@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from sovara.application.chat_service import ChatService
+from sovara.application.model_gateway import ModelGateway
 from sovara.application.system_service import SystemService
 from sovara.domain.model_registry import ModelRegistry
 from sovara.domain.tool_registry import ToolRegistry
@@ -33,3 +35,11 @@ def get_network_policy(request: Request) -> NetworkPolicy:
 
 def get_system_service(request: Request) -> SystemService:
     return request.app.state.system_service
+
+
+def get_model_gateway(request: Request) -> ModelGateway:
+    return request.app.state.gateway
+
+
+def get_chat_service(request: Request) -> ChatService:
+    return request.app.state.chat_service

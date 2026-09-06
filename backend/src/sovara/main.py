@@ -20,6 +20,8 @@ from fastapi import FastAPI, Request
 from sovara.api.error_handlers import register_error_handlers
 from sovara.api.schemas import HealthResponse
 from sovara.api.v1.router import router as v1_router
+from sovara.application.chat_service import ChatService
+from sovara.application.model_gateway import ModelGateway
 from sovara.application.system_service import SystemService
 from sovara.infrastructure.config.settings import Settings, get_settings
 from sovara.infrastructure.logging.structured import (
@@ -28,6 +30,7 @@ from sovara.infrastructure.logging.structured import (
     get_logger,
     setup_logging,
 )
+from sovara.infrastructure.models.factory import build_provider
 from sovara.infrastructure.registries import InMemoryModelRegistry, InMemoryToolRegistry
 from sovara.infrastructure.security.network_policy import NetworkPolicy
 from sovara.version import __version__
@@ -39,7 +42,8 @@ log = get_logger("sovara.main")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     setup_logging(settings.log_level)
-    # Phase 0 singletons: empty registries, explicit network policy.
+    # Singletons: registries, explicit network policy, then the Slice 1
+    # local model path (provider built + registered by the factory).
     app.state.models = InMemoryModelRegistry()
     app.state.tools = InMemoryToolRegistry()
     app.state.network = NetworkPolicy.from_settings(
@@ -47,13 +51,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         allowed_endpoints=settings.network_allowed_endpoints,
         audit_log=settings.network_audit_log,
     )
+    provider = await build_provider(settings, app.state.models, app.state.network)
+    app.state.gateway = ModelGateway(
+        registry=app.state.models,
+        providers={settings.model_default_id: provider},
+        default_model_id=settings.model_default_id,
+    )
+    app.state.chat_service = ChatService(settings=settings, gateway=app.state.gateway)
     app.state.system_service = SystemService(
         settings=settings,
         models=app.state.models,
         tools=app.state.tools,
         network=app.state.network,
     )
-    log.info("sovara backend starting phase=phase0 env=%s", settings.env)
+    log.info(
+        "sovara backend starting env=%s model_provider=%s model=%s",
+        settings.env,
+        settings.model_provider,
+        settings.model_default_id,
+    )
     yield
     log.info("sovara backend stopping")
 

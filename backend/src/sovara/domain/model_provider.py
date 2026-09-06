@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from sovara.domain.chat import ChatMessage
+
 
 class Modality(StrEnum):
     TEXT = "text"
@@ -63,6 +65,9 @@ class InferenceRequest(BaseModel):
     max_tokens: int = 256
     temperature: float = 0.2
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Phase 1: full chat history. Providers prefer `messages` when non-empty
+    # and fall back to `prompt` otherwise (keeps Phase 0 callers working).
+    messages: list[ChatMessage] = Field(default_factory=list)
 
 
 class InferenceResponse(BaseModel):

@@ -38,6 +38,7 @@ class SystemService:
             "network": self._network.describe(),
             "auth_mode": s.auth_mode,
             "capabilities": {
+                "chat_streaming": "slice1",
                 "rag": "deferred",
                 "agent_loop": "deferred",
                 "model_routing": "deferred",

@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # -- auth (abstraction only in Phase 0) --
     auth_mode: Literal["disabled", "token"] = Field(default="disabled", alias="AUTH_MODE")
 
+    # -- model gateway (Phase 1 / Slice 1: single local model path) --
+    model_provider: Literal["ollama", "echo"] = Field(default="ollama", alias="MODEL_PROVIDER")
+    model_default_id: str = Field(default="local-default", alias="MODEL_DEFAULT_ID")
+    ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="OLLAMA_BASE_URL")
+    ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
+    ollama_timeout_s: float = Field(default=10.0, alias="OLLAMA_TIMEOUT_S")
+    chat_timeout_s: float = Field(default=180.0, alias="CHAT_TIMEOUT_S")
+    chat_max_messages: int = Field(default=64, alias="CHAT_MAX_MESSAGES")
+    chat_max_prompt_chars: int = Field(default=24000, alias="CHAT_MAX_PROMPT_CHARS")
+
     # -- infrastructure paths (local-first) --
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     artifacts_dir: Path = Field(default=Path("./data/artifacts"), alias="ARTIFACTS_DIR")

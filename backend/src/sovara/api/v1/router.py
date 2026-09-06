@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from sovara.api.v1.routes import (
     artifacts,
     audit,
+    chat,
     conversations,
     health,
     knowledge,
@@ -15,6 +16,7 @@ from sovara.api.v1.routes import (
 )
 
 router = APIRouter()
+router.include_router(chat.router)
 router.include_router(health.router)
 router.include_router(system.router)
 router.include_router(models.router)

@@ -1,11 +1,14 @@
 """Placeholder boundary tests: contracts exist, real work deferred."""
 
 
-def test_models_empty_list_shape(client) -> None:
+def test_models_registry_lists_default_model(client) -> None:
+    # Slice 1: lifespan registers exactly one local model; routing deferred.
     r = client.get("/api/v1/models")
     assert r.status_code == 200
     body = r.json()
-    assert body["items"] == []
+    assert len(body["items"]) == 1
+    assert body["items"][0]["model_id"] == "local-default"
+    assert "available" in body["items"][0]
     assert body["meta"]["routing"] == "deferred"
 
 
