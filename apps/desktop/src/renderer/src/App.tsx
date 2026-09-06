@@ -1,21 +1,13 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import type { NavId } from './components/layout/Sidebar'
+import { useChatSession } from './features/chat/useChatSession'
+import { useModelWorkbench } from './features/models/useModelWorkbench'
+import { ChatView } from './features/chat/ChatView'
+import { ModelsPage } from './features/models/ModelsPage'
+import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
 import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
-import {
-  Clock,
-  Bot,
-  Sparkles,
-  Library,
-  Cpu,
-  Settings,
-  Shield,
-} from 'lucide-react'
-
-import { ChatView } from './features/chat/ChatView'
-import { useChatSession } from './features/chat/useChatSession'
-import { ModelsPage } from './features/models/ModelsPage'
 
 interface Info {
   name: string
@@ -26,23 +18,12 @@ interface Info {
   arch: string
 }
 
-function PanelTitle({ icon: Icon, title, hint }: { icon: React.ElementType; title: string; hint?: string }): React.JSX.Element {
-  return (
-    <div className="panel-head">
-      <div className="panel-title">
-        <Icon size={16} aria-hidden />
-        <span>{title}</span>
-      </div>
-      {hint ? <div className="panel-hint muted small">{hint}</div> : null}
-    </div>
-  )
-}
-
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<Info | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [activeNav, setActiveNav] = useState<NavId>('chat')
   const chat = useChatSession()
+  const workbench = useModelWorkbench()
 
   useEffect(() => {
     if (window.sovara) {
@@ -62,15 +43,25 @@ export function App(): React.JSX.Element {
         </div>
       ) : null}
       {err ? <div className="foot-error" role="alert">{err}</div> : null}
-      <div className="foot-meta" style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
-        <Shield size={12} aria-hidden />
-        <span>Local · Offline · No telemetry</span>
-      </div>
     </>
   )
 
   return (
-    <AppShell activeNav={activeNav} onNavigate={setActiveNav} footer={footer}>
+    <AppShell
+      activeNav={activeNav}
+      onNavigate={setActiveNav}
+      footer={footer}
+      projects={[]}
+      selectedProjectId={null}
+      selectedSessionId={chat.selectedId}
+      onSelectProject={() => {}}
+      onSelectSession={chat.switchSession}
+      onNewProject={() => {}}
+      onNewChat={chat.handleCreate}
+      recentChats={chat.sessions.map((s) => ({ id: s.id, title: s.title }))}
+      selectedChatId={chat.selectedId}
+      onSelectChat={chat.switchSession}
+    >
       {activeNav === 'chat' ? (
         <ChatView
           sessions={chat.sessions.map((s) => ({ id: s.id, title: s.title }))}
@@ -88,62 +79,87 @@ export function App(): React.JSX.Element {
           onCancel={chat.handleCancel}
           onCreateSession={chat.handleCreate}
           onSwitchSession={chat.switchSession}
+          activeModel={workbench.active}
+          runtimes={workbench.runtimes}
+          discoveredModels={workbench.models}
+          projectCount={0}
+          onNewProject={() => {}}
+          execMode={null}
+          execAvailable={false}
         />
-      ) : null}
-
-      {activeNav === 'sessions' ? (
-        <Card>
-          <PanelTitle icon={Clock} title="Sessions" hint={`${chat.sessions.length} persisted · WAL + JSONL`} />
-          <p className="muted">Full session management UI arrives in Commit 5. The store is already durable — this placeholder proves the IA.</p>
-          <EmptyState
-            title="Sessions placeholder"
-            description="Navigation destination reserved. Backend is live; UI follows in Commit 5."
-            icon={<Clock size={20} aria-hidden />}
-          />
-        </Card>
       ) : null}
 
       {activeNav === 'models' ? <ModelsPage /> : null}
 
+      {activeNav === 'settings' ? (
+        <Card>
+          <div className="panel-head">
+            <div className="panel-title">
+              <Settings size={16} aria-hidden />
+              <span>Settings</span>
+            </div>
+            <div className="panel-hint muted small">Sovereign defaults</div>
+          </div>
+          <EmptyState
+            title="Settings"
+            description="Theme, network allowlist, resource limits — ConfigService with Zod, file watch in Phase 2."
+            icon={<Settings size={20} aria-hidden />}
+          />
+        </Card>
+      ) : null}
+
       {activeNav === 'agents' ? (
         <Card>
-          <PanelTitle icon={Bot} title="Agents" hint="DshPort / HermesPort stubs" />
-          <EmptyState title="Agents" description="Agent presets and composition — stubs in Phase 1, Cordis/Hermes adapters in Phase 2." icon={<Bot size={20} aria-hidden />} />
+          <div className="panel-head">
+            <div className="panel-title">
+              <Bot size={16} aria-hidden />
+              <span>Agents</span>
+            </div>
+            <div className="panel-hint muted small">Coming soon</div>
+          </div>
+          <EmptyState title="Agents" description="Agent presets and composition — stubs in Phase 1, adapters in Phase 2." icon={<Bot size={20} aria-hidden />} />
         </Card>
       ) : null}
 
       {activeNav === 'skills' ? (
         <Card>
-          <PanelTitle icon={Sparkles} title="Skills" hint="Coming soon" />
+          <div className="panel-head">
+            <div className="panel-title">
+              <Sparkles size={16} aria-hidden />
+              <span>Skills</span>
+            </div>
+            <div className="panel-hint muted small">Coming soon</div>
+          </div>
           <EmptyState title="Skills" description="Skill library and curated memory — reserved for Phase 2." icon={<Sparkles size={20} aria-hidden />} />
         </Card>
       ) : null}
 
       {activeNav === 'library' ? (
         <Card>
-          <PanelTitle icon={Library} title="Library" hint="Coming soon" />
+          <div className="panel-head">
+            <div className="panel-title">
+              <Library size={16} aria-hidden />
+              <span>Library</span>
+            </div>
+            <div className="panel-hint muted small">Coming soon</div>
+          </div>
           <EmptyState title="Library" description="Knowledge / RAG documents — KnowledgePort stub, ingestion in Phase 2." icon={<Library size={20} aria-hidden />} />
         </Card>
       ) : null}
 
       {activeNav === 'runtime' ? (
         <Card>
-          <PanelTitle icon={Cpu} title="Runtime" hint="SystemResourceManagerPort" />
+          <div className="panel-head">
+            <div className="panel-title">
+              <Cpu size={16} aria-hidden />
+              <span>Runtime</span>
+            </div>
+            <div className="panel-hint muted small">Coming soon</div>
+          </div>
           <EmptyState
             title="Runtime & resources"
             description="CPU / RAM / GPU / VRAM / disk and model instances — contract + stub in Phase 1, real probes in Phase 2."
             icon={<Cpu size={20} aria-hidden />}
-          />
-        </Card>
-      ) : null}
-
-      {activeNav === 'settings' ? (
-        <Card>
-          <PanelTitle icon={Settings} title="Settings" hint="Sovereign defaults" />
-          <EmptyState
-            title="Settings"
-            description="Theme, network allowlist, resource limits — ConfigService with Zod, file watch in Phase 2."
-            icon={<Settings size={20} aria-hidden />}
           />
         </Card>
       ) : null}

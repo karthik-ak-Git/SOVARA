@@ -47,20 +47,7 @@ export function MessageList({ events, thinking = false, streamingText = '', onRe
         aria-live="polite"
         onScroll={handleScroll}
         tabIndex={0}
-      >
-        <div
-          className="message-list-empty"
-          role="status"
-          aria-label="Empty conversation"
-        >
-          <p className="empty-title">Start a local conversation</p>
-          <p className="muted small">
-            Type below and press Enter to send. Replies stream from the
-            selected local model — no cloud, no network beyond localhost.
-          </p>
-          <p className="muted small">Shift+Enter inserts a newline.</p>
-        </div>
-      </div>
+      />
     )
   }
 

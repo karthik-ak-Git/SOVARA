@@ -31,21 +31,15 @@ export function ConversationHeader({
         <div className="header-info">
           <h1 className="header-title">{title}</h1>
           {isSessionSelected ? (
-            <div className="header-session">
-              <span className="header-session-id">Session {sessionId?.slice(0, 8)}…</span>
+            <div className="header-meta">
+              <span className="header-session-id">{sessionId?.slice(0, 8)}…</span>
               {modelLabel && modelOk ? (
                 <span className="badge badge--success" role="status" aria-label={`Local model ${modelLabel} connected`}>
-                  LOCAL MODEL · {modelLabel}
+                  {modelLabel}
                 </span>
-              ) : (
-                <span className="badge badge--warn" role="status" aria-label="No local model selected">
-                  NO LOCAL MODEL · Open Models
-                </span>
-              )}
+              ) : null}
             </div>
-          ) : (
-            <p className="header-subtle">Select or create a session</p>
-          )}
+          ) : null}
         </div>
 
         <div className="header-actions">
@@ -53,11 +47,12 @@ export function ConversationHeader({
             onClick={onNewSession}
             disabled={loading}
             aria-label="Create new conversation"
-            style={{ marginRight: 8 }}
+            variant="ghost"
+            className="btn-sm"
           >
             + New
           </Button>
-          {sessions && sessions.length > 0 ? (
+          {sessions && sessions.length > 1 ? (
             <select
               value={sessionId ?? ''}
               onChange={(e) => {
@@ -66,9 +61,9 @@ export function ConversationHeader({
               }}
               aria-label="Switch conversation"
               disabled={loading}
-              style={{ marginLeft: 8 }}
+              className="header-session-select"
             >
-              <option value="">— Select conversation —</option>
+              <option value="">Switch…</option>
               {sessions.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.title}
@@ -82,7 +77,7 @@ export function ConversationHeader({
       {loading ? (
         <div className="header-loading" aria-live="polite" role="status">
           <span className="pill pill--loading" aria-hidden>{'◆'}</span>
-          Loading conversation…
+          Loading…
         </div>
       ) : null}
     </header>

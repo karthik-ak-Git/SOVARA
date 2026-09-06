@@ -1,26 +1,26 @@
 /**
  * Centralized design tokens — single source for colors, typography, spacing, radii, borders, shadows, sizing, focus, disabled, status.
  * No magic values scattered in components. CSS variables in styles.css mirror these values.
- * Dark-first, industrial, restrained.
+ * Light-first, clean, Bionic-style.
  */
 
 export const colors = {
-  bg: '#0f1115',
-  bgSoft: '#161a22',
-  bgElevated: '#1b202b',
-  panel: '#1b202b',
-  panel2: '#222838',
-  border: '#2a3144',
-  borderSoft: '#1e2433',
-  text: '#e6e8ee',
-  muted: '#9aa3b8',
-  muted2: '#7a8499',
-  accent: '#5b8def',
-  accent2: '#7aa5ff',
-  success: '#3dd68c',
-  warn: '#f0b429',
-  danger: '#ff6b6b',
-  focus: '#5b8def',
+  bg: '#ffffff',
+  bgSoft: '#f7f7f8',
+  bgElevated: '#ffffff',
+  panel: '#ffffff',
+  panel2: '#f3f4f6',
+  border: '#e5e7eb',
+  borderSoft: '#f0f0f2',
+  text: '#1a1a2e',
+  muted: '#6b7280',
+  muted2: '#9ca3af',
+  accent: '#4a90d9',
+  accent2: '#3b82f6',
+  success: '#22c55e',
+  warn: '#f59e0b',
+  danger: '#ef4444',
+  focus: '#4a90d9',
 } as const
 
 export const typography = {
@@ -75,8 +75,8 @@ export const borders = {
 } as const
 
 export const shadows = {
-  panel: '0 1px 2px rgba(0,0,0,.25), 0 4px 12px rgba(0,0,0,.2)',
-  focus: `0 0 0 2px rgba(91,141,239,.2)`,
+  panel: '0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06)',
+  focus: `0 0 0 2px rgba(74,144,217,.15)`,
 } as const
 
 export const sizing = {

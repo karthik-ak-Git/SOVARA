@@ -21,12 +21,11 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('Renderer shell — navigation & layout', () => {
-  it('renders 8 navigation destinations', () => {
+  it('renders 7 navigation destinations', () => {
     const { container } = render(<Sidebar activeId="chat" onNavigate={() => {}} />)
     const buttons = container.querySelectorAll('button.nav-item')
-    expect(buttons.length).toBe(8)
+    expect(buttons.length).toBe(7)
     expect(screen.getByRole('button', { name: /Chat/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Sessions/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Models/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Agents/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Skills/ })).toBeInTheDocument()
@@ -62,12 +61,9 @@ describe('Renderer shell — navigation & layout', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
-  it('TopBar shows sovereignty indicators', () => {
+  it('TopBar shows brand', () => {
     render(<TopBar />)
     expect(screen.getByText('Sovara')).toBeInTheDocument()
-    expect(screen.getByText('Local')).toBeInTheDocument()
-    expect(screen.getByText('Offline')).toBeInTheDocument()
-    expect(screen.getByText('No telemetry')).toBeInTheDocument()
   })
 
   it('AppShell renders topbar, sidebar, and main', () => {

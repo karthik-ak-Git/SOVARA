@@ -13,6 +13,16 @@ import { buildMockAssistantText } from '../src/main/backend/ports/LlmStubAdapter
 
 afterEach(() => cleanup())
 
+const composerProps = {
+  active: { selection: null, available: false },
+  runtimes: [],
+  models: [],
+  projectCount: 0,
+  onNewProject: () => {},
+  execMode: null,
+  execAvailable: false,
+}
+
 describe('Commit 5 — event model', () => {
   it('derives user/assistant messages in seq order and ignores other types', () => {
     const msgs = deriveMessages([
@@ -78,12 +88,12 @@ describe('Commit 5 — composer', () => {
   it('Enter sends trimmed content; empty never sends', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    const { rerender } = render(<Composer value="  hello  " onChange={() => {}} onSend={onSend} />)
+    const { rerender } = render(<Composer value="  hello  " onChange={() => {}} onSend={onSend} {...composerProps} />)
     await user.click(screen.getByRole('button', { name: 'Send message' }))
     expect(onSend).toHaveBeenCalledWith('hello')
 
     onSend.mockClear()
-    rerender(<Composer value="   " onChange={() => {}} onSend={onSend} />)
+    rerender(<Composer value="   " onChange={() => {}} onSend={onSend} {...composerProps} />)
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
   })
 
@@ -94,21 +104,21 @@ describe('Commit 5 — composer', () => {
     const onChange = vi.fn((v: string) => {
       value = v
     })
-    const { rerender } = render(<Composer value={value} onChange={onChange} onSend={onSend} />)
+    const { rerender } = render(<Composer value={value} onChange={onChange} onSend={onSend} {...composerProps} />)
     const box = screen.getByRole('textbox', { name: 'Message input' })
     await user.click(box)
     await user.keyboard('{Shift>}{Enter}{/Shift}')
     expect(onSend).not.toHaveBeenCalled()
     expect(onChange).toHaveBeenCalled()
     expect(value).toContain('\n')
-    rerender(<Composer value={value} onChange={onChange} onSend={onSend} />)
+    rerender(<Composer value={value} onChange={onChange} onSend={onSend} {...composerProps} />)
     expect(screen.getByRole('textbox', { name: 'Message input' })).toHaveValue(value)
   })
 
   it('duplicate-send prevention: disabled composer cannot send', async () => {
     const user = userEvent.setup()
     const onSend = vi.fn()
-    render(<Composer value="hello" onChange={() => {}} onSend={onSend} disabled />)
+    render(<Composer value="hello" onChange={() => {}} onSend={onSend} disabled {...composerProps} />)
     const box = screen.getByRole('textbox', { name: 'Message input' })
     expect(box).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
@@ -142,7 +152,7 @@ describe('Commit 5 — ChatView states', () => {
 
   it('guides when no conversation is selected', () => {
     render(<ChatView {...base} selectedId={null} sessions={[]} />)
-    expect(screen.getByText(/Create a conversation to start/)).toBeInTheDocument()
+    expect(screen.getByText(/What can I help with/)).toBeInTheDocument()
   })
 
   it('send button has an accessible name and composer is labelled', () => {

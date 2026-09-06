@@ -1,37 +1,56 @@
-import { Shield, HardDrive } from 'lucide-react'
+import { Grid3X3, Plus, Settings, Minus, Square, X } from 'lucide-react'
 
 interface Props {
   appName?: string
-  phaseLabel?: string
+  activeTab?: string
+  onTabSelect?: (tabId: string) => void
 }
 
-export function TopBar({ appName = 'Sovara', phaseLabel = 'Phase 1 — Foundation' }: Props): React.JSX.Element {
+export function TopBar({ appName = 'Sovara', activeTab = 'new-tab', onTabSelect }: Props): React.JSX.Element {
   return (
     <header className="topbar" role="banner">
-      <div className="brand" aria-label={`${appName} brand`}>
-        <span className="brand-mark" aria-hidden>
-          ◆
-        </span>
-        <span className="brand-name">{appName}</span>
-        <span className="brand-phase">{phaseLabel}</span>
+      <div className="topbar-left">
+        <button type="button" className="topbar-icon-btn" aria-label="Applications">
+          <Grid3X3 size={16} aria-hidden />
+        </button>
+        <button type="button" className="topbar-icon-btn" aria-label="New">
+          <Plus size={16} aria-hidden />
+        </button>
       </div>
 
-      <div className="topbar-center" aria-hidden>
-        <span className="topbar-divider" />
+      <div className="topbar-tabs" role="tablist" aria-label="Open tabs">
+        <button
+          type="button"
+          role="tab"
+          className={`topbar-tab ${activeTab === 'new-tab' ? 'active' : ''}`}
+          aria-selected={activeTab === 'new-tab'}
+          onClick={() => onTabSelect?.('new-tab')}
+        >
+          <Settings size={14} aria-hidden className="topbar-tab-icon" />
+          <span>New tab</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`topbar-tab ${activeTab === 'session' ? 'active' : ''}`}
+          aria-selected={activeTab === 'session'}
+          onClick={() => onTabSelect?.('session')}
+        >
+          <span className="topbar-tab-icon" aria-hidden>◆</span>
+          <span>{appName} Session</span>
+        </button>
       </div>
 
-      <div className="topbar-right" role="status" aria-live="polite">
-        <span className="status-indicator" title="Local and offline by default — no telemetry. Verified via HttpClient allowlist and verify-no-bare-fetch.">
-          <Shield size={14} aria-hidden />
-          <span>Local</span>
-        </span>
-        <span className="status-indicator" title="Offline by default — external network requires explicit allow flag.">
-          <HardDrive size={14} aria-hidden />
-          <span>Offline</span>
-        </span>
-        <span className="pill" title="No telemetry — no analytics SDK is bundled; verify via build output.">
-          No telemetry
-        </span>
+      <div className="topbar-window-controls">
+        <button type="button" className="topbar-win-btn" aria-label="Minimize">
+          <Minus size={14} aria-hidden />
+        </button>
+        <button type="button" className="topbar-win-btn" aria-label="Maximize">
+          <Square size={12} aria-hidden />
+        </button>
+        <button type="button" className="topbar-win-btn close" aria-label="Close">
+          <X size={14} aria-hidden />
+        </button>
       </div>
     </header>
   )
