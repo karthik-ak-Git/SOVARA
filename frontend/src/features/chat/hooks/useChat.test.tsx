@@ -94,6 +94,20 @@ describe("useChat", () => {
     expect(last[last.length - 1].content).toBe("recovered");
   });
 
+  it("passes the selected model id to the streamer", async () => {
+    const received: Array<string | undefined> = [];
+    const capture: StreamFn = async (_messages, _callbacks, modelId) => {
+      received.push(modelId);
+      return { modelId: modelId ?? "?", finishReason: "stop" };
+    };
+    const { result } = renderHook(() =>
+      useChat(() => undefined, { stream: capture, modelId: "model-b" }),
+    );
+    act(() => result.current.send([], "hi"));
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    expect(received).toEqual(["model-b"]);
+  });
+
   it("regenerate drops the last assistant answer", async () => {
     const seen: UiMessage[][] = [];
     const received: string[][] = [];

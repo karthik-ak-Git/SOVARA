@@ -31,6 +31,8 @@ export interface Conversation {
   id: string;
   title: string;
   messages: UiMessage[];
+  /** Model used for the conversation's most recent turn (manual pick). */
+  modelId?: string;
   createdAt: number;
   updatedAt: number;
 }

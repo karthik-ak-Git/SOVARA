@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
+import type { ModelItem } from "../../../api/types";
 import { useChat } from "../hooks/useChat";
 import {
   createConversation,
   deleteConversation,
   listConversations,
+  loadSelectedModelId,
   retitleFromFirstUserMessage,
   saveConversation,
+  saveSelectedModelId,
 } from "../lib/store";
 import type { Conversation, UiMessage } from "../types";
 import { Composer } from "./Composer";
 import { GenerationControls } from "./GenerationControls";
 import { MessageList } from "./MessageList";
+import { ModelSelector } from "./ModelSelector";
 import { Sidebar } from "./Sidebar";
 
 interface ChatLayoutProps {
@@ -20,9 +24,9 @@ interface ChatLayoutProps {
 }
 
 /**
- * Chat screen composition. Owns conversation state (localStorage-backed);
- * generation state lives in useChat. Metadata (model/status) is plain
- * useEffect fetches — no query library for two read-only calls.
+ * Chat screen composition. Owns conversation state (localStorage-backed)
+ * and the explicit selectedModelId; generation state lives in useChat.
+ * Model metadata comes from GET /models (registry records, manual pick).
  */
 export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Element {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
@@ -32,34 +36,48 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
     () => listConversations()[0]?.id ?? null,
   );
   const [collapsed, setCollapsed] = useState(false);
-  const [modelId, setModelId] = useState<string | null>(null);
-  const [modelAvailable, setModelAvailable] = useState(false);
+  const [models, setModels] = useState<ModelItem[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    loadSelectedModelId(),
+  );
   const [localOnly, setLocalOnly] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
+  const loadModels = useCallback(() => {
+    setModelsLoading(true);
+    setModelsError(false);
     api
       .models()
       .then((m) => {
-        if (!alive) return;
-        const first = m.items[0];
-        setModelId(first?.model_id ?? null);
-        setModelAvailable(first?.available ?? false);
+        setModels(m.items);
+        setSelectedId((prev) => {
+          if (prev !== null && m.items.some((i) => i.id === prev)) return prev;
+          const fallback = m.meta.default_model_id || m.items[0]?.id || null;
+          if (fallback !== null) saveSelectedModelId(fallback);
+          return fallback;
+        });
+        setModelsLoading(false);
       })
       .catch(() => {
-        if (alive) setModelAvailable(false);
+        setModelsError(true);
+        setModelsLoading(false);
       });
     api
       .status()
-      .then((s) => {
-        if (alive) setLocalOnly(s.network.local_only);
-      })
+      .then((s) => setLocalOnly(s.network.local_only))
       .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
   }, []);
 
+  useEffect(() => {
+    loadModels();
+  }, [loadModels]);
+
+  const selected: ModelItem | null =
+    models.find((m) => m.id === selectedId) ?? null;
+
+  // Ref mirror: setActiveId is async, but persist() may run in the same
+  // tick (new chat -> immediate send). The ref is always current.
   const activeIdRef = useRef<string | null>(listConversations()[0]?.id ?? null);
   const setActive = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -69,19 +87,27 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
   const active: Conversation | undefined = conversations.find((c) => c.id === activeId);
   const messages: UiMessage[] = active?.messages ?? [];
 
-  const persist = useCallback((next: UiMessage[]) => {
-    const id = activeIdRef.current;
-    setConversations((prev) => {
-      const current = prev.find((c) => c.id === id);
-      if (current === undefined) return prev;
-      let updated: Conversation = { ...current, messages: next };
-      if (current.title === "New chat") updated = retitleFromFirstUserMessage(updated);
-      saveConversation(updated);
-      return prev.map((c) => (c.id === updated.id ? updated : c));
-    });
-  }, []);
+  const persist = useCallback(
+    (next: UiMessage[]) => {
+      const id = activeIdRef.current;
+      setConversations((prev) => {
+        const current = prev.find((c) => c.id === id);
+        if (current === undefined) return prev;
+        let updated: Conversation = { ...current, messages: next };
+        if (current.title === "New chat") updated = retitleFromFirstUserMessage(updated);
+        saveConversation(updated);
+        return prev.map((c) => (c.id === updated.id ? updated : c));
+      });
+    },
+    [activeId],
+  );
 
-  const chat = useChat(persist, { modelId: modelId ?? undefined });
+  const chat = useChat(persist, { modelId: selectedId ?? undefined });
+
+  const handleSelectModel = useCallback((id: string) => {
+    setSelectedId(id);
+    saveSelectedModelId(id);
+  }, []);
 
   const handleNewChat = useCallback(() => {
     const convo = createConversation();
@@ -93,8 +119,19 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
     (id: string) => {
       if (chat.status === "streaming") chat.stop();
       setActive(id);
+      // Adopt the conversation's last-used model when it still exists.
+      const convo = listConversations().find((c) => c.id === id);
+      if (convo?.modelId !== undefined) {
+        setSelectedId((prev) => {
+          if (models.some((m) => m.id === convo.modelId)) {
+            saveSelectedModelId(convo.modelId as string);
+            return convo.modelId as string;
+          }
+          return prev;
+        });
+      }
     },
-    [chat, setActive],
+    [chat, models],
   );
 
   const handleDelete = useCallback(
@@ -117,13 +154,22 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
         setActive(convo.id);
         id = convo.id;
       }
-      const current = conversations.find((c) => c.id === id)?.messages ?? [];
-      chat.send(current, content);
+      const current = conversations.find((c) => c.id === id);
+      if (selectedId !== null) {
+        const stamped: Conversation = {
+          ...(current as Conversation),
+          modelId: selectedId,
+        };
+        saveConversation(stamped);
+        setConversations((prev) => prev.map((c) => (c.id === id ? stamped : c)));
+      }
+      chat.send(current?.messages ?? [], content);
     },
-    [conversations, chat, setActive],
+    [conversations, chat, selectedId, setActive],
   );
 
-  const composerDisabled = !modelAvailable;
+  const composerDisabled =
+    models.length === 0 || selected?.availability === "unavailable";
 
   return (
     <div className="sv-app">
@@ -131,8 +177,10 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
         collapsed={collapsed}
         conversations={conversations}
         activeId={activeId}
-        modelId={modelId}
-        modelAvailable={modelAvailable}
+        modelDisplayName={
+          selected !== null ? selected.display_name || selected.id : null
+        }
+        modelAvailability={selected?.availability ?? "unknown"}
         localOnly={localOnly}
         onToggle={() => setCollapsed((c) => !c)}
         onNewChat={handleNewChat}
@@ -141,9 +189,15 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
       />
       <main className="sv-main">
         <header className="sv-header">
-          <span className="sv-header-title">
-            {active?.title ?? "New chat"}
-          </span>
+          <span className="sv-header-title">{active?.title ?? "New chat"}</span>
+          <ModelSelector
+            models={models}
+            selectedId={selectedId}
+            loading={modelsLoading}
+            loadError={modelsError}
+            onSelect={handleSelectModel}
+            onRetryLoad={loadModels}
+          />
           <button
             type="button"
             className="sv-icon-btn"

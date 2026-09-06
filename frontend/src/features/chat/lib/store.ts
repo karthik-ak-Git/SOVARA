@@ -63,6 +63,25 @@ export function deleteConversation(id: string): void {
   write(read().filter((c) => c.id !== id));
 }
 
+const SELECTED_KEY = "sovara.selectedModel.v1";
+
+export function loadSelectedModelId(): string | null {
+  try {
+    const raw = localStorage.getItem(SELECTED_KEY);
+    return raw === null || raw === "" ? null : raw;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSelectedModelId(id: string): void {
+  try {
+    localStorage.setItem(SELECTED_KEY, id);
+  } catch {
+    // storage unavailable: selection still works in-memory
+  }
+}
+
 export function retitleFromFirstUserMessage(convo: Conversation): Conversation {
   const first = convo.messages.find((m: UiMessage) => m.role === "user");
   if (first === undefined) return convo;

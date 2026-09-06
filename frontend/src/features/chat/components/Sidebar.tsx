@@ -1,3 +1,4 @@
+import type { ModelAvailability } from "../../../api/types";
 import type { Conversation } from "../types";
 import { ConversationList } from "./ConversationList";
 import { StatusIndicator } from "./StatusIndicator";
@@ -6,8 +7,8 @@ interface SidebarProps {
   collapsed: boolean;
   conversations: Conversation[];
   activeId: string | null;
-  modelId: string | null;
-  modelAvailable: boolean;
+  modelDisplayName: string | null;
+  modelAvailability: ModelAvailability | "unknown";
   localOnly: boolean;
   onToggle: () => void;
   onNewChat: () => void;
@@ -19,8 +20,8 @@ export function Sidebar({
   collapsed,
   conversations,
   activeId,
-  modelId,
-  modelAvailable,
+  modelDisplayName,
+  modelAvailability,
   localOnly,
   onToggle,
   onNewChat,
@@ -78,8 +79,8 @@ export function Sidebar({
       </div>
       <div className="sv-sidebar-foot">
         <StatusIndicator
-          modelId={modelId}
-          available={modelAvailable}
+          modelDisplayName={modelDisplayName}
+          availability={modelAvailability}
           localOnly={localOnly}
         />
       </div>

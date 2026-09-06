@@ -30,17 +30,29 @@ export interface ModelCapabilities {
   supports_tools: boolean;
 }
 
-export interface ModelRecord {
-  model_id: string;
+export type ModelAvailability = "available" | "unavailable" | "unknown";
+
+export interface ModelItem {
+  id: string;
+  display_name: string;
   provider: string;
+  runtime: string;
+  version: string;
   capabilities: ModelCapabilities;
-  resource: Record<string, number | null>;
-  available: boolean;
+  capability_source: string;
+  context_window: number | null;
+  parameter_size_b: number | null;
+  availability: ModelAvailability;
+  metadata: Record<string, string>;
 }
 
 export interface ModelList {
-  items: ModelRecord[];
-  meta: Record<string, string>;
+  items: ModelItem[];
+  meta: {
+    routing: string;
+    source: string;
+    default_model_id: string;
+  };
 }
 
 export type ChatRole = "system" | "user" | "assistant";
