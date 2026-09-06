@@ -8,6 +8,9 @@ interface ConversationHeaderProps {
   onSwitchSession?: (id: string) => void
   sessions?: Array<{ id: string; title: string }>
   loading?: boolean
+  /** Active local model line, e.g. "phi-4 on LM Studio". Null = none selected. */
+  modelLabel?: string | null
+  modelOk?: boolean
 }
 
 export function ConversationHeader({
@@ -17,6 +20,8 @@ export function ConversationHeader({
   onSwitchSession,
   sessions,
   loading = false,
+  modelLabel = null,
+  modelOk = false,
 }: ConversationHeaderProps): ReactElement {
   const isSessionSelected = !!sessionId
 
@@ -28,9 +33,15 @@ export function ConversationHeader({
           {isSessionSelected ? (
             <div className="header-session">
               <span className="header-session-id">Session {sessionId?.slice(0, 8)}…</span>
-              <span className="muted small" aria-label={`${(sessions ?? []).length} conversations`}>
-                {(sessions ?? []).length} conversation{(sessions ?? []).length === 1 ? '' : 's'} · local mock
-              </span>
+              {modelLabel && modelOk ? (
+                <span className="badge badge--success" role="status" aria-label={`Local model ${modelLabel} connected`}>
+                  LOCAL MODEL · {modelLabel}
+                </span>
+              ) : (
+                <span className="badge badge--warn" role="status" aria-label="No local model selected">
+                  NO LOCAL MODEL · Open Models
+                </span>
+              )}
             </div>
           ) : (
             <p className="header-subtle">Select or create a session</p>

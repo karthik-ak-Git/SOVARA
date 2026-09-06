@@ -33,13 +33,32 @@ export interface ModelRuntimePort {
   probeRuntime(runtimeId: string): Promise<{ available: boolean; version?: string; path?: string }>
 }
 
-// ── LLM (Phase 1 stub) ──
+// ── LLM (Commit 7: real local inference behind the same boundary) ──
 export interface LlmChunk {
   type: 'text-delta' | 'done'
   text?: string
+  /** Delivery note, e.g. 'non-stream-fallback'. Never content. */
+  note?: string
+}
+export interface LlmChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+export interface LlmChatRequest {
+  /** Loopback base URL, revalidated by the adapter at request time. */
+  endpoint: string
+  /** Remote model id (without the `<runtimeId>:` prefix). */
+  model: string
+  messages: LlmChatMessage[]
+  timeoutMs: number
+  stream: boolean
+  signal?: AbortSignal
 }
 export interface LlmPort {
+  /** Legacy stub facet (Commit 5 mock). Real path is streamChat. */
   stream(prompt: string): AsyncIterable<LlmChunk>
+  /** Real local inference. Throws ChatInferenceError (classified) on failure. */
+  streamChat(request: LlmChatRequest): AsyncIterable<LlmChunk>
 }
 
 // ── Tool registry (Phase 1 stub) ──

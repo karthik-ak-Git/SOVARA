@@ -77,6 +77,179 @@ export interface RuntimeHttpResult {
   latencyMs: number
 }
 
+export interface PostLoopbackOpts {
+  timeoutMs?: number
+  maxBytes?: number
+  signal?: AbortSignal
+}
+
+/**
+ * POST JSON to a loopback URL with redirects resolved + re-validated.
+ * Returns the raw Response for the caller to consume (SSE or JSON).
+ * Throws LoopbackViolationError / AbortError / Error('response-too-large'
+ * only checked by callers while reading).
+ */
+export async function postLoopback(
+  url: string,
+  body: unknown,
+  opts?: PostLoopbackOpts
+): Promise<{ res: Response; latencyMs: number; url: string }> {
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_RUNTIME_TIMEOUT_MS
+  const started = Date.now()
+  let current = url
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    if (!(await isLoopbackUrl(current))) {
+      throw new LoopbackViolationError(`blocked non-loopback runtime URL`)
+    }
+    // AbortSignal.timeout cannot be combined with an external signal pre-Node
+    // 22 patterns we rely on: link both via a child controller.
+    const child = new AbortController()
+    const timer = setTimeout(() => child.abort(new Error('timeout: runtime did not answer in time')), timeoutMs)
+    const onAbort = (): void => child.abort(opts?.signal?.reason ?? new Error('cancelled'))
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        clearTimeout(timer)
+        throw opts.signal.reason instanceof Error ? opts.signal.reason : new Error('cancelled')
+      }
+      opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+    try {
+      const res = await fetch(current, {
+        method: 'POST',
+        redirect: 'manual',
+        signal: child.signal,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.status >= 300 && res.status < 400 && (res.status !== 304)) {
+        const loc = res.headers.get('location')
+        try {
+          await res.body?.cancel()
+        } catch {
+          // ignore
+        }
+        if (!loc || hop === MAX_REDIRECTS) throw new LoopbackViolationError('blocked runtime redirect')
+        try {
+          current = new URL(loc, current).toString()
+        } catch {
+          throw new LoopbackViolationError('blocked runtime redirect')
+        }
+        continue
+      }
+      return { res, latencyMs: Date.now() - started, url: current }
+    } catch (e) {
+      if (e instanceof LoopbackViolationError) throw e
+      throw e instanceof Error ? e : new Error('runtime request failed')
+    } finally {
+      clearTimeout(timer)
+      opts?.signal?.removeEventListener('abort', onAbort)
+    }
+  }
+  throw new LoopbackViolationError('blocked runtime redirect')
+}
+
+export interface SseConsumeResult {
+  finished: boolean
+  deltas: number
+  malformed: number
+}
+
+/**
+ * Consume an OpenAI-style SSE body (`data: {...}` / `[DONE]`) from an
+ * already-opened loopback POST response.
+ * - Forwards `choices[].delta.content` text to onDelta as it arrives.
+ * - Tolerates malformed lines (skipped); aborts past 200 bad lines.
+ * - Total streamed text bounded by maxBytes; abort signal ends the read.
+ */
+export async function consumeSseBody(
+  res: Response,
+  opts: { maxBytes?: number; onDelta: (text: string) => void }
+): Promise<SseConsumeResult> {
+  const maxBytes = opts?.maxBytes ?? MAX_RUNTIME_RESPONSE_BYTES
+  if (!res.body) throw new Error('invalid-response: empty stream body')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let total = 0
+  let deltas = 0
+  let malformed = 0
+  let finished = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) throw new Error('response-too-large: streamed reply exceeded the local cap')
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim()
+        buf = buf.slice(idx + 1)
+        if (line === '' || line.startsWith(':')) continue
+        const payload = line.startsWith('data:') ? line.slice(5).trim() : null
+        if (payload === null) {
+          malformed += 1
+          continue
+        }
+        if (payload === '[DONE]') {
+          finished = true
+          break
+        }
+        let json: unknown
+        try {
+          json = JSON.parse(payload)
+        } catch {
+          malformed += 1
+          continue
+        }
+        const text = extractDelta(json)
+        if (text === null) {
+          malformed += 1
+          continue
+        }
+        if (text !== '') {
+          deltas += 1
+          opts.onDelta(text)
+        }
+        if (malformed > 200) throw new Error('invalid-response: too many malformed stream chunks')
+      }
+      if (finished) break
+    }
+  } finally {
+    try {
+      await reader.cancel()
+    } catch {
+      // ignore
+    }
+  }
+  return { finished, deltas, malformed }
+}
+
+/** Read a bounded text body from a loopback response. */
+export async function readBoundedBody(res: Response, maxBytes?: number): Promise<string> {
+  return readBounded(res, maxBytes ?? MAX_RUNTIME_RESPONSE_BYTES)
+}
+
+/** OpenAI `choices[0].delta.content` (or `message.content`); null if absent. */
+export function extractDelta(json: unknown): string | null {
+  if (json === null || typeof json !== 'object') return null
+  const choices = (json as Record<string, unknown>)['choices']
+  if (!Array.isArray(choices) || choices.length === 0) return null
+  const first = choices[0] as Record<string, unknown>
+  const delta = first['delta']
+  if (delta !== null && typeof delta === 'object') {
+    const c = (delta as Record<string, unknown>)['content']
+    if (typeof c === 'string') return c
+  }
+  const message = first['message']
+  if (message !== null && typeof message === 'object') {
+    const c = (message as Record<string, unknown>)['content']
+    if (typeof c === 'string') return c
+  }
+  return null
+}
+
 /**
  * GET JSON from a loopback URL. Throws LoopbackViolationError for
  * non-local targets, AbortError-derived timeout, or Error for

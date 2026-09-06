@@ -48,11 +48,25 @@ export async function sendChatMessage(
   sessionId: string,
   content: string
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
+  // Long-lived invoke: resolves when generation completes and the single
+  // durable assistant event is persisted. Deltas arrive via onSessionEvents.
   return (await sovara().invoke('chat:send', { sessionId, content })) as {
     ok: boolean
     userSeq: number
     assistantSeq: number
   }
+}
+
+export async function cancelChatMessage(sessionId: string): Promise<{ cancelled: boolean }> {
+  return (await sovara().invoke('chat:cancel', { sessionId })) as { cancelled: boolean }
+}
+
+export type { ChatStreamEvent } from '@shared/types/chat'
+
+export function onSessionEvents(callback: (event: import('@shared/types/chat').ChatStreamEvent) => void): () => void {
+  return sovara().on('events:session', (...args: unknown[]) => {
+    callback(args[0] as import('@shared/types/chat').ChatStreamEvent)
+  })
 }
 
 export async function listRuntimes(): Promise<ModelRuntimeEntry[]> {

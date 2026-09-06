@@ -1,4 +1,4 @@
-import type { LlmChunk, LlmPort } from '@shared/types/ports'
+import type { LlmChatRequest, LlmChunk, LlmPort } from '@shared/types/ports'
 
 /**
  * Commit 5 — deterministic Phase 1 mock assistant.
@@ -16,5 +16,12 @@ export class LlmStubAdapter implements LlmPort {
   async *stream(prompt: string): AsyncIterable<LlmChunk> {
     yield { type: 'text-delta', text: buildMockAssistantText(prompt ?? '') }
     yield { type: 'done' }
+  }
+
+  /** Stub facet of the real boundary: clearly-labelled mock, no network. */
+  async *streamChat(request: LlmChatRequest): AsyncIterable<LlmChunk> {
+    void request
+    yield { type: 'text-delta', text: '[Phase 1 mock assistant — no model wired]' }
+    yield { type: 'done', note: 'mock' }
   }
 }

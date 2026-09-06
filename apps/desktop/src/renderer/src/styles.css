@@ -342,6 +342,21 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .runtime-endpoint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-actions { display: flex; gap: 6px; }
 
+/* Commit 7 — streaming + model presence */
+.composer-row { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
+.composer-row .composer-main { flex: 1; min-width: 0; }
+.composer-row .composer-main .composer { margin-top: 0; }
+.bubble--streaming { border-color: var(--accent); }
+.bubble--cancelled { opacity: 0.75; border-style: dashed; }
+.stream-caret {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--accent);
+}
+
 .empty { text-align: center; padding: 28px 18px; border: 1px dashed var(--border); border-radius: var(--radius-lg); background: rgba(255,255,255,.02); }
 .empty-icon { display: flex; justify-content: center; margin-bottom: 10px; color: var(--muted); }
 .empty-title { font-weight: 600; font-size: 13px; }

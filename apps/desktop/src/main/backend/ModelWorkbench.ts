@@ -65,6 +65,11 @@ export class ModelWorkbench {
     return this.config.listRuntimes()
   }
 
+  /** Read-only entry lookup for inference-time resolution (no network). */
+  describeRuntime(runtimeId: string): ModelRuntimeEntry | null {
+    return this.config.getRuntime(runtimeId)?.entry ?? null
+  }
+
   async addRuntime(input: { displayName: string; endpoint: string; type?: RuntimeType; timeoutMs?: number }): Promise<ModelRuntimeEntry> {
     const displayName = input.displayName.trim().slice(0, DISPLAY_MAX)
     if (displayName === '') throw new ModelWorkbenchError('invalid runtime: display name is required')

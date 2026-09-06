@@ -1,0 +1,246 @@
+/**
+ * Commit 7 — real local chat orchestration behind LlmPort.
+ *
+ * Flow per send: guards → resolve active model (never silently substituted)
+ * → resource check → build history from session events → persist user event
+ * → stream via LlmPort with per-session AbortController → emit transient
+ * deltas → persist exactly ONE durable assistant event.
+ *
+ * Failure: user event stays, no assistant event is faked, classified error
+ * propagates. Cancel: in-flight HTTP aborts, one `assistant/cancelled`
+ * marker event persists so the timeline explains itself.
+ */
+import type { SessionId } from '@shared/types/branded'
+import type { ChatStreamEvent } from '@shared/types/chat'
+import type { LlmChatMessage, LlmPort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
+import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
+import { appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
+import type { ModelWorkbench } from './ModelWorkbench'
+
+/** Minimal local system prompt. Main-only: never renderer-provided. */
+export const CHAT_SYSTEM_PROMPT =
+  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Answer concisely and directly.'
+
+const MAX_HISTORY_MESSAGES = 50
+const MAX_HISTORY_CHARS = 24_000
+/** Probe timeouts suit /models; generations get a bounded floor instead. */
+const CHAT_TIMEOUT_FLOOR_MS = 120_000
+
+export class ChatServiceError extends Error {
+  constructor(
+    public readonly code:
+      | 'no-active-model'
+      | 'runtime-unavailable'
+      | 'resource-pressure'
+      | 'already-generating'
+      | 'persistence-failed',
+    message: string
+  ) {
+    super(message)
+    this.name = 'ChatServiceError'
+  }
+}
+
+export interface ChatServiceDeps {
+  persistence: PersistencePort
+  llm: LlmPort
+  workbench: ModelWorkbench
+  resources: SystemResourceManagerPort
+  baseDir?: string
+  emit: (event: ChatStreamEvent) => void
+}
+
+function extractContent(data: unknown): string | null {
+  if (typeof data === 'string') return data
+  if (data !== null && typeof data === 'object') {
+    const c = (data as Record<string, unknown>)['content']
+    if (typeof c === 'string') return c
+  }
+  return null
+}
+
+/** Visible conversation → OpenAI roles. Cancelled markers never go to the model. */
+export function toRequestMessages(
+  events: Array<{ seq: number; time: number; type: string; data: unknown }>
+): LlmChatMessage[] {
+  const turns: LlmChatMessage[] = []
+  for (const e of events) {
+    if (e.type !== 'user/message' && e.type !== 'assistant/message') continue
+    const content = extractContent(e.data)
+    if (content === null || content === '') continue
+    turns.push({ role: e.type === 'user/message' ? 'user' : 'assistant', content })
+  }
+  // Bound from the tail: newest context wins, oldest drops first.
+  const bounded = turns.slice(-MAX_HISTORY_MESSAGES)
+  let chars = bounded.reduce((n, m) => n + m.content.length, 0)
+  while (bounded.length > 1 && chars > MAX_HISTORY_CHARS) {
+    const dropped = bounded.shift()
+    chars -= dropped?.content.length ?? 0
+  }
+  return bounded
+}
+
+export function remoteModelId(qualified: string): string {
+  const idx = qualified.indexOf(':')
+  return idx >= 0 ? qualified.slice(idx + 1) : qualified
+}
+
+export class ChatService {
+  private readonly inFlight = new Map<string, AbortController>()
+
+  constructor(private readonly deps: ChatServiceDeps) {}
+
+  /** Late-bound push channel (wired to BrowserWindow broadcast at startup). */
+  setEmit(emit: (event: ChatStreamEvent) => void): void {
+    ;(this.deps as { emit: (event: ChatStreamEvent) => void }).emit = emit
+  }
+
+  async send(sessionId: SessionId, content: string): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+    const sid = String(sessionId)
+    if (this.inFlight.has(sid)) {
+      throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
+    }
+
+    // 1. Resolve the active model — never silently substitute.
+    const active = this.deps.workbench.getActiveModel()
+    if (!active.selection || !active.available) {
+      throw new ChatServiceError(
+        'no-active-model',
+        'No active local model selected. Open Models and select a model first.'
+      )
+    }
+    const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
+    if (!entry || !entry.enabled) {
+      throw new ChatServiceError(
+        'runtime-unavailable',
+        'The selected runtime is unavailable. Open Models and test its connection.'
+      )
+    }
+
+    // 2. Resource advisory (stub returns ok; a blocking verdict refuses).
+    const pressure = await this.deps.resources.checkBeforeLoad(
+      { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
+      {}
+    )
+    if (pressure.blocking) {
+      throw new ChatServiceError('resource-pressure', `resource-pressure: ${pressure.reason ?? 'inference refused'}`)
+    }
+
+    // 3. History + user persistence first (durable before any network).
+    const prior = await this.deps.persistence.getEvents(sessionId)
+    const messages: LlmChatMessage[] = [
+      { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...toRequestMessages(prior),
+      { role: 'user', content },
+    ]
+    let userSeq = -1
+    try {
+      userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq
+    } catch (e) {
+      throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'could not persist your message')
+    }
+
+    // 4. Stream. Exactly one durable assistant event at the end.
+    const controller = new AbortController()
+    this.inFlight.set(sid, controller)
+    const started = Date.now()
+    const model = remoteModelId(active.selection.modelId)
+    const timeoutMs = Math.max(entry.timeoutMs, CHAT_TIMEOUT_FLOOR_MS)
+    let text = ''
+    let streamed = true
+    try {
+      for await (const chunk of this.deps.llm.streamChat({
+        endpoint: entry.endpoint,
+        model,
+        messages,
+        timeoutMs,
+        stream: true,
+        signal: controller.signal,
+      })) {
+        if (chunk.type === 'text-delta' && chunk.text) {
+          text += chunk.text
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
+        }
+        if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
+        if (chunk.type === 'done') break
+      }
+    } catch (e) {
+      if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
+        return this.finishCancelled(sessionId, sid, started, entry.id, entry.endpoint, model, streamed)
+      }
+      const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
+      this.log(entry.id, entry.endpoint, model, started, undefined, outcomeOf(e), streamed)
+      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+      throw new ChatServiceError('runtime-unavailable', safe)
+    } finally {
+      this.inFlight.delete(sid)
+    }
+
+    if (text === '') {
+      const msg = 'invalid-response: the local model returned an empty reply'
+      this.log(entry.id, entry.endpoint, model, started, undefined, 'invalid-response', streamed)
+      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
+      throw new ChatServiceError('runtime-unavailable', msg)
+    }
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    this.log(entry.id, entry.endpoint, model, started, 200, 'ok', streamed)
+    this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    return { ok: true, userSeq, assistantSeq }
+  }
+
+  cancel(sessionId: SessionId): { cancelled: boolean } {
+    const controller = this.inFlight.get(String(sessionId))
+    if (!controller) return { cancelled: false }
+    controller.abort(new Error('cancelled'))
+    return { cancelled: true }
+  }
+
+  private async finishCancelled(
+    sessionId: SessionId,
+    sid: string,
+    started: number,
+    runtimeId: string,
+    endpoint: string,
+    model: string,
+    streamed: boolean
+  ): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+    const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
+    this.log(runtimeId, endpoint, model, started, undefined, 'cancelled', streamed)
+    this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
+    // Append-only log: the user event is the immediately preceding row.
+    return { ok: true, userSeq: ev.seq - 1, assistantSeq: ev.seq }
+  }
+
+  private log(
+    runtimeId: string,
+    endpoint: string,
+    model: string,
+    started: number,
+    status: number | undefined,
+    outcome: 'ok' | 'http-error' | 'timeout' | 'refused' | 'blocked' | 'invalid-response' | 'error' | 'cancelled',
+    streamed: boolean
+  ): void {
+    appendRuntimeLog(this.deps.baseDir, {
+      time: Date.now(),
+      runtimeId,
+      method: 'POST',
+      target: safeTarget(`${endpoint.replace(/\/+$/, '')}/chat/completions`),
+      latencyMs: Date.now() - started,
+      ...(status !== undefined ? { status } : {}),
+      outcome,
+      modelId: model,
+      streamed,
+    })
+  }
+}
+
+function outcomeOf(e: unknown): 'timeout' | 'refused' | 'blocked' | 'invalid-response' | 'http-error' | 'error' {
+  if (e instanceof ChatInferenceError) {
+    if (e.code === 'timeout') return 'timeout'
+    if (e.code === 'connection-refused') return 'refused'
+    if (e.code === 'blocked') return 'blocked'
+    if (e.code === 'invalid-response' || e.code === 'response-too-large') return 'invalid-response'
+    if (e.code === 'unauthorized' || e.code === 'model-not-found') return 'http-error'
+  }
+  return 'error'
+}

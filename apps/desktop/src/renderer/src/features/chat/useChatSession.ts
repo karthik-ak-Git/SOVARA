@@ -1,29 +1,40 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  cancelChatMessage,
   createSession,
+  getActiveModel,
   getSessionEvents,
   listSessions,
+  onSessionEvents,
   sendChatMessage,
   type SessionEventView,
   type SessionHeaderView,
 } from '@renderer/lib/ipc'
+import type { ActiveModelState } from '@shared/types/models'
 
 /**
- * Commit 5 — durable conversation flow.
- * - Sessions persist via PersistencePort (SQLite+JSONL).
- * - Timeline is always reconstructed from session events.
- * - Failed persistence never masquerades as a durable message: the draft
- *   is kept and a UI error is surfaced.
- * - Duplicate submission is blocked while a send is in flight.
+ * Commit 7 — real local inference flow.
+ * - Deltas stream in on `events:session` into transient `streamingText`
+ *   (never persisted); the durable timeline still reconstructs from events.
+ * - Cancel aborts the in-flight request; the log keeps a cancelled marker.
+ * - Model status is fetched on mount + on demand (no polling, no keystroke
+ *   probing). Duplicate submission is blocked while a send is in flight.
  */
+export type ChatPhase = 'idle' | 'streaming'
+
 export function useChatSession() {
   const [sessions, setSessions] = useState<SessionHeaderView[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [events, setEvents] = useState<SessionEventView[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [phase, setPhase] = useState<ChatPhase>('idle')
+  const [streamingText, setStreamingText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [model, setModel] = useState<ActiveModelState>({ selection: null, available: false })
   const loadSeq = useRef(0)
+  const selectedRef = useRef<string | null>(null)
+  selectedRef.current = selectedId
 
   const refreshSessions = useCallback(async (): Promise<SessionHeaderView[]> => {
     const list = await listSessions()
@@ -36,13 +47,21 @@ export function useChatSession() {
     if (loadSeq.current === seq) setEvents(evts)
   }, [])
 
+  const refreshModelStatus = useCallback(async (): Promise<void> => {
+    try {
+      setModel(await getActiveModel())
+    } catch {
+      // Model status is advisory; chat errors surface on send.
+    }
+  }, [])
+
   // Initial load.
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
         const list = await refreshSessions()
-        if (!cancelled && list.length > 0 && !selectedId) {
+        if (!cancelled && list.length > 0 && !selectedRef.current) {
           const first = list[0]
           if (first) {
             setSelectedId(first.id)
@@ -50,6 +69,7 @@ export function useChatSession() {
             await refreshEvents(first.id, seq)
           }
         }
+        if (!cancelled) await refreshModelStatus()
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
       }
@@ -60,6 +80,31 @@ export function useChatSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Stream subscription: deltas for the selected session only.
+  useEffect(() => {
+    if (!window.sovara) return
+    const dispose = onSessionEvents((ev) => {
+      if (!ev || ev.sessionId !== selectedRef.current) return
+      if (ev.kind === 'assistant-delta' && ev.text) {
+        setPhase('streaming')
+        setStreamingText((t) => t + (ev.text ?? ''))
+      } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
+        const id = selectedRef.current
+        setStreamingText('')
+        setPhase('idle')
+        if (id) {
+          const seq = ++loadSeq.current
+          void refreshEvents(id, seq).then(() => refreshSessions())
+        }
+      } else if (ev.kind === 'assistant-error') {
+        setStreamingText('')
+        setPhase('idle')
+        setError(ev.error ?? 'The local model interrupted the reply.')
+      }
+    })
+    return dispose
+  }, [refreshEvents, refreshSessions])
+
   // Switch conversation: reconstruct from durable events.
   const switchSession = useCallback(
     async (id: string): Promise<void> => {
@@ -67,6 +112,8 @@ export function useChatSession() {
       setSelectedId(id)
       setError(null)
       setEvents([])
+      setStreamingText('')
+      setPhase('idle')
       try {
         await refreshEvents(id, seq)
       } catch (e) {
@@ -96,6 +143,8 @@ export function useChatSession() {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
+      setPhase('streaming')
+      setStreamingText('')
       setError(null)
       try {
         await sendChatMessage(selectedId, text)
@@ -105,13 +154,24 @@ export function useChatSession() {
         await refreshSessions()
       } catch (e) {
         // Keep the draft so nothing successfully-persisted is faked.
+        setStreamingText('')
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusy(false)
+        setPhase('idle')
       }
     },
     [selectedId, busy, refreshEvents, refreshSessions]
   )
+
+  const handleCancel = useCallback(async (): Promise<void> => {
+    if (!selectedId || !busy) return
+    try {
+      await cancelChatMessage(selectedId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [selectedId, busy])
 
   const dismissError = useCallback(() => setError(null), [])
 
@@ -122,10 +182,15 @@ export function useChatSession() {
     draft,
     setDraft,
     busy,
+    phase,
+    streamingText,
     error,
+    model,
     dismissError,
     handleCreate,
     handleSend,
+    handleCancel,
     switchSession,
+    refreshModelStatus,
   }
 }

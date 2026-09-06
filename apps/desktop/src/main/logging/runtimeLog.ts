@@ -14,12 +14,15 @@ const MAX_LOG_BYTES = 1_000_000
 export interface RuntimeLogEntry {
   time: number
   runtimeId: string
-  method: 'GET'
+  method: 'GET' | 'POST'
   /** Origin + pathname only, e.g. `http://127.0.0.1:1234/v1/models`. */
   target: string
   latencyMs: number
   status?: number
-  outcome: 'ok' | 'http-error' | 'timeout' | 'refused' | 'blocked' | 'invalid-response' | 'error'
+  outcome: 'ok' | 'http-error' | 'timeout' | 'refused' | 'blocked' | 'invalid-response' | 'error' | 'cancelled'
+  /** Inference only. Never prompts, completions, headers, or bodies. */
+  modelId?: string
+  streamed?: boolean
 }
 
 export function safeTarget(rawUrl: string): string {

@@ -14,6 +14,10 @@ export const zChatSend = z
   })
   .strict()
 
+export const zChatCancel = z
+  .object({ sessionId: zSessionId })
+  .strict()
+
 export const zModelsProbe = z.string().min(1).max(64)
 
 const zRuntimeType = z.enum(['openai-compatible', 'ollama', 'lmstudio', 'vllm', 'llama.cpp', 'custom'])

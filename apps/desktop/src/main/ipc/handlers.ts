@@ -1,11 +1,26 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
-import { zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
+import type { ChatStreamEvent } from '@shared/types/chat'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
+
+/** Push channel for transient chat stream events (deltas are never persisted). */
+function broadcastChat(event: ChatStreamEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      try {
+        win.webContents.send('events:session', event)
+      } catch {
+        // ignore dead renderers
+      }
+    }
+  }
+}
 
 export function registerIpcHandlers(): void {
+  getBackend().chat.setEmit(broadcastChat)
   ipcMain.handle('app:getInfo', async () => {
     return getBackend().getInfo()
   })
@@ -44,27 +59,23 @@ export function registerIpcHandlers(): void {
     const parsed = zChatSend.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid chat payload: ${parsed.error.message}`)
     const sid = brand<'SessionId'>(parsed.data.sessionId)
-
-    // 1. Append user message event
-    const userEv = await getBackend().ports.persistence.appendEvent(sid, 'user/message', { content: parsed.data.content })
-
-    // 2. Generate deterministic mock assistant response via LlmStubAdapter
-    const chunks: string[] = []
-    for await (const chunk of getBackend().ports.llm.stream(parsed.data.content)) {
-      if (chunk.type === 'text-delta' && chunk.text) {
-        chunks.push(chunk.text)
-      }
-      if (chunk.type === 'done') break
+    try {
+      // Real local inference via ChatService → LlmPort → loopback runtime.
+      // Deltas stream back on `events:session`; the invoke resolves on
+      // completion with the durable seqs.
+      return await getBackend().chat.send(sid, parsed.data.content)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'chat failed')
     }
-    const mockText = chunks.join('') || '[Phase 1 stub — no LLM wired]'
-
-    // 3. Append assistant message event
-    const assistantEv = await getBackend().ports.persistence.appendEvent(sid, 'assistant/message', { content: mockText })
-
-    return { ok: true, userSeq: userEv.seq, assistantSeq: assistantEv.seq }
   })
 
-  ipcMain.handle('chat:cancel', async () => ({ ok: true }))
+  ipcMain.handle('chat:cancel', async (_e, raw: unknown) => {
+    // No session ref = legacy probe call; treat as a no-op success.
+    if (raw === undefined) return { ok: true, cancelled: false }
+    const parsed = zChatCancel.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid cancel payload: ${parsed.error.message}`)
+    return getBackend().chat.cancel(brand<'SessionId'>(parsed.data.sessionId))
+  })
 
   ipcMain.handle('models:listLocal', async () => getBackend().ports.models.listLocalModels())
 

@@ -79,9 +79,13 @@ export function App(): React.JSX.Element {
           draft={chat.draft}
           setDraft={chat.setDraft}
           busy={chat.busy}
+          phase={chat.phase}
+          streamingText={chat.streamingText}
           error={chat.error}
+          model={chat.model}
           onDismissError={chat.dismissError}
           onSend={chat.handleSend}
+          onCancel={chat.handleCancel}
           onCreateSession={chat.handleCreate}
           onSwitchSession={chat.switchSession}
         />

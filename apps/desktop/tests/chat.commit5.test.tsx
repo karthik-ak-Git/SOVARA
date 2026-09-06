@@ -53,7 +53,7 @@ describe('Commit 5 — message rendering', () => {
   it('renders empty conversation guidance', () => {
     render(<MessageList events={[]} />)
     expect(screen.getByRole('status')).toBeInTheDocument()
-    expect(screen.getByText(/Start a local mock conversation/)).toBeInTheDocument()
+    expect(screen.getByText(/Start a local conversation/)).toBeInTheDocument()
   })
 
   it('renders timeline from events and thinking state', () => {

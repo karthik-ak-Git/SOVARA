@@ -7,6 +7,10 @@ interface MessageBubbleProps {
   timestamp?: number
   loading?: boolean
   thinking?: boolean
+  /** Live in-progress reply (transient, not yet persisted). */
+  streaming?: boolean
+  /** Stopped generation marker (durable `assistant/cancelled` event). */
+  cancelled?: boolean
 }
 
 export function MessageBubble({
@@ -16,6 +20,8 @@ export function MessageBubble({
   timestamp,
   loading = false,
   thinking = false,
+  streaming = false,
+  cancelled = false,
 }: MessageBubbleProps): ReactElement {
   const isUser = role === 'user'
   const bubbles = isUser ? 'user-bubble' : 'assistant-bubble'
@@ -70,12 +76,17 @@ export function MessageBubble({
   return (
     <article
       key={id}
-      data-testid={isUser ? 'message-user' : 'message-assistant'}
+      data-testid={streaming ? 'message-streaming' : isUser ? 'message-user' : 'message-assistant'}
       data-role={role}
-      className={`bubble ${bubbles}`}
-      aria-label={isUser ? 'Your message' : 'Assistant response'}
+      className={`bubble ${bubbles}${streaming ? ' bubble--streaming' : ''}${cancelled ? ' bubble--cancelled' : ''}`}
+      aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : isUser ? 'Your message' : 'Assistant response'}
+      aria-live={streaming ? 'polite' : undefined}
     >
-      <p className="bubble-text">{content}</p>
+      <p className="bubble-text">
+        {content}
+        {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
+      </p>
+      {cancelled ? <span className="bubble-meta muted small">Stopped — no reply was generated.</span> : null}
       <span className="bubble-meta muted small">
         {typeof timestamp === 'number' && Number.isFinite(timestamp) ? (
           <time dateTime={new Date(timestamp).toISOString()}>

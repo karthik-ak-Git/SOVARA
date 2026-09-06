@@ -2,7 +2,7 @@ import os from 'node:os'
 import { app } from 'electron'
 import type { PersistencePort, LlmPort, ToolPort, ModelRuntimePort, SystemResourceManagerPort, DshPort, HermesPort } from '@shared/types/ports'
 import { SqlitePersistenceAdapter } from './ports/SqlitePersistenceAdapter'
-import { LlmStubAdapter } from './ports/LlmStubAdapter'
+import { LocalOpenAIChatAdapter } from './ports/LocalOpenAIChatAdapter'
 import { ToolStubAdapter } from './ports/ToolStubAdapter'
 import { DshStubAdapter } from './ports/DshStubAdapter'
 import { HermesStubAdapter } from './ports/HermesStubAdapter'
@@ -10,6 +10,7 @@ import { ModelRuntimeStub } from './ports/ModelRuntimeStub'
 import { SystemResourceStub } from './ports/SystemResourceStub'
 import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
+import { ChatService } from './ChatService'
 
 export interface AppBackendPorts {
   persistence: PersistencePort
@@ -30,16 +31,27 @@ export class AppBackend {
   private readonly persistenceAdapter: SqlitePersistenceAdapter
   /** Commit 6 — registry/probe/select facet (lifecycle stays stubbed). */
   public readonly workbench: ModelWorkbench
+  /** Commit 7 — real local inference orchestration behind LlmPort. */
+  public readonly chat: ChatService
   private readonly runtimeConfig: RuntimeConfigStore
 
-  constructor(baseDir?: string) {
+  constructor(baseDir?: string, emit?: (event: import('@shared/types/chat').ChatStreamEvent) => void) {
     this.persistenceAdapter = new SqlitePersistenceAdapter(baseDir)
     const resources = new SystemResourceStub()
     this.runtimeConfig = new RuntimeConfigStore(baseDir)
     this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
+    const llm = new LocalOpenAIChatAdapter()
+    this.chat = new ChatService({
+      persistence: this.persistenceAdapter,
+      llm,
+      workbench: this.workbench,
+      resources,
+      baseDir,
+      emit: emit ?? ((): void => {}),
+    })
     this.ports = {
       persistence: this.persistenceAdapter,
-      llm: new LlmStubAdapter(),
+      llm,
       tools: new ToolStubAdapter(),
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
