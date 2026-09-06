@@ -32,6 +32,33 @@ export interface ModelCapabilities {
 
 export type ModelAvailability = "available" | "unavailable" | "unknown";
 
+export type SelectionMode = "auto" | "manual";
+
+export interface ProviderStatus {
+  provider: string;
+  runtime: string;
+  base_url: string;
+  connected: boolean;
+  detail: string;
+  model_count: number;
+}
+
+export interface ProvidersResponse {
+  items: ProviderStatus[];
+  meta: {
+    source: string;
+  };
+}
+
+/** Concise auto-routing metadata (reasons only, never chain-of-thought). */
+export interface RoutingInfo {
+  auto: boolean;
+  task_type?: string;
+  selected_model_id?: string;
+  reason_codes?: string[];
+  decision_source?: string;
+}
+
 export interface ModelItem {
   id: string;
   display_name: string;
@@ -69,7 +96,12 @@ export interface ChatRequest {
 
 export type ChatEvent =
   | { type: "token"; delta: string }
-  | { type: "done"; model_id: string; finish_reason: string }
+  | {
+      type: "done";
+      model_id: string;
+      finish_reason: string;
+      routing?: RoutingInfo;
+    }
   | { type: "error"; code: string; message: string };
 
 export interface ApiError {

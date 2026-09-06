@@ -82,6 +82,26 @@ export function saveSelectedModelId(id: string): void {
   }
 }
 
+const MODE_KEY = "sovara.selectionMode.v1";
+
+/** Routing mode: auto (router decides) is the default; manual is explicit. */
+export function loadSelectionMode(): "auto" | "manual" {
+  try {
+    const raw = localStorage.getItem(MODE_KEY);
+    return raw === "manual" ? "manual" : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+export function saveSelectionMode(mode: "auto" | "manual"): void {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    // storage unavailable: mode still works in-memory
+  }
+}
+
 export function retitleFromFirstUserMessage(convo: Conversation): Conversation {
   const first = convo.messages.find((m: UiMessage) => m.role === "user");
   if (first === undefined) return convo;

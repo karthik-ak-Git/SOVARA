@@ -166,3 +166,55 @@ describe("ModelSelector", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 });
+
+describe("ModelSelector auto mode", () => {
+  const autoProps = {
+    models: MODELS,
+    selectedId: MODELS[0].id,
+    loading: false,
+    loadError: false,
+    onSelect: () => undefined,
+    onRetryLoad: () => undefined,
+    onSelectAuto: vi.fn(),
+  };
+
+  it("offers SOVARA Auto and switches to it", async () => {
+    const user = userEvent.setup();
+    const onSelectAuto = vi.fn();
+    render(<ModelSelector {...autoProps} mode="manual" onSelectAuto={onSelectAuto} />);
+    await user.click(screen.getByRole("button", { name: "Select model" }));
+    await user.click(screen.getByRole("option", { name: /SOVARA Auto/ }));
+    expect(onSelectAuto).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("shows Auto with the routed model and reasons", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelSelector
+        {...autoProps}
+        mode="auto"
+        autoInfo={{
+          resolvedId: MODELS[0].id,
+          taskType: "coding",
+          reasonCodes: ["coding_capability", "available_local_runtime"],
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
+      "Auto → Qwen3.5 9b",
+    );
+    await user.click(screen.getByRole("button", { name: "Select model" }));
+    const list = screen.getByRole("listbox");
+    expect(within(list).getByText("coding")).toBeInTheDocument();
+    expect(within(list).getByText(/Coding capability/)).toBeInTheDocument();
+  });
+
+  it("disables Auto when nothing is available", async () => {
+    const user = userEvent.setup();
+    const down = MODELS.map((m) => ({ ...m, availability: "unavailable" as const }));
+    render(<ModelSelector {...autoProps} models={down} mode="manual" />);
+    await user.click(screen.getByRole("button", { name: "Select model" }));
+    expect(screen.getByRole("option", { name: /SOVARA Auto/ })).toBeDisabled();
+  });
+});

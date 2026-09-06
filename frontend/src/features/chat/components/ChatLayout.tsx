@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
-import type { ModelItem } from "../../../api/types";
+import type { ModelItem, SelectionMode } from "../../../api/types";
 import { useChat } from "../hooks/useChat";
 import {
   createConversation,
   deleteConversation,
   listConversations,
   loadSelectedModelId,
+  loadSelectionMode,
   retitleFromFirstUserMessage,
   saveConversation,
   saveSelectedModelId,
+  saveSelectionMode,
 } from "../lib/store";
 import type { Conversation, UiMessage } from "../types";
 import { Composer } from "./Composer";
@@ -24,9 +26,10 @@ interface ChatLayoutProps {
 }
 
 /**
- * Chat screen composition. Owns conversation state (localStorage-backed)
- * and the explicit selectedModelId; generation state lives in useChat.
- * Model metadata comes from GET /models (registry records, manual pick).
+ * Chat screen composition. Owns conversation state (localStorage-backed),
+ * the routing mode (auto = SOVARA Auto, manual = explicit pick), and the
+ * manual selectedModelId; generation state lives in useChat. Model
+ * metadata comes from GET /models. Manual selection bypasses routing.
  */
 export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Element {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
@@ -42,6 +45,9 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     loadSelectedModelId(),
   );
+  // Routing mode is explicit state, never inferred from selectedId:
+  // manual = user's choice, auto = router's choice (default, persisted).
+  const [mode, setMode] = useState<SelectionMode>(() => loadSelectionMode());
   const [localOnly, setLocalOnly] = useState(true);
 
   const loadModels = useCallback(() => {
@@ -102,11 +108,21 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
     [activeId],
   );
 
-  const chat = useChat(persist, { modelId: selectedId ?? undefined });
+  const chat = useChat(persist, {
+    modelId: mode === "manual" ? (selectedId ?? undefined) : undefined,
+    selectionMode: mode,
+  });
 
   const handleSelectModel = useCallback((id: string) => {
+    setMode("manual");
+    saveSelectionMode("manual");
     setSelectedId(id);
     saveSelectedModelId(id);
+  }, []);
+
+  const handleSelectAuto = useCallback(() => {
+    setMode("auto");
+    saveSelectionMode("auto");
   }, []);
 
   const handleNewChat = useCallback(() => {
@@ -119,7 +135,9 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
     (id: string) => {
       if (chat.status === "streaming") chat.stop();
       setActive(id);
-      // Adopt the conversation's last-used model when it still exists.
+      // Adopt the conversation's last-used model only in manual mode;
+      // auto mode keeps routing every turn.
+      if (mode !== "manual") return;
       const convo = listConversations().find((c) => c.id === id);
       if (convo?.modelId !== undefined) {
         setSelectedId((prev) => {
@@ -131,7 +149,7 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
         });
       }
     },
-    [chat, models],
+    [chat, models, mode],
   );
 
   const handleDelete = useCallback(
@@ -155,21 +173,44 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
         id = convo.id;
       }
       const current = conversations.find((c) => c.id === id);
-      if (selectedId !== null) {
+      // Stamp the turn's model for per-conversation memory: the explicit
+      // pick in manual mode, the routed id in auto mode (when known).
+      const stampId =
+        mode === "manual" ? selectedId : (chat.routing?.selected_model_id ?? null);
+      if (stampId !== null) {
         const stamped: Conversation = {
           ...(current as Conversation),
-          modelId: selectedId,
+          modelId: stampId,
         };
         saveConversation(stamped);
         setConversations((prev) => prev.map((c) => (c.id === id ? stamped : c)));
       }
       chat.send(current?.messages ?? [], content);
     },
-    [conversations, chat, selectedId, setActive],
+    [conversations, chat, selectedId, mode, setActive],
   );
 
+  const autoResolved: ModelItem | null =
+    mode === "auto" && chat.routing?.selected_model_id !== undefined
+      ? (models.find((m) => m.id === chat.routing?.selected_model_id) ?? null)
+      : null;
+
   const composerDisabled =
-    models.length === 0 || selected?.availability === "unavailable";
+    models.length === 0 ||
+    (mode === "manual"
+      ? selected?.availability === "unavailable"
+      : !models.some((m) => m.availability === "available"));
+
+  const sidebarName =
+    mode === "auto"
+      ? (autoResolved !== null
+          ? autoResolved.display_name || autoResolved.id
+          : "SOVARA Auto")
+      : (selected !== null ? selected.display_name || selected.id : null);
+  const sidebarAvailability =
+    mode === "auto"
+      ? (autoResolved?.availability ?? "unknown")
+      : (selected?.availability ?? "unknown");
 
   return (
     <div className="sv-app">
@@ -177,10 +218,8 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
         collapsed={collapsed}
         conversations={conversations}
         activeId={activeId}
-        modelDisplayName={
-          selected !== null ? selected.display_name || selected.id : null
-        }
-        modelAvailability={selected?.availability ?? "unknown"}
+        modelDisplayName={sidebarName}
+        modelAvailability={sidebarAvailability}
         localOnly={localOnly}
         onToggle={() => setCollapsed((c) => !c)}
         onNewChat={handleNewChat}
@@ -197,6 +236,17 @@ export function ChatLayout({ theme, onToggleTheme }: ChatLayoutProps): JSX.Eleme
             loadError={modelsError}
             onSelect={handleSelectModel}
             onRetryLoad={loadModels}
+            mode={mode}
+            autoInfo={
+              mode === "auto"
+                ? {
+                    resolvedId: chat.routing?.selected_model_id ?? null,
+                    taskType: chat.routing?.task_type ?? null,
+                    reasonCodes: chat.routing?.reason_codes ?? [],
+                  }
+                : null
+            }
+            onSelectAuto={handleSelectAuto}
           />
           <button
             type="button"

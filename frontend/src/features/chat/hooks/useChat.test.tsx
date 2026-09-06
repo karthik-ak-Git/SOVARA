@@ -108,8 +108,7 @@ describe("useChat", () => {
     expect(received).toEqual(["model-b"]);
   });
 
-  it("regenerate drops the last assistant answer", async () => {
-    const seen: UiMessage[][] = [];
+  it("regenerate drops the last assistant answer", async () => {    const seen: UiMessage[][] = [];
     const received: string[][] = [];
     const capture: StreamFn = async (messages, { onToken }) => {
       received.push(messages.map((m) => m.content));
@@ -125,5 +124,28 @@ describe("useChat", () => {
     expect(received[0]).toEqual(["q"]); // old answer not resent
     const last = seen[seen.length - 1];
     expect(last[last.length - 1].content).toBe("new");
+  });
+
+  it("stores routing metadata from auto turns and forwards the mode", async () => {
+    const received: Array<string | undefined> = [];
+    const routed: StreamFn = async (_messages, { onToken }, _modelId, mode) => {
+      received.push(mode);
+      onToken("done");
+      return {
+        modelId: "coder-7b",
+        finishReason: "stop",
+        routing: { auto: true, task_type: "coding", selected_model_id: "coder-7b" },
+      };
+    };
+    const { result } = renderHook(() =>
+      useChat(() => undefined, { stream: routed, selectionMode: "auto" }),
+    );
+    act(() => result.current.send([], "Write a Python function"));
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    expect(received).toEqual(["auto"]);
+    expect(result.current.routing).toMatchObject({
+      auto: true,
+      task_type: "coding",
+    });
   });
 });

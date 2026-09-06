@@ -5,7 +5,12 @@
  */
 
 import { apiBase, CHAT_PATH } from "../../../api/client";
-import type { ChatEvent, ChatMessageIn } from "../../../api/types";
+import type {
+  ChatEvent,
+  ChatMessageIn,
+  RoutingInfo,
+  SelectionMode,
+} from "../../../api/types";
 import type { ChatErrorKind } from "../types";
 
 export class ChatStreamError extends Error {
@@ -28,6 +33,7 @@ export interface StreamCallbacks {
 export interface StreamResult {
   modelId: string;
   finishReason: string;
+  routing?: RoutingInfo;
 }
 
 function parseEvent(line: string): ChatEvent | null {
@@ -58,20 +64,23 @@ function envelopeCode(body: unknown): string | null {
 /**
  * POST the turn, stream SSE tokens via onToken, resolve on `done`.
  * Rejects with ChatStreamError; AbortError from `signal` maps to `cancelled`.
+ * modelId omitted (auto mode) lets the server route deterministically.
  */
 export async function streamChat(
   messages: ChatMessageIn[],
   callbacks: StreamCallbacks,
   modelId?: string,
+  selectionMode?: SelectionMode,
 ): Promise<StreamResult> {
+  const payload: Record<string, unknown> = { messages };
+  if (modelId !== undefined) payload.model_id = modelId;
+  if (selectionMode !== undefined) payload.selection_mode = selectionMode;
   let res: Response;
   try {
     res = await fetch(`${apiBase()}${CHAT_PATH}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify(
-        modelId === undefined ? { messages } : { model_id: modelId, messages },
-      ),
+      body: JSON.stringify(payload),
       signal: callbacks.signal,
     });
   } catch (err) {
@@ -120,7 +129,11 @@ export async function streamChat(
           if (event === null) continue;
           if (event.type === "token") callbacks.onToken(event.delta);
           else if (event.type === "done") {
-            return { modelId: event.model_id, finishReason: event.finish_reason };
+            return {
+              modelId: event.model_id,
+              finishReason: event.finish_reason,
+              routing: event.routing,
+            };
           } else {
             throw new ChatStreamError("generation", event.message);
           }

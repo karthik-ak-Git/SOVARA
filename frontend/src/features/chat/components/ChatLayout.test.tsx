@@ -74,32 +74,56 @@ beforeEach(() => {
 });
 
 describe("ChatLayout model flow", () => {
-  it("defaults to the registry default and sends with the selected id", async () => {
+  it("defaults to SOVARA Auto and sends without a model id", async () => {
     const user = userEvent.setup();
     mockModels.mockResolvedValue(list(["model-a", "model-b"]));
     render(<ChatLayout theme="dark" onToggleTheme={() => undefined} />);
 
-    // default from meta
+    // fresh state -> auto mode
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
-        "model-a",
+        "SOVARA Auto",
       ),
     );
-    // switch to B
-    await user.click(screen.getByRole("button", { name: "Select model" }));
-    await user.click(screen.getByRole("option", { name: /model-b/ }));
-    expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
-      "model-b",
-    );
-    // send carries B through useChat -> streamChat third arg
+    // send routes server-side: no model id, explicit auto mode
     await user.type(screen.getByLabelText("Message SOVARA"), "hi{enter}");
     await waitFor(() => expect(mockStream).toHaveBeenCalled());
     const call = mockStream.mock.calls[0];
-    expect(call[2]).toBe("model-b");
+    expect(call[2]).toBeUndefined();
+    expect(call[3]).toBe("auto");
     expect(call[0]).toEqual([{ role: "user", content: "hi" }]);
   });
 
-  it("persists the selection across reloads", async () => {
+  it("shows the routed model after an auto turn", async () => {
+    const user = userEvent.setup();
+    mockModels.mockResolvedValue(list(["model-a", "model-b"]));
+    mockStream.mockImplementation(async (_messages, { onToken }) => {
+      onToken("hello");
+      return {
+        modelId: "model-b",
+        finishReason: "stop",
+        routing: {
+          auto: true,
+          task_type: "coding",
+          selected_model_id: "model-b",
+          reason_codes: ["coding_capability", "available_local_runtime"],
+          decision_source: "deterministic_router",
+        },
+      };
+    });
+    render(<ChatLayout theme="dark" onToggleTheme={() => undefined} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Select model" })).toBeInTheDocument(),
+    );
+    await user.type(screen.getByLabelText("Message SOVARA"), "hi{enter}");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
+        "Auto → model-b",
+      ),
+    );
+  });
+
+  it("manual pick persists across reloads and sends with the selected id", async () => {
     const user = userEvent.setup();
     mockModels.mockResolvedValue(list(["model-a", "model-b"]));
     const { unmount } = render(
@@ -108,8 +132,19 @@ describe("ChatLayout model flow", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Select model" })).toBeInTheDocument(),
     );
+    // switch to manual B
     await user.click(screen.getByRole("button", { name: "Select model" }));
     await user.click(screen.getByRole("option", { name: /model-b/ }));
+    expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
+      "model-b",
+    );
+    // send carries B through useChat -> streamChat third arg, manual mode
+    await user.type(screen.getByLabelText("Message SOVARA"), "hi{enter}");
+    await waitFor(() => expect(mockStream).toHaveBeenCalled());
+    const call = mockStream.mock.calls[0];
+    expect(call[2]).toBe("model-b");
+    expect(call[3]).toBe("manual");
+    // reload restores the manual pick (mode + id both persist)
     unmount();
     render(<ChatLayout theme="dark" onToggleTheme={() => undefined} />);
     await waitFor(() =>

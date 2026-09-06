@@ -114,4 +114,56 @@ describe("streamChat", () => {
       }),
     ).rejects.toMatchObject({ kind: "generation" });
   });
+
+  it("sends the selected model id in the request body", async () => {
+    const body =
+      sseEvent({ type: "token", delta: "hi" }) +
+      sseEvent({ type: "done", model_id: "model-b", finish_reason: "stop" });
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await streamChat(
+      [{ role: "user", content: "hi" }],
+      { signal: new AbortController().signal, onToken: () => undefined },
+      "model-b",
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(init?.body as string)).toMatchObject({ model_id: "model-b" });
+    expect(result).toEqual({ modelId: "model-b", finishReason: "stop" });
+  });
+
+  it("omits model_id when no model is selected (server default applies)", async () => {
+    const body = sseEvent({ type: "done", model_id: "model-a", finish_reason: "stop" });
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    await streamChat([{ role: "user", content: "hi" }], {
+      signal: new AbortController().signal,
+      onToken: () => undefined,
+    });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(init?.body as string)).not.toHaveProperty("model_id");
+  });
+
+  it("sends selection_mode auto and returns routing metadata", async () => {
+    const routing = {
+      auto: true,
+      task_type: "coding",
+      selected_model_id: "model-b",
+      reason_codes: ["coding_capability"],
+      decision_source: "deterministic_router",
+    };
+    const body =
+      sseEvent({ type: "token", delta: "hi" }) +
+      sseEvent({ type: "done", model_id: "model-b", finish_reason: "stop", routing });
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await streamChat(
+      [{ role: "user", content: "hi" }],
+      { signal: new AbortController().signal, onToken: () => undefined },
+      undefined,
+      "auto",
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(init?.body as string)).toMatchObject({ selection_mode: "auto" });
+    expect(result.routing).toMatchObject({ auto: true, task_type: "coding" });
+  });
 });

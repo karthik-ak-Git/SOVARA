@@ -4,7 +4,7 @@
  * (The chat SSE stream lives in features/chat/api/chatClient.ts.)
  */
 
-import type { HealthResponse, ModelList, SystemStatus } from "./types";
+import type { HealthResponse, ModelList, ProvidersResponse, SystemStatus } from "./types";
 
 const BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
@@ -38,5 +38,8 @@ export const api = {
   },
   models(): Promise<ModelList> {
     return get<ModelList>("/api/v1/models");
+  },
+  providers(): Promise<ProvidersResponse> {
+    return get<ProvidersResponse>("/api/v1/providers");
   },
 };

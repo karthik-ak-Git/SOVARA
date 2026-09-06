@@ -35,6 +35,32 @@ export function modelLabel(model: ModelItem): string {
   return model.display_name !== "" ? model.display_name : model.id;
 }
 
+const REASON_LABELS: Record<string, string> = {
+  available_local_runtime: "Local runtime available",
+  capabilities_unknown: "General capability",
+  configured_default: "Preferred default",
+  context_fit: "Context fits",
+  modality_match: "Input supported",
+  text_modality: "Text input",
+};
+
+/** "coding_capability" -> "Coding capability"; known codes get plain labels. */
+export function reasonLabel(code: string): string {
+  const known = REASON_LABELS[code];
+  if (known !== undefined) return known;
+  if (code.endsWith("_capability")) {
+    const task = code.slice(0, -"_capability".length);
+    return `${task.slice(0, 1).toUpperCase()}${task.slice(1)} capability`;
+  }
+  return code;
+}
+
+/** Top routing reasons as a compact human line (max 3, no internals). */
+export function summarizeReasons(codes: string[] | undefined): string {
+  if (codes === undefined || codes.length === 0) return "";
+  return codes.slice(0, 3).map(reasonLabel).join(" • ");
+}
+
 export function availabilityText(
   availability: ModelItem["availability"],
 ): string {

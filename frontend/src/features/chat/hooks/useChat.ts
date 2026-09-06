@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { streamChat } from "../api/chatClient";
-import type { ChatMessageIn } from "../../../api/types";
+import type { ChatMessageIn, RoutingInfo, SelectionMode } from "../../../api/types";
 import type { AssistantRole, ChatError, ChatStatus, UiMessage } from "../types";
 import { uid } from "../lib/store";
 
@@ -16,17 +16,21 @@ export type StreamFn = (
   messages: ChatMessageIn[],
   callbacks: { signal: AbortSignal; onToken: (delta: string) => void },
   modelId?: string,
-) => Promise<{ modelId: string; finishReason: string }>;
+  selectionMode?: SelectionMode,
+) => Promise<{ modelId: string; finishReason: string; routing?: RoutingInfo }>;
 
 interface UseChatOptions {
   stream?: StreamFn;
   modelId?: string;
+  selectionMode?: SelectionMode;
 }
 
 interface UseChatResult {
   status: ChatStatus;
   error: ChatError | null;
   streamingId: string | null;
+  /** Routing metadata from the last completed turn (auto mode only). */
+  routing: RoutingInfo | null;
   send: (messages: UiMessage[], content: string) => void;
   stop: () => void;
   retry: (messages: UiMessage[]) => void;
@@ -50,10 +54,11 @@ export function useChat(
   onMessages: (messages: UiMessage[]) => void,
   options: UseChatOptions = {},
 ): UseChatResult {
-  const { stream = streamChat, modelId } = options;
+  const { stream = streamChat, modelId, selectionMode } = options;
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<ChatError | null>(null);
   const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [routing, setRouting] = useState<RoutingInfo | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const onMessagesRef = useRef(onMessages);
   onMessagesRef.current = onMessages;
@@ -73,6 +78,7 @@ export function useChat(
       setStreamingId(assistantId);
       setStatus("streaming");
       setError(null);
+      setRouting(null);
       let buffer = "";
       const withPlaceholder: UiMessage[] = [
         ...base,
@@ -80,21 +86,27 @@ export function useChat(
       ];
       onMessagesRef.current(withPlaceholder);
 
-      void stream(historyForApi, {
-        signal: controller.signal,
-        onToken: (delta: string) => {
-          buffer += delta;
-          const snapshot = buffer;
-          onMessagesRef.current(
-            withPlaceholder.map((m) =>
-              m.id === assistantId ? { ...m, content: snapshot } : m,
-            ),
-          );
+      void stream(
+        historyForApi,
+        {
+          signal: controller.signal,
+          onToken: (delta: string) => {
+            buffer += delta;
+            const snapshot = buffer;
+            onMessagesRef.current(
+              withPlaceholder.map((m) =>
+                m.id === assistantId ? { ...m, content: snapshot } : m,
+              ),
+            );
+          },
         },
-      }, modelId).then(
-        () => {
+        modelId,
+        selectionMode,
+      ).then(
+        (result) => {
           setStatus("idle");
           setStreamingId(null);
+          setRouting(result.routing ?? null);
           abortRef.current = null;
         },
         (err: unknown) => {
@@ -115,7 +127,7 @@ export function useChat(
         },
       );
     },
-    [stream, modelId],
+    [stream, modelId, selectionMode],
   );
 
   const send = useCallback(
@@ -159,5 +171,5 @@ export function useChat(
     [run, status],
   );
 
-  return { status, error, streamingId, send, stop, retry, regenerate };
+  return { status, error, streamingId, routing, send, stop, retry, regenerate };
 }

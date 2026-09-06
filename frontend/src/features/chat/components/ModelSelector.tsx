@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ModelItem } from "../../../api/types";
+import type { ModelItem, SelectionMode } from "../../../api/types";
 import {
   availabilityText,
   capabilityLabels,
   formatContextWindow,
   modelLabel,
+  summarizeReasons,
 } from "../lib/models";
+
+interface AutoInfo {
+  /** Router's last selected model id (null before the first auto turn). */
+  resolvedId: string | null;
+  taskType: string | null;
+  reasonCodes: string[];
+}
 
 interface ModelSelectorProps {
   models: ModelItem[];
@@ -14,6 +22,11 @@ interface ModelSelectorProps {
   loadError: boolean;
   onSelect: (id: string) => void;
   onRetryLoad: () => void;
+  /** Routing mode; defaults to manual so manual flows stay untouched. */
+  mode?: SelectionMode;
+  /** Last auto-routing outcome (auto mode transparency). */
+  autoInfo?: AutoInfo | null;
+  onSelectAuto?: () => void;
 }
 
 function AvailabilityDot({ model }: { model: ModelItem }): JSX.Element {
@@ -27,8 +40,9 @@ function AvailabilityDot({ model }: { model: ModelItem }): JSX.Element {
 }
 
 /**
- * Manual model picker (dropdown + details). Reads registry records only;
- * selection flows up as selectedModelId — no routing, per ADR-0009.
+ * Model picker (dropdown + details). Manual rows flow up as selectedModelId;
+ * the Auto row switches to deterministic smart routing ("SOVARA Auto").
+ * Manual selection bypasses routing and is never overridden.
  */
 export function ModelSelector({
   models,
@@ -37,10 +51,18 @@ export function ModelSelector({
   loadError,
   onSelect,
   onRetryLoad,
+  mode = "manual",
+  autoInfo = null,
+  onSelectAuto,
 }: ModelSelectorProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selected = models.find((m) => m.id === selectedId) ?? null;
+  const autoResolved =
+    autoInfo?.resolvedId !== undefined && autoInfo?.resolvedId !== null
+      ? (models.find((m) => m.id === autoInfo.resolvedId) ?? null)
+      : null;
+  const hasAvailable = models.some((m) => m.availability === "available");
 
   useEffect(() => {
     if (!open) return;
@@ -68,9 +90,18 @@ export function ModelSelector({
     [onSelect],
   );
 
+  const chooseAuto = useCallback(() => {
+    onSelectAuto?.();
+    setOpen(false);
+  }, [onSelectAuto]);
+
+  const autoLabel =
+    autoResolved !== null ? `Auto → ${modelLabel(autoResolved)}` : "✨ SOVARA Auto";
   const buttonLabel = loading
     ? "Loading models…"
-    : (selected !== null ? modelLabel(selected) : "Select model");
+    : mode === "auto"
+      ? autoLabel
+      : (selected !== null ? modelLabel(selected) : "Select model");
 
   return (
     <div className="sv-modelsel" ref={rootRef}>
@@ -90,6 +121,34 @@ export function ModelSelector({
       {open && (
         <div className="sv-modelsel-pop" role="listbox" aria-label="Available models">
           <p className="sv-modelsel-head">SOVARA Local</p>
+          {onSelectAuto !== undefined && (
+            <button
+              type="button"
+              role="option"
+              aria-selected={mode === "auto"}
+              disabled={!hasAvailable}
+              className={
+                mode === "auto"
+                  ? "sv-modelsel-opt sv-modelsel-active"
+                  : "sv-modelsel-opt"
+              }
+              onClick={chooseAuto}
+              title={
+                hasAvailable
+                  ? "SOVARA Auto — picks the best local model per task"
+                  : "SOVARA Auto — no local models available"
+              }
+            >
+              <span aria-hidden="true">✨</span>
+              <span className="sv-modelsel-opt-main">
+                <span className="sv-modelsel-opt-name">SOVARA Auto</span>
+                <span className="sv-modelsel-opt-meta">Picks per task</span>
+              </span>
+              <span className="sv-modelsel-opt-state">
+                {mode === "auto" ? "On" : ""}
+              </span>
+            </button>
+          )}
           {loadError && models.length === 0 && (
             <div className="sv-modelsel-err">
               <p role="alert">Could not load models.</p>
@@ -132,7 +191,7 @@ export function ModelSelector({
               </button>
             );
           })}
-          {selected !== null && (
+          {selected !== null && mode === "manual" && (
             <dl className="sv-modelsel-details">
               <div>
                 <dt>Model</dt>
@@ -158,6 +217,40 @@ export function ModelSelector({
                 <dt>Status</dt>
                 <dd>{availabilityText(selected.availability)}</dd>
               </div>
+              <div>
+                <dt>Location</dt>
+                <dd>Local</dd>
+              </div>
+            </dl>
+          )}
+          {mode === "auto" && (
+            <dl className="sv-modelsel-details">
+              <div>
+                <dt>Mode</dt>
+                <dd>✨ SOVARA Auto</dd>
+              </div>
+              <div>
+                <dt>Selected</dt>
+                <dd>
+                  {autoResolved !== null
+                    ? modelLabel(autoResolved)
+                    : "Picks the best local model per task"}
+                </dd>
+              </div>
+              {autoInfo?.taskType !== undefined && autoInfo?.taskType !== null && (
+                <div>
+                  <dt>Task</dt>
+                  <dd>{autoInfo.taskType}</dd>
+                </div>
+              )}
+              {autoInfo !== null &&
+                autoInfo.reasonCodes.length > 0 &&
+                autoResolved !== null && (
+                  <div>
+                    <dt>Why</dt>
+                    <dd>{summarizeReasons(autoInfo.reasonCodes)}</dd>
+                  </div>
+                )}
               <div>
                 <dt>Location</dt>
                 <dd>Local</dd>
