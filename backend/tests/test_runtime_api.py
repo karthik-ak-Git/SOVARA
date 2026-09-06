@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
+
+from sovara.infrastructure.config.settings import Settings
+from sovara.main import create_app
 
 
 def _events(text: str) -> list[dict[str, object]]:
@@ -16,15 +20,28 @@ def _events(text: str) -> list[dict[str, object]]:
     return out
 
 
+@pytest.fixture()
+def down_client() -> TestClient:
+    """App with no enabled runtimes: deterministically down in any env."""
+    settings = Settings(env="test", enabled_providers=[])
+    app = create_app(settings)
+    with TestClient(app) as client:
+        yield client
+
+
 def test_providers_endpoint_reports_connection_state(echo_client: TestClient) -> None:
     body = echo_client.get("/api/v1/providers").json()
     by_kind = {i["provider"]: i for i in body["items"]}
     assert set(by_kind) == {"echo", "lmstudio", "ollama"}
     assert by_kind["echo"]["connected"] is True
     assert by_kind["echo"]["model_count"] == 1
-    # No local runtime installed here: honest unavailable, never fabricated.
-    assert by_kind["lmstudio"]["connected"] is False
-    assert by_kind["ollama"]["connected"] is False
+    # Other runtimes report live state (True when LM Studio/Ollama runs,
+    # False otherwise) — the contract is honesty + separation from models.
+    listed = echo_client.get("/api/v1/models").json()["items"]
+    for kind, status in by_kind.items():
+        assert isinstance(status["connected"], bool)
+        assert isinstance(status["detail"], str) and status["detail"] != ""
+        assert status["model_count"] == sum(1 for m in listed if m["provider"] == kind)
     assert body["meta"]["source"] == "connection-manager"
 
 
@@ -40,9 +57,11 @@ def test_routing_decide_previews_without_generating(echo_client: TestClient) -> 
     assert isinstance(body["reason_codes"], list)
 
 
-def test_routing_decide_rejects_unknown_when_nothing_suitable(client: TestClient) -> None:
-    # Default client: every runtime down -> controlled 502, not a silent pick.
-    res = client.post("/api/v1/routing/decide", json={"text": "Hello there"})
+def test_routing_decide_rejects_unknown_when_nothing_suitable(
+    down_client: TestClient,
+) -> None:
+    # No enabled runtimes -> controlled 502, not a silent pick.
+    res = down_client.post("/api/v1/routing/decide", json={"text": "Hello there"})
     assert res.status_code == 502
     assert "No suitable local model" in res.json()["error"]["message"]
 
@@ -77,7 +96,9 @@ def test_chat_manual_done_event_is_not_auto(echo_client: TestClient) -> None:
     assert done[0]["routing"] == {"auto": False}
 
 
-def test_chat_auto_with_all_runtimes_down_is_controlled_502(client: TestClient) -> None:
-    res = client.post("/api/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+def test_chat_auto_with_all_runtimes_down_is_controlled_502(
+    down_client: TestClient,
+) -> None:
+    res = down_client.post("/api/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
     assert res.status_code == 502
     assert "No suitable local model" in res.json()["error"]["message"]

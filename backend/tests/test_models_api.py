@@ -5,9 +5,10 @@ from fastapi.testclient import TestClient
 
 def test_models_normalized_shape(echo_client: TestClient) -> None:
     body = echo_client.get("/api/v1/models").json()
-    # Echo harness up; LM Studio + Ollama down -> honest unavailable rows.
+    # Echo harness is always up; other rows depend on live runtimes
+    # (a running LM Studio contributes its discovered models, a down
+    # runtime an honest unavailable fallback) — assert shape, not count.
     by_id = {i["id"]: i for i in body["items"]}
-    assert set(by_id) == {"echo-dev", "llama3.1", "local-model"}
     item = by_id["echo-dev"]
     assert item["id"] == "echo-dev"
     assert item["display_name"] == "Echo (dev harness)"
@@ -17,8 +18,17 @@ def test_models_normalized_shape(echo_client: TestClient) -> None:
     assert item["capability_source"] in ("provider", "configured")
     assert item["capabilities"]["supports_streaming"] is True
     assert item["context_window"] is None
-    assert by_id["llama3.1"]["availability"] == "unavailable"
-    assert by_id["local-model"]["availability"] == "unavailable"
+    for row in body["items"]:
+        assert row["availability"] in ("available", "unavailable", "unknown")
+        assert set(row) >= {
+            "id",
+            "display_name",
+            "provider",
+            "runtime",
+            "capabilities",
+            "capability_source",
+            "availability",
+        }
     assert body["meta"]["default_model_id"] == "echo-dev"
     assert body["meta"]["routing"] == "auto"
 

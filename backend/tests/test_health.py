@@ -25,5 +25,9 @@ def test_system_status_shape(client) -> None:
     assert body["capabilities"]["agent_loop"] == "deferred"
     assert body["capabilities"]["chat_streaming"] == "slice1"
     assert body["capabilities"]["model_discovery"] == "slice2"
-    assert body["models_registered"] == 1
+    # Registry size depends on live runtimes (a running LM Studio adds its
+    # discovered models); assert consistency with /models instead of a count.
+    listed = client.get("/api/v1/models").json()
+    assert body["models_registered"] == len(listed["items"])
+    assert body["models_registered"] >= 1
     assert body["tools_registered"] == 0
