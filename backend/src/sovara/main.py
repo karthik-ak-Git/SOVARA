@@ -22,6 +22,7 @@ from sovara.api.error_handlers import register_error_handlers
 from sovara.api.schemas import HealthResponse
 from sovara.api.v1.router import router as v1_router
 from sovara.application.chat_service import ChatService
+from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
 from sovara.application.system_service import SystemService
 from sovara.infrastructure.config.settings import Settings, get_settings
@@ -52,11 +53,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         allowed_endpoints=settings.network_allowed_endpoints,
         audit_log=settings.network_audit_log,
     )
-    provider = await build_provider(settings, app.state.models, app.state.network)
+    # Slice 2 lifecycle: build provider -> discover + register via the
+    # catalog -> resolve default -> map every record to its provider.
+    provider, native_model_id = await build_provider(settings, app.state.network)
+    app.state.provider = provider
+    app.state.catalog = ModelCatalog(
+        provider=provider,
+        registry=app.state.models,
+        configured_model_id=native_model_id,
+    )
+    await app.state.catalog.refresh()
+    default_id = app.state.catalog.resolve_default(settings.model_default_id)
     app.state.gateway = ModelGateway(
         registry=app.state.models,
-        providers={settings.model_default_id: provider},
-        default_model_id=settings.model_default_id,
+        providers={r.model_id: provider for r in app.state.models.list()},
+        default_model_id=default_id,
     )
     app.state.chat_service = ChatService(settings=settings, gateway=app.state.gateway)
     app.state.system_service = SystemService(

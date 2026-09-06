@@ -39,6 +39,7 @@ class SystemService:
             "auth_mode": s.auth_mode,
             "capabilities": {
                 "chat_streaming": "slice1",
+                "model_discovery": "slice2",
                 "rag": "deferred",
                 "agent_loop": "deferred",
                 "model_routing": "deferred",

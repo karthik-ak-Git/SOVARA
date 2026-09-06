@@ -24,5 +24,6 @@ def test_system_status_shape(client) -> None:
     assert body["network"]["local_only"] is True
     assert body["capabilities"]["agent_loop"] == "deferred"
     assert body["capabilities"]["chat_streaming"] == "slice1"
+    assert body["capabilities"]["model_discovery"] == "slice2"
     assert body["models_registered"] == 1
     assert body["tools_registered"] == 0

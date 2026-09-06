@@ -74,11 +74,11 @@ def test_factory_builds_lmstudio_and_registers() -> None:
         model_default_id="local-default",
         lmstudio_model="test-model",
     )
-    registry = InMemoryModelRegistry()
-    provider = asyncio.run(build_provider(settings, registry, NetworkPolicy(local_only=True)))
+    provider, native = asyncio.run(
+        build_provider(settings, NetworkPolicy(local_only=True))
+    )
     assert provider.info.provider == "lmstudio"
-    record = registry.get("local-default")
-    assert record is not None and record.provider == "lmstudio"
+    assert native == "test-model"
 
 
 def test_factory_denies_remote_lmstudio_under_local_only() -> None:
@@ -90,6 +90,4 @@ def test_factory_denies_remote_lmstudio_under_local_only() -> None:
         lmstudio_base_url="http://models.corp.example:1234/v1",
     )
     with pytest.raises(SecurityPolicyError):
-        asyncio.run(
-            build_provider(settings, InMemoryModelRegistry(), NetworkPolicy(local_only=True))
-        )
+        asyncio.run(build_provider(settings, NetworkPolicy(local_only=True)))

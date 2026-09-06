@@ -37,6 +37,7 @@ class EchoProvider(ModelProvider):
     def __init__(self, *, model_id: str = "echo-dev") -> None:
         self._info = ModelInfo(
             model_id=model_id,
+            display_name="Echo (dev harness)",
             provider="echo",
             version="0.1.0-slice1",
             capabilities=ModelCapabilities(
@@ -53,6 +54,9 @@ class EchoProvider(ModelProvider):
 
     async def health(self) -> ModelHealth:
         return ModelHealth(model_id=self._info.model_id, available=True, detail="dev-harness")
+
+    async def list_models(self) -> list[ModelInfo]:
+        return [self._info]
 
     async def infer(self, request: InferenceRequest) -> InferenceResponse:
         text = "".join([chunk async for chunk in self.stream(request)])

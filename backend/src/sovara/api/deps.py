@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from sovara.application.chat_service import ChatService
+from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
 from sovara.application.system_service import SystemService
 from sovara.domain.model_registry import ModelRegistry
@@ -39,6 +40,10 @@ def get_system_service(request: Request) -> SystemService:
 
 def get_model_gateway(request: Request) -> ModelGateway:
     return request.app.state.gateway
+
+
+def get_model_catalog(request: Request) -> ModelCatalog:
+    return request.app.state.catalog
 
 
 def get_chat_service(request: Request) -> ChatService:

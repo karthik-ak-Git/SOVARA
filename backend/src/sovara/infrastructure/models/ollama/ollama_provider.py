@@ -14,7 +14,9 @@ Failure mapping:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -27,6 +29,7 @@ from sovara.domain.model_provider import (
     ModelHealth,
     ModelInfo,
     ModelProvider,
+    ModelResource,
     TaskCapability,
 )
 
@@ -70,9 +73,65 @@ class OllamaProvider(ModelProvider):
         text = "".join([chunk async for chunk in self.stream(request)])
         return InferenceResponse(model_id=self._model, text=text, finish_reason="stop")
 
+    async def list_models(self) -> list[ModelInfo]:
+        """Parse /api/tags into normalized infos; [] when unreachable."""
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.get(f"{self._base_url}/api/tags")
+        except (httpx.ConnectError, httpx.TimeoutException, OSError):
+            return []
+        if resp.status_code != 200:
+            return []
+        try:
+            body = resp.json()
+        except ValueError:
+            return []
+        models = body.get("models")
+        if not isinstance(models, list):
+            return []
+        infos: list[ModelInfo] = []
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            raw_details = entry.get("details")
+            details = raw_details if isinstance(raw_details, dict) else {}
+            infos.append(
+                ModelInfo(
+                    model_id=name,
+                    display_name=name,
+                    provider="ollama",
+                    capabilities=ModelCapabilities(
+                        modalities=[Modality.TEXT], supports_streaming=True
+                    ),
+                    resource=ModelResource(
+                        parameters_b=self._parse_param_size(details.get("parameter_size"))
+                    ),
+                )
+            )
+        return infos
+
+    @staticmethod
+    def _parse_param_size(raw: Any) -> float | None:
+        """'8.0B' -> 8.0, '4B' -> 4.0, '350M' -> 0.35; None when unparseable."""
+        if not isinstance(raw, str):
+            return None
+        match = re.fullmatch(r"\s*([\d.]+)\s*([BMK])?\s*", raw.upper())
+        if not match:
+            return None
+        scale = {"B": 1.0, "M": 1e-3, "K": 1e-6, None: 1.0}[match.group(2)]
+        try:
+            return float(match.group(1)) * scale
+        except ValueError:
+            return None
+
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         payload = {
-            "model": self._model,
+            # Slice 2: the resolved (native) model id selects the runtime
+            # model; the adapter default is only a fallback.
+            "model": request.model_id or self._model,
             "messages": self._to_ollama_messages(request),
             "stream": True,
             "options": {"num_predict": request.max_tokens, "temperature": request.temperature},

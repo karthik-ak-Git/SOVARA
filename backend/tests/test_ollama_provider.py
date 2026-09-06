@@ -54,3 +54,17 @@ def test_stream_unreachable_raises_model_error() -> None:
     with pytest.raises(ModelError) as exc:
         asyncio.run(drain())
     assert exc.value.status_code == 502
+
+
+def test_list_models_unreachable_returns_empty() -> None:
+    assert asyncio.run(_provider().list_models()) == []
+
+
+def test_parse_param_size() -> None:
+    parse = OllamaProvider._parse_param_size
+    assert parse("8.0B") == 8.0
+    assert parse("4B") == 4.0
+    assert parse("350M") == pytest.approx(0.35)
+    assert parse("nonsense") is None
+    assert parse(None) is None
+    assert parse(8) is None

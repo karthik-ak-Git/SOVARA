@@ -86,6 +86,9 @@ class _FailProvider(ModelProvider):
     async def infer(self, request: InferenceRequest):  # type: ignore[no-untyped-def]
         return await self._echo.infer(request)
 
+    async def list_models(self):  # type: ignore[no-untyped-def]
+        return await self._echo.list_models()
+
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         yield "partial "
         raise ModelError("boom mid-stream")
@@ -94,7 +97,17 @@ class _FailProvider(ModelProvider):
 def test_chat_midstream_failure_is_error_event(
     echo_settings: Settings, echo_client: TestClient
 ) -> None:
+    from sovara.domain.model_registry import ModelAvailability, ModelRecord
+
     app = echo_client.app
+    app.state.models.register(
+        ModelRecord(
+            model_id="fail-dev",
+            display_name="fail-dev",
+            provider="stub",
+            availability=ModelAvailability.AVAILABLE,
+        )
+    )
     gateway = ModelGateway(
         registry=app.state.models,
         providers={"fail-dev": _FailProvider()},

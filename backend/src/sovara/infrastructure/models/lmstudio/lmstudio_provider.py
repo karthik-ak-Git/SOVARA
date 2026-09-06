@@ -29,6 +29,7 @@ from sovara.domain.model_provider import (
     ModelHealth,
     ModelInfo,
     ModelProvider,
+    ModelResource,
     TaskCapability,
 )
 
@@ -74,9 +75,58 @@ class LMStudioProvider(ModelProvider):
         text = "".join([chunk async for chunk in self.stream(request)])
         return InferenceResponse(model_id=self._model, text=text, finish_reason="stop")
 
+    async def list_models(self) -> list[ModelInfo]:
+        """Parse GET /v1/models into normalized infos; [] when unreachable."""
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.get(f"{self._base_url}/models")
+        except (httpx.ConnectError, httpx.TimeoutException, OSError):
+            return []
+        if resp.status_code != 200:
+            return []
+        try:
+            body = resp.json()
+        except ValueError:
+            return []
+        data = body.get("data")
+        if not isinstance(data, list):
+            return []
+        infos: list[ModelInfo] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            model_id = entry.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            raw_meta = entry.get("meta")
+            meta = raw_meta if isinstance(raw_meta, dict) else {}
+            context = meta.get("contextLength")
+            infos.append(
+                ModelInfo(
+                    model_id=model_id,
+                    display_name=self._display_name(model_id),
+                    provider="lmstudio",
+                    capabilities=ModelCapabilities(
+                        modalities=[Modality.TEXT], supports_streaming=True
+                    ),
+                    resource=ModelResource(
+                        context_window=context if isinstance(context, int) else None
+                    ),
+                )
+            )
+        return infos
+
+    @staticmethod
+    def _display_name(model_id: str) -> str:
+        """'qwen/qwen3.5-9b' -> 'Qwen3.5 9b'. Purely presentational."""
+        short = model_id.split("/")[-1].replace("-", " ").replace("_", " ").strip()
+        return short[:1].upper() + short[1:] if short else model_id
+
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         payload = {
-            "model": self._model,
+            # Slice 2: the resolved (native) model id selects the runtime
+            # model; the adapter default is only a fallback.
+            "model": request.model_id or self._model,
             "messages": self._to_oai_messages(request),
             "stream": True,
             "max_tokens": request.max_tokens,
