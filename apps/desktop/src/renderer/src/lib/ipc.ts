@@ -115,3 +115,16 @@ export interface SystemResourcesView {
 export async function getSystemResources(): Promise<SystemResourcesView> {
   return (await sovara().invoke('system:getResources')) as SystemResourcesView
 }
+
+// ── Window controls (frameless window) ──
+export async function minimizeWindow(): Promise<void> {
+  await sovara().invoke('window:minimize')
+}
+
+export async function maximizeWindow(): Promise<void> {
+  await sovara().invoke('window:maximize')
+}
+
+export async function closeWindow(): Promise<void> {
+  await sovara().invoke('window:close')
+}

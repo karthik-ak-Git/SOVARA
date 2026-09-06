@@ -8,7 +8,8 @@ export function createMainWindow(): BrowserWindow {
     minWidth: 980,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0f1115',
+    frame: false,
+    backgroundColor: '#ffffff',
     title: 'Sovara',
     autoHideMenuBar: true,
     webPreferences: {

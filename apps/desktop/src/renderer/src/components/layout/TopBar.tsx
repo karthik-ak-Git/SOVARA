@@ -1,19 +1,27 @@
-import { Grid3X3, Plus, Settings, Minus, Square, X } from 'lucide-react'
+import { Grid3X3, Plus, Minus, Square, X } from 'lucide-react'
+import { minimizeWindow, maximizeWindow, closeWindow } from '../../lib/ipc'
 
 interface Props {
-  appName?: string
   activeTab?: string
   onTabSelect?: (tabId: string) => void
+  onNewSession?: () => void
 }
 
-export function TopBar({ appName = 'Sovara', activeTab = 'new-tab', onTabSelect }: Props): React.JSX.Element {
+export function TopBar({ activeTab = 'new-tab', onTabSelect, onNewSession }: Props): React.JSX.Element {
   return (
     <header className="topbar" role="banner">
+      <div className="topbar-drag-region" data-tauri-drag-region />
       <div className="topbar-left">
-        <button type="button" className="topbar-icon-btn" aria-label="Applications">
+        <button type="button" className="topbar-icon-btn" aria-label="Applications" title="Applications">
           <Grid3X3 size={16} aria-hidden />
         </button>
-        <button type="button" className="topbar-icon-btn" aria-label="New">
+        <button
+          type="button"
+          className="topbar-icon-btn"
+          aria-label="New"
+          title="New session"
+          onClick={() => onNewSession?.()}
+        >
           <Plus size={16} aria-hidden />
         </button>
       </div>
@@ -26,7 +34,6 @@ export function TopBar({ appName = 'Sovara', activeTab = 'new-tab', onTabSelect 
           aria-selected={activeTab === 'new-tab'}
           onClick={() => onTabSelect?.('new-tab')}
         >
-          <Settings size={14} aria-hidden className="topbar-tab-icon" />
           <span>New tab</span>
         </button>
         <button
@@ -37,18 +44,18 @@ export function TopBar({ appName = 'Sovara', activeTab = 'new-tab', onTabSelect 
           onClick={() => onTabSelect?.('session')}
         >
           <span className="topbar-tab-icon" aria-hidden>◆</span>
-          <span>{appName} Session</span>
+          <span>Sovara Session</span>
         </button>
       </div>
 
       <div className="topbar-window-controls">
-        <button type="button" className="topbar-win-btn" aria-label="Minimize">
+        <button type="button" className="topbar-win-btn" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>
           <Minus size={14} aria-hidden />
         </button>
-        <button type="button" className="topbar-win-btn" aria-label="Maximize">
+        <button type="button" className="topbar-win-btn" aria-label="Maximize" title="Maximize" onClick={maximizeWindow}>
           <Square size={12} aria-hidden />
         </button>
-        <button type="button" className="topbar-win-btn close" aria-label="Close">
+        <button type="button" className="topbar-win-btn close" aria-label="Close" title="Close" onClick={closeWindow}>
           <X size={14} aria-hidden />
         </button>
       </div>

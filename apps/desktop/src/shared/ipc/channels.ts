@@ -25,6 +25,10 @@ export const IPC_CHANNELS = {
   'models:getActiveModel': { type: 'invoke' as const },
   'settings:get': { type: 'invoke' as const },
   'settings:set': { type: 'invoke' as const },
+  // Window controls (frameless window)
+  'window:minimize': { type: 'invoke' as const },
+  'window:maximize': { type: 'invoke' as const },
+  'window:close': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
 } as const

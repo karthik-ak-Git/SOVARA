@@ -149,4 +149,24 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('settings:get', async () => ({ theme: 'dark', network: { allowModelDownload: false } }))
 
   ipcMain.handle('settings:set', async (_e, _raw: unknown) => ({ ok: true }))
+
+  // ── Window controls (frameless window) ──
+  ipcMain.handle('window:minimize', async (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.minimize()
+    return { ok: true }
+  })
+
+  ipcMain.handle('window:maximize', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (win) {
+      if (win.isMaximized()) win.unmaximize()
+      else win.maximize()
+    }
+    return { ok: true }
+  })
+
+  ipcMain.handle('window:close', async (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.close()
+    return { ok: true }
+  })
 }
