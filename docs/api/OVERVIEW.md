@@ -22,6 +22,23 @@ Correlation: send `X-Request-ID` (optional); responses always return one.
 | GET | `/api/v1/audit/events` | List | Empty; event store deferred |
 | POST | `/api/v1/chat` | Streaming chat turn | **Live (Slice 1): SSE stream** |
 
+### GET /api/v1/models (Slice 2: normalized)
+
+`{items: [{id, display_name, provider, runtime, version, capabilities,
+capability_source, context_window, parameter_size_b, availability,
+metadata}], meta: {routing: "deferred", source: "registry",
+default_model_id}}`. Unknown values are null — never invented.
+
+### GET /api/v1/models/{id} (Slice 2)
+
+Single normalized record, or `404 not_found`.
+
+### POST /api/v1/models/refresh (Slice 2)
+
+Re-runs provider discovery + health probes, replaces registry contents,
+rebinds the gateway, returns the same shape as `GET /models`. Explicit
+lifecycle — chat turns never pay discovery cost.
+
 ### POST /api/v1/chat (Slice 1)
 
 Request `{model_id?: string, messages: [{role, content}]}` (1–64 messages,

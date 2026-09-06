@@ -33,6 +33,16 @@ No runtime installed? Use the deterministic dev harness (non-production):
 SOVARA_MODEL_PROVIDER=echo uv run uvicorn sovara.main:app --host 127.0.0.1 --port 8000
 ```
 
+Multi-model setup (Slice 2): the backend discovers every model the runtime
+lists and registers one record each. `SOVARA_LMSTUDIO_MODEL` /
+`SOVARA_OLLAMA_MODEL` now select the *default*; `SOVARA_MODEL_DEFAULT_ID`
+overrides by registry id. Refresh without restart:
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/v1/models/refresh
+curl http://127.0.0.1:8000/api/v1/models
+```
+
 End-to-end smoke test (streaming + errors):
 
 ```sh

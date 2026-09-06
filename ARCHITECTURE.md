@@ -114,7 +114,27 @@ Chat UI -> POST /api/v1/chat (SSE) -> ChatService -> ModelGateway
 - **Errors**: Phase 0 envelope throughout; the UI maps to five kinds
   (model_unavailable, validation, generation, connection, cancelled).
 
-## 9. What Phase 0 deliberately omits
+## 9. Phase 1 / Slice 2: model management (live)
+
+```text
+Runtime -> list_models() -> ModelCatalog.refresh() -> ModelRegistry
+  -> GET /models -> ModelSelector UI -> model_id -> POST /chat
+  -> ModelGateway.resolve() -> provider (request.model_id dispatched)
+```
+
+- **Normalized records**: id (native, verbatim in calls), display_name,
+  provider, runtime, version, capabilities (claimed-task lists),
+  capability_source (provider/configured/inferred), context_window,
+  parameter_size_b, availability; nulls stay null (ADR-0009).
+- **Discovery per adapter** (LM Studio `/v1/models`, Ollama `/api/tags`,
+  echo self-report); empty discovery falls back to one configured record.
+- **Gateway**: unknown vs. unavailable both 502, distinctly messaged; no
+  routing. Refresh rebinds the id→provider map explicitly.
+- **UI**: manual dropdown with availability dots, disabled unavailable rows,
+  selected-model details, persisted `selectedModelId`, per-conversation
+  last-model adoption. No Auto (does not exist, not pretended).
+
+## 10. What Phase 0 deliberately omits
 
 No persistence (registries are in-memory), no inference, no retrieval, no
 execution, no generation, no production auth — per the Phase 0 definition of
