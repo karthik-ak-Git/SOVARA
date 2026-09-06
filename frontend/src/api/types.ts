@@ -1,4 +1,4 @@
-/** API contract types (mirror backend OpenAPI; hand-maintained in Phase 0). */
+/** API contract types (mirror backend OpenAPI; hand-maintained). */
 
 export interface HealthResponse {
   status: string;
@@ -22,6 +22,43 @@ export interface SystemStatus {
   auth_mode: string;
   capabilities: Record<string, string>;
 }
+
+export interface ModelCapabilities {
+  modalities: string[];
+  tasks: string[];
+  supports_streaming: boolean;
+  supports_tools: boolean;
+}
+
+export interface ModelRecord {
+  model_id: string;
+  provider: string;
+  capabilities: ModelCapabilities;
+  resource: Record<string, number | null>;
+  available: boolean;
+}
+
+export interface ModelList {
+  items: ModelRecord[];
+  meta: Record<string, string>;
+}
+
+export type ChatRole = "system" | "user" | "assistant";
+
+export interface ChatMessageIn {
+  role: ChatRole;
+  content: string;
+}
+
+export interface ChatRequest {
+  model_id?: string;
+  messages: ChatMessageIn[];
+}
+
+export type ChatEvent =
+  | { type: "token"; delta: string }
+  | { type: "done"; model_id: string; finish_reason: string }
+  | { type: "error"; code: string; message: string };
 
 export interface ApiError {
   error: {
