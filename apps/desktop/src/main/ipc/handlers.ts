@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
-import { zChatSend, zModelsLoad, zModelsProbe, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
+import { zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('app:getInfo', async () => {
@@ -79,6 +79,60 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid load payload: ${parsed.error.message}`)
     // @ts-expect-error — branded string compat in stub
     return getBackend().ports.models.load(parsed.data.modelId, {})
+  })
+
+  // ── Commit 6 workbench facet — explicit channels, strict schemas ──
+  ipcMain.handle('models:listRuntimes', async () => {
+    return getBackend().workbench.listRuntimes()
+  })
+
+  ipcMain.handle('models:addRuntime', async (_e, raw: unknown) => {
+    const parsed = zModelsAddRuntime.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid runtime payload: ${parsed.error.message}`)
+    return getBackend().workbench.addRuntime(parsed.data)
+  })
+
+  ipcMain.handle('models:removeRuntime', async (_e, raw: unknown) => {
+    const parsed = zModelsRuntimeRef.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid runtime ref: ${parsed.error.message}`)
+    const removed = getBackend().workbench.removeRuntime(parsed.data.runtimeId)
+    if (!removed) throw new Error('unknown runtime')
+    return { ok: true }
+  })
+
+  ipcMain.handle('models:testConnection', async (_e, raw: unknown) => {
+    const parsed = zModelsRuntimeRef.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid runtime ref: ${parsed.error.message}`)
+    try {
+      return await getBackend().workbench.probeRuntime(parsed.data.runtimeId)
+    } catch (e) {
+      // Unknown runtime only — probe failures arrive inside the result.
+      throw new Error(e instanceof Error ? e.message : 'probe failed')
+    }
+  })
+
+  ipcMain.handle('models:listModels', async (_e, raw: unknown) => {
+    const parsed = zModelsListModels.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid list payload: ${parsed.error.message}`)
+    try {
+      return await getBackend().workbench.listModels(parsed.data.runtimeId)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'list failed')
+    }
+  })
+
+  ipcMain.handle('models:selectModel', async (_e, raw: unknown) => {
+    const parsed = zModelsSelect.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid selection: ${parsed.error.message}`)
+    try {
+      return await getBackend().workbench.selectModel(parsed.data.runtimeId, parsed.data.modelId)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'selection failed')
+    }
+  })
+
+  ipcMain.handle('models:getActiveModel', async () => {
+    return getBackend().workbench.getActiveModel()
   })
 
   ipcMain.handle('settings:get', async () => ({ theme: 'dark', network: { allowModelDownload: false } }))

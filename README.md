@@ -1,86 +1,72 @@
-# SOVARA — Sovereign Autonomous Reasoning & Action
+# SOVARA — Sovereign AI Desktop Workbench
 
-On-premise, air-gapped, agentic AI workbench for confidential industrial work.
-Based on SIH Problem Statement **SIH26117**: sovereign on-premise agentic AI
-workbench using open-weight multimodal LLMs.
+On-premise, offline-first AI workbench for confidential industrial work.
+Windows desktop app (Electron) — local only, no cloud, no telemetry.
 
-> **Phase 0 scope:** architecture & engineering foundation ONLY — interfaces,
-> boundaries, configuration, and scaffolding. No assistant, RAG, model routing,
-> agent loop, OCR, multimodal inference, document generation, or production
-> auth yet. Those plug into the contracts defined here in later phases.
+> **Current state (Phase 1):** secure Electron shell, durable session store
+> (SQLite + append-only JSONL), mock local chat over session events, and a
+> local model workbench (detect → connect → probe → list → select) for
+> OpenAI-compatible loopback runtimes (LM Studio, Ollama, vLLM, llama.cpp
+> server). **No real inference yet** — chat answers come from a deterministic
+> local stub; model load/execution, downloads, RAG, MCP, and agents are
+> explicitly out of scope until later phases.
+>
+> See [docs/ARCHITECTURE_PHASE1.md](docs/ARCHITECTURE_PHASE1.md) for the full
+> architecture proposal and boundaries.
 
-## Quick start (local, no cloud AI required)
+## Quick start
 
-Backend uses [`uv`](https://docs.astral.sh/uv/) — no `pip install`:
-
-```sh
-cd backend
-uv sync --group dev     # first run only; creates .venv + lockfile
-uv run pytest           # contract + boundary tests
-uv run uvicorn sovara.main:app --host 127.0.0.1 --port 8000
-```
-
-Frontend (needs node 20+):
+Requires Node >= 22 and [pnpm](https://pnpm.io/) 11.x. All commands run from
+the repo root:
 
 ```sh
-cd frontend
-npm install
-npm run dev             # :5173, proxies /api to backend :8000
-```
-
-Full local stack via Docker (self-hosted images only):
-
-```sh
-docker compose up --build
-# backend  http://127.0.0.1:8000/api/v1/health
-# frontend http://127.0.0.1:8080/
+pnpm install
+pnpm dev            # Electron + Vite dev window
+pnpm typecheck      # tsc --noEmit
+pnpm --filter @sovara/desktop test    # vitest suite (101 tests)
+pnpm build          # electron-vite production build
+pnpm build:win      # Windows installer / unpacked dir (apps/desktop/dist)
 ```
 
 ## Project structure
 
 ```text
 SOVARA
-├── backend/                 # FastAPI modular monolith (API + contracts)
-│   ├── src/sovara/
-│   │   ├── api/v1/routes/   # health, system, models, conversations, tasks,
-│   │   │                    # tools, knowledge, artifacts, audit
-│   │   ├── application/     # orchestration services (stubs in Phase 0)
-│   │   ├── domain/          # STABLE contracts: models, agents, tools,
-│   │   │                    # knowledge, artifacts, audit, errors
-│   │   └── infrastructure/  # config, logging, security, network policy
-│   └── tests/               # contract + boundary tests (run with uv)
-├── frontend/                # Vite + React + TS boundary (status display only)
-│   └── src/api/             # typed client — the only HTTP layer
-├── docs/
-│   ├── adr/                 # architecture decision records
-│   └── api/OVERVIEW.md      # endpoint contract map
-├── ARCHITECTURE.md          # boundaries, dependency direction, extension points
-├── DEVELOPMENT.md           # setup, commands, testing, conventions
-└── docker-compose.yml       # backend + frontend (local images only)
+├── apps/desktop/            # the Electron app (@sovara/desktop)
+│   ├── src/main/            # Main process: window, IPC handlers, AppBackend,
+│   │                        # ports/adapters, storage, network, config, logging
+│   ├── src/preload/         # contextBridge whitelist (window.sovara) only
+│   ├── src/renderer/src/    # React 18 UI: chat, models workbench, shell
+│   ├── src/shared/          # types + IPC channels/schemas (no runtime code)
+│   └── tests/               # vitest: contracts, persistence, IPC, UI, sovereignty
+├── docs/ARCHITECTURE_PHASE1.md
+└── test/                    # read-only reference checkouts (never shipped)
 ```
 
 ## Architecture at a glance
 
-```
-User → SOVARA UI → API Gateway (FastAPI) → Application/Orchestration
-  → Agent Runtime (Planner/Executor/State/Memory/Tools — contracts only)
-  → Model Gateway (Reasoning/Coding/Vision/Embedding — contracts only)
-  → Knowledge (contracts only) → Tools (contracts only)
-  → Security/Audit (abstractions + network-policy gate live in Phase 0)
+```text
+Renderer → Preload → IPC → AppBackend → Ports → Adapters → local runtime
 ```
 
-Key rules: no coupling to one LLM/runtime; tools are plugins resolved by
-name; the agent never gets arbitrary host access; external network is
-deny-by-default through `NetworkPolicy.check_egress()`; single
-workstation/server first.
+- Renderer has **no** `fs` / `child_process` / `electron` / database / network
+  access — everything goes through whitelisted IPC validated with Zod.
+- `PersistencePort` is real (SQLite metadata + `events.v1.jsonl` source of
+  truth, seq-contiguous). Chat is derived from session events; no messages table.
+- `ModelWorkbench` (Commit 6) owns the runtime registry, probing, and active
+  model selection behind `CustomOpenAICompatibleAdapter` and a single
+  loopback-only `HttpClient` (`http:` + `127.0.0.1`/`localhost`/`::1`, DNS
+  verified, redirects re-validated, timeout + size caps). Persistence via the
+  existing database; per-request local logging without bodies or secrets.
+- `LlmPort`, tool/sandbox/DSH/Hermes/model-lifecycle ports remain stubs.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/adr/](docs/adr/).
+## Sovereignty guarantees
 
-## Configuration
-
-One source: environment variables prefixed `SOVARA_` (see
-`backend/.env.example`). Sections: application, model, infrastructure,
-security/network. Local-only network mode is the default.
+Default offline. No external network, telemetry, cloud, downloads, or model
+execution. CI-equivalent local gates: `sovereignty.test.ts` (no Cordis, no
+Python spawn, fetch only inside `HttpClient`), `security.test.ts` (sandbox,
+CSP, IPC validation), plus workbench proofs (loopback allow/reject, no cloud
+endpoints, renderer isolation, VRAM reported UNKNOWN never fabricated).
 
 ## License
 

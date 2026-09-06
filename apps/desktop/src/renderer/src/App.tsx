@@ -5,7 +5,6 @@ import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
 import {
   Clock,
-  Database,
   Bot,
   Sparkles,
   Library,
@@ -16,6 +15,7 @@ import {
 
 import { ChatView } from './features/chat/ChatView'
 import { useChatSession } from './features/chat/useChatSession'
+import { ModelsPage } from './features/models/ModelsPage'
 
 interface Info {
   name: string
@@ -99,12 +99,7 @@ export function App(): React.JSX.Element {
         </Card>
       ) : null}
 
-      {activeNav === 'models' ? (
-        <Card>
-          <PanelTitle icon={Database} title="Models" hint="Runtime-agnostic · local only" />
-          <EmptyState title="Local model library" description="Discovery for llama.cpp / Ollama / LM Studio / vLLM — interface only in Phase 1." icon={<Database size={20} aria-hidden />} />
-        </Card>
-      ) : null}
+      {activeNav === 'models' ? <ModelsPage /> : null}
 
       {activeNav === 'agents' ? (
         <Card>

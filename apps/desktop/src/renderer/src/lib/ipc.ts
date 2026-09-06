@@ -1,9 +1,17 @@
 /**
- * Commit 5 — typed IPC wrapper for the renderer.
+ * Typed IPC wrapper for the renderer (Commit 5 chat + Commit 6 workbench).
  * Renderer must never touch the filesystem, subprocesses, Electron APIs,
  * databases, or the network directly. Every call below goes through the
  * preload whitelist (`window.sovara.invoke`) and is validated in Main with Zod.
  */
+
+import type {
+  ActiveModelState,
+  DiscoveredModel,
+  ModelRuntimeEntry,
+  RuntimeProbeResult,
+  RuntimeType,
+} from '@shared/types/models'
 
 export interface SessionHeaderView {
   id: string
@@ -45,4 +53,51 @@ export async function sendChatMessage(
     userSeq: number
     assistantSeq: number
   }
+}
+
+export async function listRuntimes(): Promise<ModelRuntimeEntry[]> {
+  return (await sovara().invoke('models:listRuntimes')) as ModelRuntimeEntry[]
+}
+
+export async function addRuntime(input: {
+  displayName: string
+  endpoint: string
+  type?: RuntimeType
+  timeoutMs?: number
+}): Promise<ModelRuntimeEntry> {
+  return (await sovara().invoke('models:addRuntime', input)) as ModelRuntimeEntry
+}
+
+export async function removeRuntime(runtimeId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('models:removeRuntime', { runtimeId })) as { ok: boolean }
+}
+
+export async function testRuntimeConnection(runtimeId: string): Promise<RuntimeProbeResult> {
+  return (await sovara().invoke('models:testConnection', { runtimeId })) as RuntimeProbeResult
+}
+
+export async function listDiscoveredModels(runtimeId?: string): Promise<DiscoveredModel[]> {
+  return (await sovara().invoke('models:listModels', runtimeId ? { runtimeId } : {})) as DiscoveredModel[]
+}
+
+export async function selectModel(runtimeId: string, modelId: string): Promise<ActiveModelState> {
+  return (await sovara().invoke('models:selectModel', { runtimeId, modelId })) as ActiveModelState
+}
+
+export async function getActiveModel(): Promise<ActiveModelState> {
+  return (await sovara().invoke('models:getActiveModel')) as ActiveModelState
+}
+
+export interface SystemResourcesView {
+  cpu: { logicalCores: number; loadAvg1: number }
+  ram: { totalMB: number; freeMB: number; usedByAppMB: number }
+  gpu: { available: boolean; name?: string; driverVersion?: string }
+  vram: { totalMB?: number; freeMB?: number; usedByModelsMB?: number }
+  disk: { path: string; totalMB: number; freeMB: number }
+  models: { instances: unknown[]; totalVramUsedMB?: number }
+  limits: { maxConcurrentModels: number; maxVramBudgetMB?: number; maxRamBudgetMB?: number }
+}
+
+export async function getSystemResources(): Promise<SystemResourcesView> {
+  return (await sovara().invoke('system:getResources')) as SystemResourcesView
 }

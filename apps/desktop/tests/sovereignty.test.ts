@@ -31,12 +31,14 @@ describe('Commit 1 sovereignty guards', () => {
       expect(txt, `run_agent found in ${f}`).not.toMatch(/run_agent\.py/)
     }
   })
-  it('no bare fetch outside HttpClient (which does not exist yet)', () => {
+  it('no bare fetch outside the single HttpClient boundary (Commit 6)', () => {
     const files = scan('src', ['.ts', '.tsx'])
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')
-      // fetch should not appear at all in Phase 1 (sovereign offline)
-      expect(txt, `bare fetch found in ${f}`).not.toMatch(/\bfetch\s*\(/)
+      if (/\bfetch\s*\(/.test(txt)) {
+        // The centralized loopback-only client is the sole exception.
+        expect(f.replace(/\\/g, '/'), `bare fetch outside HttpClient: ${f}`).toMatch(/main\/network\/HttpClient\.ts$/)
+      }
     }
   })
   it('preload does not expose raw ipcRenderer', () => {

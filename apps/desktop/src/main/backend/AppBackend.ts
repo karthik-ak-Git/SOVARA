@@ -8,6 +8,8 @@ import { DshStubAdapter } from './ports/DshStubAdapter'
 import { HermesStubAdapter } from './ports/HermesStubAdapter'
 import { ModelRuntimeStub } from './ports/ModelRuntimeStub'
 import { SystemResourceStub } from './ports/SystemResourceStub'
+import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
+import { ModelWorkbench } from './ModelWorkbench'
 
 export interface AppBackendPorts {
   persistence: PersistencePort
@@ -26,9 +28,15 @@ export interface AppBackendPorts {
 export class AppBackend {
   public readonly ports: AppBackendPorts
   private readonly persistenceAdapter: SqlitePersistenceAdapter
+  /** Commit 6 — registry/probe/select facet (lifecycle stays stubbed). */
+  public readonly workbench: ModelWorkbench
+  private readonly runtimeConfig: RuntimeConfigStore
 
   constructor(baseDir?: string) {
     this.persistenceAdapter = new SqlitePersistenceAdapter(baseDir)
+    const resources = new SystemResourceStub()
+    this.runtimeConfig = new RuntimeConfigStore(baseDir)
+    this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
     this.ports = {
       persistence: this.persistenceAdapter,
       llm: new LlmStubAdapter(),
@@ -36,7 +44,7 @@ export class AppBackend {
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
       models: new ModelRuntimeStub(),
-      resources: new SystemResourceStub()
+      resources
     }
   }
 
@@ -64,6 +72,11 @@ export class AppBackend {
   async dispose(): Promise<void> {
     try {
       await this.persistenceAdapter.close()
+    } catch {
+      // ignore
+    }
+    try {
+      this.runtimeConfig.close()
     } catch {
       // ignore
     }

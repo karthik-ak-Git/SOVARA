@@ -327,6 +327,21 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .bubble--thinking, .bubble--loading { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .thinking-svg { width: 18px; height: 18px; color: var(--muted); }
 
+/* Commit 6 — model workbench (industrial, same language as chat) */
+.models-page { display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
+.active-model { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.runtime-add { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+.runtime-add .field { flex: 1; min-width: 180px; }
+.runtime-list, .model-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.runtime-row, .model-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+  padding: 10px 12px; background: rgba(255,255,255,.015);
+}
+.runtime-info, .model-info { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; }
+.runtime-endpoint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-actions { display: flex; gap: 6px; }
+
 .empty { text-align: center; padding: 28px 18px; border: 1px dashed var(--border); border-radius: var(--radius-lg); background: rgba(255,255,255,.02); }
 .empty-icon { display: flex; justify-content: center; margin-bottom: 10px; color: var(--muted); }
 .empty-title { font-weight: 600; font-size: 13px; }
