@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from sovara.api.error_handlers import register_error_handlers
 from sovara.api.schemas import HealthResponse
@@ -84,6 +85,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+
+    # Local-UI CORS only: allowlisted browser origins get ACAO headers.
+    # Empty allowlist = no CORS middleware at all (locked down default).
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allowed_origins,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["Content-Type", "Accept", "X-Request-ID", "Authorization"],
+            max_age=600,
+        )
 
     @app.middleware("http")
     async def _correlation(request: Request, call_next):  # type: ignore[no-untyped-def]

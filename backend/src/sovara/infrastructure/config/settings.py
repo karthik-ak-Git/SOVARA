@@ -25,10 +25,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 EnvName = Literal["development", "test", "production", "local"]
 
@@ -52,20 +52,35 @@ class Settings(BaseSettings):
 
     # -- network policy (air-gap boundary) --
     network_local_only: bool = Field(default=True, alias="NETWORK_LOCAL_ONLY")
-    network_allowed_endpoints: list[str] = Field(
+    # NoDecode: keep the raw string so our validator (not JSON) splits it.
+    # An empty env value means "no endpoints", never a JSON parse crash.
+    network_allowed_endpoints: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="NETWORK_ALLOWED_ENDPOINTS"
     )
     network_audit_log: bool = Field(default=True, alias="NETWORK_AUDIT_LOG")
+    # CORS: browser origin allowlist for local UI development.
+    # Empty = no CORS headers (locked down). Dev default covers vite.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"],
+        alias="CORS_ALLOWED_ORIGINS",
+    )
 
     # -- auth (abstraction only in Phase 0) --
     auth_mode: Literal["disabled", "token"] = Field(default="disabled", alias="AUTH_MODE")
 
     # -- model gateway (Phase 1 / Slice 1: single local model path) --
-    model_provider: Literal["ollama", "echo"] = Field(default="ollama", alias="MODEL_PROVIDER")
+    model_provider: Literal["ollama", "lmstudio", "echo"] = Field(
+        default="ollama", alias="MODEL_PROVIDER"
+    )
     model_default_id: str = Field(default="local-default", alias="MODEL_DEFAULT_ID")
     ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
     ollama_timeout_s: float = Field(default=10.0, alias="OLLAMA_TIMEOUT_S")
+    # LM Studio serves an OpenAI-compatible API on :1234 by default.
+    # LMSTUDIO_MODEL must match a model currently loaded in LM Studio.
+    lmstudio_base_url: str = Field(default="http://127.0.0.1:1234/v1", alias="LMSTUDIO_BASE_URL")
+    lmstudio_model: str = Field(default="local-model", alias="LMSTUDIO_MODEL")
+    lmstudio_timeout_s: float = Field(default=10.0, alias="LMSTUDIO_TIMEOUT_S")
     chat_timeout_s: float = Field(default=180.0, alias="CHAT_TIMEOUT_S")
     chat_max_messages: int = Field(default=64, alias="CHAT_MAX_MESSAGES")
     chat_max_prompt_chars: int = Field(default=24000, alias="CHAT_MAX_PROMPT_CHARS")
@@ -74,7 +89,7 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     artifacts_dir: Path = Field(default=Path("./data/artifacts"), alias="ARTIFACTS_DIR")
 
-    @field_validator("network_allowed_endpoints", mode="before")
+    @field_validator("network_allowed_endpoints", "cors_allowed_origins", mode="before")
     @classmethod
     def _split_endpoints(cls, v: object) -> list[str]:
         if v is None or v == "":

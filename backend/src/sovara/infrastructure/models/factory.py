@@ -15,6 +15,7 @@ from sovara.domain.model_provider import ModelProvider
 from sovara.domain.model_registry import ModelRecord, ModelRegistry
 from sovara.infrastructure.config.settings import Settings
 from sovara.infrastructure.models.echo_provider import EchoProvider
+from sovara.infrastructure.models.lmstudio.lmstudio_provider import LMStudioProvider
 from sovara.infrastructure.models.ollama.ollama_provider import OllamaProvider
 from sovara.infrastructure.security.network_policy import NetworkPolicy
 
@@ -30,15 +31,26 @@ async def build_provider(
             raise RuntimeError("SOVARA_MODEL_PROVIDER=echo is refused in production.")
         provider: ModelProvider = EchoProvider(model_id=settings.model_default_id)
     else:
-        decision = policy.check_egress(settings.ollama_base_url)
+        if kind == "lmstudio":
+            runtime = "LM Studio"
+            base_url = settings.lmstudio_base_url
+            model = settings.lmstudio_model
+            timeout_s = settings.lmstudio_timeout_s
+        else:
+            runtime = "Ollama"
+            base_url = settings.ollama_base_url
+            model = settings.ollama_model
+            timeout_s = settings.ollama_timeout_s
+        decision = policy.check_egress(base_url)
         if not decision.allowed:
             raise SecurityPolicyError(
-                f"Ollama egress denied by network policy: {decision.reason} (host={decision.host})"
+                f"{runtime} egress denied by network policy: {decision.reason} "
+                f"(host={decision.host})"
             )
-        provider = OllamaProvider(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_model,
-            timeout_s=settings.ollama_timeout_s,
+        provider = (
+            LMStudioProvider(base_url=base_url, model=model, timeout_s=timeout_s)
+            if kind == "lmstudio"
+            else OllamaProvider(base_url=base_url, model=model, timeout_s=timeout_s)
         )
 
     info = provider.info
