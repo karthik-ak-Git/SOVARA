@@ -65,9 +65,15 @@ export function createMainWindow(): BrowserWindow {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // ── Deny all permission requests (camera, mic, geolocation, etc.) ──
-  win.webContents.session.setPermissionCheckHandler(() => false)
-  win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+  // ── Permission handler — allow mic, deny everything else ──
+  win.webContents.session.setPermissionCheckHandler((_wc, permission, _requestingOrigin, _details) => {
+    if (permission === 'media') return true
+    return false
+  })
+  win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'media') { callback(true); return }
+    callback(false)
+  })
 
   // ── Navigation hijack block ──
   const isAllowedNav = (url: string): boolean =>
