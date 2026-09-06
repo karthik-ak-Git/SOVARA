@@ -1,20 +1,19 @@
-import type { ReactNode, ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
 import { ConversationHeader } from './ConversationHeader'
-import { TypingIndicator } from './TypingIndicator'
-import { ThinkingIndicator } from './ThinkingIndicator'
+import type { SessionEventLike } from './conversation'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
   selectedId: string | null
-  events: Array<{ seq: number; time: number; type: string; data: unknown }>
+  events: SessionEventLike[]
   draft: string
-  setDraft: React.Dispatch<React.SetStateAction<string>>
+  setDraft: (value: string) => void
   busy: boolean
-  setBusy: React.Dispatch<React.SetStateAction<boolean>>
+  error: string | null
+  onDismissError?: () => void
   onSend: (content: string) => void
-  onNewline: () => void
   onCreateSession: () => void
   onSwitchSession: (id: string) => void
 }
@@ -26,37 +25,43 @@ export function ChatView({
   draft,
   setDraft,
   busy,
-  setBusy,
+  error,
+  onDismissError,
   onSend,
-  onNewline,
   onCreateSession,
   onSwitchSession,
 }: ChatViewProps): ReactElement {
+  const active = sessions.find((s) => s.id === selectedId)
   return (
     <section className="chat-view" aria-label="Chat">
       <ConversationHeader
         sessionId={selectedId || undefined}
-        title='Chat'
+        title={active ? active.title : 'Chat'}
         onNewSession={onCreateSession}
         onSwitchSession={onSwitchSession}
         sessions={sessions}
-        loading={busy}
+        loading={busy && events.length === 0}
       />
 
-      <MessageList events={events} />
+      {error ? (
+        <div className="chat-error" role="alert" aria-label="Chat error">
+          <span>{error}</span>
+          {onDismissError ? (
+            <button type="button" className="btn btn-sm" onClick={onDismissError} aria-label="Dismiss error">
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
-      <Composer
-        value={draft}
-        onChange={setDraft}
-        onSend={onSend}
-        onNewline={onNewline}
-        disabled={busy}
-      />
+      <MessageList events={events} thinking={busy} />
 
-      { /* Thinking/Typing state rendering */ }
-      {busy && (
-        <TypingIndicator />
-      )}
+      <Composer value={draft} onChange={setDraft} onSend={onSend} disabled={busy || !selectedId} />
+      {!selectedId ? (
+        <p className="muted small chat-hint" role="status">
+          Create a conversation to start chatting with the local mock assistant.
+        </p>
+      ) : null}
     </section>
   )
 }

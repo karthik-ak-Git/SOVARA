@@ -1,43 +1,95 @@
-import type { ReactNode, ReactElement } from 'react'
+import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
 import { MessageBubble } from './MessageBubble'
+import { deriveMessages, type SessionEventLike } from './conversation'
 
 interface MessageListProps {
-  events: Array<{ seq: number; time: number; type: string; data: unknown }>
+  events: SessionEventLike[]
+  thinking?: boolean
   onRemove?: (eventSeq: number) => void
 }
 
-export function MessageList({
-  events,
-}: MessageListProps): ReactElement {
-  const rendered = events
-    .filter((e) => e.type === 'user/message' || e.type === 'assistant/message')
-    .map((e) => {
-      const content =
-        (e.data as { content: string })?.content ?? JSON.stringify(e.data)
-      const role = e.type === 'user/message' ? 'user' : 'assistant'
-      const timestamp = e.time
-      return (
-        <MessageBubble
-          key={e.seq}
-          id={e.seq.toString()}
-          role={role}
-          content={content}
-          timestamp={timestamp}
-        />
-      )
-    })
+const STICK_THRESHOLD_PX = 80
 
-  if (rendered.length === 0) {
+export function MessageList({ events, thinking = false, onRemove }: MessageListProps): ReactElement {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stickRef = useRef(true)
+  const messages = deriveMessages(events)
+
+  const handleScroll = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickRef.current = distance <= STICK_THRESHOLD_PX
+  }
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    if (stickRef.current) el.scrollTop = el.scrollHeight
+  }, [messages.length, thinking])
+
+  // First paint: start pinned to the latest message.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (messages.length === 0 && !thinking) {
     return (
       <div
-        className="message-list-empty"
-        role="status"
-        aria-label="No messages yet — send a mock message."
+        ref={scrollRef}
+        className="message-list"
+        role="log"
+        aria-label="Conversation messages"
+        aria-live="polite"
+        onScroll={handleScroll}
+        tabIndex={0}
       >
-        No messages yet — send a mock message.
+        <div
+          className="message-list-empty"
+          role="status"
+          aria-label="Empty conversation"
+        >
+          <p className="empty-title">Start a local mock conversation</p>
+          <p className="muted small">
+            Type below and press Enter to send. The Phase 1 assistant is a
+            deterministic local stub — no model, no network.
+          </p>
+          <p className="muted small">Shift+Enter inserts a newline.</p>
+        </div>
       </div>
     )
   }
 
-  return <>{rendered}</>
+  let content: ReactNode = (
+    <>
+      {messages.map((m) => (
+        <MessageBubble
+          key={m.seq}
+          id={m.seq.toString()}
+          role={m.role}
+          content={m.content}
+          timestamp={m.time}
+        />
+      ))}
+      {thinking ? (
+        <MessageBubble id="thinking" role="assistant" content="" thinking />
+      ) : null}
+    </>
+  )
+  void onRemove
+  return (
+    <div
+      ref={scrollRef}
+      className="message-list"
+      role="log"
+      aria-label="Conversation messages"
+      aria-live="polite"
+      onScroll={handleScroll}
+      tabIndex={0}
+    >
+      {content}
+    </div>
+  )
 }

@@ -1,4 +1,4 @@
-import type { ReactNode, ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import { Button } from '@renderer/components/ui/Button'
 
 interface ConversationHeaderProps {
@@ -28,6 +28,9 @@ export function ConversationHeader({
           {isSessionSelected ? (
             <div className="header-session">
               <span className="header-session-id">Session {sessionId?.slice(0, 8)}…</span>
+              <span className="muted small" aria-label={`${(sessions ?? []).length} conversations`}>
+                {(sessions ?? []).length} conversation{(sessions ?? []).length === 1 ? '' : 's'} · local mock
+              </span>
             </div>
           ) : (
             <p className="header-subtle">Select or create a session</p>
@@ -35,27 +38,26 @@ export function ConversationHeader({
         </div>
 
         <div className="header-actions">
-          {loading ? (
-            <span className="pill pill--loading" aria-hidden>{'◆'}</span>
-          ) : (
-            <Button
-              onClick={onNewSession}
-              aria-label="Create new session"
-              style={{ marginRight: 8 }}
-            >
-              + New
-            </Button>
-          )}
-          {isSessionSelected && sessions && sessions.length > 0 ? (
+          <Button
+            onClick={onNewSession}
+            disabled={loading}
+            aria-label="Create new conversation"
+            style={{ marginRight: 8 }}
+          >
+            + New
+          </Button>
+          {sessions && sessions.length > 0 ? (
             <select
+              value={sessionId ?? ''}
               onChange={(e) => {
-                const val = e.target.value as string
-                if (val && onSwitchSession) onSwitchSession(val!)
+                const val = e.target.value
+                if (val && onSwitchSession) onSwitchSession(val)
               }}
-              aria-label="Switch session"
+              aria-label="Switch conversation"
+              disabled={loading}
               style={{ marginLeft: 8 }}
             >
-              <option value="">— Select session —</option>
+              <option value="">— Select conversation —</option>
               {sessions.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.title}
@@ -67,7 +69,7 @@ export function ConversationHeader({
       </div>
 
       {loading ? (
-        <div className="header-loading" aria-live="polite">
+        <div className="header-loading" aria-live="polite" role="status">
           <span className="pill pill--loading" aria-hidden>{'◆'}</span>
           Loading conversation…
         </div>

@@ -24,6 +24,8 @@ export function MessageBubble({
     return (
       <div
         key={id}
+        data-testid="assistant-typing"
+        data-role="assistant"
         className={`bubble ${bubbles} bubble--loading`}
         aria-live="polite"
         aria-label="Assistant is typing"
@@ -38,6 +40,8 @@ export function MessageBubble({
     return (
       <div
         key={id}
+        data-testid="assistant-thinking"
+        data-role="assistant"
         className={`bubble ${bubbles} bubble--thinking`}
         aria-live="polite"
         aria-label="Assistant is thinking"
@@ -64,18 +68,23 @@ export function MessageBubble({
   }
 
   return (
-    <div
+    <article
       key={id}
+      data-testid={isUser ? 'message-user' : 'message-assistant'}
+      data-role={role}
       className={`bubble ${bubbles}`}
-      role="alert"
       aria-label={isUser ? 'Your message' : 'Assistant response'}
     >
       <p className="bubble-text">{content}</p>
       <span className="bubble-meta muted small">
-        {timestamp
-          ? new Date(timestamp).toLocaleTimeString()
-          : ''}
+        {typeof timestamp === 'number' && Number.isFinite(timestamp) ? (
+          <time dateTime={new Date(timestamp).toISOString()}>
+            {new Date(timestamp).toLocaleTimeString()}
+          </time>
+        ) : (
+          ''
+        )}
       </span>
-    </div>
+    </article>
   )
 }
