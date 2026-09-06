@@ -9,6 +9,8 @@ import pytest
 
 from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
+from sovara.application.provider_registry import ProviderRegistry
+from sovara.application.runtime_connections import RuntimeConnectionManager
 from sovara.domain.errors import ModelError, SecurityPolicyError
 from sovara.domain.model_provider import (
     InferenceRequest,
@@ -120,13 +122,25 @@ def test_gateway_rebind_swaps_mapping() -> None:
         gw.resolve("model-a")
 
 
-def test_catalog_registers_discovered_models() -> None:
-    registry = InMemoryModelRegistry()
-    catalog = ModelCatalog(
-        provider=_StubProvider("ignored"),
-        registry=registry,
-        configured_model_id="fallback",
+def _catalog(
+    provider: ModelProvider,
+    configured_id: str,
+    registry: ModelRegistry | None = None,
+) -> ModelCatalog:
+    """Single-adapter catalog: the Slice 2 shape on Slice 3 wiring."""
+    providers = ProviderRegistry({"stub": provider})
+    manager = RuntimeConnectionManager(providers)
+    return ModelCatalog(
+        manager=manager,
+        registry=registry or InMemoryModelRegistry(),
+        configured_model_ids={"stub": configured_id},
+        primary_kind="stub",
     )
+
+
+def test_catalog_registers_discovered_models() -> None:
+    provider = _StubProvider("ignored")
+    catalog = _catalog(provider, "fallback")
 
     async def fake_list() -> list[ModelInfo]:
         return [
@@ -134,7 +148,7 @@ def test_catalog_registers_discovered_models() -> None:
             ModelInfo(model_id="b", display_name="B", provider="stub"),
         ]
 
-    catalog._provider.list_models = fake_list  # type: ignore[method-assign]
+    provider.list_models = fake_list  # type: ignore[method-assign]
     records = asyncio.run(catalog.refresh())
     assert [r.model_id for r in records] == ["a", "b"]
     assert all(r.capability_source == CapabilitySource.PROVIDER for r in records)
@@ -143,8 +157,6 @@ def test_catalog_registers_discovered_models() -> None:
 
 
 def test_catalog_falls_back_to_configured_when_runtime_down() -> None:
-    registry = InMemoryModelRegistry()
-
     class _Down(_StubProvider):
         async def health(self) -> ModelHealth:
             return ModelHealth(model_id="x", available=False, detail="down")
@@ -152,7 +164,7 @@ def test_catalog_falls_back_to_configured_when_runtime_down() -> None:
         async def list_models(self) -> list[ModelInfo]:
             return []
 
-    catalog = ModelCatalog(provider=_Down("x"), registry=registry, configured_model_id="cfg-model")
+    catalog = _catalog(_Down("x"), "cfg-model")
     records = asyncio.run(catalog.refresh())
     assert [r.model_id for r in records] == ["cfg-model"]
     assert records[0].capability_source == CapabilitySource.CONFIGURED
@@ -163,9 +175,7 @@ def test_catalog_default_prefers_explicit_then_native_then_available() -> None:
     registry = InMemoryModelRegistry()
     registry.register(_record("native-x", ModelAvailability.UNAVAILABLE))
     registry.register(_record("other", ModelAvailability.AVAILABLE))
-    catalog = ModelCatalog(
-        provider=_StubProvider("x"), registry=registry, configured_model_id="native-x"
-    )
+    catalog = _catalog(_StubProvider("x"), "native-x", registry)
     assert catalog.resolve_default("other") == "other"  # explicit override wins
     assert catalog.resolve_default("ghost") == "native-x"  # native fallback
     registry.remove("native-x")

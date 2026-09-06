@@ -73,6 +73,15 @@ class Settings(BaseSettings):
         default="ollama", alias="MODEL_PROVIDER"
     )
     model_default_id: str = Field(default="local-default", alias="MODEL_DEFAULT_ID")
+    # Slice 3: which local runtimes coexist (comma-separated subset of
+    # lmstudio,ollama,echo). The echo harness joins automatically when
+    # MODEL_PROVIDER=echo outside production; it is always refused in prod.
+    enabled_providers: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["lmstudio", "ollama"], alias="ENABLED_PROVIDERS"
+    )
+    # Slice 3: deterministic smart routing ("SOVARA Auto"). Manual selection
+    # always remains available as an explicit override.
+    routing_enabled: bool = Field(default=True, alias="ROUTING_ENABLED")
     ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
     ollama_timeout_s: float = Field(default=10.0, alias="OLLAMA_TIMEOUT_S")

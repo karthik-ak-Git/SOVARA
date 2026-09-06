@@ -1,9 +1,10 @@
-"""Model catalog boundary (Slice 2: normalized records + refresh).
+"""Model catalog boundary (Slice 3: normalized records + multi-runtime refresh).
 
 GET /models returns the registry contents in SOVARA-normalized form plus
 the resolved default in meta. POST /models/refresh re-runs discovery and
-health probes (explicit lifecycle — chat turns never pay this cost).
-Routing stays deferred; the selector is manual.
+health probes across every enabled runtime (explicit lifecycle — chat
+turns never pay this cost). Manual selection stays; meta.routing reports
+whether deterministic auto-routing ("auto") is enabled.
 """
 
 from __future__ import annotations
@@ -14,12 +15,14 @@ from sovara.api.deps import (
     get_model_catalog,
     get_model_gateway,
     get_model_registry,
+    get_settings,
 )
 from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
+from sovara.application.model_router import ModelRouter
 from sovara.domain.errors import NotFoundError
-from sovara.domain.model_provider import ModelProvider
 from sovara.domain.model_registry import ModelRecord, ModelRegistry
+from sovara.infrastructure.config.settings import Settings
 
 router = APIRouter(tags=["models"])
 
@@ -40,11 +43,13 @@ def record_to_item(record: ModelRecord) -> dict[str, object]:
     }
 
 
-def _collection(registry: ModelRegistry, gateway: ModelGateway) -> dict[str, object]:
+def _collection(
+    registry: ModelRegistry, gateway: ModelGateway, settings: Settings
+) -> dict[str, object]:
     return {
         "items": [record_to_item(r) for r in registry.list()],
         "meta": {
-            "routing": "deferred",
+            "routing": "auto" if settings.routing_enabled else "deferred",
             "source": "registry",
             "default_model_id": gateway.default_model_id,
         },
@@ -55,8 +60,9 @@ def _collection(registry: ModelRegistry, gateway: ModelGateway) -> dict[str, obj
 def list_models(
     registry: ModelRegistry = Depends(get_model_registry),
     gateway: ModelGateway = Depends(get_model_gateway),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
-    return _collection(registry, gateway)
+    return _collection(registry, gateway, settings)
 
 
 @router.get("/models/{model_id}")
@@ -77,10 +83,12 @@ async def refresh_models(
     registry: ModelRegistry = Depends(get_model_registry),
     gateway: ModelGateway = Depends(get_model_gateway),
 ) -> dict[str, object]:
-    records = await catalog.refresh()
-    provider: ModelProvider = request.app.state.provider
+    await catalog.refresh()
     gateway.rebind(
-        {r.model_id: provider for r in records},
+        catalog.provider_map(),
         catalog.resolve_default(gateway.default_model_id),
     )
-    return _collection(registry, gateway)
+    router_service: ModelRouter = request.app.state.router
+    router_service.rebind(gateway.default_model_id)
+    settings: Settings = request.app.state.settings
+    return _collection(registry, gateway, settings)

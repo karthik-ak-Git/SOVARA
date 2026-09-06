@@ -24,6 +24,8 @@ from sovara.api.v1.router import router as v1_router
 from sovara.application.chat_service import ChatService
 from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
+from sovara.application.model_router import ModelRouter
+from sovara.application.runtime_connections import RuntimeConnectionManager
 from sovara.application.system_service import SystemService
 from sovara.infrastructure.config.settings import Settings, get_settings
 from sovara.infrastructure.logging.structured import (
@@ -32,7 +34,10 @@ from sovara.infrastructure.logging.structured import (
     get_logger,
     setup_logging,
 )
-from sovara.infrastructure.models.factory import build_provider
+from sovara.infrastructure.models.factory import (
+    build_provider_registry,
+    runtime_base_urls,
+)
 from sovara.infrastructure.registries import InMemoryModelRegistry, InMemoryToolRegistry
 from sovara.infrastructure.security.network_policy import NetworkPolicy
 from sovara.version import __version__
@@ -53,23 +58,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         allowed_endpoints=settings.network_allowed_endpoints,
         audit_log=settings.network_audit_log,
     )
-    # Slice 2 lifecycle: build provider -> discover + register via the
-    # catalog -> resolve default -> map every record to its provider.
-    provider, native_model_id = await build_provider(settings, app.state.network)
-    app.state.provider = provider
+    # Slice 3 lifecycle: build every enabled local runtime -> probe +
+    # discover via the connection manager -> normalize through the catalog
+    # -> resolve default -> map every record to its serving adapter.
+    provider_registry, configured_ids = await build_provider_registry(settings, app.state.network)
+    app.state.provider_registry = provider_registry
+    app.state.connection_manager = RuntimeConnectionManager(
+        provider_registry, base_urls=runtime_base_urls(settings)
+    )
     app.state.catalog = ModelCatalog(
-        provider=provider,
+        manager=app.state.connection_manager,
         registry=app.state.models,
-        configured_model_id=native_model_id,
+        configured_model_ids=configured_ids,
+        preferred_default=settings.model_default_id,
+        primary_kind=settings.model_provider,
     )
     await app.state.catalog.refresh()
     default_id = app.state.catalog.resolve_default(settings.model_default_id)
     app.state.gateway = ModelGateway(
         registry=app.state.models,
-        providers={r.model_id: provider for r in app.state.models.list()},
+        providers=app.state.catalog.provider_map(),
         default_model_id=default_id,
     )
-    app.state.chat_service = ChatService(settings=settings, gateway=app.state.gateway)
+    app.state.router = ModelRouter(configured_model_id=default_id)
+    app.state.chat_service = ChatService(
+        settings=settings,
+        gateway=app.state.gateway,
+        router=app.state.router,
+        registry=app.state.models,
+    )
     app.state.system_service = SystemService(
         settings=settings,
         models=app.state.models,

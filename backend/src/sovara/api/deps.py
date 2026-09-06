@@ -11,6 +11,9 @@ from fastapi import Request
 from sovara.application.chat_service import ChatService
 from sovara.application.model_catalog import ModelCatalog
 from sovara.application.model_gateway import ModelGateway
+from sovara.application.model_router import ModelRouter
+from sovara.application.provider_registry import ProviderRegistry
+from sovara.application.runtime_connections import RuntimeConnectionManager
 from sovara.application.system_service import SystemService
 from sovara.domain.model_registry import ModelRegistry
 from sovara.domain.tool_registry import ToolRegistry
@@ -48,3 +51,15 @@ def get_model_catalog(request: Request) -> ModelCatalog:
 
 def get_chat_service(request: Request) -> ChatService:
     return request.app.state.chat_service
+
+
+def get_provider_registry(request: Request) -> ProviderRegistry:
+    return request.app.state.provider_registry
+
+
+def get_connection_manager(request: Request) -> RuntimeConnectionManager:
+    return request.app.state.connection_manager
+
+
+def get_model_router(request: Request) -> ModelRouter:
+    return request.app.state.router

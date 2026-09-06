@@ -19,7 +19,6 @@ from sovara.domain.model_provider import (
     ModelHealth,
     ModelInfo,
     ModelProvider,
-    TaskCapability,
 )
 
 _TEMPLATE = (
@@ -35,6 +34,9 @@ class EchoProvider(ModelProvider):
     """In-process streaming stub. Refused in production by the factory."""
 
     def __init__(self, *, model_id: str = "echo-dev") -> None:
+        # The harness verifies the pipeline, not any real skill: it claims
+        # no task capabilities (honest unknown). Slice 3 routing treats
+        # unknown capabilities as an eligible fallback, never as a match.
         self._info = ModelInfo(
             model_id=model_id,
             display_name="Echo (dev harness)",
@@ -42,7 +44,7 @@ class EchoProvider(ModelProvider):
             version="0.1.0-slice1",
             capabilities=ModelCapabilities(
                 modalities=[Modality.TEXT],
-                tasks=[TaskCapability.REASONING],
+                tasks=[],
                 supports_streaming=True,
                 supports_tools=False,
             ),
@@ -60,7 +62,12 @@ class EchoProvider(ModelProvider):
 
     async def infer(self, request: InferenceRequest) -> InferenceResponse:
         text = "".join([chunk async for chunk in self.stream(request)])
-        return InferenceResponse(model_id=self._info.model_id, text=text, finish_reason="stop")
+        # Echo the requested runtime id, never the harness default.
+        return InferenceResponse(
+            model_id=request.model_id or self._info.model_id,
+            text=text,
+            finish_reason="stop",
+        )
 
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         n = len(request.messages)

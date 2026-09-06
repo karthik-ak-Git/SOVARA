@@ -10,6 +10,8 @@ from sovara.api.v1.routes import (
     health,
     knowledge,
     models,
+    routing,
+    runtime,
     system,
     tasks,
     tools,
@@ -20,6 +22,8 @@ router.include_router(chat.router)
 router.include_router(health.router)
 router.include_router(system.router)
 router.include_router(models.router)
+router.include_router(runtime.router)
+router.include_router(routing.router)
 router.include_router(conversations.router)
 router.include_router(tasks.router)
 router.include_router(tools.router)

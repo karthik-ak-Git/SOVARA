@@ -2,18 +2,18 @@
 
 
 def test_models_registry_lists_configured_fallback(client) -> None:
-    # Default client: Ollama unreachable -> one configured record, honestly
-    # marked unavailable. Routing stays deferred.
+    # Default client: LM Studio + Ollama unreachable -> one configured
+    # record per runtime, honestly marked unavailable. Routing is auto.
     r = client.get("/api/v1/models")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["items"]) == 1
-    item = body["items"][0]
-    assert item["id"] == "llama3.1"
+    by_id = {i["id"]: i for i in body["items"]}
+    assert set(by_id) == {"llama3.1", "local-model"}
+    item = by_id["llama3.1"]
     assert item["provider"] == "ollama"
     assert item["availability"] == "unavailable"
     assert item["capability_source"] == "configured"
-    assert body["meta"]["routing"] == "deferred"
+    assert body["meta"]["routing"] == "auto"
     assert body["meta"]["default_model_id"] == "llama3.1"
 
 
