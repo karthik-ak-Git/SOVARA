@@ -1,9 +1,10 @@
 import type { ReactElement } from 'react'
 import { MessageList } from './MessageList'
-import { Composer } from './Composer'
+import { Composer, type FileAttachment } from './Composer'
 import type { SessionEventLike } from './conversation'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 import type { ChatPhase } from './useChatSession'
+import type { ExecMode } from '../../components/ui/PermissionControl'
 import { Sparkles } from 'lucide-react'
 
 interface ChatViewProps {
@@ -18,18 +19,20 @@ interface ChatViewProps {
   error: string | null
   model?: ActiveModelState
   onDismissError?: () => void
-  onSend: (content: string) => void
+  onSend: (content: string, attachments?: FileAttachment[]) => void
   onCancel?: () => void
   onCreateSession: () => void
   onSwitchSession: (id: string) => void
-  /** Model workbench data — threaded from App to Composer */
   activeModel?: ActiveModelState
   runtimes?: ModelRuntimeEntry[]
   discoveredModels?: DiscoveredModel[]
   projectCount?: number
   onNewProject?: () => void
-  execMode?: 'disabled' | 'ask' | 'policy' | 'automatic' | null
+  execMode?: ExecMode
+  onExecModeChange?: (mode: ExecMode) => void
   execAvailable?: boolean
+  reasoningEnabled?: boolean
+  onReasoningToggle?: (enabled: boolean) => void
 }
 
 export function ChatView({
@@ -53,10 +56,12 @@ export function ChatView({
   discoveredModels = [],
   projectCount = 0,
   onNewProject = () => {},
-  execMode = null,
+  execMode = 'off',
+  onExecModeChange = () => {},
   execAvailable = false,
+  reasoningEnabled = false,
+  onReasoningToggle = () => {},
 }: ChatViewProps): ReactElement {
-  const active = sessions.find((s) => s.id === selectedId)
   const streaming = busy && phase === 'streaming'
   const hasConversation = !!selectedId
   const hasMessages = events.length > 0
@@ -65,29 +70,22 @@ export function ChatView({
   return (
     <section className="chat-view" aria-label="Chat">
       {showEmpty ? (
-        /* ── Empty state: Bionic-style centered workspace ── */
         <div className="chat-empty-state" role="status" aria-label="Start a conversation">
           <div className="chat-empty-hero">
             <div className="chat-empty-mascot" aria-hidden>
               <svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-                {/* Hard hat */}
                 <ellipse cx="40" cy="28" rx="22" ry="8" fill="#FFD93D" />
                 <rect x="22" y="20" width="36" height="12" rx="4" fill="#FFD93D" />
                 <rect x="18" y="28" width="44" height="4" rx="2" fill="#FFC107" />
-                {/* Face */}
                 <rect x="24" y="32" width="32" height="28" rx="6" fill="#9B59B6" />
-                {/* Eyes */}
                 <circle cx="34" cy="42" r="4" fill="#1a1a2e" />
                 <circle cx="46" cy="42" r="4" fill="#1a1a2e" />
                 <circle cx="35" cy="41" r="1.5" fill="#ffffff" />
                 <circle cx="47" cy="41" r="1.5" fill="#ffffff" />
-                {/* Smile */}
                 <path d="M34 50 Q40 56 46 50" stroke="#1a1a2e" strokeWidth="2" fill="none" strokeLinecap="round" />
-                {/* Toolbox */}
                 <rect x="52" y="48" width="14" height="10" rx="2" fill="#EF4444" />
                 <rect x="56" y="44" width="6" height="6" rx="1" fill="#EF4444" />
                 <line x1="54" y1="53" x2="64" y2="53" stroke="#ffffff" strokeWidth="1.5" />
-                {/* Hammer */}
                 <rect x="60" y="36" width="3" height="14" rx="1" fill="#8B5CF6" />
                 <rect x="57" y="34" width="9" height="5" rx="1.5" fill="#6B7280" />
               </svg>
@@ -112,7 +110,10 @@ export function ChatView({
               projectCount={projectCount}
               onNewProject={onNewProject}
               execMode={execMode}
+              onExecModeChange={onExecModeChange}
               execAvailable={execAvailable}
+              reasoningEnabled={reasoningEnabled}
+              onReasoningToggle={onReasoningToggle}
             />
           </div>
 
@@ -134,7 +135,6 @@ export function ChatView({
           </div>
         </div>
       ) : (
-        /* ── Active conversation ── */
         <>
           {error ? (
             <div className="chat-error" role="alert" aria-label="Chat error">
@@ -176,7 +176,10 @@ export function ChatView({
                 projectCount={projectCount}
                 onNewProject={onNewProject}
                 execMode={execMode}
+                onExecModeChange={onExecModeChange}
                 execAvailable={execAvailable}
+                reasoningEnabled={reasoningEnabled}
+                onReasoningToggle={onReasoningToggle}
               />
             </div>
             {streaming ? (

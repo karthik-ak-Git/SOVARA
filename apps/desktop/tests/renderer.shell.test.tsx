@@ -21,54 +21,133 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('Renderer shell — navigation & layout', () => {
-  it('renders 7 navigation destinations', () => {
-    const { container } = render(<Sidebar activeId="chat" onNavigate={() => {}} />)
-    const buttons = container.querySelectorAll('button.nav-item')
-    expect(buttons.length).toBe(7)
-    expect(screen.getByRole('button', { name: /Chat/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Models/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Agents/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Skills/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Library/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Runtime/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Settings/ })).toBeInTheDocument()
+  it('renders sidebar with Projects, Chats, and Settings', () => {
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+      />
+    )
+    expect(screen.getByText('Projects')).toBeInTheDocument()
+    expect(screen.getByText('Chats')).toBeInTheDocument()
+    expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
-  it('marks active nav with aria-current=page', () => {
-    render(<Sidebar activeId="models" onNavigate={() => {}} />)
-    const active = screen.getByRole('button', { name: /^Models$/ })
-    expect(active).toHaveAttribute('aria-current', 'page')
-    const inactive = screen.getByRole('button', { name: /^Chat$/ })
-    expect(inactive).not.toHaveAttribute('aria-current')
+  it('renders New Project and New Chat action buttons', () => {
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+      />
+    )
+    expect(screen.getByRole('button', { name: /New Project/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New Chat/ })).toBeInTheDocument()
   })
 
-  it('disabled nav items have aria-disabled and title', () => {
-    render(<Sidebar activeId="chat" onNavigate={() => {}} />)
-    const skills = screen.getByRole('button', { name: /Skills \(coming soon\)/ })
-    expect(skills).toHaveAttribute('aria-disabled', 'true')
-    expect(skills).toBeDisabled()
-    expect(skills).toHaveAttribute('title', 'Skills — coming soon')
+  it('marks settings as active nav with aria-current=page', () => {
+    render(
+      <Sidebar
+        activeId="settings"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+      />
+    )
+    const settings = screen.getByRole('button', { name: /Settings/ })
+    expect(settings).toHaveAttribute('aria-current', 'page')
   })
 
-  it('clicking nav calls onNavigate with id', async () => {
+  it('clicking New Chat calls onNewChat', async () => {
     const user = userEvent.setup()
-    const spy = vi.fn()
-    render(<Sidebar activeId="chat" onNavigate={spy} />)
-    await user.click(screen.getByRole('button', { name: /^Models$/ }))
-    expect(spy).toHaveBeenCalledWith('models')
-    // disabled should not fire
-    await user.click(screen.getByRole('button', { name: /Skills \(coming soon\)/ }))
-    expect(spy).toHaveBeenCalledTimes(1)
+    const onNewChat = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+        onNewChat={onNewChat}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: /New Chat/ }))
+    expect(onNewChat).toHaveBeenCalledOnce()
   })
 
-  it('TopBar shows brand', () => {
+  it('clicking New Project calls onNewProject', async () => {
+    const user = userEvent.setup()
+    const onNewProject = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+        onNewProject={onNewProject}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: /New Project/ }))
+    expect(onNewProject).toHaveBeenCalledOnce()
+  })
+
+  it('renders project names and calls onSelectProject', async () => {
+    const user = userEvent.setup()
+    const onSelectProject = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[{ id: 'p1', name: 'My App', sessions: [] }]}
+        selectedProjectId={null}
+        onSelectProject={onSelectProject}
+        recentChats={[]}
+      />
+    )
+    const projBtn = screen.getByRole('button', { name: /My App/ })
+    expect(projBtn).toBeInTheDocument()
+    await user.click(projBtn)
+    expect(onSelectProject).toHaveBeenCalledWith('p1')
+  })
+
+  it('renders recent chat titles and calls onSelectChat', async () => {
+    const user = userEvent.setup()
+    const onSelectChat = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[{ id: 'c1', title: 'Hello World' }]}
+        selectedChatId={null}
+        onSelectChat={onSelectChat}
+      />
+    )
+    const chatItem = screen.getByText('Hello World')
+    expect(chatItem).toBeInTheDocument()
+    await user.click(chatItem.closest('button')!)
+    expect(onSelectChat).toHaveBeenCalledWith('c1')
+  })
+
+  it('TopBar shows tabs and window controls', () => {
     render(<TopBar />)
-    expect(screen.getByText('Sovara')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /New tab/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Sovara Session/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Close/ })).toBeInTheDocument()
   })
 
   it('AppShell renders topbar, sidebar, and main', () => {
     render(
-      <AppShell activeNav="chat" onNavigate={() => {}}>
+      <AppShell
+        activeNav="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[]}
+      >
         <div>content</div>
       </AppShell>
     )
@@ -97,14 +176,5 @@ describe('Renderer shell — navigation & layout', () => {
     )
     expect(screen.getByText('Empty')).toBeInTheDocument()
     expect(screen.getByText('No data')).toBeInTheDocument()
-  })
-
-  it('keyboard navigation: tab order matches visual order', async () => {
-    const user = userEvent.setup()
-    render(<Sidebar activeId="chat" onNavigate={() => {}} />)
-    // First nav item should be focusable via tab
-    await user.tab()
-    const first = screen.getByRole('button', { name: /^Chat$/ })
-    expect(first).toHaveFocus()
   })
 })

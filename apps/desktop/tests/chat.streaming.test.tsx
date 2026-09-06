@@ -48,7 +48,7 @@ describe('Commit 7 — ChatView states', () => {
   const base = {
     sessions: [{ id: 's1', title: 'Session 1' }],
     selectedId: 's1' as string | null,
-    events: [] as Array<{ seq: number; time: number; type: string; data: unknown }>,
+    events: [{ seq: 0, time: 1, type: 'user/message', data: { content: 'hi' } }] as Array<{ seq: number; time: number; type: string; data: unknown }>,
     draft: '',
     setDraft: () => {},
     busy: false,

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Search, Check, ChevronDown, Wrench } from 'lucide-react'
+import { Search, Check, ChevronDown, Wrench, Brain } from 'lucide-react'
 import { Popover } from './Popover'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
@@ -8,9 +8,11 @@ interface ModelSelectorProps {
   models: DiscoveredModel[]
   runtimes: ModelRuntimeEntry[]
   onSelect: (runtimeId: string, modelId: string) => void
+  reasoningEnabled?: boolean
+  onReasoningToggle?: (enabled: boolean) => void
 }
 
-export function ModelSelector({ active, models, runtimes, onSelect }: ModelSelectorProps): ReactElement {
+export function ModelSelector({ active, models, runtimes, onSelect, reasoningEnabled = false, onReasoningToggle }: ModelSelectorProps): ReactElement {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -109,7 +111,7 @@ export function ModelSelector({ active, models, runtimes, onSelect }: ModelSelec
           <ul className="model-popover-list">
             {filtered.length === 0 ? (
               <li className="model-popover-empty" role="option" aria-disabled>
-                No models match "{filter}"
+                No models match &quot;{filter}&quot;
               </li>
             ) : (
               filtered.map((m) => {
@@ -148,6 +150,24 @@ export function ModelSelector({ active, models, runtimes, onSelect }: ModelSelec
               })
             )}
           </ul>
+
+          <div className="model-popover-divider" />
+
+          <div className="model-popover-reasoning">
+            <button
+              type="button"
+              className="reasoning-toggle"
+              onClick={(e) => { e.stopPropagation(); onReasoningToggle?.(!reasoningEnabled) }}
+              aria-pressed={reasoningEnabled}
+              aria-label={`Reasoning mode: ${reasoningEnabled ? 'on' : 'off'}`}
+            >
+              <Brain size={14} aria-hidden />
+              <span className="reasoning-toggle-label">Reasoning</span>
+              <span className={`reasoning-toggle-track ${reasoningEnabled ? 'on' : ''}`}>
+                <span className="reasoning-toggle-thumb" />
+              </span>
+            </button>
+          </div>
 
           <div className="model-popover-divider" />
           <button

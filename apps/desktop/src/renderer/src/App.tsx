@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import type { NavId } from './components/layout/Sidebar'
 import { useChatSession } from './features/chat/useChatSession'
 import { useModelWorkbench } from './features/models/useModelWorkbench'
 import { ChatView } from './features/chat/ChatView'
+import type { FileAttachment } from './features/chat/Composer'
+import { CreateProjectModal } from './components/modals/CreateProjectModal'
+import type { ExecMode } from './components/ui/PermissionControl'
 import { ModelsPage } from './features/models/ModelsPage'
 import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
 import { Card } from './components/ui/Card'
@@ -18,10 +21,24 @@ interface Info {
   arch: string
 }
 
+interface Project {
+  id: string
+  name: string
+  rootPath: string
+  sessions: Array<{ id: string; title: string }>
+}
+
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<Info | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [activeNav, setActiveNav] = useState<NavId>('chat')
+  const [activeTab, setActiveTab] = useState('new-tab')
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [execMode, setExecMode] = useState<ExecMode>('ask')
+  const [reasoningEnabled, setReasoningEnabled] = useState(false)
+  const [projectModalOpen, setProjectModalOpen] = useState(false)
+
   const chat = useChatSession()
   const workbench = useModelWorkbench()
 
@@ -31,36 +48,63 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
-  const footer = (
-    <>
-      <div className="foot-label">Build</div>
-      <div className="foot-value">{info ? `${info.name} ${info.version}` : '…'}</div>
-      {info ? (
-        <div className="foot-meta">
-          Electron {info.electron} · Node {info.node}
-          <br />
-          {info.platform}/{info.arch}
-        </div>
-      ) : null}
-      {err ? <div className="foot-error" role="alert">{err}</div> : null}
-    </>
-  )
+  const handleCreateProject = useCallback((name: string, rootPath: string): void => {
+    const id = `project-${Date.now()}`
+    setProjects((prev) => [
+      ...prev,
+      { id, name, rootPath, sessions: [] },
+    ])
+    setSelectedProjectId(id)
+    setProjectModalOpen(false)
+  }, [])
+
+  const handleNewSession = useCallback((): void => {
+    chat.handleCreate()
+    setActiveTab('session')
+  }, [chat])
+
+  const handleTabSelect = useCallback((tabId: string): void => {
+    setActiveTab(tabId)
+  }, [])
+
+  const handleSend = useCallback((content: string, attachments?: FileAttachment[]): void => {
+    let enrichedContent = content
+    if (attachments && attachments.length > 0) {
+      const fileSummary = attachments.map((a) => `[Attached: ${a.name} (${a.type})]`).join(' ')
+      enrichedContent = `${fileSummary}\n\n${content}`
+    }
+    chat.handleSend(enrichedContent)
+  }, [chat])
+
+  const selectedProject = projects.find((p) => p.id === selectedProjectId)
 
   return (
     <AppShell
       activeNav={activeNav}
       onNavigate={setActiveNav}
-      footer={footer}
-      projects={[]}
-      selectedProjectId={null}
+      activeTab={activeTab}
+      onTabSelect={handleTabSelect}
+      onNewSession={handleNewSession}
+      footer={null}
+      projects={projects}
+      selectedProjectId={selectedProjectId}
       selectedSessionId={chat.selectedId}
-      onSelectProject={() => {}}
-      onSelectSession={chat.switchSession}
-      onNewProject={() => {}}
-      onNewChat={chat.handleCreate}
+      onSelectProject={setSelectedProjectId}
+      onSelectSession={(id) => {
+        chat.switchSession(id)
+        setActiveTab('session')
+      }}
+      onNewProject={() => setProjectModalOpen(true)}
+      onNewChat={() => {
+        chat.handleCreate()
+        setActiveTab('session')
+      }}
       recentChats={chat.sessions.map((s) => ({ id: s.id, title: s.title }))}
       selectedChatId={chat.selectedId}
-      onSelectChat={chat.switchSession}
+      onSelectChat={(id) => {
+        chat.switchSession(id)
+        setActiveTab('session')
+      }}
     >
       {activeNav === 'chat' ? (
         <ChatView
@@ -75,17 +119,20 @@ export function App(): React.JSX.Element {
           error={chat.error}
           model={chat.model}
           onDismissError={chat.dismissError}
-          onSend={chat.handleSend}
+          onSend={handleSend}
           onCancel={chat.handleCancel}
-          onCreateSession={chat.handleCreate}
+          onCreateSession={handleNewSession}
           onSwitchSession={chat.switchSession}
           activeModel={workbench.active}
           runtimes={workbench.runtimes}
           discoveredModels={workbench.models}
-          projectCount={0}
-          onNewProject={() => {}}
-          execMode={null}
-          execAvailable={false}
+          projectCount={selectedProject?.sessions.length ?? 0}
+          onNewProject={() => setProjectModalOpen(true)}
+          execMode={execMode}
+          onExecModeChange={setExecMode}
+          execAvailable={execMode !== 'off'}
+          reasoningEnabled={reasoningEnabled}
+          onReasoningToggle={setReasoningEnabled}
         />
       ) : null}
 
@@ -163,6 +210,12 @@ export function App(): React.JSX.Element {
           />
         </Card>
       ) : null}
+
+      <CreateProjectModal
+        open={projectModalOpen}
+        onClose={() => setProjectModalOpen(false)}
+        onCreate={handleCreateProject}
+      />
     </AppShell>
   )
 }

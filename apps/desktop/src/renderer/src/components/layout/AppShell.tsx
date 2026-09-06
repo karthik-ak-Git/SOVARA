@@ -7,6 +7,9 @@ interface Props {
   onNavigate: (id: NavId) => void
   children: ReactNode
   footer?: ReactNode
+  activeTab?: string
+  onTabSelect?: (tabId: string) => void
+  onNewSession?: () => void
   projects?: Array<{ id: string; name: string; sessions: Array<{ id: string; title: string }> }>
   selectedProjectId?: string | null
   selectedSessionId?: string | null
@@ -24,6 +27,9 @@ export function AppShell({
   onNavigate,
   children,
   footer,
+  activeTab,
+  onTabSelect,
+  onNewSession,
   projects = [],
   selectedProjectId = null,
   selectedSessionId = null,
@@ -37,7 +43,7 @@ export function AppShell({
 }: Props): React.JSX.Element {
   return (
     <div className="app">
-      <TopBar />
+      <TopBar activeTab={activeTab} onTabSelect={onTabSelect} onNewSession={onNewSession} />
       <div className="layout">
         <Sidebar
           activeId={activeNav}

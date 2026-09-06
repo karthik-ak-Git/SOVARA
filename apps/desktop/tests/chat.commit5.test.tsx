@@ -19,7 +19,8 @@ const composerProps = {
   models: [],
   projectCount: 0,
   onNewProject: () => {},
-  execMode: null,
+  execMode: 'ask' as const,
+  onExecModeChange: () => {},
   execAvailable: false,
 }
 
@@ -60,10 +61,9 @@ describe('Commit 5 — message rendering', () => {
     expect(screen.getByText('world')).toBeInTheDocument()
   })
 
-  it('renders empty conversation guidance', () => {
+  it('renders empty log container when no events', () => {
     render(<MessageList events={[]} />)
-    expect(screen.getByRole('status')).toBeInTheDocument()
-    expect(screen.getByText(/Start a local conversation/)).toBeInTheDocument()
+    expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeInTheDocument()
   })
 
   it('renders timeline from events and thinking state', () => {
@@ -90,7 +90,7 @@ describe('Commit 5 — composer', () => {
     const onSend = vi.fn()
     const { rerender } = render(<Composer value="  hello  " onChange={() => {}} onSend={onSend} {...composerProps} />)
     await user.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(onSend).toHaveBeenCalledWith('hello')
+    expect(onSend).toHaveBeenCalledWith('hello', undefined)
 
     onSend.mockClear()
     rerender(<Composer value="   " onChange={() => {}} onSend={onSend} {...composerProps} />)
@@ -144,7 +144,14 @@ describe('Commit 5 — ChatView states', () => {
   it('shows error banner with role=alert and dismiss', async () => {
     const user = userEvent.setup()
     const dismiss = vi.fn()
-    render(<ChatView {...base} error="persistence failed" onDismissError={dismiss} />)
+    render(
+      <ChatView
+        {...base}
+        events={[{ seq: 0, time: 1, type: 'user/message', data: { content: 'hi' } }]}
+        error="persistence failed"
+        onDismissError={dismiss}
+      />
+    )
     expect(screen.getByRole('alert')).toHaveTextContent('persistence failed')
     await user.click(screen.getByRole('button', { name: 'Dismiss error' }))
     expect(dismiss).toHaveBeenCalledOnce()

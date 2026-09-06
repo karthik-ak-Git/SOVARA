@@ -108,6 +108,7 @@ export function useChatSession() {
   // Switch conversation: reconstruct from durable events.
   const switchSession = useCallback(
     async (id: string): Promise<void> => {
+      if (!id) return
       const seq = ++loadSeq.current
       setSelectedId(id)
       setError(null)

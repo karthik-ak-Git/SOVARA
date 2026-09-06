@@ -23,12 +23,21 @@ export const IPC_CHANNELS = {
   'models:listModels': { type: 'invoke' as const },
   'models:selectModel': { type: 'invoke' as const },
   'models:getActiveModel': { type: 'invoke' as const },
+  // Settings (API keys + preferences)
   'settings:get': { type: 'invoke' as const },
   'settings:set': { type: 'invoke' as const },
+  'settings:getOpenAIKey': { type: 'invoke' as const },
+  'settings:setOpenAIKey': { type: 'invoke' as const },
+  'settings:getOpenAIBaseUrl': { type: 'invoke' as const },
+  'settings:setOpenAIBaseUrl': { type: 'invoke' as const },
   // Window controls (frameless window)
   'window:minimize': { type: 'invoke' as const },
   'window:maximize': { type: 'invoke' as const },
   'window:close': { type: 'invoke' as const },
+  // Dialog
+  'dialog:pickFolder': { type: 'invoke' as const },
+  // Voice transcription
+  'voice:transcribe': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
 } as const

@@ -10,7 +10,7 @@ interface Props {
 export function TopBar({ activeTab = 'new-tab', onTabSelect, onNewSession }: Props): React.JSX.Element {
   return (
     <header className="topbar" role="banner">
-      <div className="topbar-drag-region" data-tauri-drag-region />
+      <div className="topbar-drag-region" />
       <div className="topbar-left">
         <button type="button" className="topbar-icon-btn" aria-label="Applications" title="Applications">
           <Grid3X3 size={16} aria-hidden />
