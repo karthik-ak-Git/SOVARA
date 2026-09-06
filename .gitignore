@@ -38,3 +38,21 @@ data/
 *.sqlite
 *.sqlite3
 *.db
+
+# Build outputs
+out/
+apps/desktop/out/
+apps/desktop/dist/
+*.log
+
+# Screenshots & visual test traces / images
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+
+# Test folder traces
+test/

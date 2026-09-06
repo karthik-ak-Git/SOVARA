@@ -1,0 +1,16 @@
+{
+  "name": "sovara-root",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @sovara/desktop dev",
+    "build": "pnpm --filter @sovara/desktop build",
+    "build:win": "pnpm --filter @sovara/desktop build:win",
+    "typecheck": "pnpm --filter @sovara/desktop typecheck"
+  },
+  "pnpm": {}
+}

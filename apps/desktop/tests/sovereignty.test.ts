@@ -1,0 +1,49 @@
+import { describe, it, expect } from 'vitest'
+import fs from 'node:fs'
+import path from 'node:path'
+
+function scan(dir: string, exts: string[]): string[] {
+  const out: string[] = []
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name)
+    if (ent.isDirectory()) {
+      if (ent.name === 'node_modules' || ent.name === 'dist' || ent.name === 'out') continue
+      out.push(...scan(p, exts))
+    } else if (exts.some((e) => p.endsWith(e))) out.push(p)
+  }
+  return out
+}
+
+describe('Commit 1 sovereignty guards', () => {
+  it('no Cordis import in shipped code', () => {
+    const files = scan('src', ['.ts', '.tsx'])
+    for (const f of files) {
+      const txt = fs.readFileSync(f, 'utf8')
+      expect(txt, `Cordis import found in ${f}`).not.toMatch(/@deepseek-ai\/cordis|dsh-agent-loop|dsh-session/)
+    }
+  })
+  it('no Python spawn in shipped code', () => {
+    const files = scan('src', ['.ts', '.tsx'])
+    for (const f of files) {
+      const txt = fs.readFileSync(f, 'utf8')
+      // allow mentioning the word Python in comments, but not spawn('python' / 'run_agent')
+      expect(txt, `Python spawn found in ${f}`).not.toMatch(/spawn\s*\(\s*['"]python/)
+      expect(txt, `run_agent found in ${f}`).not.toMatch(/run_agent\.py/)
+    }
+  })
+  it('no bare fetch outside HttpClient (which does not exist yet)', () => {
+    const files = scan('src', ['.ts', '.tsx'])
+    for (const f of files) {
+      const txt = fs.readFileSync(f, 'utf8')
+      // fetch should not appear at all in Phase 1 (sovereign offline)
+      expect(txt, `bare fetch found in ${f}`).not.toMatch(/\bfetch\s*\(/)
+    }
+  })
+  it('preload does not expose raw ipcRenderer', () => {
+    const txt = fs.readFileSync('src/preload/preload.ts', 'utf8')
+    expect(txt).not.toMatch(/exposeInMainWorld.*ipcRenderer/)
+    // must use contextBridge with filtered alias — we check it whitelists
+    expect(txt).toMatch(/ALLOWED_INVOKE/)
+    expect(txt).toMatch(/contextBridge/)
+  })
+})

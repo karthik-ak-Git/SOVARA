@@ -1,0 +1,30 @@
+/**
+ * Single source of IPC channels — imported by main, preload, renderer (types only).
+ * Enforced by preload whitelist; handlers validate with zod.
+ */
+export const IPC_CHANNELS = {
+  'app:getInfo': { type: 'invoke' as const },
+  'app:getSystem': { type: 'invoke' as const },
+  'system:getResources': { type: 'invoke' as const },
+  'sessions:list': { type: 'invoke' as const },
+  'sessions:create': { type: 'invoke' as const },
+  'sessions:get': { type: 'invoke' as const },
+  'sessions:getEvents': { type: 'invoke' as const },
+  'chat:send': { type: 'invoke' as const },
+  'chat:cancel': { type: 'invoke' as const },
+  'models:listLocal': { type: 'invoke' as const },
+  'models:load': { type: 'invoke' as const },
+  'models:probeRuntime': { type: 'invoke' as const },
+  'settings:get': { type: 'invoke' as const },
+  'settings:set': { type: 'invoke' as const },
+  'events:session': { type: 'on' as const },
+  'events:resources': { type: 'on' as const },
+} as const
+
+export type IpcChannel = keyof typeof IPC_CHANNELS
+export type IpcInvokeChannel = {
+  [K in IpcChannel]: (typeof IPC_CHANNELS)[K]['type'] extends 'invoke' ? K : never
+}[IpcChannel]
+export type IpcOnChannel = {
+  [K in IpcChannel]: (typeof IPC_CHANNELS)[K]['type'] extends 'on' ? K : never
+}[IpcChannel]
