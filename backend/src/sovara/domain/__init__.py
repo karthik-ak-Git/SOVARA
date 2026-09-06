@@ -26,13 +26,20 @@ from sovara.domain.knowledge import Citation, KnowledgeHit, KnowledgeProvider
 from sovara.domain.model_provider import (
     InferenceRequest,
     InferenceResponse,
+    Modality,
     ModelCapabilities,
     ModelHealth,
     ModelInfo,
     ModelProvider,
     ModelResource,
+    TaskCapability,
 )
-from sovara.domain.model_registry import ModelRecord, ModelRegistry
+from sovara.domain.model_registry import (
+    CapabilitySource,
+    ModelAvailability,
+    ModelRecord,
+    ModelRegistry,
+)
 from sovara.domain.tool import Tool, ToolErrorInfo, ToolManifest, ToolPermission
 from sovara.domain.tool_registry import ToolRegistry
 
@@ -49,6 +56,7 @@ __all__ = [
     "AgentError",
     "AuthenticationError",
     "AuthorizationError",
+    "CapabilitySource",
     "Citation",
     "ConflictError",
     "ErrorCode",
@@ -58,6 +66,8 @@ __all__ = [
     "KnowledgeError",
     "KnowledgeHit",
     "KnowledgeProvider",
+    "Modality",
+    "ModelAvailability",
     "ModelCapabilities",
     "ModelError",
     "ModelHealth",
@@ -71,6 +81,7 @@ __all__ = [
     "PlanStep",
     "SecurityPolicyError",
     "SovaraError",
+    "TaskCapability",
     "Tool",
     "ToolError",
     "ToolErrorInfo",

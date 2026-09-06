@@ -29,6 +29,9 @@ class TaskCapability(StrEnum):
     VISION = "vision"
     EMBEDDING = "embedding"
     OCR = "ocr"
+    DOCUMENT = "document"
+    TOOL_USE = "tool_use"
+    LONG_CONTEXT = "long_context"
 
 
 class ModelCapabilities(BaseModel):
@@ -46,6 +49,7 @@ class ModelResource(BaseModel):
 
 class ModelInfo(BaseModel):
     model_id: str
+    display_name: str = ""
     provider: str
     version: str = "0.0.0-phase0"
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
@@ -96,3 +100,12 @@ class ModelProvider(ABC):
     @abstractmethod
     def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         """Token streaming (implemented in later phases)."""
+
+    @abstractmethod
+    async def list_models(self) -> list[ModelInfo]:
+        """Discover models exposed by the runtime, normalized to ModelInfo.
+
+        Returns [] when the runtime is unreachable or lists nothing —
+        discovery failure is empty, never an exception. Unknown fields
+        stay at their defaults; adapters must not invent metadata.
+        """

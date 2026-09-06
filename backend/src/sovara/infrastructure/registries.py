@@ -6,7 +6,7 @@ contracts without a database. Persistent catalogs arrive in later phases.
 
 from __future__ import annotations
 
-from sovara.domain.model_registry import ModelRecord, ModelRegistry
+from sovara.domain.model_registry import ModelAvailability, ModelRecord, ModelRegistry
 from sovara.domain.tool import Tool, ToolManifest
 from sovara.domain.tool_registry import ToolRegistry
 
@@ -26,6 +26,13 @@ class InMemoryModelRegistry(ModelRegistry):
 
     def remove(self, model_id: str) -> bool:
         return self._records.pop(model_id, None) is not None
+
+    def set_availability(self, model_id: str, availability: ModelAvailability) -> bool:
+        record = self._records.get(model_id)
+        if record is None:
+            return False
+        self._records[model_id] = record.model_copy(update={"availability": availability})
+        return True
 
 
 class InMemoryToolRegistry(ToolRegistry):
