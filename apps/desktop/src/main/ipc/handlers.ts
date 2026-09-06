@@ -5,27 +5,14 @@ import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
-import { SettingsStore } from '../config/SettingsStore'
 import { VoiceTranscriber } from '../services/voiceTranscriber'
 
-// Singleton instances — lazily created on first registerIpcHandlers() call.
-let settingsStore: SettingsStore | null = null
+// Singleton — lazily created on first registerIpcHandlers() call.
 let voiceTranscriber: VoiceTranscriber | null = null
 
-function getSettingsStore(): SettingsStore {
-  if (!settingsStore) settingsStore = new SettingsStore()
-  return settingsStore
-}
-
 function getVoiceTranscriber(): VoiceTranscriber {
-  if (!voiceTranscriber) voiceTranscriber = new VoiceTranscriber(getSettingsStore())
+  if (!voiceTranscriber) voiceTranscriber = new VoiceTranscriber()
   return voiceTranscriber
-}
-
-/** Mask an API key for display — show only last 4 characters. */
-function maskKey(key: string): string {
-  if (key.length <= 8) return '****'
-  return `${'*'.repeat(key.length - 4)}${key.slice(-4)}`
 }
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
@@ -201,30 +188,7 @@ export function registerIpcHandlers(): void {
     return { canceled: false, filePath: result.filePaths[0] }
   })
 
-  // ── Settings — API keys (persisted via SettingsStore) ──
-  ipcMain.handle('settings:getOpenAIKey', async () => {
-    const key = getSettingsStore().getOpenAIKey()
-    return { key: key ? maskKey(key) : null, configured: !!key }
-  })
-
-  ipcMain.handle('settings:setOpenAIKey', async (_e, raw: unknown) => {
-    const data = raw as { key?: string }
-    getSettingsStore().setOpenAIKey(data?.key ?? null)
-    return { ok: true }
-  })
-
-  ipcMain.handle('settings:getOpenAIBaseUrl', async () => {
-    const url = getSettingsStore().getOpenAIBaseUrl()
-    return { url }
-  })
-
-  ipcMain.handle('settings:setOpenAIBaseUrl', async (_e, raw: unknown) => {
-    const data = raw as { url?: string }
-    getSettingsStore().setOpenAIBaseUrl(data?.url ?? null)
-    return { ok: true }
-  })
-
-  // ── Voice transcription (OpenAI Whisper) ──
+  // ── Voice transcription (local Whisper — no API keys, no network) ──
   ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
     const data = raw as { audio?: string; format?: string }
     if (!data?.audio) throw new Error('voice:transcribe requires audio data')

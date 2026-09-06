@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, ArrowUp, Paperclip, X } from 'lucide-react'
+import { Plus, Globe, Mic, MicOff, ArrowUp, Paperclip, X, Loader2 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
@@ -34,6 +34,8 @@ export interface FileAttachment {
 const MAX_LENGTH = 32_000
 const MAX_HEIGHT_PX = 160
 
+type VoiceState = 'idle' | 'recording' | 'transcribing'
+
 export function Composer({
   value,
   onChange,
@@ -53,9 +55,12 @@ export function Composer({
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
-  const [recording, setRecording] = useState(false)
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -72,6 +77,15 @@ export function Composer({
     if (wasDisabled.current && !disabled) areaRef.current?.focus()
     wasDisabled.current = disabled
   }, [disabled])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop())
+      }
+    }
+  }, [])
 
   const submit = (): void => {
     const content = value.trim()
@@ -104,7 +118,6 @@ export function Composer({
     if (!files) return
     const maxSize = 10 * 1024 * 1024
     const allowed = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/plain', 'text/markdown']
-    const newAttachments: FileAttachment[] = []
     for (const file of Array.from(files)) {
       if (file.size > maxSize) continue
       if (!allowed.includes(file.type)) continue
@@ -115,7 +128,6 @@ export function Composer({
       }
       reader.readAsDataURL(file)
     }
-    void newAttachments
     e.target.value = ''
   }, [])
 
@@ -123,59 +135,121 @@ export function Composer({
     setAttachments((prev) => prev.filter((_, i) => i !== idx))
   }, [])
 
-  const handleVoiceToggle = useCallback(async (): Promise<void> => {
-    if (recording) {
-      setRecording(false)
-      return
+  const stopRecording = useCallback((): void => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
     }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+  }, [])
+
+  const startRecording = useCallback(async (): Promise<void> => {
+    setVoiceError(null)
+
     if (!navigator.mediaDevices?.getUserMedia) {
-      alert('Microphone access is not available')
+      setVoiceError('Microphone not available')
       return
     }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mediaRecorder = new MediaRecorder(stream)
+      streamRef.current = stream
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      mediaRecorderRef.current = mediaRecorder
       const chunks: BlobPart[] = []
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data)
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop())
-        setRecording(false)
-        const blob = new Blob(chunks, { type: 'audio/webm' })
-        const reader = new FileReader()
-        reader.onload = async () => {
-          const base64 = (reader.result as string).split(',')[1]
-          if (window.sovara) {
-            try {
-              const result = await window.sovara.invoke('voice:transcribe', { audio: base64, format: 'webm' })
-              // Handle both string and object response formats
-              let transcribed = ''
-              if (typeof result === 'string') {
-                transcribed = result
-              } else if (result && typeof result === 'object' && 'text' in result) {
-                transcribed = (result as { text: string }).text ?? ''
+        streamRef.current = null
+
+        if (chunks.length === 0) {
+          setVoiceState('idle')
+          return
+        }
+
+        setVoiceState('transcribing')
+
+        try {
+          const blob = new Blob(chunks, { type: 'audio/webm' })
+          const reader = new FileReader()
+          reader.onload = async () => {
+            const base64 = (reader.result as string).split(',')[1]
+            if (window.sovara) {
+              try {
+                const result = await window.sovara.invoke('voice:transcribe', { audio: base64, format: 'webm' })
+                let transcribed = ''
+                if (typeof result === 'string') {
+                  transcribed = result
+                } else if (result && typeof result === 'object' && 'text' in result) {
+                  transcribed = (result as { text: string }).text ?? ''
+                }
+                if (transcribed) {
+                  onChange(value ? `${value}\n${transcribed}` : transcribed)
+                }
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : 'Transcription failed'
+                setVoiceError(msg)
+              } finally {
+                setVoiceState('idle')
               }
-              if (transcribed) {
-                onChange(value ? `${value}\n${transcribed}` : transcribed)
-              }
-            } catch {
-              /* Whisper not configured or failed — graceful no-op */
+            } else {
+              setVoiceState('idle')
             }
           }
+          reader.readAsDataURL(blob)
+        } catch {
+          setVoiceState('idle')
         }
-        reader.readAsDataURL(blob)
       }
-      mediaRecorder.start()
-      setRecording(true)
+
+      mediaRecorder.start(250) // Collect data every 250ms for faster response
+      setVoiceState('recording')
+
+      // Auto-stop after 30 seconds
       setTimeout(() => {
         if (mediaRecorder.state === 'recording') {
           mediaRecorder.stop()
-          setRecording(false)
         }
       }, 30_000)
-    } catch {
-      setRecording(false)
+    } catch (err) {
+      setVoiceState('idle')
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        setVoiceError('Microphone permission denied')
+      } else {
+        setVoiceError('Could not access microphone')
+      }
     }
-  }, [recording, value, onChange])
+  }, [value, onChange])
+
+  const handleVoiceToggle = useCallback((): void => {
+    if (voiceState === 'recording' || voiceState === 'transcribing') {
+      stopRecording()
+      if (voiceState === 'transcribing') {
+        setVoiceState('idle')
+      }
+    } else {
+      startRecording()
+    }
+  }, [voiceState, stopRecording, startRecording])
+
+  const micIcon = (): ReactElement => {
+    if (voiceState === 'transcribing') return <Loader2 size={16} className="spin" aria-hidden />
+    if (voiceState === 'recording') return <MicOff size={16} aria-hidden />
+    return <Mic size={16} aria-hidden />
+  }
+
+  const micLabel = voiceState === 'recording'
+    ? 'Stop recording'
+    : voiceState === 'transcribing'
+      ? 'Transcribing…'
+      : 'Voice input'
 
   return (
     <div className="composer-bionic" aria-label="Composer workspace">
@@ -212,11 +286,15 @@ export function Composer({
           ref={areaRef}
           className="composer-bionic-input"
           placeholder={
-            streaming
-              ? 'Streaming response…'
-              : disabled
-                ? 'Waiting for model…'
-                : 'Ask anything'
+            voiceState === 'transcribing'
+              ? 'Transcribing…'
+              : voiceState === 'recording'
+                ? 'Listening…'
+                : streaming
+                  ? 'Streaming response…'
+                  : disabled
+                    ? 'Waiting for model…'
+                    : 'Ask anything'
           }
           value={value}
           onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
@@ -231,11 +309,12 @@ export function Composer({
         <div className="composer-bionic-right">
           <button
             type="button"
-            className={`composer-icon-btn ${recording ? 'recording' : ''}`}
-            aria-label={recording ? 'Stop recording' : 'Voice input'}
+            className={`composer-icon-btn mic-btn ${voiceState === 'recording' ? 'recording' : ''} ${voiceState === 'transcribing' ? 'transcribing' : ''}`}
+            aria-label={micLabel}
             onClick={handleVoiceToggle}
+            disabled={voiceState === 'transcribing'}
           >
-            <Mic size={16} aria-hidden />
+            {micIcon()}
           </button>
           <ModelSelector
             active={active}
@@ -257,6 +336,15 @@ export function Composer({
           </button>
         </div>
       </div>
+
+      {voiceError ? (
+        <div className="composer-voice-error">
+          <span>{voiceError}</span>
+          <button type="button" onClick={() => setVoiceError(null)} aria-label="Dismiss">
+            <X size={10} aria-hidden />
+          </button>
+        </div>
+      ) : null}
 
       {attachments.length > 0 ? (
         <div className="composer-attachments">

@@ -1067,10 +1067,41 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   background: var(--danger); color: #fff;
   animation: pulse-recording 1.2s ease infinite;
 }
+.composer-icon-btn.transcribing {
+  background: var(--accent); color: #fff;
+  opacity: 0.7; cursor: not-allowed;
+}
+.composer-icon-btn.transcribing svg {
+  animation: spin-icon 0.8s linear infinite;
+}
 @keyframes pulse-recording {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.4); }
   50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
 }
+@keyframes spin-icon {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin { animation: spin-icon 0.8s linear infinite; }
+.composer-voice-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  margin: 0 12px 4px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  font-size: 12px;
+}
+.composer-voice-error button {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: none; background: transparent; color: var(--danger);
+  cursor: pointer;
+}
+.composer-voice-error button:hover { background: rgba(239,68,68,.1); }
 
 /* ═══════════════════════════════════════════════════════════════
    Permission Control
