@@ -19,7 +19,7 @@ import {
   postLoopback,
   readBoundedBody,
 } from '../../network/HttpClient'
-import type { LlmChatRequest, LlmChunk, LlmPort } from '@shared/types/ports'
+import type { LlmChatRequest, LlmChunk, LlmPort, LlmUsage } from '@shared/types/ports'
 
 export type ChatErrorCode =
   | 'connection-refused'
@@ -89,6 +89,19 @@ function checkStatus(status: number): void {
   }
 }
 
+function extractUsage(json: unknown): LlmUsage | undefined {
+  if (json === null || typeof json !== 'object') return undefined
+  const obj = json as Record<string, unknown>
+  const usage = obj['usage']
+  if (usage === null || typeof usage !== 'object') return undefined
+  const u = usage as Record<string, unknown>
+  const prompt = typeof u['prompt_tokens'] === 'number' ? u['prompt_tokens'] : 0
+  const completion = typeof u['completion_tokens'] === 'number' ? u['completion_tokens'] : 0
+  const total = typeof u['total_tokens'] === 'number' ? u['total_tokens'] : prompt + completion
+  if (prompt === 0 && completion === 0) return undefined
+  return { promptTokens: prompt, completionTokens: completion, totalTokens: total }
+}
+
 export class LocalOpenAIChatAdapter implements LlmPort {
   async *stream(_prompt: string): AsyncIterable<LlmChunk> {
     void _prompt
@@ -151,7 +164,8 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       throw new ChatInferenceError('invalid-response', 'invalid-response: reply carried no assistant text')
     }
     yield { type: 'text-delta', text: content }
-    yield { type: 'done', note: 'non-stream-fallback' }
+    const usage = extractUsage(json)
+    yield { type: 'done', note: 'non-stream-fallback', usage }
   }
 
   /**
@@ -163,6 +177,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     const queue: string[] = []
     let settled = false
     let failed: unknown = null
+    let sseResult: { usage?: { promptTokens: number; completionTokens: number; totalTokens: number } } | undefined
     let wake: () => void = () => {}
     const notify = (): void => {
       const w = wake
@@ -175,7 +190,8 @@ export class LocalOpenAIChatAdapter implements LlmPort {
         notify()
       },
     }).then(
-      () => {
+      (result) => {
+        sseResult = result
         settled = true
         notify()
       },
@@ -203,6 +219,6 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       throw classifyChatError(failed ?? e)
     }
     if (failed) throw classifyChatError(failed)
-    yield { type: 'done' }
+    yield { type: 'done', usage: sseResult?.usage }
   }
 }

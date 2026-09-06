@@ -128,3 +128,26 @@ export async function maximizeWindow(): Promise<void> {
 export async function closeWindow(): Promise<void> {
   await sovara().invoke('window:close')
 }
+
+// ── Usage stats ──
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export interface ModelUsage {
+  model: string
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  requestCount: number
+}
+
+export async function getTotalUsage(): Promise<TokenUsage> {
+  return (await sovara().invoke('usage:getTotal')) as TokenUsage
+}
+
+export async function getUsageByModel(): Promise<ModelUsage[]> {
+  return (await sovara().invoke('usage:getByModel')) as ModelUsage[]
+}

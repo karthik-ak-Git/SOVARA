@@ -153,6 +153,7 @@ export interface SseConsumeResult {
   finished: boolean
   deltas: number
   malformed: number
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
 }
 
 /**
@@ -161,6 +162,7 @@ export interface SseConsumeResult {
  * - Forwards `choices[].delta.content` text to onDelta as it arrives.
  * - Tolerates malformed lines (skipped); aborts past 200 bad lines.
  * - Total streamed text bounded by maxBytes; abort signal ends the read.
+ * - Captures `usage` from the final chunk if present.
  */
 export async function consumeSseBody(
   res: Response,
@@ -175,6 +177,7 @@ export async function consumeSseBody(
   let deltas = 0
   let malformed = 0
   let finished = false
+  let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -204,14 +207,13 @@ export async function consumeSseBody(
           continue
         }
         const text = extractDelta(json)
-        if (text === null) {
-          malformed += 1
-          continue
-        }
-        if (text !== '') {
+        if (text !== null && text !== '') {
           deltas += 1
           opts.onDelta(text)
         }
+        // Extract usage from the final chunk if present
+        const chunkUsage = extractUsageFromJson(json)
+        if (chunkUsage) usage = chunkUsage
         if (malformed > 200) throw new Error('invalid-response: too many malformed stream chunks')
       }
       if (finished) break
@@ -223,7 +225,7 @@ export async function consumeSseBody(
       // ignore
     }
   }
-  return { finished, deltas, malformed }
+  return { finished, deltas, malformed, usage }
 }
 
 /** Read a bounded text body from a loopback response. */
@@ -248,6 +250,20 @@ export function extractDelta(json: unknown): string | null {
     if (typeof c === 'string') return c
   }
   return null
+}
+
+/** Extract OpenAI `usage` object from a JSON chunk; null if absent. */
+export function extractUsageFromJson(json: unknown): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
+  if (json === null || typeof json !== 'object') return undefined
+  const obj = json as Record<string, unknown>
+  const usage = obj['usage']
+  if (usage === null || typeof usage !== 'object') return undefined
+  const u = usage as Record<string, unknown>
+  const prompt = typeof u['prompt_tokens'] === 'number' ? u['prompt_tokens'] : 0
+  const completion = typeof u['completion_tokens'] === 'number' ? u['completion_tokens'] : 0
+  const total = typeof u['total_tokens'] === 'number' ? u['total_tokens'] : prompt + completion
+  if (prompt === 0 && completion === 0) return undefined
+  return { promptTokens: prompt, completionTokens: completion, totalTokens: total }
 }
 
 /**

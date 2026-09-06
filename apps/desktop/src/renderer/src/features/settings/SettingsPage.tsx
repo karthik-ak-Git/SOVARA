@@ -1,9 +1,10 @@
-import { useState, useCallback, type ReactElement } from 'react'
+import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
   Settings, User, Cpu, Mic, CreditCard, Palette, MessageSquare,
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
-  RotateCcw, ChevronRight, ArrowLeft, Check
+  RotateCcw, ChevronRight, ArrowLeft, Check, Cloud
 } from 'lucide-react'
+import { getTotalUsage, getUsageByModel, type TokenUsage, type ModelUsage } from '../../lib/ipc'
 
 type SettingsSection =
   | 'general'
@@ -169,6 +170,34 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
   const [autoTranscribe, setAutoTranscribe] = useState(true)
   const [whisperModel, setWhisperModel] = useState<'tiny' | 'base' | 'small' | 'medium'>('tiny')
 
+  // Agent settings
+  const [rootModel, setRootModel] = useState('no-default')
+  const [visionModel, setVisionModel] = useState('off')
+  const [webSearch, setWebSearch] = useState(false)
+  const [explorationAgents, setExplorationAgents] = useState(true)
+  const [customAutoReview, setCustomAutoReview] = useState(false)
+
+  // Billing/usage settings
+  const [billingAccount, setBillingAccount] = useState('personal')
+  const [totalUsage, setTotalUsage] = useState<TokenUsage>({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })
+  const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
+  const [usageLoaded, setUsageLoaded] = useState(false)
+
+  useEffect(() => {
+    const loadUsage = async (): Promise<void> => {
+      try {
+        const [total, byModel] = await Promise.all([getTotalUsage(), getUsageByModel()])
+        setTotalUsage(total)
+        setModelUsage(byModel)
+      } catch {
+        // Usage not available yet
+      } finally {
+        setUsageLoaded(true)
+      }
+    }
+    loadUsage()
+  }, [])
+
   const handleRequestMic = useCallback(async (): Promise<void> => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -269,11 +298,136 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
         return (
           <div className="settings-content">
             <h2 className="settings-section-title">Agent</h2>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Models</div>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Root model</div>
+                    <div className="settings-row-desc">Optionally choose the default model for new Bionic sessions.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={rootModel}
+                    onChange={(e) => setRootModel(e.target.value)}
+                    aria-label="Root model"
+                  >
+                    <option value="no-default">No default</option>
+                    <option value="local">Local model</option>
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Vision subagent model</div>
+                    <div className="settings-row-desc">Choose a vision-capable model to help text-only models understand images.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={visionModel}
+                    onChange={(e) => setVisionModel(e.target.value)}
+                    aria-label="Vision subagent model"
+                  >
+                    <option value="off">Off</option>
+                    <option value="local">Local model</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <div className="settings-group">
               <div className="settings-group-header">Behavior</div>
               <div className="settings-card">
-                <Toggle checked={false} onChange={() => {}} label="Thinking mode" description="Show reasoning steps before the final answer." />
-                <Toggle checked={true} onChange={() => {}} label="Stream responses" description="Display tokens as they arrive from the model." />
+                <Toggle
+                  checked={webSearch}
+                  onChange={setWebSearch}
+                  label="Web search"
+                  description="Sign in to use the built-in web search and extraction tools."
+                />
+                <Toggle
+                  checked={explorationAgents}
+                  onChange={setExplorationAgents}
+                  label="Exploration agents"
+                  description="Allow assistants to spawn helper agents that search your project files in parallel."
+                />
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Command Auto Review</div>
+              <div className="settings-card">
+                <Toggle
+                  checked={customAutoReview}
+                  onChange={setCustomAutoReview}
+                  label="Custom instructions for Auto Review"
+                  description="Additional preferences applied when shell commands are automatically reviewed."
+                />
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'billing':
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Billing</h2>
+            <div className="settings-group">
+              <div className="settings-group-header">Billing account</div>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row-content">
+                    <span className="settings-row-label">Billing account</span>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={billingAccount}
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setBillingAccount(e.target.value)}
+                    aria-label="Billing account"
+                  >
+                    <option value="personal">Personal</option>
+                    <option value="team">Team</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Usage</div>
+              <div className="settings-card">
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                  Usage is based on API calls made through local inference runtimes. No external billing is required.
+                </p>
+                {usageLoaded && totalUsage.totalTokens > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Total tokens used:</span>
+                      <span style={{ fontWeight: 600 }}>{totalUsage.totalTokens.toLocaleString()}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Prompt tokens:</span>
+                      <span>{totalUsage.promptTokens.toLocaleString()}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Completion tokens:</span>
+                      <span>{totalUsage.completionTokens.toLocaleString()}</span>
+                    </div>
+                  </div>
+                )}
+                {usageLoaded && modelUsage.length > 0 && (
+                  <div style={{ marginTop: '1rem' }}>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      By Model
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {modelUsage.map((m) => (
+                        <div key={m.model} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', padding: '0.5rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{m.model}</span>
+                          <span>{m.totalTokens.toLocaleString()} tokens ({m.requestCount} requests)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

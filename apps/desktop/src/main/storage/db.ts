@@ -28,6 +28,10 @@ export class SovaraDb {
   private stmtUpdateSession!: ReturnType<DatabaseSync['prepare']>
   private stmtUpsertMeta!: ReturnType<DatabaseSync['prepare']>
   private stmtGetMeta!: ReturnType<DatabaseSync['prepare']>
+  private stmtInsertTokenUsage!: ReturnType<DatabaseSync['prepare']>
+  private stmtGetUsageBySession!: ReturnType<DatabaseSync['prepare']>
+  private stmtGetTotalUsage!: ReturnType<DatabaseSync['prepare']>
+  private stmtGetUsageByModel!: ReturnType<DatabaseSync['prepare']>
 
   constructor(baseDir?: string) {
     const dataDir = getSovaraDataDir(baseDir)
@@ -77,9 +81,21 @@ export class SovaraDb {
         ctxLen INTEGER,
         discoveredAt INTEGER
       );
+
+      CREATE TABLE IF NOT EXISTS token_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sessionId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        promptTokens INTEGER NOT NULL DEFAULT 0,
+        completionTokens INTEGER NOT NULL DEFAULT 0,
+        totalTokens INTEGER NOT NULL DEFAULT 0,
+        timestamp INTEGER NOT NULL
+      );
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_updatedAt ON sessions(updatedAt DESC)')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_session_indexes_session ON session_indexes(sessionId)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_token_usage_session ON token_usage(sessionId)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp)')
 
     const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
     const current = row ? parseInt(row.value, 10) : 0
@@ -104,6 +120,10 @@ export class SovaraDb {
     this.stmtUpdateSession = this.db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ?')
     this.stmtUpsertMeta = this.db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     this.stmtGetMeta = this.db.prepare('SELECT value FROM app_meta WHERE key = ?')
+    this.stmtInsertTokenUsage = this.db.prepare('INSERT INTO token_usage (sessionId, model, promptTokens, completionTokens, totalTokens, timestamp) VALUES (?, ?, ?, ?, ?, ?)')
+    this.stmtGetUsageBySession = this.db.prepare('SELECT SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens FROM token_usage WHERE sessionId = ?')
+    this.stmtGetTotalUsage = this.db.prepare('SELECT SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens FROM token_usage')
+    this.stmtGetUsageByModel = this.db.prepare('SELECT model, SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens, COUNT(*) as requestCount FROM token_usage GROUP BY model')
   }
 
   insertSession(row: DbSessionRow): void {
@@ -145,6 +165,32 @@ export class SovaraDb {
     } catch {
       // ignore
     }
+  }
+
+  insertTokenUsage(row: { sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    this.stmtInsertTokenUsage.run(row.sessionId, row.model, row.promptTokens, row.completionTokens, row.totalTokens, Date.now())
+  }
+
+  getUsageBySession(sessionId: string): { promptTokens: number; completionTokens: number; totalTokens: number } {
+    const row = this.stmtGetUsageBySession.get(sessionId) as { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | undefined
+    return {
+      promptTokens: row?.promptTokens ?? 0,
+      completionTokens: row?.completionTokens ?? 0,
+      totalTokens: row?.totalTokens ?? 0,
+    }
+  }
+
+  getTotalUsage(): { promptTokens: number; completionTokens: number; totalTokens: number } {
+    const row = this.stmtGetTotalUsage.get() as { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | undefined
+    return {
+      promptTokens: row?.promptTokens ?? 0,
+      completionTokens: row?.completionTokens ?? 0,
+      totalTokens: row?.totalTokens ?? 0,
+    }
+  }
+
+  getUsageByModel(): Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }> {
+    return this.stmtGetUsageByModel.all() as Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }>
   }
 
   get raw(): DatabaseSync {

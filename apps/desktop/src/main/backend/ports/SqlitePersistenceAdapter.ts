@@ -67,6 +67,18 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     return readEventsSync(sessionId, this.baseDir)
   }
 
+  insertTokenUsage(row: { sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    this.db.insertTokenUsage(row)
+  }
+
+  getTotalUsage(): { promptTokens: number; completionTokens: number; totalTokens: number } {
+    return this.db.getTotalUsage()
+  }
+
+  getUsageByModel(): Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }> {
+    return this.db.getUsageByModel()
+  }
+
   /** For tests: verify invariants, expose close */
   async close(): Promise<void> {
     this.db.close()

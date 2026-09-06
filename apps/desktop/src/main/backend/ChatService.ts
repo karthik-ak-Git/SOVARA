@@ -25,6 +25,8 @@ const MAX_HISTORY_MESSAGES = 50
 const MAX_HISTORY_CHARS = 24_000
 /** Probe timeouts suit /models; generations get a bounded floor instead. */
 const CHAT_TIMEOUT_FLOOR_MS = 120_000
+/** Rough token estimation: ~4 chars per token for English text. */
+const CHARS_PER_TOKEN = 4
 
 export class ChatServiceError extends Error {
   constructor(
@@ -148,6 +150,7 @@ export class ChatService {
     const timeoutMs = Math.max(entry.timeoutMs, CHAT_TIMEOUT_FLOOR_MS)
     let text = ''
     let streamed = true
+    let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
     try {
       for await (const chunk of this.deps.llm.streamChat({
         endpoint: entry.endpoint,
@@ -162,6 +165,7 @@ export class ChatService {
           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
+        if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
         if (chunk.type === 'done') break
       }
     } catch (e) {
@@ -182,6 +186,26 @@ export class ChatService {
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
       throw new ChatServiceError('runtime-unavailable', msg)
     }
+
+    // 5. Track token usage
+    const promptText = messages.map((m) => m.content).join(' ')
+    const tokenUsage = usage ?? {
+      promptTokens: Math.ceil(promptText.length / CHARS_PER_TOKEN),
+      completionTokens: Math.ceil(text.length / CHARS_PER_TOKEN),
+      totalTokens: Math.ceil((promptText.length + text.length) / CHARS_PER_TOKEN),
+    }
+    try {
+      this.deps.persistence.insertTokenUsage({
+        sessionId: sid,
+        model,
+        promptTokens: tokenUsage.promptTokens,
+        completionTokens: tokenUsage.completionTokens,
+        totalTokens: tokenUsage.totalTokens,
+      })
+    } catch {
+      // Non-critical: usage tracking failure should not break chat
+    }
+
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.log(entry.id, entry.endpoint, model, started, 200, 'ok', streamed)
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })

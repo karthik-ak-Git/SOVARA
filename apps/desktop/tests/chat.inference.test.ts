@@ -274,6 +274,9 @@ function makePersistence(): PersistencePort & { events: Map<string, SessionEvent
     async getEvents(sessionId: SessionId): Promise<SessionEventView[]> {
       return [...(events.get(String(sessionId)) ?? [])]
     },
+    insertTokenUsage: () => {},
+    getTotalUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+    getUsageByModel: () => [],
     async close(): Promise<void> {},
   }
 }

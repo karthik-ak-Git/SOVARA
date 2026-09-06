@@ -55,8 +55,11 @@ export function Composer({
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const pcmChunksRef = useRef<Float32Array[]>([])
+  const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
@@ -84,6 +87,10 @@ export function Composer({
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop())
       }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {})
+      }
+      if (recordingTimerRef.current) clearTimeout(recordingTimerRef.current)
     }
   }, [])
 
@@ -136,17 +143,27 @@ export function Composer({
   }, [])
 
   const stopRecording = useCallback((): void => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop()
+    if (recordingTimerRef.current) {
+      clearTimeout(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    if (processorRef.current) {
+      processorRef.current.disconnect()
+      processorRef.current = null
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close().catch(() => {})
+      audioContextRef.current = null
+    }
   }, [])
 
   const startRecording = useCallback(async (): Promise<void> => {
     setVoiceError(null)
+    pcmChunksRef.current = []
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setVoiceError('Microphone not available')
@@ -157,66 +174,34 @@ export function Composer({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-      mediaRecorderRef.current = mediaRecorder
-      const chunks: BlobPart[] = []
+      // Use AudioContext + ScriptProcessorNode to capture raw PCM Float32Array.
+      // This runs in the renderer (browser context) where AudioContext is available.
+      const ctx = new AudioContext({ sampleRate: 16000 })
+      audioContextRef.current = ctx
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data)
+      const source = ctx.createMediaStreamSource(stream)
+      // Buffer size 4096, 1 input channel (mono), 1 output channel
+      const processor = ctx.createScriptProcessor(4096, 1, 1)
+      processorRef.current = processor
+
+      processor.onaudioprocess = (e) => {
+        // Capture raw PCM Float32Array from the input channel
+        const inputData = e.inputBuffer.getChannelData(0)
+        // Copy the data (inputData is reused by the audio engine)
+        pcmChunksRef.current.push(new Float32Array(inputData))
       }
 
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop())
-        streamRef.current = null
+      source.connect(processor)
+      // Connect to destination to keep the processor running (required for onaudioprocess)
+      processor.connect(ctx.destination)
 
-        if (chunks.length === 0) {
-          setVoiceState('idle')
-          return
-        }
-
-        setVoiceState('transcribing')
-
-        try {
-          const blob = new Blob(chunks, { type: 'audio/webm' })
-          const reader = new FileReader()
-          reader.onload = async () => {
-            const base64 = (reader.result as string).split(',')[1]
-            if (window.sovara) {
-              try {
-                const result = await window.sovara.invoke('voice:transcribe', { audio: base64, format: 'webm' })
-                let transcribed = ''
-                if (typeof result === 'string') {
-                  transcribed = result
-                } else if (result && typeof result === 'object' && 'text' in result) {
-                  transcribed = (result as { text: string }).text ?? ''
-                }
-                if (transcribed) {
-                  onChange(value ? `${value}\n${transcribed}` : transcribed)
-                }
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : 'Transcription failed'
-                setVoiceError(msg)
-              } finally {
-                setVoiceState('idle')
-              }
-            } else {
-              setVoiceState('idle')
-            }
-          }
-          reader.readAsDataURL(blob)
-        } catch {
-          setVoiceState('idle')
-        }
-      }
-
-      mediaRecorder.start(250) // Collect data every 250ms for faster response
       setVoiceState('recording')
 
       // Auto-stop after 30 seconds
-      setTimeout(() => {
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop()
-        }
+      recordingTimerRef.current = setTimeout(() => {
+        stopRecording()
+        // Trigger transcription after stop
+        void transcribeChunks()
       }, 30_000)
     } catch (err) {
       setVoiceState('idle')
@@ -226,18 +211,77 @@ export function Composer({
         setVoiceError('Could not access microphone')
       }
     }
+  }, [stopRecording])
+
+  // Separate function to handle transcription after recording stops
+  const transcribeChunks = useCallback(async (): Promise<void> => {
+    const chunks = pcmChunksRef.current
+    pcmChunksRef.current = []
+
+    if (chunks.length === 0) {
+      setVoiceState('idle')
+      return
+    }
+
+    setVoiceState('transcribing')
+
+    try {
+      // Merge all Float32Array chunks into one
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+      const merged = new Float32Array(totalLength)
+      let offset = 0
+      for (const chunk of chunks) {
+        merged.set(chunk, offset)
+        offset += chunk.length
+      }
+
+      // Convert Float32Array → base64 via ArrayBuffer
+      const buffer = merged.buffer
+      const bytes = new Uint8Array(buffer)
+      let binary = ''
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i])
+      }
+      const base64 = btoa(binary)
+
+      if (window.sovara) {
+        try {
+          const result = await window.sovara.invoke('voice:transcribe', { pcm: base64, sampleRate: 16000 })
+          let transcribed = ''
+          if (typeof result === 'string') {
+            transcribed = result
+          } else if (result && typeof result === 'object' && 'text' in result) {
+            transcribed = (result as { text: string }).text ?? ''
+          }
+          if (transcribed) {
+            onChange(value ? `${value}\n${transcribed}` : transcribed)
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Transcription failed'
+          setVoiceError(msg)
+        } finally {
+          setVoiceState('idle')
+        }
+      } else {
+        setVoiceState('idle')
+      }
+    } catch {
+      setVoiceState('idle')
+    }
   }, [value, onChange])
 
   const handleVoiceToggle = useCallback((): void => {
-    if (voiceState === 'recording' || voiceState === 'transcribing') {
+    if (voiceState === 'recording') {
       stopRecording()
-      if (voiceState === 'transcribing') {
-        setVoiceState('idle')
-      }
+      // Trigger transcription with the captured chunks
+      void transcribeChunks()
+    } else if (voiceState === 'transcribing') {
+      setVoiceState('idle')
+      pcmChunksRef.current = []
     } else {
       startRecording()
     }
-  }, [voiceState, stopRecording, startRecording])
+  }, [voiceState, stopRecording, startRecording, transcribeChunks])
 
   const micIcon = (): ReactElement => {
     if (voiceState === 'transcribing') return <Loader2 size={16} className="spin" aria-hidden />

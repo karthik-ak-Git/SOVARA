@@ -159,6 +159,15 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('settings:set', async (_e, _raw: unknown) => ({ ok: true }))
 
+  // ── Usage stats ──
+  ipcMain.handle('usage:getTotal', async () => {
+    return getBackend().ports.persistence.getTotalUsage()
+  })
+
+  ipcMain.handle('usage:getByModel', async () => {
+    return getBackend().ports.persistence.getUsageByModel()
+  })
+
   // ── Window controls (frameless window) ──
   ipcMain.handle('window:minimize', async (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize()
@@ -190,10 +199,10 @@ export function registerIpcHandlers(): void {
 
   // ── Voice transcription (local Whisper — no API keys, no network) ──
   ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
-    const data = raw as { audio?: string; format?: string }
-    if (!data?.audio) throw new Error('voice:transcribe requires audio data')
+    const data = raw as { pcm?: string; sampleRate?: number }
+    if (!data?.pcm) throw new Error('voice:transcribe requires pcm data')
     try {
-      const result = await getVoiceTranscriber().transcribe(data.audio, data.format ?? 'webm')
+      const result = await getVoiceTranscriber().transcribeFromPCM(data.pcm, data.sampleRate ?? 16000)
       return result
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'transcription failed'

@@ -34,11 +34,18 @@ export interface ModelRuntimePort {
 }
 
 // ── LLM (Commit 7: real local inference behind the same boundary) ──
+export interface LlmUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
 export interface LlmChunk {
   type: 'text-delta' | 'done'
   text?: string
   /** Delivery note, e.g. 'non-stream-fallback'. Never content. */
   note?: string
+  /** Token usage from the API response (available on 'done' chunk). */
+  usage?: LlmUsage
 }
 export interface LlmChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -92,6 +99,9 @@ export interface PersistencePort {
   get(id: SessionId): Promise<SessionHeader | null>
   appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView>
   getEvents(sessionId: SessionId): Promise<SessionEventView[]>
+  insertTokenUsage(row: { sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number }): void
+  getTotalUsage(): { promptTokens: number; completionTokens: number; totalTokens: number }
+  getUsageByModel(): Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }>
 }
 
 // ── System resources (Phase 1: contract + stub) ──
