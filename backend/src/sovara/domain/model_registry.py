@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from sovara.domain.model_provider import ModelCapabilities, ModelResource
+from sovara.domain.model_provider import ModelCapabilities, ModelResource, ModelRole
 
 
 class ModelAvailability(StrEnum):
@@ -43,6 +43,7 @@ class ModelRecord(BaseModel):
     provider: str  # adapter kind: ollama | lmstudio | echo
     runtime: str = ""  # underlying runtime name, e.g. "LM Studio"
     version: str = ""
+    role: ModelRole = ModelRole.UNKNOWN
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     capability_source: CapabilitySource = CapabilitySource.PROVIDER
     context_window: int | None = None

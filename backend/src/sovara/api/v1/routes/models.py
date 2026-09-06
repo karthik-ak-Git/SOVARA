@@ -34,6 +34,7 @@ def record_to_item(record: ModelRecord) -> dict[str, object]:
         "provider": record.provider,
         "runtime": record.runtime,
         "version": record.version,
+        "role": record.role.value,
         "capabilities": record.capabilities.model_dump(),
         "capability_source": record.capability_source.value,
         "context_window": record.context_window,

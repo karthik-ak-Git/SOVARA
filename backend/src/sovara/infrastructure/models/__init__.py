@@ -5,9 +5,17 @@ the only construction site, and the rest of SOVARA programs against the
 ModelProvider ABC (see ADR-0002).
 """
 
+from sovara.infrastructure.models.attribution import PROVIDER_HEADERS, SOVARA_USER_AGENT
 from sovara.infrastructure.models.echo_provider import EchoProvider
 from sovara.infrastructure.models.factory import build_provider
 from sovara.infrastructure.models.lmstudio.lmstudio_provider import LMStudioProvider
 from sovara.infrastructure.models.ollama.ollama_provider import OllamaProvider
 
-__all__ = ["EchoProvider", "LMStudioProvider", "OllamaProvider", "build_provider"]
+__all__ = [
+    "EchoProvider",
+    "LMStudioProvider",
+    "OllamaProvider",
+    "PROVIDER_HEADERS",
+    "SOVARA_USER_AGENT",
+    "build_provider",
+]

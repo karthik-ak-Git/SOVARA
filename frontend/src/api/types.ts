@@ -65,6 +65,7 @@ export interface ModelItem {
   provider: string;
   runtime: string;
   version: string;
+  role?: string;
   capabilities: ModelCapabilities;
   capability_source: string;
   context_window: number | null;

@@ -134,6 +134,48 @@ Runtime -> list_models() -> ModelCatalog.refresh() -> ModelRegistry
   selected-model details, persisted `selectedModelId`, per-conversation
   last-model adoption. No Auto (does not exist, not pretended).
 
+### 9a. Model identity contract (Slice 2 fix)
+
+For every chat turn the model id must be preserved verbatim through each
+layer — no aliasing, no silent fallback, no default substitution:
+
+```text
+frontend selectedModelId
+        ==
+chat request model_id
+        ==
+gateway resolved model ID
+        ==
+provider request model ID
+        ==
+local runtime model ID
+```
+
+- **Explicit wins**: a request carrying `model_id` uses exactly that model.
+  The configured default applies ONLY when the request omits `model_id`.
+  Unknown ids fail as JSON `502 model_error` before any runtime call, so an
+  unlisted id can never reach the runtime and trigger a silent substitution.
+- **Adapter payloads** (`LMStudioProvider.build_payload`,
+  `OllamaProvider.build_payload`) carry `request.model_id`, falling back to
+  the adapter default only when the request omits one. `infer()` responses
+  echo the requested id for the same reason.
+- **Diagnostics** (ids and counts only, never prompts/responses): the chat
+  route logs `requested_model_id` vs `resolved_model_id`; `ChatService`
+  logs `resolved_model_id` + `provider` + `runtime_model_id`; each adapter
+  logs the exact runtime `model` value it sends.
+- **Self-identification is not authoritative**: asking a model "which model
+  are you?" can return training-data identity or hallucination. The
+  authoritative identity is the registry record + provider/runtime metadata
+  shown in the selector (Model / Runtime / Status / Local), plus the `done`
+  event's `model_id`. SOVARA never rewrites the assistant's reply and never
+  injects identity claims into the prompt (that would alter conversations
+  without fixing routing).
+- **Runtime caveat (verified)**: LM Studio honors valid loaded model ids
+  (response `model`/`system_fingerprint` match the request), but silently
+  serves a loaded model for an *unknown* id instead of erroring. SOVARA's
+  pre-stream registry check is what makes this safe: unknown ids never
+  leave the backend.
+
 ## 10. What Phase 0 deliberately omits
 
 No persistence (registries are in-memory), no inference, no retrieval, no

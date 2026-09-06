@@ -12,7 +12,6 @@ from sovara.domain.model_provider import InferenceRequest
 from sovara.infrastructure.config.settings import Settings
 from sovara.infrastructure.models.factory import build_provider
 from sovara.infrastructure.models.lmstudio.lmstudio_provider import LMStudioProvider
-from sovara.infrastructure.registries import InMemoryModelRegistry
 from sovara.infrastructure.security.network_policy import NetworkPolicy
 
 
@@ -74,9 +73,7 @@ def test_factory_builds_lmstudio_and_registers() -> None:
         model_default_id="local-default",
         lmstudio_model="test-model",
     )
-    provider, native = asyncio.run(
-        build_provider(settings, NetworkPolicy(local_only=True))
-    )
+    provider, native = asyncio.run(build_provider(settings, NetworkPolicy(local_only=True)))
     assert provider.info.provider == "lmstudio"
     assert native == "test-model"
 

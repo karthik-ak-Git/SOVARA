@@ -30,10 +30,24 @@ from sovara.domain.model_provider import (
     ModelInfo,
     ModelProvider,
     ModelResource,
+    ModelRole,
     TaskCapability,
+    infer_model_role,
 )
+from sovara.infrastructure.logging.structured import get_logger
+from sovara.infrastructure.models.attribution import PROVIDER_HEADERS
+
+log = get_logger("sovara.models.lmstudio")
 
 DONE_MARKER = "[DONE]"
+
+
+def is_done_line(line: str) -> bool:
+    """True when a raw SSE line is the terminal [DONE] marker (pure, testable)."""
+    text = line.strip()
+    if not text.startswith("data:"):
+        return False
+    return text[len("data:") :].strip() == DONE_MARKER
 
 
 class LMStudioProvider(ModelProvider):
@@ -45,9 +59,11 @@ class LMStudioProvider(ModelProvider):
             model_id=model,
             provider="lmstudio",
             version="0.1.0-slice1",
+            # Honest unknown: /v1/models advertises no task capabilities
+            # (see DEEPSEEK_HARNESS_ANALYSIS G2).
             capabilities=ModelCapabilities(
                 modalities=[Modality.TEXT],
-                tasks=[TaskCapability.REASONING, TaskCapability.CODING],
+                tasks=[],
                 supports_streaming=True,
                 supports_tools=False,
             ),
@@ -59,7 +75,7 @@ class LMStudioProvider(ModelProvider):
 
     async def health(self) -> ModelHealth:
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, headers=PROVIDER_HEADERS) as client:
                 resp = await client.get(f"{self._base_url}/models")
         except (httpx.ConnectError, httpx.TimeoutException, OSError):
             return ModelHealth(model_id=self._model, available=False, detail="runtime unreachable")
@@ -73,12 +89,14 @@ class LMStudioProvider(ModelProvider):
 
     async def infer(self, request: InferenceRequest) -> InferenceResponse:
         text = "".join([chunk async for chunk in self.stream(request)])
-        return InferenceResponse(model_id=self._model, text=text, finish_reason="stop")
+        # Echo the requested runtime id: the response must carry the
+        # authoritative identity, never the adapter's configured default.
+        return InferenceResponse(model_id=request.model_id, text=text, finish_reason="stop")
 
     async def list_models(self) -> list[ModelInfo]:
         """Parse GET /v1/models into normalized infos; [] when unreachable."""
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, headers=PROVIDER_HEADERS) as client:
                 resp = await client.get(f"{self._base_url}/models")
         except (httpx.ConnectError, httpx.TimeoutException, OSError):
             return []
@@ -101,13 +119,18 @@ class LMStudioProvider(ModelProvider):
             raw_meta = entry.get("meta")
             meta = raw_meta if isinstance(raw_meta, dict) else {}
             context = meta.get("contextLength")
+            role = infer_model_role(model_id)
+            is_embedding = role == ModelRole.EMBEDDING
             infos.append(
                 ModelInfo(
                     model_id=model_id,
                     display_name=self._display_name(model_id),
                     provider="lmstudio",
+                    role=role,
                     capabilities=ModelCapabilities(
-                        modalities=[Modality.TEXT], supports_streaming=True
+                        modalities=[Modality.TEXT],
+                        tasks=[TaskCapability.EMBEDDING] if is_embedding else [],
+                        supports_streaming=not is_embedding,
                     ),
                     resource=ModelResource(
                         context_window=context if isinstance(context, int) else None
@@ -122,27 +145,43 @@ class LMStudioProvider(ModelProvider):
         short = model_id.split("/")[-1].replace("-", " ").replace("_", " ").strip()
         return short[:1].upper() + short[1:] if short else model_id
 
-    async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
-        payload = {
-            # Slice 2: the resolved (native) model id selects the runtime
-            # model; the adapter default is only a fallback.
+    def build_payload(self, request: InferenceRequest) -> dict[str, object]:
+        """Build the runtime request body (pure, testable).
+
+        Identity rule: the resolved (native) model id selects the runtime
+        model; the adapter default applies ONLY when the request omits one.
+        """
+        return {
             "model": request.model_id or self._model,
             "messages": self._to_oai_messages(request),
             "stream": True,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
+
+    async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
+        payload = self.build_payload(request)
+        # Diagnostic only: the runtime model id, never prompt content.
+        log.info("lmstudio chat request runtime_model_id=%s", payload["model"])
         try:
             timeout = httpx.Timeout(self._timeout, read=300.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, headers=PROVIDER_HEADERS) as client:
                 async with client.stream(
                     "POST", f"{self._base_url}/chat/completions", json=payload
                 ) as resp:
                     if resp.status_code != 200:
                         raise ModelError(f"Local model runtime error: status {resp.status_code}")
+                    completed = False
                     async for line in resp.aiter_lines():
+                        if is_done_line(line):
+                            completed = True
                         for delta in self.parse_sse_lines(line):
                             yield delta
+                    if not completed:
+                        # Reference behavior (dsh STREAM_CLOSED): EOF without
+                        # [DONE] is truncation — untrusted, never silently
+                        # accepted as a complete turn.
+                        raise ModelError("Local model stream ended without completion")
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             raise ModelError(f"Local model unavailable: {exc.__class__.__name__}") from exc
 

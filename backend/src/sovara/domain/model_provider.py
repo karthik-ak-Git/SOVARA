@@ -34,6 +34,33 @@ class TaskCapability(StrEnum):
     LONG_CONTEXT = "long_context"
 
 
+class ModelRole(StrEnum):
+    """What kind of model this is — preserved honestly from runtime data.
+
+    Neither Ollama (/api/tags) nor LM Studio (/v1/models) advertises a
+    type field, so adapters derive this from the only signal available:
+    the native model id/name. Unknown stays unknown — never guessed.
+    Chat routing hard-excludes EMBEDDING; UNKNOWN stays eligible.
+    """
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    UNKNOWN = "unknown"
+
+
+def infer_model_role(model_id: str) -> ModelRole:
+    """Derive a model's role from its native id (shared harness helper).
+
+    The runtimes provide no type field; a name containing "embed"
+    (e.g. text-embedding-nomic-embed-text-v1.5) is the industry-standard
+    embedding signal. Anything else is UNKNOWN — adapters must not claim
+    CHAT without evidence.
+    """
+    if "embed" in (model_id or "").lower():
+        return ModelRole.EMBEDDING
+    return ModelRole.UNKNOWN
+
+
 class ModelCapabilities(BaseModel):
     modalities: list[Modality] = Field(default_factory=list)
     tasks: list[TaskCapability] = Field(default_factory=list)
@@ -52,6 +79,7 @@ class ModelInfo(BaseModel):
     display_name: str = ""
     provider: str
     version: str = "0.0.0-phase0"
+    role: ModelRole = ModelRole.UNKNOWN
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     resource: ModelResource = Field(default_factory=ModelResource)
 

@@ -98,7 +98,9 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     artifacts_dir: Path = Field(default=Path("./data/artifacts"), alias="ARTIFACTS_DIR")
 
-    @field_validator("network_allowed_endpoints", "cors_allowed_origins", mode="before")
+    @field_validator(
+        "network_allowed_endpoints", "cors_allowed_origins", "enabled_providers", mode="before"
+    )
     @classmethod
     def _split_endpoints(cls, v: object) -> list[str]:
         if v is None or v == "":

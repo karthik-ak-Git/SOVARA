@@ -24,7 +24,7 @@ raises ModelError — the router never silently serves the wrong model.
 from __future__ import annotations
 
 from sovara.domain.errors import ModelError
-from sovara.domain.model_provider import Modality
+from sovara.domain.model_provider import Modality, ModelRole, TaskCapability
 from sovara.domain.model_registry import ModelAvailability, ModelRecord
 from sovara.domain.routing import RoutingDecision, ScoredCandidate, TaskProfile
 from sovara.infrastructure.logging.structured import get_logger
@@ -44,8 +44,17 @@ class ModelRouter:
 
     def route(self, profile: TaskProfile, records: list[ModelRecord]) -> RoutingDecision:
         available = [r for r in records if r.availability == ModelAvailability.AVAILABLE]
-        if not available:
+        # Harness rule (G1): embedding models are never chat candidates.
+        # Role unknown stays eligible (honest fallback); known-embedding is
+        # excluded before scoring, never outranked-but-selected.
+        chat_eligible = [r for r in available if not _is_embedding(r)]
+        if not chat_eligible:
+            if available:
+                raise ModelError(
+                    "No suitable local model available: only embedding models are reachable"
+                )
             raise ModelError("No suitable local model available: no local models are reachable")
+        available = chat_eligible
         scored: list[ScoredCandidate] = []
         for record in available:
             candidate = self._score(profile, record)
@@ -130,3 +139,10 @@ class ModelRouter:
             reasons.append("configured_default")
 
         return ScoredCandidate(model_id=record.model_id, score=score, reason_codes=reasons)
+
+
+def _is_embedding(record: ModelRecord) -> bool:
+    """True when the record is a known embedding model (role or task claim)."""
+    if record.role == ModelRole.EMBEDDING:
+        return True
+    return TaskCapability.EMBEDDING in record.capabilities.tasks
