@@ -89,7 +89,32 @@ name, never by direct import.
 | Real auth/SSO/RBAC | implement `AuthProvider`, set `SOVARA_AUTH_MODE` |
 | Postgres/object storage | infrastructure adapters; compose services on `sovara-net` |
 
-## 8. What Phase 0 deliberately omits
+## 8. Phase 1 / Slice 1: local chat harness (live)
+
+```text
+Chat UI -> POST /api/v1/chat (SSE) -> ChatService -> ModelGateway
+  -> ModelProvider -> Ollama adapter | echo dev harness -> tokens -> UI
+```
+
+- **Stateless turns**: the client sends full message history; no server-side
+  conversation memory (deferred). The UI persists conversations in
+  localStorage; backend persistence stays deferred.
+- **Gateway**: `ModelGateway` resolves one registered model (no routing).
+  Unknown IDs fail as JSON `502 model_error` before the first SSE byte.
+- **Providers** (`infrastructure/models/`, factory is the sole construction
+  site): `OllamaProvider` (primary, `/api/chat` NDJSON, loopback default,
+  non-loopback URLs pass the `NetworkPolicy` egress gate) and `EchoProvider`
+  (deterministic dev harness, refused in production, never echoes content).
+- **Streaming**: FastAPI `StreamingResponse` SSE (`token`/`done`/`error`
+  events); client disconnect aborts provider iteration; per-request timeout
+  via `SOVARA_CHAT_TIMEOUT_S`; malformed lines skipped on both ends.
+- **Frontend** (`features/chat/`): HTTP only in `api/chatClient.ts`;
+  generation state in `useChat`, conversation state in the layout;
+  markdown via react-markdown, no UI framework.
+- **Errors**: Phase 0 envelope throughout; the UI maps to five kinds
+  (model_unavailable, validation, generation, connection, cancelled).
+
+## 9. What Phase 0 deliberately omits
 
 No persistence (registries are in-memory), no inference, no retrieval, no
 execution, no generation, no production auth — per the Phase 0 definition of

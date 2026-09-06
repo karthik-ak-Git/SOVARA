@@ -13,4 +13,9 @@ export default defineConfig({
     },
   },
   preview: { port: 4173 },
+  test: {
+    globals: true, // lets @testing-library/react auto-cleanup between tests
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+  },
 });

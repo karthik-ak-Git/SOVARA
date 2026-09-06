@@ -22,6 +22,28 @@ uv run uvicorn sovara.main:app --host 127.0.0.1 --port 8000
 
 Interactive API docs: `http://127.0.0.1:8000/docs` · OpenAPI JSON: `/openapi.json`.
 
+### Local model (Slice 1)
+
+Default is Ollama at `http://127.0.0.1:11434` (`SOVARA_OLLAMA_MODEL`, default
+`llama3.1`). Install Ollama and pull a model, e.g. `ollama pull llama3.1`.
+
+No runtime installed? Use the deterministic dev harness (non-production):
+
+```sh
+SOVARA_MODEL_PROVIDER=echo uv run uvicorn sovara.main:app --host 127.0.0.1 --port 8000
+```
+
+End-to-end smoke test (streaming + errors):
+
+```sh
+curl -N -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Explain what SOVARA is in one paragraph."}]}'
+curl -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" -d '{"model_id":"ghost","messages":[{"role":"user","content":"hi"}]}'
+# -> {"error":{"code":"model_error",...}} with HTTP 502
+```
+
 Config: copy `.env.example` to `.env`, edit values (all `SOVARA_` prefixed).
 Never commit `.env`.
 
@@ -33,6 +55,7 @@ From `frontend/`:
 npm install
 npm run dev     # :5173, /api proxied to backend :8000
 npm run build   # tsc + vite bundle
+npm test        # vitest (chat client, useChat, Composer, MessageList, CodeBlock)
 ```
 
 Point at another backend with `VITE_API_BASE_URL` (see `.env.example`).

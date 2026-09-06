@@ -20,6 +20,20 @@ Correlation: send `X-Request-ID` (optional); responses always return one.
 | GET | `/api/v1/knowledge/documents` | List | Empty; ingestion deferred |
 | GET | `/api/v1/artifacts` | List | Empty; generation deferred |
 | GET | `/api/v1/audit/events` | List | Empty; event store deferred |
+| POST | `/api/v1/chat` | Streaming chat turn | **Live (Slice 1): SSE stream** |
+
+### POST /api/v1/chat (Slice 1)
+
+Request `{model_id?: string, messages: [{role, content}]}` (1–64 messages,
+content ≤ 12000 chars). Stateless: the client sends full history each turn.
+
+- Success: `200 text/event-stream`, events `data: {"type":"token","delta"}…`,
+  then `data: {"type":"done","model_id","finish_reason":"stop"}`.
+- Unknown model: JSON `502 model_error` envelope (resolved before first byte).
+- Mid-stream failure: `data: {"type":"error","code","message"}`, stream closes.
+- Validation failure: JSON `422 validation_error` envelope.
+- Timeout (`SOVARA_CHAT_TIMEOUT_S`): `error` event `"Generation timed out"`.
+- Client disconnect aborts iteration server-side (real cancellation).
 
 Full machine-readable contract: `GET /openapi.json` (or `/docs` UI) with the
 backend running.

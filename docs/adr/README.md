@@ -10,6 +10,8 @@ Index of binding decisions for SOVARA. Read before changing a boundary.
 | 0004 | Isolated agent execution (no host access) | Accepted | 2026-09-05 |
 | 0005 | Policy-controlled external network (air-gap ready) | Accepted | 2026-09-05 |
 | 0006 | Python FastAPI backend + React/Vite frontend | Accepted | 2026-09-05 |
+| 0007 | Chat streaming via SSE with stateless turns | Accepted | 2026-09-06 |
+| 0008 | Ollama first, echo harness for model-less environments | Accepted | 2026-09-06 |
 
 ## Creating a new ADR
 
