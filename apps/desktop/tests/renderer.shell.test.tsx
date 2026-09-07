@@ -147,6 +147,26 @@ describe('Renderer shell — navigation & layout', () => {
     expect(onDeleteChat).toHaveBeenCalledWith('c1')
   })
 
+  it('chat rename commits on Enter', async () => {
+    const user = userEvent.setup()
+    const onRenameChat = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[{ id: 'c1', title: 'Hello World' }]}
+        onRenameChat={onRenameChat}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Chat options for Hello World' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByRole('textbox', { name: 'Rename chat' })
+    await user.clear(input)
+    await user.type(input, 'New Name{enter}')
+    expect(onRenameChat).toHaveBeenCalledWith('c1', 'New Name')
+  })
+
   it('renders recent chat titles and calls onSelectChat', async () => {
     const user = userEvent.setup()
     const onSelectChat = vi.fn()

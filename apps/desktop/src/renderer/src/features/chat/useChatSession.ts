@@ -218,6 +218,16 @@ export function useChatSession() {
 
   const dismissError = useCallback(() => setError(null), [])
 
+  /** Clear the conversation view (no tab selected) without deleting anything. */
+  const clearSelection = useCallback((): void => {
+    loadSeq.current += 1
+    setSelectedId(null)
+    setEvents([])
+    setStreamingText('')
+    setPhase('idle')
+    setError(null)
+  }, [])
+
   return {
     sessions,
     globalSessions,
@@ -238,6 +248,7 @@ export function useChatSession() {
     handleSend,
     handleCancel,
     switchSession,
+    clearSelection,
     refreshModelStatus,
   }
 }

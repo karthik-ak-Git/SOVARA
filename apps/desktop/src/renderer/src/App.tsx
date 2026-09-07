@@ -79,6 +79,57 @@ export function App(): React.JSX.Element {
     chat.switchSession(tabId)
   }, [chat])
 
+  // ── Open tabs (header) — closing a tab only hides it; the chat stays in
+  // the sidebar and its files are untouched. Permanent removal lives only in
+  // the sidebar 3-dots menu / tab X never deletes.
+  const [openChatIds, setOpenChatIds] = useState<string[]>([])
+
+  // Seed open tabs from the auto-selected session; prune ids of deleted chats.
+  useEffect(() => {
+    if (chat.selectedId) {
+      setOpenChatIds((prev) => {
+        const alive = prev.filter((id) => chat.sessions.some((s) => s.id === id))
+        return alive.includes(chat.selectedId ?? '')
+          ? alive
+          : [...alive, chat.selectedId ?? ''].filter(Boolean)
+      })
+    } else {
+      setOpenChatIds((prev) => prev.filter((id) => chat.sessions.some((s) => s.id === id)))
+    }
+  }, [chat.selectedId, chat.sessions])
+
+  const openChat = useCallback((id: string): void => {
+    const sess = chat.sessions.find((s) => s.id === id)
+    setSelectedProjectId(sess?.projectId ?? null)
+    setOpenChatIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    chat.switchSession(id)
+    setActiveTab('session')
+  }, [chat])
+
+  const closeTab = useCallback((id: string): void => {
+    setOpenChatIds((prev) => {
+      const next = prev.filter((t) => t !== id)
+      if (chat.selectedId === id) {
+        // Fall back to the newest remaining open tab, else clear the view.
+        const fallback = next[next.length - 1]
+        if (fallback) {
+          const sess = chat.sessions.find((s) => s.id === fallback)
+          setSelectedProjectId(sess?.projectId ?? null)
+          chat.switchSession(fallback)
+        } else {
+          // No tabs left — keep the session list, clear the conversation view.
+          chat.clearSelection()
+        }
+      }
+      return next
+    })
+  }, [chat])
+
+  const openChats = openChatIds
+    .map((id) => chat.sessions.find((s) => s.id === id))
+    .filter((s): s is (typeof chat.sessions)[number] => Boolean(s))
+    .map((s) => ({ id: s.id, title: s.title }))
+
   const handleSend = useCallback((content: string, attachments?: FileAttachment[]): void => {
     let enrichedContent = content
     if (attachments && attachments.length > 0) {
@@ -104,12 +155,7 @@ export function App(): React.JSX.Element {
         selectedProjectId={selectedProjectId}
         selectedSessionId={chat.selectedId}
         onSelectProject={setSelectedProjectId}
-        onSelectSession={(id) => {
-          const sess = chat.sessions.find((s) => s.id === id)
-          setSelectedProjectId(sess?.projectId ?? null)
-          chat.switchSession(id)
-          setActiveTab('session')
-        }}
+        onSelectSession={openChat}
         onNewProject={() => setProjectModalOpen(true)}
         onNewChat={() => {
           setSelectedProjectId(null)
@@ -121,17 +167,9 @@ export function App(): React.JSX.Element {
         onDeleteChat={(id) => void chat.handleDelete(id)}
         recentChats={chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))}
         selectedChatId={chat.selectedId}
-        onSelectChat={(id) => {
-          setSelectedProjectId(null)
-          chat.switchSession(id)
-          setActiveTab('session')
-        }}
-        onCloseChat={(id) => {
-          const target = chat.sessions.find((s) => s.id === id)
-          if (window.confirm(`Close "${target?.title ?? 'chat'}" permanently? Chat files are removed and cannot be recovered.`)) {
-            void chat.handleDelete(id)
-          }
-        }}
+        onSelectChat={openChat}
+        onCloseChat={closeTab}
+        tabs={openChats}
       >
         {activeNav === 'chat' ? (
           <ChatView

@@ -394,12 +394,12 @@ body {
   right: 0;
   top: calc(100% + 4px);
   z-index: 50;
-  min-width: 140px;
+  min-width: 150px;
   padding: 4px;
   border-radius: var(--radius-md);
-  background: var(--surface, #1c1c1e);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 /* Fixed variant — escapes sidebar overflow clipping */
 .nav-chat-menu-fixed {
@@ -413,17 +413,19 @@ body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: 6px;
   font-size: 12px;
+  font-weight: 500;
   color: var(--text);
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
 }
-.nav-chat-menu-item:hover { background: var(--panel); }
-.nav-chat-menu-item.danger { color: var(--danger, #ff5c5c); }
+.nav-chat-menu-item:hover { background: var(--panel-2); }
+.nav-chat-menu-item.danger { color: var(--danger); }
+.nav-chat-menu-item.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .nav-chat-rename {
   flex: 1;
   min-width: 0;

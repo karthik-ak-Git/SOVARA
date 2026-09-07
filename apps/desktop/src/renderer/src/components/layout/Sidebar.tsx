@@ -129,6 +129,7 @@ function ChatRow({
           maxLength={120}
           aria-label="Rename chat"
           onChange={(e) => setDraft(e.target.value)}
+          onFocus={(e) => e.target.select()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitRename()
             if (e.key === 'Escape') {
