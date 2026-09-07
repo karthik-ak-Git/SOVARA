@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
   Settings, User, Cpu, Mic, CreditCard, Palette, MessageSquare,
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
-  RotateCcw, ChevronRight, Check, Cloud
+  RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
 import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource } from '../../lib/ipc'
 import { ExplorePage } from '../explore/ExplorePage'
@@ -201,7 +201,7 @@ const MCP_PRESETS: McpPreset[] = [
   },
 ]
 
-export function SettingsPage(): ReactElement {
+export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt')
   const [autoTranscribe, setAutoTranscribe] = useState(true)
@@ -828,6 +828,12 @@ export function SettingsPage(): ReactElement {
   return (
     <div className="settings-page">
       <div className="settings-sidebar">
+        {onBack ? (
+          <button type="button" className="settings-back" onClick={onBack} aria-label="Back to chat">
+            <ArrowLeft size={14} aria-hidden />
+            <span>Back</span>
+          </button>
+        ) : null}
         <nav className="settings-nav" aria-label="Settings navigation">
           {NAV_GROUPS.map((group) => (
             <div key={group.label} className="settings-nav-group">

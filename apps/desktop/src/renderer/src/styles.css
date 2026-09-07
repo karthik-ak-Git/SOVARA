@@ -1143,6 +1143,7 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .composer-attachment-remove:hover { background: var(--danger); color: #fff; }
 .composer-icon-btn.active { background: var(--accent); color: #fff; }
+.composer-icon-btn.recording { background: var(--danger); color: #fff; }
 
 /* ═══════════════════════════════════════════════════════════════
    Permission Control
@@ -1194,6 +1195,24 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .perm-item--active { background: var(--panel-2); border-color: var(--accent); }
 .perm-item-label { font-weight: 500; }
 .perm-item-desc { font-size: 11px; color: var(--muted-2); }
+/* Full-access warning — orange, always visible under "Allow all" */
+.perm-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 4px 6px;
+  padding: 7px 9px;
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #b45309;
+  font-size: 11px;
+  line-height: 1.4;
+}
+[data-theme="dark"] .perm-warn { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
+/* Inline full-access hint next to the composer permission trigger */
+.composer-exec-hint--allow { color: #b45309; font-weight: 600; }
+[data-theme="dark"] .composer-exec-hint--allow { color: #fbbf24; }
 
 /* ═══════════════════════════════════════════════════════════════
    Reasoning Toggle (inside model popover)
@@ -1320,6 +1339,22 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   flex-shrink: 0;
   overflow-y: auto;
 }
+.settings-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 10px 2px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.settings-back:hover { background: var(--panel-2); }
 .settings-nav {
   display: flex;
   flex-direction: column;
@@ -1602,134 +1637,6 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   .nav-item { justify-content: center; padding: 8px; }
   .chat-empty-state { padding: 20px 16px; }
   .chat-empty-title { font-size: 18px; }
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   Dictation panel — voice transcription overlay
-   ═══════════════════════════════════════════════════════════════ */
-.dictation-panel {
-  margin-top: 8px;
-  padding: 14px 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-}
-.dictation-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.dictation-header-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-}
-.dictation-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-.dictation-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-md);
-  border: none;
-  background: transparent;
-  color: var(--muted-2);
-  cursor: pointer;
-  padding: 0;
-  transition: background 120ms ease, color 120ms ease;
-}
-.dictation-close:hover { background: var(--danger); color: #fff; }
-.dictation-state-pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-.dictation-state-pill.recording { color: #ff6b6b; border-color: #ff6b6b55; background: #ff6b6b11; }
-.dictation-state-pill.transcribing { color: var(--accent); border-color: var(--accent); }
-.dictation-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
-}
-.dictation-subtitle {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 0 0 10px;
-  line-height: 1.4;
-}
-.dictation-link {
-  color: var(--accent);
-  cursor: pointer;
-}
-.dictation-link:hover { text-decoration: underline; }
-
-/* Waveform bars */
-.dictation-waveform {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  height: 32px;
-  margin-bottom: 10px;
-}
-.dictation-waveform-bar {
-  width: 3px;
-  height: 8px;
-  border-radius: 2px;
-  background: var(--accent);
-  animation: waveform-pulse 1.6s ease-in-out infinite;
-}
-.dictation-waveform-bar.live { animation: none; transition: height 90ms linear; }
-@keyframes waveform-pulse {
-  0%, 100% { height: 8px; opacity: 0.4; }
-  50% { height: 24px; opacity: 1; }
-}
-
-/* Transcribing spinner */
-.dictation-transcribing {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 32px;
-  margin-bottom: 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-/* Model info */
-.dictation-model {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft);
-}
-.dictation-model-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text);
-}
-.dictation-model-desc {
-  font-size: 11px;
-  color: var(--muted-2);
-  line-height: 1.4;
-}
-.dictation-model-desc strong {
-  color: var(--muted);
-  font-weight: 500;
 }
 
 /* Settings — Connected Apps / MCP */

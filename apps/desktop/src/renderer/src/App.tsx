@@ -175,6 +175,7 @@ export function App(): React.JSX.Element {
         onSelectChat={openChat}
         onCloseChat={closeTab}
         tabs={openChats}
+        hideSidebar={activeNav === 'settings'}
       >
         {activeNav === 'chat' ? (
           <ChatView
@@ -208,7 +209,7 @@ export function App(): React.JSX.Element {
 
         {activeNav === 'models' ? <ModelsPage /> : null}
 
-        {activeNav === 'settings' ? <SettingsPage /> : null}
+        {activeNav === 'settings' ? <SettingsPage onBack={() => setActiveNav('chat')} /> : null}
 
         {activeNav === 'agents' ? (
           <Card>

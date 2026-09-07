@@ -6,20 +6,11 @@ import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zToolDispatch } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
-import { VoiceTranscriber } from '../services/voiceTranscriber'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility } from '../services/hardwareCheck'
 import type { HardwareInfo } from '@shared/types/explore'
-
-// Singleton — lazily created on first registerIpcHandlers() call.
-let voiceTranscriber: VoiceTranscriber | null = null
-
-function getVoiceTranscriber(): VoiceTranscriber {
-  if (!voiceTranscriber) voiceTranscriber = new VoiceTranscriber()
-  return voiceTranscriber
-}
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
 function broadcastChat(event: ChatStreamEvent): void {
@@ -347,22 +338,5 @@ export function registerIpcHandlers(): void {
     const parsed = zLibrarySetDirectory.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
     return { ok: true, path: parsed.data.path }
-  })
-
-  // ── Voice transcription (local faster-whisper — no API keys, no network) ──
-  ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
-    const data = raw as { pcm?: string; sampleRate?: number; language?: string; model?: string }
-    if (!data?.pcm) throw new Error('voice:transcribe requires pcm data')
-    try {
-      const result = await getVoiceTranscriber().transcribeFromPCM(
-        data.pcm,
-        data.sampleRate ?? 16000,
-        { language: data.language ?? 'en', model: (data.model as 'tiny' | 'base' | 'small' | 'medium' | 'large-v3') ?? 'tiny' }
-      )
-      return result
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'transcription failed'
-      throw new Error(msg)
-    }
   })
 }

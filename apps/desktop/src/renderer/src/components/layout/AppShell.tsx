@@ -26,6 +26,8 @@ interface Props {
   onCloseChat?: (id: string) => void
   /** Open header tabs — defaults to recentChats. Closed tabs hide without deleting. */
   tabs?: Array<{ id: string; title: string }>
+  /** Hide the app sidebar (e.g. full-page settings). */
+  hideSidebar?: boolean
 }
 
 export function AppShell({
@@ -51,6 +53,7 @@ export function AppShell({
   onSelectChat = () => {},
   onCloseChat = () => {},
   tabs,
+  hideSidebar = false,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -66,7 +69,7 @@ export function AppShell({
         onCloseChat={onCloseChat}
       />
       <div className="layout">
-        {sidebarOpen ? (
+        {sidebarOpen && !hideSidebar ? (
         <Sidebar
           activeId={activeNav}
           onNavigate={onNavigate}

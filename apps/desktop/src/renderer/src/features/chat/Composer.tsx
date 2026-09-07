@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, ArrowUp, Paperclip, X } from 'lucide-react'
+import { Plus, Globe, Mic, ArrowUp, Paperclip, X } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
@@ -55,6 +55,7 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
+  const [micActive, setMicActive] = useState(false)
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -172,6 +173,14 @@ export function Composer({
         />
 
         <div className="composer-bionic-right">
+          <button
+            type="button"
+            className={`composer-icon-btn mic-btn ${micActive ? 'recording' : ''}`}
+            aria-label={micActive ? 'Microphone on' : 'Microphone off'}
+            onClick={() => setMicActive((v) => !v)}
+          >
+            <Mic size={16} aria-hidden />
+          </button>
           <ModelSelector
             active={active}
             models={models}
