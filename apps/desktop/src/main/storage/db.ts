@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { getDbPath, ensureDir, getSovaraDataDir } from './paths'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 export interface DbSessionRow {
   id: string
@@ -11,6 +11,15 @@ export interface DbSessionRow {
   createdAt: number
   updatedAt: number
   archived?: number | null
+  projectId?: string | null
+}
+
+export interface DbProjectRow {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: number
+  updatedAt: number
 }
 
 /**
@@ -27,7 +36,11 @@ export class SovaraDb {
   private stmtGetSession!: ReturnType<DatabaseSync['prepare']>
   private stmtListSessions!: ReturnType<DatabaseSync['prepare']>
   private stmtListArchivedSessions!: ReturnType<DatabaseSync['prepare']>
+  private stmtListSessionsByProject!: ReturnType<DatabaseSync['prepare']>
+  private stmtListGlobalSessions!: ReturnType<DatabaseSync['prepare']>
   private stmtUpdateSession!: ReturnType<DatabaseSync['prepare']>
+  private stmtRenameSession!: ReturnType<DatabaseSync['prepare']>
+  private stmtDeleteSession!: ReturnType<DatabaseSync['prepare']>
   private stmtArchiveSession!: ReturnType<DatabaseSync['prepare']>
   private stmtUnarchiveSession!: ReturnType<DatabaseSync['prepare']>
   private stmtUpsertMeta!: ReturnType<DatabaseSync['prepare']>
@@ -67,7 +80,16 @@ export class SovaraDb {
         title TEXT NOT NULL,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL,
-        archived INTEGER
+        archived INTEGER,
+        projectId TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        rootPath TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS session_indexes (
@@ -123,14 +145,36 @@ export class SovaraDb {
     } catch {
       // column already exists — ignore
     }
+    // Migration v2: project scoping — projects table + sessions.projectId
+    try {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN projectId TEXT')
+    } catch {
+      // column already exists — ignore
+    }
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        rootPath TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
+      )`)
+    } catch {
+      // ignore
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_projectId ON sessions(projectId)')
   }
 
   private prepareStatements(): void {
-    this.stmtInsertSession = this.db.prepare('INSERT INTO sessions (id, title, createdAt, updatedAt) VALUES (?, ?, ?, ?)')
-    this.stmtGetSession = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE id = ?')
-    this.stmtListSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE archived IS NULL OR archived = 0 ORDER BY updatedAt DESC, id DESC')
-    this.stmtListArchivedSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE archived IS NOT NULL AND archived != 0 ORDER BY updatedAt DESC, id DESC')
+    this.stmtInsertSession = this.db.prepare('INSERT INTO sessions (id, title, createdAt, updatedAt, projectId) VALUES (?, ?, ?, ?, ?)')
+    this.stmtGetSession = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived, projectId FROM sessions WHERE id = ?')
+    this.stmtListSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived, projectId FROM sessions WHERE archived IS NULL OR archived = 0 ORDER BY updatedAt DESC, id DESC')
+    this.stmtListArchivedSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived, projectId FROM sessions WHERE archived IS NOT NULL AND archived != 0 ORDER BY updatedAt DESC, id DESC')
+    this.stmtListSessionsByProject = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived, projectId FROM sessions WHERE projectId = ? AND (archived IS NULL OR archived = 0) ORDER BY updatedAt DESC, id DESC')
+    this.stmtListGlobalSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived, projectId FROM sessions WHERE projectId IS NULL AND (archived IS NULL OR archived = 0) ORDER BY updatedAt DESC, id DESC')
     this.stmtUpdateSession = this.db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ?')
+    this.stmtRenameSession = this.db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ?')
+    this.stmtDeleteSession = this.db.prepare('DELETE FROM sessions WHERE id = ?')
     this.stmtArchiveSession = this.db.prepare('UPDATE sessions SET archived = ? WHERE id = ?')
     this.stmtUnarchiveSession = this.db.prepare('UPDATE sessions SET archived = NULL WHERE id = ?')
     this.stmtUpsertMeta = this.db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')

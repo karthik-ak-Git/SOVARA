@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, MicOff, ArrowUp, Paperclip, X, Loader2, MicVocal } from 'lucide-react'
+import { Plus, Globe, Mic, ArrowUp, Paperclip, X, Loader2, MicVocal } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'

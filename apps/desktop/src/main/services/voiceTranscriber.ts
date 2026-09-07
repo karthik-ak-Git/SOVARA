@@ -18,7 +18,7 @@ export interface TranscribeResult {
 export interface TranscribeOptions {
   /** Language code (default: 'en'). Use 'auto' for auto-detect. */
   language?: string
-  /** Whisper model size (default: 'tiny'). */
+  /** Whisper model size (default: 'base' — ZukuriFlow parity). */
   model?: 'tiny' | 'base' | 'small' | 'medium' | 'large-v3'
 }
 
@@ -226,7 +226,7 @@ export class VoiceTranscriber {
       pcm: audioFloat32,
       sampleRate,
       language: options?.language ?? 'en',
-      model: options?.model ?? 'tiny',
+      model: options?.model ?? 'base',
     })
 
     const data = result as Record<string, unknown>
