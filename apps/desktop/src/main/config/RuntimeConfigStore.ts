@@ -147,6 +147,15 @@ export class RuntimeConfigStore {
     this.db.setMeta('active_model', JSON.stringify(null))
   }
 
+  getExecMode(): string {
+    const raw = this.db.getMeta('exec_mode')
+    return raw ?? 'ask'
+  }
+
+  setExecMode(mode: string): void {
+    this.db.setMeta('exec_mode', mode)
+  }
+
   close(): void {
     this.db.close()
   }

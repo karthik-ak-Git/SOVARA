@@ -11,6 +11,7 @@ import { SystemResourceStub } from './ports/SystemResourceStub'
 import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
+import { isExecMode, type ExecMode } from '../services/execPermissions'
 
 export interface AppBackendPorts {
   persistence: PersistencePort
@@ -70,7 +71,6 @@ export class AppBackend {
       arch: process.arch
     }
   }
-
   getSystem(): { cpus: number; totalMemMB: number; freeMemMB: number; homedir: string; userData: string } {
     return {
       cpus: os.cpus().length,
@@ -79,6 +79,18 @@ export class AppBackend {
       homedir: os.homedir(),
       userData: app.getPath('userData')
     }
+  }
+
+  /** AI command permission level (persisted, default 'ask'). */
+  getExecMode(): ExecMode {
+    const raw = this.runtimeConfig.getExecMode()
+    return isExecMode(raw) ? raw : 'ask'
+  }
+
+  setExecMode(mode: ExecMode): ExecMode {
+    if (!isExecMode(mode)) throw new Error(`invalid exec mode: ${String(mode)}`)
+    this.runtimeConfig.setExecMode(mode)
+    return mode
   }
 
   async dispose(): Promise<void> {

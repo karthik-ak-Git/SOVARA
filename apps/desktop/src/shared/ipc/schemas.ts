@@ -96,3 +96,9 @@ export const zLibrarySetDirectory = z
   .strict()
 
 export const zSettingsSet = z.record(z.unknown())
+
+export const zExecMode = z.enum(['off', 'ask', 'review', 'allow'])
+
+export const zToolDispatch = z
+  .object({ name: z.string().min(1).max(128), args: z.record(z.unknown()).default({}) })
+  .strict()

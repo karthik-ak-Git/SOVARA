@@ -6,13 +6,12 @@ import { useModelWorkbench } from './features/models/useModelWorkbench'
 import { ChatView } from './features/chat/ChatView'
 import type { FileAttachment } from './features/chat/Composer'
 import { CreateProjectModal } from './components/modals/CreateProjectModal'
-import type { ExecMode } from './components/ui/PermissionControl'
 import { ModelsPage } from './features/models/ModelsPage'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
 import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
-import { createProject, listProjects, pickFolder, type ProjectView } from './lib/ipc'
+import { createProject, listProjects, pickFolder, getExecMode, setExecMode, type ProjectView, type ExecMode } from './lib/ipc'
 
 interface Info {
   name: string
@@ -30,7 +29,7 @@ export function App(): React.JSX.Element {
   const [activeTab, setActiveTab] = useState('session')
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [execMode, setExecMode] = useState<ExecMode>('ask')
+  const [execMode, setExecModeState] = useState<ExecMode>('ask')
   const [reasoningEnabled, setReasoningEnabled] = useState(false)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
 
@@ -41,7 +40,13 @@ export function App(): React.JSX.Element {
     if (window.sovara) {
       window.sovara.invoke('app:getInfo').then((v) => setInfo(v as Info)).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       listProjects().then(setProjects).catch(() => {})
+      getExecMode().then(setExecModeState).catch(() => {})
     }
+  }, [])
+
+  const handleExecModeChange = useCallback((mode: ExecMode): void => {
+    setExecModeState(mode)
+    setExecMode(mode).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
   }, [])
 
   const refreshProjects = useCallback((): void => {
@@ -194,7 +199,7 @@ export function App(): React.JSX.Element {
             projectCount={selectedProjectId ? projectChats(selectedProjectId).length : 0}
             onNewProject={() => setProjectModalOpen(true)}
             execMode={execMode}
-            onExecModeChange={setExecMode}
+            onExecModeChange={handleExecModeChange}
             execAvailable={execMode !== 'off'}
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={setReasoningEnabled}

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ReactElement } from 'react'
-import { Shield, ChevronDown } from 'lucide-react'
+import { Shield, ChevronDown, TriangleAlert } from 'lucide-react'
 
 export type ExecMode = 'off' | 'ask' | 'review' | 'allow'
 
@@ -47,20 +47,27 @@ export function PermissionControl({ mode, onChange }: PermissionControlProps): R
       {open ? (
         <div className="perm-dropdown" role="listbox" aria-label="Permission modes">
           {MODES.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              role="option"
-              aria-selected={m.value === mode}
-              className={`perm-item ${m.value === mode ? 'perm-item--active' : ''}`}
-              onClick={() => {
-                onChange(m.value)
-                setOpen(false)
-              }}
-            >
-              <span className="perm-item-label">{m.label}</span>
-              <span className="perm-item-desc">{m.desc}</span>
-            </button>
+            <div key={m.value}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={m.value === mode}
+                className={`perm-item ${m.value === mode ? 'perm-item--active' : ''}`}
+                onClick={() => {
+                  onChange(m.value)
+                  setOpen(false)
+                }}
+              >
+                <span className="perm-item-label">{m.label}</span>
+                <span className="perm-item-desc">{m.desc}</span>
+              </button>
+              {m.value === 'allow' ? (
+                <div className="perm-warn" role="note" aria-label="Full access warning">
+                  <TriangleAlert size={12} aria-hidden />
+                  <span>Full access — the AI can run any command on this machine without asking. Use only with trusted models.</span>
+                </div>
+              ) : null}
+            </div>
           ))}
         </div>
       ) : null}

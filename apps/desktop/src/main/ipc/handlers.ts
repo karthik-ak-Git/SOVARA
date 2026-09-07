@@ -4,7 +4,8 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zToolDispatch } from '@shared/ipc/schemas'
+import { gateDispatch } from '../services/execPermissions'
 import { VoiceTranscriber } from '../services/voiceTranscriber'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
@@ -217,6 +218,36 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('settings:get', async () => ({ theme: 'dark', network: { allowModelDownload: false } }))
 
   ipcMain.handle('settings:set', async (_e, _raw: unknown) => ({ ok: true }))
+
+  // ── Exec permissions — the AI command levels, enforced on every dispatch ──
+  ipcMain.handle('exec:getMode', async () => {
+    return { mode: getBackend().getExecMode() }
+  })
+
+  ipcMain.handle('exec:setMode', async (_e, raw: unknown) => {
+    const parsed = zExecMode.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid exec mode: ${parsed.error.message}`)
+    return { mode: getBackend().setExecMode(parsed.data) }
+  })
+
+  ipcMain.handle('tools:list', async () => {
+    return getBackend().ports.tools.list()
+  })
+
+  ipcMain.handle('tools:dispatch', async (_e, raw: unknown) => {
+    const parsed = zToolDispatch.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid tools:dispatch payload: ${parsed.error.message}`)
+    const mode = getBackend().getExecMode()
+    const verdict = gateDispatch(mode, parsed.data.name)
+    if (!verdict.allowed) {
+      return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message }
+    }
+    const result = await getBackend().ports.tools.dispatch(
+      parsed.data.name,
+      parsed.data.args as Record<string, unknown>
+    )
+    return { ok: true, autoApproved: verdict.autoApproved, result }
+  })
 
   // ── Usage stats ──
   ipcMain.handle('usage:getTotal', async () => {

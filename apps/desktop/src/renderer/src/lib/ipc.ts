@@ -166,6 +166,32 @@ export async function getSystemResources(): Promise<SystemResourcesView> {
   return (await sovara().invoke('system:getResources')) as SystemResourcesView
 }
 
+// ── Exec permissions (AI command levels) ──
+export type ExecMode = 'off' | 'ask' | 'review' | 'allow'
+
+export async function getExecMode(): Promise<ExecMode> {
+  const r = (await sovara().invoke('exec:getMode')) as { mode: ExecMode }
+  return r.mode
+}
+
+export async function setExecMode(mode: ExecMode): Promise<ExecMode> {
+  const r = (await sovara().invoke('exec:setMode', mode)) as { mode: ExecMode }
+  return r.mode
+}
+
+export interface ToolDispatchResult {
+  ok: boolean
+  blocked?: boolean
+  reason?: 'disabled' | 'needs-approval'
+  message?: string
+  autoApproved?: boolean
+  result?: string
+}
+
+export async function dispatchTool(name: string, args?: Record<string, unknown>): Promise<ToolDispatchResult> {
+  return (await sovara().invoke('tools:dispatch', { name, args: args ?? {} })) as ToolDispatchResult
+}
+
 // ── Window controls (frameless window) ──
 export async function minimizeWindow(): Promise<void> {
   await sovara().invoke('window:minimize')

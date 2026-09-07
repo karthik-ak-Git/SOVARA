@@ -55,6 +55,12 @@ export const IPC_CHANNELS = {
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },
   'library:setDirectory': { type: 'invoke' as const },
+  // Exec permissions (AI command levels)
+  'exec:getMode': { type: 'invoke' as const },
+  'exec:setMode': { type: 'invoke' as const },
+  // Tools (gated by exec permission level)
+  'tools:list': { type: 'invoke' as const },
+  'tools:dispatch': { type: 'invoke' as const },
   // Voice transcription
   'voice:transcribe': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
