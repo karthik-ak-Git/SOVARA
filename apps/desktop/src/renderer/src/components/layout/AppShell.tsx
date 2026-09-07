@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { Sidebar, type NavId } from './Sidebar'
 
@@ -41,10 +41,20 @@ export function AppShell({
   selectedChatId = null,
   onSelectChat = () => {},
 }: Props): React.JSX.Element {
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
     <div className="app">
-      <TopBar activeTab={activeTab} onTabSelect={onTabSelect} onNewSession={onNewSession} />
+      <TopBar
+        activeTab={activeTab}
+        onTabSelect={onTabSelect}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        chats={recentChats}
+        selectedChatId={selectedChatId}
+        onSelectChat={onSelectChat}
+      />
       <div className="layout">
+        {sidebarOpen ? (
         <Sidebar
           activeId={activeNav}
           onNavigate={onNavigate}
@@ -60,6 +70,7 @@ export function AppShell({
           selectedChatId={selectedChatId}
           onSelectChat={onSelectChat}
         />
+        ) : null}
         <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content">
           {children}
         </main>

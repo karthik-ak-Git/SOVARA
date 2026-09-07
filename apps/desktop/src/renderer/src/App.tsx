@@ -33,7 +33,7 @@ export function App(): React.JSX.Element {
   const [info, setInfo] = useState<Info | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [activeNav, setActiveNav] = useState<NavId>('chat')
-  const [activeTab, setActiveTab] = useState('new-tab')
+  const [activeTab, setActiveTab] = useState('session')
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [execMode, setExecMode] = useState<ExecMode>('ask')
@@ -66,7 +66,8 @@ export function App(): React.JSX.Element {
 
   const handleTabSelect = useCallback((tabId: string): void => {
     setActiveTab(tabId)
-  }, [])
+    chat.switchSession(tabId)
+  }, [chat])
 
   const handleSend = useCallback((content: string, attachments?: FileAttachment[]): void => {
     let enrichedContent = content

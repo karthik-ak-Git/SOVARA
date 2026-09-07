@@ -15,10 +15,9 @@
     "jsx": "react-jsx",
     "jsxImportSource": "react",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@renderer/*": ["src/renderer/src/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@renderer/*": ["./src/renderer/src/*"]
     },
     "outDir": "out",
     "rootDir": ".",

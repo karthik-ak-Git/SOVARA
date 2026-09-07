@@ -132,9 +132,10 @@ describe('Renderer shell — navigation & layout', () => {
   })
 
   it('TopBar shows tabs and window controls', () => {
-    render(<TopBar />)
-    expect(screen.getByRole('tab', { name: /New tab/ })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /Sovara Session/ })).toBeInTheDocument()
+    render(<TopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" />)
+    expect(screen.getByRole('tab', { name: /Hello/ })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /New tab/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /Sovara Session/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Close/ })).toBeInTheDocument()

@@ -329,12 +329,13 @@ export function Composer({
 
   const micIcon = (): ReactElement => {
     if (voiceState === 'transcribing') return <Loader2 size={16} className="spin" aria-hidden />
-    if (voiceState === 'recording') return <MicOff size={16} aria-hidden />
+    // Listening state keeps the Mic glyph (never swaps to MicOff) — the red
+    // `recording` class + "Listening…" placeholder carry the state instead.
     return <Mic size={16} aria-hidden />
   }
 
   const micLabel = voiceState === 'recording'
-    ? 'Stop recording'
+    ? 'Listening — click to stop and transcribe'
     : voiceState === 'transcribing'
       ? 'Transcribing…'
       : 'Voice input'
