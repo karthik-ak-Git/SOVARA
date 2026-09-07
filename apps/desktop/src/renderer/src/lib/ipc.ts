@@ -387,3 +387,22 @@ export async function getLibraryDirectory(): Promise<{ path: string }> {
 export async function setLibraryDirectory(path: string): Promise<{ ok: boolean }> {
   return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean }
 }
+
+// ── Voice transcription (local faster-whisper) ──
+export interface VoiceTranscribeResult {
+  ok: boolean
+  text?: string
+  raw?: string
+  language?: string
+  duration?: number
+  transcribeTime?: number
+  error?: string
+}
+
+export async function getVoiceStatus(): Promise<{ ready: boolean }> {
+  return (await sovara().invoke('voice:status')) as { ready: boolean }
+}
+
+export async function transcribeAudio(audioBase64: string, filename: string): Promise<VoiceTranscribeResult> {
+  return (await sovara().invoke('voice:transcribe', { audio: audioBase64, filename })) as VoiceTranscribeResult
+}

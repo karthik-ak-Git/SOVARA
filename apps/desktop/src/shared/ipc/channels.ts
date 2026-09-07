@@ -64,6 +64,9 @@ export const IPC_CHANNELS = {
   // Tools (gated by exec permission level)
   'tools:list': { type: 'invoke' as const },
   'tools:dispatch': { type: 'invoke' as const },
+  // Voice transcription (local faster-whisper)
+  'voice:transcribe': { type: 'invoke' as const },
+  'voice:status': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
 } as const

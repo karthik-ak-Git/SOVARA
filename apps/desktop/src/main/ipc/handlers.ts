@@ -8,6 +8,7 @@ import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLo
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { scanSkillsSources } from '../services/skillsScanner'
+import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility } from '../services/hardwareCheck'
@@ -357,5 +358,22 @@ export function registerIpcHandlers(): void {
     const parsed = zLibrarySetDirectory.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
     return { ok: true, path: parsed.data.path }
+  })
+
+  // ── Voice transcription (local faster-whisper) ──
+  ipcMain.handle('voice:status', async () => {
+    return { ready: isVoiceReady() }
+  })
+
+  ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
+    const parsed = (await import('@shared/ipc/schemas')).zVoiceTranscribe.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid voice:transcribe payload: ${parsed.error.message}`)
+    try {
+      const buf = Buffer.from(parsed.data.audio, 'base64')
+      const result = await transcribeAudio(buf, parsed.data.filename)
+      return { ok: true, ...result }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 }

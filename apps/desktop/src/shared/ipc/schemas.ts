@@ -120,3 +120,10 @@ export const zExecMode = z.enum(['off', 'ask', 'review', 'allow'])
 export const zToolDispatch = z
   .object({ name: z.string().min(1).max(128), args: z.record(z.unknown()).default({}) })
   .strict()
+
+export const zVoiceTranscribe = z
+  .object({
+    audio: z.string().min(1), // base64-encoded audio
+    filename: z.string().min(1).max(256),
+  })
+  .strict()

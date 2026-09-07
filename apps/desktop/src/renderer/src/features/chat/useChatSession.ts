@@ -16,13 +16,14 @@ import {
 import type { ActiveModelState } from '@shared/types/models'
 
 /**
- * System notification when a session finishes while the window isn't
- * focused. Honors Settings → General → "Session completion notifications".
- * Permission is requested lazily, only when a notification is actually due.
+ * System notification when a session finishes while it isn't focused —
+ * window hidden/minimized OR a different session is being viewed. Honors
+ * Settings → General → "Session completion notifications". Permission is
+ * requested lazily, only when a notification is actually due.
  */
-async function maybeNotifyCompletion(sessionTitle: string): Promise<void> {
-  if (typeof document !== 'undefined' && !document.hidden) return
+async function maybeNotifyCompletion(sessionTitle: string, sessionFocused: boolean): Promise<void> {
   if (typeof Notification === 'undefined') return
+  if (typeof document !== 'undefined' && !document.hidden && sessionFocused) return
   let enabled = true
   try {
     enabled = (await getAppSettings()).sessionNotifications
@@ -107,28 +108,41 @@ export function useChatSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Stream subscription: deltas for the selected session only.
+  // Stream subscription: deltas for the selected session only, but
+  // completion of ANY session refreshes + may notify (background sessions
+  // finish while another project is focused — the notify setting's case).
   useEffect(() => {
     if (!window.sovara) return
     const dispose = onSessionEvents((ev) => {
-      if (!ev || ev.sessionId !== selectedRef.current) return
+      if (!ev) return
+      const isSelected = ev.sessionId === selectedRef.current
       if (ev.kind === 'assistant-delta' && ev.text) {
+        if (!isSelected) return
         setPhase('streaming')
         setStreamingText((t) => t + (ev.text ?? ''))
       } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
-        const id = selectedRef.current
-        setStreamingText('')
-        setPhase('idle')
-        if (id) {
+        if (isSelected) {
+          setStreamingText('')
+          setPhase('idle')
           const seq = ++loadSeq.current
-          void refreshEvents(id, seq).then(() => refreshSessions()).then((list) => {
+          void refreshEvents(ev.sessionId, seq).then(() => refreshSessions()).then((list) => {
             if (ev.kind === 'assistant-done') {
-              const title = list.find((s) => s.id === id)?.title ?? ''
-              void maybeNotifyCompletion(title)
+              const title = list.find((s) => s.id === ev.sessionId)?.title ?? ''
+              void maybeNotifyCompletion(title, true)
+            }
+          })
+        } else {
+          // Background session: refresh the list so the sidebar updates,
+          // then notify (not focused by definition).
+          void refreshSessions().then((list) => {
+            if (ev.kind === 'assistant-done') {
+              const title = list.find((s) => s.id === ev.sessionId)?.title ?? ''
+              void maybeNotifyCompletion(title, false)
             }
           })
         }
       } else if (ev.kind === 'assistant-error') {
+        if (!isSelected) return
         setStreamingText('')
         setPhase('idle')
         setError(ev.error ?? 'The local model interrupted the reply.')

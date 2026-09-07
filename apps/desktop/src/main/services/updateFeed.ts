@@ -17,11 +17,14 @@ export interface UpdateCheckResult {
   message: string
 }
 
-type FetchFn = (url: string, init?: { signal?: AbortSignal }) => Promise<{
+type FetchFn = (url: string, init?: { signal?: AbortSignal; headers?: Record<string, string> }) => Promise<{
   ok: boolean
   status: number
   json: () => Promise<unknown>
 }>
+
+/** GitHub's API rejects requests without a User-Agent (HTTP 403). */
+const FEED_USER_AGENT = 'sovara-desktop/0.1.0'
 
 function normalizeVersion(v: unknown): string | null {
   if (typeof v !== 'string') return null
@@ -83,8 +86,17 @@ export async function checkForUpdates(
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetchFn(url.toString(), { signal: ctrl.signal })
+    const res = await fetchFn(url.toString(), {
+      signal: ctrl.signal,
+      headers: {
+        'user-agent': FEED_USER_AGENT,
+        accept: 'application/vnd.github+json, application/json',
+      },
+    })
     if (!res.ok) {
+      if (res.status === 403 && url.hostname === 'api.github.com') {
+        return { status: 'error', current: currentVersion, latest: null, message: 'GitHub refused the request (HTTP 403) — usually API rate limiting. Try again in a few minutes.' }
+      }
       return { status: 'error', current: currentVersion, latest: null, message: `Feed returned HTTP ${res.status}.` }
     }
     const latest = extractLatest(await res.json())

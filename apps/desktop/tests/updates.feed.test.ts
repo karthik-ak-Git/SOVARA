@@ -47,6 +47,22 @@ describe('checkForUpdates', () => {
     expect((await checkForUpdates('https://x/y.json', '1.0.0', stubFetch({ nope: 1 }))).status).toBe('error')
   })
 
+  it('sends a User-Agent (GitHub rejects header-less requests with 403)', async () => {
+    let seen: Record<string, string> = {}
+    const capture = async (_url: string, init?: { headers?: Record<string, string> }) => {
+      seen = init?.headers ?? {}
+      return { ok: true, status: 200, json: async () => ({ version: '1.0.0' }) }
+    }
+    await checkForUpdates('https://api.github.com/repos/a/b/releases', '1.0.0', capture)
+    expect(seen['user-agent']).toMatch(/sovara/)
+  })
+
+  it('explains GitHub 403 as rate limiting', async () => {
+    const r = await checkForUpdates('https://api.github.com/repos/a/b/releases', '1.0.0', stubFetch({}, false, 403))
+    expect(r.status).toBe('error')
+    expect(r.message).toMatch(/rate limiting/)
+  })
+
   it('errors when the feed is unreachable', async () => {
     const r = await checkForUpdates('https://x/y.json', '1.0.0', async () => { throw new Error('down') })
     expect(r.status).toBe('error')

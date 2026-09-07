@@ -1,36 +1,18 @@
 /**
- * Voice transcription via @huggingface/transformers WASM whisper.
- * Runs entirely in the renderer process — no IPC, no separate server.
- * Model is downloaded on first use and cached by the browser.
+ * Voice transcription via Web Speech API (built into Chromium/Electron).
+ * Zero external dependencies — uses the OS speech recognition engine.
+ * Runs entirely in the renderer process — no IPC, no CDN, no WASM.
  */
 
-import { pipeline, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type SpeechRecognitionInstance = any
+type SpeechRecognitionEventResult = any
 
-let pipe: AutomaticSpeechRecognitionPipeline | null = null
-let loading = false
-let loadPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
-
-const MODEL_ID = 'onnx-community/whisper-base'
-
-async function getPipe(): Promise<AutomaticSpeechRecognitionPipeline> {
-  if (pipe) return pipe
-  if (loadPromise) return loadPromise
-
-  loading = true
-  loadPromise = (async () => {
-    try {
-      const p = await pipeline('automatic-speech-recognition', MODEL_ID, {
-        dtype: 'fp32',
-        device: 'wasm',
-      } as Parameters<typeof pipeline>[2] & { dtype: string; device: string })
-      pipe = p
-      return p
-    } finally {
-      loading = false
-    }
-  })()
-
-  return loadPromise
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionInstance
+    webkitSpeechRecognition?: new () => SpeechRecognitionInstance
+  }
 }
 
 export interface TranscribeResult {
@@ -40,30 +22,14 @@ export interface TranscribeResult {
 }
 
 /**
- * Convert a Blob (from MediaRecorder) to Float32Array at 16kHz mono.
- * This is required by the whisper model.
+ * Check if Web Speech API is available.
  */
-async function blobToFloat32Array(blob: Blob): Promise<{ audio: Float32Array; sampleRate: number }> {
-  const arrayBuffer = await blob.arrayBuffer()
-  const audioCtx = new OfflineAudioContext(1, 1, 16000)
-  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
-
-  // Resample to 16kHz mono
-  const offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000)
-  const source = offlineCtx.createBufferSource()
-  source.buffer = audioBuffer
-  source.connect(offlineCtx.destination)
-  source.start(0)
-
-  const rendered = await offlineCtx.startRendering()
-  const channelData = rendered.getChannelData(0)
-
-  return { audio: channelData, sampleRate: 16000 }
+export function isSpeechRecognitionAvailable(): boolean {
+  return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
 }
 
 /**
  * Refine transcribed text — apply jargon mapping, capitalization, contractions.
- * Ported from ZukuriFlow's TextRefiner for accuracy.
  */
 function refineText(text: string): string {
   if (!text.trim()) return text
@@ -130,7 +96,6 @@ function refineText(text: string): string {
     [/\bsde\b/gi, 'SDE'],
   ]
 
-  // Apply jargon
   for (const [pattern, replacement] of jargonMap) {
     text = text.replace(pattern, replacement)
   }
@@ -176,49 +141,68 @@ function refineText(text: string): string {
 }
 
 /**
- * Transcribe audio from a Blob using WASM whisper.
- * The blob should come from MediaRecorder (webm/opus or similar).
+ * Transcribe speech using the Web Speech API.
+ * Returns a promise that resolves when the user stops speaking (or stops the mic).
  */
-export async function transcribeAudioBlob(blob: Blob): Promise<TranscribeResult> {
+export function startSpeechRecognition(): {
+  promise: Promise<TranscribeResult>
+  stop: () => void
+} {
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!Ctor) {
+    throw new Error('SpeechRecognition API not available')
+  }
+
+  const recognition: SpeechRecognitionInstance = new Ctor()
+  recognition.continuous = true
+  recognition.interimResults = false
+  recognition.lang = 'en-US'
+  recognition.maxAlternatives = 1
+
   const t0 = performance.now()
 
-  // Ensure pipeline is loaded
-  const whisper = await getPipe()
+  const promise = new Promise<TranscribeResult>((resolve, reject) => {
+    recognition.onresult = (event: SpeechRecognitionEventResult) => {
+      let finalText = ''
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalText += event.results[i][0].transcript
+        }
+      }
 
-  // Convert blob to Float32Array at 16kHz
-  const { audio } = await blobToFloat32Array(blob)
+      const elapsed = (performance.now() - t0) / 1000
+      const raw = finalText.trim()
+      const text = refineText(raw)
 
-  // Run whisper inference
-  const result = await whisper(audio, {
-    chunk_length_s: 30,
-    stride_length_s: 5,
-    return_timestamps: false,
+      console.log(`[voice] Transcribed in ${elapsed.toFixed(2)}s: "${text.slice(0, 60)}..."`)
+
+      resolve({
+        text,
+        language: event.results[0]?.[0]?.language ?? 'en-US',
+        duration: elapsed,
+      })
+    }
+
+    recognition.onerror = (event: { error: string }) => {
+      console.error('[voice] Speech recognition error:', event.error)
+      if (event.error === 'no-speech') {
+        resolve({ text: '', language: 'en-US', duration: 0 })
+      } else {
+        reject(new Error(`Speech recognition error: ${event.error}`))
+      }
+    }
+
+    recognition.onend = () => {
+      // If no result was received, resolve with empty
+    }
   })
 
-  const elapsed = (performance.now() - t0) / 1000
-
-  // Extract text from result
-  const raw = typeof result === 'string'
-    ? result
-    : Array.isArray(result)
-      ? result.map((r: { text?: string }) => r.text ?? '').join(' ')
-      : (result as { text?: string }).text ?? ''
-
-  // Refine text (jargon, capitalization, contractions)
-  const text = refineText(raw)
-
-  console.log(`[voice] Transcribed in ${elapsed.toFixed(2)}s: "${text.slice(0, 60)}..."`)
+  recognition.start()
 
   return {
-    text,
-    language: 'auto',
-    duration: audio.length / 16000,
+    promise,
+    stop: () => {
+      recognition.stop()
+    },
   }
-}
-
-/**
- * Check if whisper model is currently loading.
- */
-export function isWhisperLoading(): boolean {
-  return loading
 }

@@ -41,9 +41,9 @@ export function createMainWindow(): BrowserWindow {
   // ── CSP (sovereign default: no external connects except loopback allowlisted in CSP) ──
   const isDev = Boolean(process.env['ELECTRON_RENDERER_URL'])
   const devCsp =
-    "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https://huggingface.co https://*.huggingface.co https://*.hf.co https://cdn.jsdelivr.net; wasm-unsafe-eval"
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*"
   const prodCsp =
-    "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; script-src-elem 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* https://huggingface.co https://*.huggingface.co https://*.hf.co https://cdn.jsdelivr.net; wasm-unsafe-eval"
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*"
   const activeCsp = isDev ? devCsp : prodCsp
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {

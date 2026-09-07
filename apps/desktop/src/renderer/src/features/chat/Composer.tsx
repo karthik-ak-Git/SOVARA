@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type Reac
 import { Plus, Globe, Mic, ArrowUp, Paperclip, X, Loader2 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
-import { transcribeAudioBlob } from '../../lib/voiceTranscription'
+import { transcribeAudio } from '../../lib/ipc'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
 interface ComposerProps {
@@ -115,7 +115,6 @@ export function Composer({
       streamRef.current = stream
       audioChunksRef.current = []
 
-      // Prefer webm/opus, fall back to whatever the browser supports
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : MediaRecorder.isTypeSupported('audio/webm')
@@ -142,19 +141,27 @@ export function Composer({
         audioChunksRef.current = []
 
         if (blob.size < 100) {
-          // Too small — probably no actual audio
           setMicLoading(false)
           return
         }
 
         try {
-          // Transcribe using internal WASM whisper — no IPC needed
-          const result = await transcribeAudioBlob(blob)
+          // Convert blob to base64
+          const arrayBuffer = await blob.arrayBuffer()
+          const bytes = new Uint8Array(arrayBuffer)
+          let binary = ''
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i])
+          }
+          const base64 = btoa(binary)
 
-          if (result.text && result.text.trim()) {
-            // Append transcribed text to current draft
+          const result = await transcribeAudio(base64, 'recording.webm')
+
+          if (result.ok && result.text && result.text.trim()) {
             const prefix = value.trim() ? value.trim() + ' ' : ''
             onChange(prefix + result.text.trim())
+          } else if (!result.ok) {
+            console.error('[Composer] Transcription error:', result.error)
           }
         } catch (err) {
           console.error('[Composer] Transcription failed:', err)
@@ -163,7 +170,7 @@ export function Composer({
         }
       }
 
-      recorder.start(250) // collect data every 250ms
+      recorder.start(250)
       setMicActive(true)
     } catch (err) {
       console.error('[Composer] Microphone access denied:', err)
