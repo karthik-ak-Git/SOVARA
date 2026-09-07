@@ -7,6 +7,10 @@ export const zSessionsCreate = z
 
 export const zSessionId = z.string().min(1).max(128)
 
+export const zSessionArchive = z
+  .object({ sessionId: zSessionId })
+  .strict()
+
 export const zChatSend = z
   .object({
     sessionId: z.string().min(1).max(128),
@@ -52,6 +56,27 @@ export const zModelsSelect = z
 
 export const zModelsLoad = z
   .object({ modelId: z.string().min(1).max(128) })
+  .strict()
+
+export const zSkillsToggle = z
+  .object({ sourceName: z.string().min(1).max(128), enabled: z.boolean() })
+  .strict()
+
+export const zExploreListModels = z
+  .object({ sortBy: z.string().optional(), query: z.string().optional() })
+  .strict()
+  .default({})
+
+export const zExploreGetModel = z
+  .object({ modelId: z.string().min(1).max(128) })
+  .strict()
+
+export const zExploreGetCompatibility = z
+  .object({ modelId: z.string().min(1).max(128) })
+  .strict()
+
+export const zLibrarySetDirectory = z
+  .object({ path: z.string().min(1).max(512) })
   .strict()
 
 export const zSettingsSet = z.record(z.unknown())

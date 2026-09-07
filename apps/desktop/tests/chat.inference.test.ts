@@ -261,9 +261,14 @@ function makePersistence(): PersistencePort & { events: Map<string, SessionEvent
     async list(): Promise<SessionHeader[]> {
       return []
     },
+    async listArchived(): Promise<SessionHeader[]> {
+      return []
+    },
     async get(): Promise<SessionHeader | null> {
       return null
     },
+    async archive(): Promise<void> {},
+    async unarchive(): Promise<void> {},
     async appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView> {
       const list = events.get(String(sessionId)) ?? []
       const ev: SessionEventView = { seq: list.length, time: Date.now(), type, data }
@@ -556,7 +561,9 @@ describe('Commit 7 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        expect(f.replace(/\\/g, '/'), `fetch outside HttpClient: ${f}`).toMatch(/main\/network\/HttpClient\.ts$/)
+        // Exceptions: HttpClient (loopback inference) and voiceTranscriber (local faster-whisper server)
+        const rel = f.replace(/\\/g, '/')
+        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/voiceTranscriber\.ts)$/)
       }
     }
   })

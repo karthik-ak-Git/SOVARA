@@ -18,6 +18,7 @@ export interface SessionHeaderView {
   title: string
   createdAt: number
   updatedAt: number
+  archived?: number | null
 }
 
 export interface SessionEventView {
@@ -42,6 +43,18 @@ export async function createSession(title: string): Promise<SessionHeaderView> {
 
 export async function getSessionEvents(sessionId: string): Promise<SessionEventView[]> {
   return (await sovara().invoke('sessions:getEvents', sessionId)) as SessionEventView[]
+}
+
+export async function archiveSession(sessionId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('sessions:archive', { sessionId })) as { ok: boolean }
+}
+
+export async function unarchiveSession(sessionId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('sessions:unarchive', { sessionId })) as { ok: boolean }
+}
+
+export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
+  return (await sovara().invoke('sessions:listArchived')) as SessionHeaderView[]
 }
 
 export async function sendChatMessage(
@@ -150,4 +163,94 @@ export async function getTotalUsage(): Promise<TokenUsage> {
 
 export async function getUsageByModel(): Promise<ModelUsage[]> {
   return (await sovara().invoke('usage:getByModel')) as ModelUsage[]
+}
+
+// ── Skills scanning ──
+export interface SkillsSource {
+  name: string
+  path: string
+  skillCount: number
+  enabled: boolean
+}
+
+export async function scanSkills(): Promise<SkillsSource[]> {
+  return (await sovara().invoke('skills:scan')) as SkillsSource[]
+}
+
+export async function toggleSkillsSource(
+  sourceName: string,
+  enabled: boolean
+): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('skills:toggle', { sourceName, enabled })) as { ok: boolean }
+}
+
+// ── Explore (HuggingFace catalog) ──
+export interface ExploreModelFile {
+  format: string
+  quantization?: string
+  sizeGB: number
+  downloadUrl: string
+}
+
+export interface ExploreModel {
+  id: string
+  name: string
+  slug: string
+  author: string
+  description: string
+  longDescription: string
+  downloads: number
+  likes: number
+  staffPick: boolean
+  updatedAt: string
+  parameters: string
+  architecture: string
+  capabilities: string[]
+  files: ExploreModelFile[]
+  tags: string[]
+  iconType: 'hf' | 'google' | 'meta' | 'mistral' | 'qwen' | 'microsoft' | 'deepseek'
+}
+
+export interface CompatibilityResult {
+  fitsInMemory: boolean
+  estimatedRamUsageGB: number
+  estimatedVramUsageGB?: number
+  message: string
+  severity: 'good' | 'tight' | 'too-large'
+}
+
+export async function listExploreModels(sortBy?: string, query?: string): Promise<ExploreModel[]> {
+  return (await sovara().invoke('explore:listModels', { sortBy, query })) as ExploreModel[]
+}
+
+export async function getExploreModel(modelId: string): Promise<ExploreModel> {
+  return (await sovara().invoke('explore:getModel', { modelId })) as ExploreModel
+}
+
+export async function getModelCompatibility(modelId: string): Promise<CompatibilityResult> {
+  return (await sovara().invoke('explore:getCompatibility', { modelId })) as CompatibilityResult
+}
+
+// ── Library (downloaded models) ──
+export interface LibraryModel {
+  id: string
+  name: string
+  slug: string
+  sizeGB: number
+  format: string
+  quantization?: string
+  capabilities: string[]
+  lastUsed?: string
+}
+
+export async function listLibraryModels(): Promise<LibraryModel[]> {
+  return (await sovara().invoke('library:listModels')) as LibraryModel[]
+}
+
+export async function getLibraryDirectory(): Promise<{ path: string }> {
+  return (await sovara().invoke('library:getDirectory')) as { path: string }
+}
+
+export async function setLibraryDirectory(path: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean }
 }

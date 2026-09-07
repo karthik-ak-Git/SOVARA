@@ -41,13 +41,25 @@ export class SqlitePersistenceAdapter implements PersistencePort {
   }
 
   async list(): Promise<SessionHeader[]> {
-    return this.db.listSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt }))
+    return this.db.listSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }))
+  }
+
+  async listArchived(): Promise<SessionHeader[]> {
+    return this.db.listArchivedSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }))
   }
 
   async get(id: SessionId): Promise<SessionHeader | null> {
     const r = this.db.getSession(id)
     if (!r) return null
-    return { id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt }
+    return { id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }
+  }
+
+  async archive(id: SessionId): Promise<void> {
+    this.db.archiveSession(id)
+  }
+
+  async unarchive(id: SessionId): Promise<void> {
+    this.db.unarchiveSession(id)
   }
 
   async appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView> {

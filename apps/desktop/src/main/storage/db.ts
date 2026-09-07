@@ -10,6 +10,7 @@ export interface DbSessionRow {
   title: string
   createdAt: number
   updatedAt: number
+  archived?: number | null
 }
 
 /**
@@ -25,7 +26,10 @@ export class SovaraDb {
   private stmtInsertSession!: ReturnType<DatabaseSync['prepare']>
   private stmtGetSession!: ReturnType<DatabaseSync['prepare']>
   private stmtListSessions!: ReturnType<DatabaseSync['prepare']>
+  private stmtListArchivedSessions!: ReturnType<DatabaseSync['prepare']>
   private stmtUpdateSession!: ReturnType<DatabaseSync['prepare']>
+  private stmtArchiveSession!: ReturnType<DatabaseSync['prepare']>
+  private stmtUnarchiveSession!: ReturnType<DatabaseSync['prepare']>
   private stmtUpsertMeta!: ReturnType<DatabaseSync['prepare']>
   private stmtGetMeta!: ReturnType<DatabaseSync['prepare']>
   private stmtInsertTokenUsage!: ReturnType<DatabaseSync['prepare']>
@@ -62,7 +66,8 @@ export class SovaraDb {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
+        updatedAt INTEGER NOT NULL,
+        archived INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS session_indexes (
@@ -111,13 +116,23 @@ export class SovaraDb {
     } else if (current > SCHEMA_VERSION) {
       console.warn(`[db] schema_version ${current} > ${SCHEMA_VERSION} — downgrade not supported`)
     }
+
+    // Migration: add archived column if missing (safe for existing DBs)
+    try {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN archived INTEGER')
+    } catch {
+      // column already exists — ignore
+    }
   }
 
   private prepareStatements(): void {
     this.stmtInsertSession = this.db.prepare('INSERT INTO sessions (id, title, createdAt, updatedAt) VALUES (?, ?, ?, ?)')
-    this.stmtGetSession = this.db.prepare('SELECT id, title, createdAt, updatedAt FROM sessions WHERE id = ?')
-    this.stmtListSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt FROM sessions ORDER BY updatedAt DESC, id DESC')
+    this.stmtGetSession = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE id = ?')
+    this.stmtListSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE archived IS NULL OR archived = 0 ORDER BY updatedAt DESC, id DESC')
+    this.stmtListArchivedSessions = this.db.prepare('SELECT id, title, createdAt, updatedAt, archived FROM sessions WHERE archived IS NOT NULL AND archived != 0 ORDER BY updatedAt DESC, id DESC')
     this.stmtUpdateSession = this.db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ?')
+    this.stmtArchiveSession = this.db.prepare('UPDATE sessions SET archived = ? WHERE id = ?')
+    this.stmtUnarchiveSession = this.db.prepare('UPDATE sessions SET archived = NULL WHERE id = ?')
     this.stmtUpsertMeta = this.db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     this.stmtGetMeta = this.db.prepare('SELECT value FROM app_meta WHERE key = ?')
     this.stmtInsertTokenUsage = this.db.prepare('INSERT INTO token_usage (sessionId, model, promptTokens, completionTokens, totalTokens, timestamp) VALUES (?, ?, ?, ?, ?, ?)')
@@ -140,6 +155,18 @@ export class SovaraDb {
 
   updateSession(id: string, title: string, updatedAt: number): void {
     this.stmtUpdateSession.run(title, updatedAt, id)
+  }
+
+  listArchivedSessions(): DbSessionRow[] {
+    return this.stmtListArchivedSessions.all() as unknown as DbSessionRow[]
+  }
+
+  archiveSession(id: string): void {
+    this.stmtArchiveSession.run(Date.now(), id)
+  }
+
+  unarchiveSession(id: string): void {
+    this.stmtUnarchiveSession.run(id)
   }
 
   getMeta(key: string): string | undefined {

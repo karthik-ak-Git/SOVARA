@@ -10,6 +10,9 @@ export const IPC_CHANNELS = {
   'sessions:create': { type: 'invoke' as const },
   'sessions:get': { type: 'invoke' as const },
   'sessions:getEvents': { type: 'invoke' as const },
+  'sessions:archive': { type: 'invoke' as const },
+  'sessions:unarchive': { type: 'invoke' as const },
+  'sessions:listArchived': { type: 'invoke' as const },
   'chat:send': { type: 'invoke' as const },
   'chat:cancel': { type: 'invoke' as const },
   'models:listLocal': { type: 'invoke' as const },
@@ -35,6 +38,17 @@ export const IPC_CHANNELS = {
   'window:close': { type: 'invoke' as const },
   // Dialog
   'dialog:pickFolder': { type: 'invoke' as const },
+  // Skills scanning
+  'skills:scan': { type: 'invoke' as const },
+  'skills:toggle': { type: 'invoke' as const },
+  // Explore (HuggingFace catalog)
+  'explore:listModels': { type: 'invoke' as const },
+  'explore:getModel': { type: 'invoke' as const },
+  'explore:getCompatibility': { type: 'invoke' as const },
+  // Library (downloaded models)
+  'library:listModels': { type: 'invoke' as const },
+  'library:getDirectory': { type: 'invoke' as const },
+  'library:setDirectory': { type: 'invoke' as const },
   // Voice transcription
   'voice:transcribe': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },

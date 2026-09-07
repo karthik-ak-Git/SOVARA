@@ -4,8 +4,13 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionArchive, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
 import { VoiceTranscriber } from '../services/voiceTranscriber'
+import { scanSkillsSources } from '../services/skillsScanner'
+import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
+import { MODEL_CATALOG, sortModels, filterModels } from '../services/hfCatalog'
+import { estimateCompatibility } from '../services/hardwareCheck'
+import type { HardwareInfo } from '@shared/types/explore'
 
 // Singleton — lazily created on first registerIpcHandlers() call.
 let voiceTranscriber: VoiceTranscriber | null = null
@@ -62,6 +67,24 @@ export function registerIpcHandlers(): void {
     const parsed = zSessionId.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid session id: ${parsed.error.message}`)
     return getBackend().ports.persistence.getEvents(brand<'SessionId'>(parsed.data))
+  })
+
+  ipcMain.handle('sessions:archive', async (_e, raw: unknown) => {
+    const parsed = zSessionArchive.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid archive payload: ${parsed.error.message}`)
+    await getBackend().ports.persistence.archive(brand<'SessionId'>(parsed.data.sessionId))
+    return { ok: true }
+  })
+
+  ipcMain.handle('sessions:unarchive', async (_e, raw: unknown) => {
+    const parsed = zSessionArchive.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid unarchive payload: ${parsed.error.message}`)
+    await getBackend().ports.persistence.unarchive(brand<'SessionId'>(parsed.data.sessionId))
+    return { ok: true }
+  })
+
+  ipcMain.handle('sessions:listArchived', async () => {
+    return getBackend().ports.persistence.listArchived()
   })
 
   ipcMain.handle('chat:send', async (_e, raw: unknown) => {
@@ -197,12 +220,81 @@ export function registerIpcHandlers(): void {
     return { canceled: false, filePath: result.filePaths[0] }
   })
 
-  // ── Voice transcription (local Whisper — no API keys, no network) ──
+  // ── Skills scanning ──
+  ipcMain.handle('skills:scan', async () => {
+    return scanSkillsSources()
+  })
+
+  ipcMain.handle('skills:toggle', async (_e, raw: unknown) => {
+    const parsed = zSkillsToggle.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid skills:toggle payload: ${parsed.error.message}`)
+    return { ok: true, sourceName: parsed.data.sourceName, enabled: parsed.data.enabled }
+  })
+
+  // ── Explore (HuggingFace catalog) ──
+  ipcMain.handle('explore:listModels', async (_e, raw: unknown) => {
+    const parsed = zExploreListModels.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid explore:listModels payload: ${parsed.error.message}`)
+    let models = [...MODEL_CATALOG]
+    if (parsed.data.query) {
+      models = filterModels(models, parsed.data.query)
+    }
+    return sortModels(models, parsed.data.sortBy ?? 'recommended')
+  })
+
+  ipcMain.handle('explore:getModel', async (_e, raw: unknown) => {
+    const parsed = zExploreGetModel.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid explore:getModel payload: ${parsed.error.message}`)
+    const model = MODEL_CATALOG.find((m) => m.id === parsed.data.modelId)
+    if (!model) throw new Error(`unknown model: ${parsed.data.modelId}`)
+    return model
+  })
+
+  ipcMain.handle('explore:getCompatibility', async (_e, raw: unknown) => {
+    const parsed = zExploreGetCompatibility.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
+    const model = MODEL_CATALOG.find((m) => m.id === parsed.data.modelId)
+    if (!model) throw new Error(`unknown model: ${parsed.data.modelId}`)
+    // Get hardware info from system resources
+    const resources = await getBackend().ports.resources.getSnapshot()
+    const hw: HardwareInfo = {
+      totalRamMB: resources.ram.totalMB,
+      freeRamMB: resources.ram.freeMB,
+      totalVramMB: resources.vram.totalMB,
+      freeVramMB: resources.vram.freeMB,
+      gpuName: resources.gpu.name,
+      gpuAvailable: resources.gpu.available,
+    }
+    return estimateCompatibility(model, hw)
+  })
+
+  // ── Library (downloaded models) ──
+  ipcMain.handle('library:listModels', async () => {
+    // TODO: scan actual models directory for GGUF/MLX files
+    return []
+  })
+
+  ipcMain.handle('library:getDirectory', async () => {
+    const home = process.env.USERPROFILE || process.env.HOME || ''
+    return { path: `${home}\\.lmstudio\\models` }
+  })
+
+  ipcMain.handle('library:setDirectory', async (_e, raw: unknown) => {
+    const parsed = zLibrarySetDirectory.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
+    return { ok: true, path: parsed.data.path }
+  })
+
+  // ── Voice transcription (local faster-whisper — no API keys, no network) ──
   ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
-    const data = raw as { pcm?: string; sampleRate?: number }
+    const data = raw as { pcm?: string; sampleRate?: number; language?: string; model?: string }
     if (!data?.pcm) throw new Error('voice:transcribe requires pcm data')
     try {
-      const result = await getVoiceTranscriber().transcribeFromPCM(data.pcm, data.sampleRate ?? 16000)
+      const result = await getVoiceTranscriber().transcribeFromPCM(
+        data.pcm,
+        data.sampleRate ?? 16000,
+        { language: data.language ?? 'en', model: (data.model as 'tiny' | 'base' | 'small' | 'medium' | 'large-v3') ?? 'tiny' }
+      )
       return result
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'transcription failed'

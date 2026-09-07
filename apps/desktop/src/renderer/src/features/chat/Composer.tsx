@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, MicOff, ArrowUp, Paperclip, X, Loader2 } from 'lucide-react'
+import { Plus, Globe, Mic, MicOff, ArrowUp, Paperclip, X, Loader2, MicVocal } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
@@ -36,6 +36,21 @@ const MAX_HEIGHT_PX = 160
 
 type VoiceState = 'idle' | 'recording' | 'transcribing'
 
+/** Animated waveform bars for the dictation panel. */
+function WaveformBars(): ReactElement {
+  return (
+    <div className="dictation-waveform" aria-hidden>
+      {Array.from({ length: 32 }, (_, i) => (
+        <div
+          key={i}
+          className="dictation-waveform-bar"
+          style={{ animationDelay: `${(i * 0.05) % 1.6}s` }}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function Composer({
   value,
   onChange,
@@ -56,14 +71,16 @@ export function Composer({
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const pcmChunksRef = useRef<Float32Array[]>([])
+  const nativeSampleRateRef = useRef<number>(16000)
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [showDictation, setShowDictation] = useState(false)
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -147,9 +164,9 @@ export function Composer({
       clearTimeout(recordingTimerRef.current)
       recordingTimerRef.current = null
     }
-    if (processorRef.current) {
-      processorRef.current.disconnect()
-      processorRef.current = null
+    if (workletNodeRef.current) {
+      workletNodeRef.current.disconnect()
+      workletNodeRef.current = null
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
@@ -174,37 +191,35 @@ export function Composer({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      // Use AudioContext + ScriptProcessorNode to capture raw PCM Float32Array.
-      // This runs in the renderer (browser context) where AudioContext is available.
-      const ctx = new AudioContext({ sampleRate: 16000 })
+      const ctx = new AudioContext()
       audioContextRef.current = ctx
+      nativeSampleRateRef.current = ctx.sampleRate
+
+      await ctx.audioWorklet.addModule(new URL('./pcm-processor.worklet.ts', import.meta.url).href)
 
       const source = ctx.createMediaStreamSource(stream)
-      // Buffer size 4096, 1 input channel (mono), 1 output channel
-      const processor = ctx.createScriptProcessor(4096, 1, 1)
-      processorRef.current = processor
+      const workletNode = new AudioWorkletNode(ctx, 'pcm-processor')
+      workletNodeRef.current = workletNode
 
-      processor.onaudioprocess = (e) => {
-        // Capture raw PCM Float32Array from the input channel
-        const inputData = e.inputBuffer.getChannelData(0)
-        // Copy the data (inputData is reused by the audio engine)
-        pcmChunksRef.current.push(new Float32Array(inputData))
+      workletNode.port.onmessage = (e: MessageEvent<{ pcm: Float32Array }>) => {
+        if (e.data?.pcm) {
+          pcmChunksRef.current.push(e.data.pcm)
+        }
       }
 
-      source.connect(processor)
-      // Connect to destination to keep the processor running (required for onaudioprocess)
-      processor.connect(ctx.destination)
+      source.connect(workletNode)
+      workletNode.connect(ctx.destination)
 
       setVoiceState('recording')
+      setShowDictation(true)
 
-      // Auto-stop after 30 seconds
       recordingTimerRef.current = setTimeout(() => {
         stopRecording()
-        // Trigger transcription after stop
-        void transcribeChunks()
+        void transcribeChunks(nativeSampleRateRef.current)
       }, 30_000)
     } catch (err) {
       setVoiceState('idle')
+      setShowDictation(false)
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
         setVoiceError('Microphone permission denied')
       } else {
@@ -213,8 +228,7 @@ export function Composer({
     }
   }, [stopRecording])
 
-  // Separate function to handle transcription after recording stops
-  const transcribeChunks = useCallback(async (): Promise<void> => {
+  const transcribeChunks = useCallback(async (nativeSampleRate?: number): Promise<void> => {
     const chunks = pcmChunksRef.current
     pcmChunksRef.current = []
 
@@ -226,7 +240,6 @@ export function Composer({
     setVoiceState('transcribing')
 
     try {
-      // Merge all Float32Array chunks into one
       const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
       const merged = new Float32Array(totalLength)
       let offset = 0
@@ -235,8 +248,24 @@ export function Composer({
         offset += chunk.length
       }
 
-      // Convert Float32Array → base64 via ArrayBuffer
-      const buffer = merged.buffer
+      const targetRate = 16000
+      let resampled = merged
+      const srcRate = nativeSampleRate ?? targetRate
+      if (srcRate !== targetRate && srcRate > 0) {
+        const ratio = targetRate / srcRate
+        const newLength = Math.round(merged.length * ratio)
+        resampled = new Float32Array(newLength)
+        for (let i = 0; i < newLength; i++) {
+          const srcIdx = i / ratio
+          const idx = Math.floor(srcIdx)
+          const frac = srcIdx - idx
+          resampled[i] = idx + 1 < merged.length
+            ? merged[idx] * (1 - frac) + merged[idx + 1] * frac
+            : merged[idx] ?? 0
+        }
+      }
+
+      const buffer = resampled.buffer
       const bytes = new Uint8Array(buffer)
       let binary = ''
       for (let i = 0; i < bytes.byteLength; i++) {
@@ -246,7 +275,11 @@ export function Composer({
 
       if (window.sovara) {
         try {
-          const result = await window.sovara.invoke('voice:transcribe', { pcm: base64, sampleRate: 16000 })
+          const result = await window.sovara.invoke('voice:transcribe', {
+            pcm: base64,
+            sampleRate: targetRate,
+            language: 'en',
+          })
           let transcribed = ''
           if (typeof result === 'string') {
             transcribed = result
@@ -261,27 +294,38 @@ export function Composer({
           setVoiceError(msg)
         } finally {
           setVoiceState('idle')
+          setShowDictation(false)
         }
       } else {
         setVoiceState('idle')
+        setShowDictation(false)
       }
     } catch {
       setVoiceState('idle')
+      setShowDictation(false)
     }
   }, [value, onChange])
 
   const handleVoiceToggle = useCallback((): void => {
     if (voiceState === 'recording') {
       stopRecording()
-      // Trigger transcription with the captured chunks
-      void transcribeChunks()
+      void transcribeChunks(nativeSampleRateRef.current)
     } else if (voiceState === 'transcribing') {
       setVoiceState('idle')
+      setShowDictation(false)
       pcmChunksRef.current = []
     } else {
       startRecording()
     }
   }, [voiceState, stopRecording, startRecording, transcribeChunks])
+
+  const closeDictation = useCallback((): void => {
+    if (voiceState === 'recording') {
+      stopRecording()
+      void transcribeChunks(nativeSampleRateRef.current)
+    }
+    setShowDictation(false)
+  }, [voiceState, stopRecording, transcribeChunks])
 
   const micIcon = (): ReactElement => {
     if (voiceState === 'transcribing') return <Loader2 size={16} className="spin" aria-hidden />
@@ -380,6 +424,41 @@ export function Composer({
           </button>
         </div>
       </div>
+
+      {/* Dictation panel — shown when recording or transcribing */}
+      {showDictation && voiceState !== 'idle' ? (
+        <div className="dictation-panel">
+          <div className="dictation-header">
+            <div className="dictation-header-left">
+              <MicVocal size={14} aria-hidden />
+              <span className="dictation-title">Dictation</span>
+            </div>
+            <button type="button" className="dictation-close" onClick={closeDictation} aria-label="Close dictation">
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+          <p className="dictation-subtitle">
+            Speak and it becomes text. Adjust{' '}
+            <span className="dictation-link">settings</span>{' '}
+            or{' '}
+            <span className="dictation-link">how it's written</span>{' '}
+            any time.
+          </p>
+          {voiceState === 'recording' ? <WaveformBars /> : null}
+          {voiceState === 'transcribing' ? (
+            <div className="dictation-transcribing">
+              <Loader2 size={14} className="spin" aria-hidden />
+              <span>Transcribing…</span>
+            </div>
+          ) : null}
+          <div className="dictation-model">
+            <span className="dictation-model-label">Dictate (Speech to Text)</span>
+            <span className="dictation-model-desc">
+              Types what you say into the input. Transcribes on-device with the <strong>faster-whisper</strong> multilingual model.
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       {voiceError ? (
         <div className="composer-voice-error">

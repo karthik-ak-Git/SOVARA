@@ -36,8 +36,9 @@ describe('Commit 1 sovereignty guards', () => {
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // The centralized loopback-only client is the sole exception.
-        expect(f.replace(/\\/g, '/'), `bare fetch outside HttpClient: ${f}`).toMatch(/main\/network\/HttpClient\.ts$/)
+        // Exceptions: HttpClient (loopback inference) and voiceTranscriber (local faster-whisper server)
+        const rel = f.replace(/\\/g, '/')
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/voiceTranscriber\.ts)$/)
       }
     }
   })

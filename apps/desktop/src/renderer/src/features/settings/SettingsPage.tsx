@@ -4,7 +4,9 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, ArrowLeft, Check, Cloud
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, type TokenUsage, type ModelUsage } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource } from '../../lib/ipc'
+import { ExplorePage } from '../explore/ExplorePage'
+import { LibraryPage } from '../library/LibraryPage'
 
 type SettingsSection =
   | 'general'
@@ -15,7 +17,6 @@ type SettingsSection =
   | 'sessions'
   | 'connected-apps'
   | 'skills'
-  | 'devices'
   | 'explore'
   | 'library'
   | 'loaded-instances'
@@ -45,12 +46,6 @@ const NAV_GROUPS: SettingsNavGroup[] = [
     items: [
       { id: 'connected-apps', label: 'Connected Apps', icon: <Link2 size={16} /> },
       { id: 'skills', label: 'Skills', icon: <Puzzle size={16} /> },
-    ],
-  },
-  {
-    label: 'Devices',
-    items: [
-      { id: 'devices', label: 'LM Link', icon: <Globe size={16} /> },
     ],
   },
   {
@@ -160,6 +155,52 @@ function PermissionOption({ id, label, description, selected, onSelect }: Permis
   )
 }
 
+interface McpPreset {
+  id: string
+  name: string
+  description: string
+  provider: string
+  icon: string
+}
+
+const MCP_PRESETS: McpPreset[] = [
+  {
+    id: 'github',
+    name: 'GitHub',
+    description: 'Work with repositories, issues, pull requests, and code.',
+    provider: 'GitHub',
+    icon: '🐙',
+  },
+  {
+    id: 'linear',
+    name: 'Linear',
+    description: 'Find, create, and update issues, projects, and comments.',
+    provider: 'Linear',
+    icon: '📐',
+  },
+  {
+    id: 'notion',
+    name: 'Notion',
+    description: 'Search, read, and update pages and databases in your workspace.',
+    provider: 'Notion',
+    icon: '📋',
+  },
+  {
+    id: 'sentry',
+    name: 'Sentry',
+    description: 'Investigate errors, traces, and application performance.',
+    provider: 'Sentry',
+    icon: '🔍',
+  },
+  {
+    id: 'atlassian',
+    name: 'Atlassian',
+    description: 'Work with Jira issues, Confluence pages, and team knowledge.',
+    provider: 'Atlassian',
+    icon: '🔺',
+  },
+]
+
 interface SettingsPageProps {
   onBack?: () => void
 }
@@ -168,7 +209,8 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt')
   const [autoTranscribe, setAutoTranscribe] = useState(true)
-  const [whisperModel, setWhisperModel] = useState<'tiny' | 'base' | 'small' | 'medium'>('tiny')
+  const [whisperModel, setWhisperModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large-v3'>('tiny')
+  const [whisperLanguage, setWhisperLanguage] = useState('en')
 
   // Agent settings
   const [rootModel, setRootModel] = useState('no-default')
@@ -177,11 +219,25 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
   const [explorationAgents, setExplorationAgents] = useState(true)
   const [customAutoReview, setCustomAutoReview] = useState(false)
 
+  // Appearance settings
+  const [sidebarBackground, setSidebarBackground] = useState('solid')
+  const [uiColorTheme, setUiColorTheme] = useState('system')
+  const [inlineDiffLayout, setInlineDiffLayout] = useState('unified')
+
   // Billing/usage settings
   const [billingAccount, setBillingAccount] = useState('personal')
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
   const [usageLoaded, setUsageLoaded] = useState(false)
+
+  // Sessions settings
+  const [renameAfterFork, setRenameAfterFork] = useState(true)
+  const [archivedSessions, setArchivedSessions] = useState<SessionHeaderView[]>([])
+  const [archivedLoaded, setArchivedLoaded] = useState(false)
+
+  // Skills settings
+  const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
+  const [skillsLoaded, setSkillsLoaded] = useState(false)
 
   useEffect(() => {
     const loadUsage = async (): Promise<void> => {
@@ -197,6 +253,38 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
     }
     loadUsage()
   }, [])
+
+  // Load archived sessions when sessions tab is active
+  useEffect(() => {
+    if (activeSection !== 'sessions') return
+    const loadArchived = async (): Promise<void> => {
+      try {
+        const sessions = await listArchivedSessions()
+        setArchivedSessions(sessions)
+      } catch {
+        // archived sessions not available yet
+      } finally {
+        setArchivedLoaded(true)
+      }
+    }
+    loadArchived()
+  }, [activeSection])
+
+  // Load skills sources when skills tab is active
+  useEffect(() => {
+    if (activeSection !== 'skills') return
+    const loadSkills = async (): Promise<void> => {
+      try {
+        const sources = await scanSkills()
+        setSkillsSources(sources)
+      } catch {
+        // skills not available
+      } finally {
+        setSkillsLoaded(true)
+      }
+    }
+    loadSkills()
+  }, [activeSection])
 
   const handleRequestMic = useCallback(async (): Promise<void> => {
     try {
@@ -254,6 +342,31 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
 
                 <div className="settings-row">
                   <div className="settings-row-text">
+                    <div className="settings-row-label">Language</div>
+                    <div className="settings-row-desc">Primary language for voice transcription. Setting the correct language prevents garbled output.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={whisperLanguage}
+                    onChange={(e) => setWhisperLanguage(e.target.value)}
+                    aria-label="Transcription language"
+                  >
+                    <option value="en">English</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="it">Italian</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="nl">Dutch</option>
+                    <option value="ja">Japanese</option>
+                    <option value="zh">Chinese</option>
+                    <option value="ko">Korean</option>
+                    <option value="auto">Auto-detect</option>
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
                     <div className="settings-row-label">Whisper model</div>
                     <div className="settings-row-desc">Larger models are more accurate but slower. Tiny is recommended for real-time use.</div>
                   </div>
@@ -263,12 +376,19 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
                     onChange={(e) => setWhisperModel(e.target.value as typeof whisperModel)}
                     aria-label="Whisper model size"
                   >
-                    <option value="tiny">Tiny (~75 MB)</option>
-                    <option value="base">Base (~140 MB)</option>
-                    <option value="small">Small (~460 MB)</option>
-                    <option value="medium">Medium (~1.5 GB)</option>
+                    <option value="tiny">Tiny (~75 MB, fastest)</option>
+                    <option value="base">Base (~140 MB, balanced)</option>
+                    <option value="small">Small (~460 MB, accurate)</option>
+                    <option value="medium">Medium (~1.5 GB, very accurate)</option>
+                    <option value="large-v3">Large V3 (~3 GB, most accurate)</option>
                   </select>
                 </div>
+
+                <InfoRow
+                  label="Model status"
+                  value="faster-whisper (CPU)"
+                  badge="Server"
+                />
               </div>
             </div>
           </div>
@@ -431,6 +551,274 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
               </div>
             </div>
           </div>
+        )
+
+      case 'sessions':
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Sessions</h2>
+
+            <div className="settings-group">
+              <div className="settings-card">
+                <Toggle
+                  checked={renameAfterFork}
+                  onChange={setRenameAfterFork}
+                  label="Rename after fork"
+                  description="Use the previous session name and the first message sent in a fork to suggest a new name."
+                />
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Archived sessions</div>
+              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+                Archived sessions stay intact but do not appear in the sidebar.
+              </p>
+              <div className="settings-card">
+                {archivedSessions.length === 0 ? (
+                  <div className="settings-row">
+                    <span className="muted">No archived sessions.</span>
+                  </div>
+                ) : (
+                  archivedSessions.map((session) => (
+                    <div key={session.id} className="settings-row">
+                      <div className="settings-row-text">
+                        <div className="settings-row-label">{session.title}</div>
+                      </div>
+                      <ActionButton
+                        label="Unarchive"
+                        onClick={async () => {
+                          try {
+                            await unarchiveSession(session.id)
+                            setArchivedSessions((prev) => prev.filter((s) => s.id !== session.id))
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'appearance':
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Appearance</h2>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Interface</div>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Sidebar background</div>
+                    <div className="settings-row-desc">Choose the translucent shell look or a solid sidebar surface.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={sidebarBackground}
+                    onChange={(e) => setSidebarBackground(e.target.value)}
+                    aria-label="Sidebar background"
+                  >
+                    <option value="solid">Solid</option>
+                    <option value="translucent">Translucent</option>
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">UI color theme</div>
+                    <div className="settings-row-desc">Choose the app-wide color theme.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={uiColorTheme}
+                    onChange={(e) => setUiColorTheme(e.target.value)}
+                    aria-label="UI color theme"
+                  >
+                    <option value="system">System</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Inline diff layout</div>
+                    <div className="settings-row-desc">Choose how inline file-change diffs appear in the transcript.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={inlineDiffLayout}
+                    onChange={(e) => setInlineDiffLayout(e.target.value)}
+                    aria-label="Inline diff layout"
+                  >
+                    <option value="unified">Unified</option>
+                    <option value="split">Split</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'connected-apps':
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Connected Apps</h2>
+
+            <div className="settings-group">
+              <div className="settings-group-header">
+                Connected MCP Servers <span className="settings-badge">0</span>
+              </div>
+              <div className="settings-card settings-card--empty">
+                <div className="settings-empty-state">
+                  <div className="settings-empty-icon">🔒</div>
+                  <div className="settings-empty-text">
+                    <div className="settings-empty-title">No MCPs connected yet</div>
+                    <div className="settings-empty-desc">Choose a popular MCP below to get started.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Popular MCPs</div>
+              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+                Hand-picked MCP servers with a simple setup.
+              </p>
+              <div className="mcp-grid">
+                {MCP_PRESETS.map((mcp) => (
+                  <div key={mcp.id} className="mcp-card">
+                    <div className="mcp-card-icon">{mcp.icon}</div>
+                    <div className="mcp-card-body">
+                      <div className="mcp-card-name">{mcp.name}</div>
+                      <div className="mcp-card-desc">{mcp.description}</div>
+                      <div className="mcp-card-footer">
+                        <span className="mcp-card-by">By {mcp.provider}</span>
+                        <button type="button" className="settings-action-btn settings-action-btn--primary">
+                          Set Up
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Manual MCP server setup</div>
+                    <div className="settings-row-desc">Add a local command or remote MCP server.</div>
+                  </div>
+                  <button type="button" className="settings-action-btn">
+                    + Add custom MCP
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'skills':
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Skills</h2>
+
+            <div className="settings-group">
+              <div className="settings-group-header">
+                <div className="skills-header-row">
+                  <span>Bionic Skills</span>
+                  <div className="skills-dropdown-wrap">
+                    <button type="button" className="settings-action-btn settings-action-btn--primary">
+                      + Add Skill
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card settings-card--empty">
+                <div className="settings-empty-state">
+                  <div className="settings-empty-icon">📦</div>
+                  <div className="settings-empty-text">
+                    <div className="settings-empty-title">No skills installed yet</div>
+                    <div className="settings-empty-desc">Create a custom skill or install a pre-built one.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Use skills found in other apps</div>
+              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+                SOVARA can detect and use skills installed in compatible directories on this device.
+              </p>
+              {!skillsLoaded ? (
+                <div className="settings-card">
+                  <span className="muted">Scanning…</span>
+                </div>
+              ) : (
+                skillsSources.map((src) => (
+                  <div key={src.name} className="settings-card">
+                    <div className="settings-row">
+                      <div className="settings-row-text">
+                        <div className="settings-row-label">{src.name}</div>
+                        <div className="settings-row-desc">
+                          {src.skillCount > 0
+                            ? `${src.skillCount.toLocaleString()} skills found in ${src.path}`
+                            : `No skills found in ${src.path}`}
+                        </div>
+                      </div>
+                      <div className="settings-row-right">
+                        <span className="settings-badge">{src.skillCount.toLocaleString()}</span>
+                        <button
+                          type="button"
+                          className={`settings-toggle ${src.enabled ? 'settings-toggle--on' : ''}`}
+                          onClick={async () => {
+                            const newEnabled = !src.enabled
+                            setSkillsSources((prev) =>
+                              prev.map((s) => (s.name === src.name ? { ...s, enabled: newEnabled } : s))
+                            )
+                            try {
+                              await toggleSkillsSource(src.name, newEnabled)
+                            } catch {
+                              // revert on error
+                              setSkillsSources((prev) =>
+                                prev.map((s) => (s.name === src.name ? { ...s, enabled: !newEnabled } : s))
+                              )
+                            }
+                          }}
+                          role="switch"
+                          aria-checked={src.enabled}
+                          aria-label={`Enable ${src.name} skills`}
+                        >
+                          <span className="settings-toggle-thumb" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )
+
+      case 'explore':
+        return (
+          <ExplorePage
+            onBack={() => onBack?.()}
+          />
+        )
+
+      case 'library':
+        return (
+          <LibraryPage
+            onBack={() => onBack?.()}
+          />
         )
 
       default:

@@ -86,6 +86,7 @@ export interface SessionHeader {
   title: string
   createdAt: number
   updatedAt: number
+  archived?: number | null
 }
 export interface SessionEventView {
   seq: number
@@ -96,7 +97,10 @@ export interface SessionEventView {
 export interface PersistencePort {
   create(title?: string): Promise<SessionHeader>
   list(): Promise<SessionHeader[]>
+  listArchived(): Promise<SessionHeader[]>
   get(id: SessionId): Promise<SessionHeader | null>
+  archive(id: SessionId): Promise<void>
+  unarchive(id: SessionId): Promise<void>
   appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView>
   getEvents(sessionId: SessionId): Promise<SessionEventView[]>
   insertTokenUsage(row: { sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number }): void
