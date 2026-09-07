@@ -218,9 +218,15 @@ export function Composer({
 
       <div className="composer-bionic-footer">
         <PermissionControl mode={execMode} onChange={onExecModeChange} />
-        {execAvailable ? (
-          <span className="composer-exec-hint muted small">Commands will run locally</span>
-        ) : null}
+        {execMode === 'off' ? (
+          <span className="composer-exec-hint muted small">Commands disabled</span>
+        ) : execMode === 'ask' ? (
+          <span className="composer-exec-hint muted small">Commands will ask first</span>
+        ) : execMode === 'review' ? (
+          <span className="composer-exec-hint muted small">Safe commands auto-run</span>
+        ) : (
+          <span className="composer-exec-hint composer-exec-hint--allow small">Full access — commands run without prompting</span>
+        )}
       </div>
     </div>
   )

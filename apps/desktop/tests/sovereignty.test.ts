@@ -36,9 +36,9 @@ describe('Commit 1 sovereignty guards', () => {
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), voiceTranscriber (local faster-whisper server), and hfCatalog (HuggingFace Hub API)
+        // Exceptions: HttpClient (loopback inference) and hfCatalog (HuggingFace Hub API)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/voiceTranscriber\.ts|main\/services\/hfCatalog\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts)$/)
       }
     }
   })

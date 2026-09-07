@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
-  Settings, User, Cpu, Mic, CreditCard, Palette, MessageSquare,
+  Settings, User, Cpu, CreditCard, Palette, MessageSquare,
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
@@ -11,7 +11,6 @@ import { LibraryPage } from '../library/LibraryPage'
 type SettingsSection =
   | 'general'
   | 'agent'
-  | 'voice'
   | 'billing'
   | 'appearance'
   | 'sessions'
@@ -35,7 +34,6 @@ const NAV_GROUPS: SettingsNavGroup[] = [
     items: [
       { id: 'general', label: 'General', icon: <Settings size={16} /> },
       { id: 'agent', label: 'Agent', icon: <Cpu size={16} /> },
-      { id: 'voice', label: 'Voice', icon: <Mic size={16} /> },
       { id: 'billing', label: 'Billing and Usage', icon: <CreditCard size={16} /> },
       { id: 'appearance', label: 'Appearance', icon: <Palette size={16} /> },
       { id: 'sessions', label: 'Sessions', icon: <MessageSquare size={16} /> },
@@ -203,10 +201,6 @@ const MCP_PRESETS: McpPreset[] = [
 
 export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
-  const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt')
-  const [autoTranscribe, setAutoTranscribe] = useState(true)
-  const [whisperModel, setWhisperModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large-v3'>('tiny')
-  const [whisperLanguage, setWhisperLanguage] = useState('en')
 
   // Agent settings
   const [rootModel, setRootModel] = useState('no-default')
@@ -282,114 +276,8 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     loadSkills()
   }, [activeSection])
 
-  const handleRequestMic = useCallback(async (): Promise<void> => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach((t) => t.stop())
-      setMicPermission('granted')
-    } catch {
-      setMicPermission('denied')
-    }
-  }, [])
-
   const renderContent = (): ReactElement => {
     switch (activeSection) {
-      case 'voice':
-        return (
-          <div className="settings-content">
-            <h2 className="settings-section-title">Voice</h2>
-
-            <div className="settings-group">
-              <div className="settings-group-header">Microphone</div>
-              <div className="settings-card">
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">Microphone access</div>
-                    <div className="settings-row-desc">
-                      {micPermission === 'granted'
-                        ? 'Microphone is available for voice input.'
-                        : micPermission === 'denied'
-                          ? 'Microphone permission was denied. Enable it in your system settings.'
-                          : 'Allow microphone access to use voice input.'}
-                    </div>
-                  </div>
-                  {micPermission === 'granted' ? (
-                    <span className="settings-perm-status settings-perm-status--granted">
-                      <Check size={14} /> Connected
-                    </span>
-                  ) : micPermission === 'denied' ? (
-                    <ActionButton label="Open system settings" onClick={handleRequestMic} />
-                  ) : (
-                    <ActionButton label="Allow microphone" variant="primary" onClick={handleRequestMic} />
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="settings-group">
-              <div className="settings-group-header">Transcription</div>
-              <div className="settings-card">
-                <Toggle
-                  checked={autoTranscribe}
-                  onChange={setAutoTranscribe}
-                  label="Auto-transcribe voice input"
-                  description="Automatically convert speech to text when you stop recording."
-                />
-
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">Language</div>
-                    <div className="settings-row-desc">Primary language for voice transcription. Setting the correct language prevents garbled output.</div>
-                  </div>
-                  <select
-                    className="settings-select"
-                    value={whisperLanguage}
-                    onChange={(e) => setWhisperLanguage(e.target.value)}
-                    aria-label="Transcription language"
-                  >
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="it">Italian</option>
-                    <option value="pt">Portuguese</option>
-                    <option value="nl">Dutch</option>
-                    <option value="ja">Japanese</option>
-                    <option value="zh">Chinese</option>
-                    <option value="ko">Korean</option>
-                    <option value="auto">Auto-detect</option>
-                  </select>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">Whisper model</div>
-                    <div className="settings-row-desc">Larger models are more accurate but slower. Tiny is recommended for real-time use.</div>
-                  </div>
-                  <select
-                    className="settings-select"
-                    value={whisperModel}
-                    onChange={(e) => setWhisperModel(e.target.value as typeof whisperModel)}
-                    aria-label="Whisper model size"
-                  >
-                    <option value="tiny">Tiny (~75 MB, fastest)</option>
-                    <option value="base">Base (~140 MB, balanced)</option>
-                    <option value="small">Small (~460 MB, accurate)</option>
-                    <option value="medium">Medium (~1.5 GB, very accurate)</option>
-                    <option value="large-v3">Large V3 (~3 GB, most accurate)</option>
-                  </select>
-                </div>
-
-                <InfoRow
-                  label="Model status"
-                  value="faster-whisper (CPU)"
-                  badge="Server"
-                />
-              </div>
-            </div>
-          </div>
-        )
-
       case 'general':
         return (
           <div className="settings-content">
