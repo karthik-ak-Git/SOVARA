@@ -230,12 +230,22 @@ def transcribe():
         if not data or "wav_base64" not in data:
             return jsonify({"error": "missing wav_base64 in JSON body"}), 400
         import base64
-        wav_b64 = data["wav_base64"]
-        wav_bytes = base64.b64decode(wav_b64)
-        # Parse WAV to get PCM
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            frames = wf.readframes(wf.getnframes())
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        raw_b64 = data["wav_base64"]
+        raw_bytes = base64.b64decode(raw_b64)
+        # Decode any audio format (WebM/Opus, WAV, MP3, etc.) via av
+        import av
+        container = av.open(io.BytesIO(raw_bytes))
+        audio_frames = []
+        for frame in container.decode(audio=0):
+            audio_frames.append(frame.to_ndarray().flatten())
+        container.close()
+        if audio_frames:
+            audio = np.concatenate(audio_frames).astype(np.float32)
+            # Normalize int16 to float32 if needed
+            if audio.max() > 1.0 or audio.min() < -1.0:
+                audio = audio / 32768.0
+        else:
+            audio = np.array([], dtype=np.float32)
     else:
         # Try treating body as raw audio bytes
         pcm_data = request.get_data()

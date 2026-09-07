@@ -216,9 +216,6 @@ export interface AppSettingsState {
   rootModel: string
   visionModel: string
   webSearch: boolean
-  webSearchHasKey: boolean
-  webSearchBaseUrl: string
-  webSearchModel: string
   explorationAgents: boolean
   customAutoReview: boolean
   customInstructions: string
@@ -235,9 +232,6 @@ export interface AppSettingsPatch {
   rootModel?: string
   visionModel?: string
   webSearch?: boolean
-  webSearchApiKey?: string
-  webSearchBaseUrl?: string
-  webSearchModel?: string
   explorationAgents?: boolean
   customAutoReview?: boolean
   customInstructions?: string

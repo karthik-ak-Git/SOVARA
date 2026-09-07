@@ -131,9 +131,6 @@ export class AppBackend {
       rootModel: get('root_model') ?? 'no-default',
       visionModel: get('vision_model') ?? 'off',
       webSearch: get('web_search') === '1',
-      webSearchHasKey: (get('web_search_api_key') ?? '').length > 0 || (process.env['DEEPSEEK_API_KEY']?.trim() ?? '').length > 0,
-      webSearchBaseUrl: get('web_search_base_url') ?? DEEPSEEK_SEARCH_DEFAULT_BASE_URL,
-      webSearchModel: get('web_search_model') ?? DEEPSEEK_SEARCH_DEFAULT_MODEL,
       explorationAgents: (get('exploration_agents') ?? '1') === '1',
       customAutoReview: get('custom_auto_review') === '1',
       customInstructions: get('custom_instructions') ?? '',
@@ -150,9 +147,6 @@ export class AppBackend {
     rootModel?: string
     visionModel?: string
     webSearch?: boolean
-    webSearchApiKey?: string
-    webSearchBaseUrl?: string
-    webSearchModel?: string
     explorationAgents?: boolean
     customAutoReview?: boolean
     customInstructions?: string
@@ -185,53 +179,15 @@ export class AppBackend {
     if (patch.rootModel !== undefined) set('root_model', patch.rootModel.trim().slice(0, 256))
     if (patch.visionModel !== undefined) set('vision_model', patch.visionModel.trim().slice(0, 256))
     if (patch.webSearch !== undefined) set('web_search', patch.webSearch ? '1' : '0')
-    if (patch.webSearchApiKey !== undefined) {
-      // Local-only secret, same trust boundary as the rest of app_meta; env DEEPSEEK_API_KEY also honored.
-      const key = patch.webSearchApiKey.trim()
-      if (key.length > 512) throw new Error('API key is too long')
-      set('web_search_api_key', key)
-    }
-    if (patch.webSearchBaseUrl !== undefined) {
-      const base = patch.webSearchBaseUrl.trim().slice(0, 512)
-      if (base !== '') {
-        let url: URL
-        try {
-          url = new URL(base)
-        } catch {
-          throw new Error('search endpoint URL is not valid')
-        }
-        if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('search endpoint must be an http(s) URL')
-      }
-      set('web_search_base_url', base === '' ? DEEPSEEK_SEARCH_DEFAULT_BASE_URL : base)
-    }
-    if (patch.webSearchModel !== undefined) {
-      const model = patch.webSearchModel.trim().slice(0, 128)
-      if (model.length === 0) throw new Error('search model must not be empty')
-      set('web_search_model', model)
-    }
     if (patch.explorationAgents !== undefined) set('exploration_agents', patch.explorationAgents ? '1' : '0')
     if (patch.customAutoReview !== undefined) set('custom_auto_review', patch.customAutoReview ? '1' : '0')
     if (patch.customInstructions !== undefined) set('custom_instructions', patch.customInstructions.slice(0, 4000))
     return this.getAppSettings()
   }
 
-  /** Live web_search config for the tool adapter: settings key wins, env fallback. */
-  getWebSearchConfig(): { enabled: boolean; options: import('../services/deepseekSearch').DeepSeekSearchOptions } {
-    const get = (k: string): string | null => this.runtimeConfig.getAppSetting(k)
-    const stored = (get('web_search_api_key') ?? '').trim()
-    const env = (process.env['DEEPSEEK_API_KEY'] ?? '').trim()
-    return {
-      enabled: get('web_search') === '1',
-      options: {
-        apiKey: stored.length > 0 ? stored : (env.length > 0 ? env : undefined),
-        baseURL: get('web_search_base_url') ?? DEEPSEEK_SEARCH_DEFAULT_BASE_URL,
-        model: get('web_search_model') ?? DEEPSEEK_SEARCH_DEFAULT_MODEL,
-        apiVersion: DEEPSEEK_SEARCH_DEFAULT_API_VERSION,
-        maxTokens: DEEPSEEK_SEARCH_DEFAULT_MAX_TOKENS,
-        maxUses: DEEPSEEK_SEARCH_DEFAULT_MAX_USES,
-        timeoutMs: WEB_SEARCH_TIMEOUT_MS,
-      },
-    }
+  /** Live web_search flag for the tool adapter (keyless — toggle only). */
+  getWebSearchConfig(): { enabled: boolean } {
+    return { enabled: this.runtimeConfig.getAppSetting('web_search') === '1' }
   }
 
   recordUpdateCheck(status: string): void {
