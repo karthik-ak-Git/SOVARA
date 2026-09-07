@@ -37,8 +37,16 @@ describe('Commit 1 — stub ports satisfy contracts', () => {
     expect(chunks[0].type).toBe('text-delta')
   })
 
-  it('ToolStub lists empty', () => {
-    expect(new ToolStubAdapter().list()).toEqual([])
+  it('ToolStub lists web_search (DeepSeek server tool), nothing else', () => {
+    const defs = new ToolStubAdapter().list()
+    expect(defs.map((d) => d.name)).toEqual(['web_search'])
+    expect(defs[0].toolset).toBe('web')
+  })
+
+  it('ToolStub refuses web_search while disabled and validates queries', async () => {
+    const tools = new ToolStubAdapter()
+    expect(JSON.parse(await tools.dispatch('web_search', { queries: ['x'] })).error).toMatch(/disabled/)
+    expect(JSON.parse(await tools.dispatch('nope', {})).error).toMatch(/unavailable/)
   })
 
   it('Persistence stub creates and lists sessions in order', async () => {

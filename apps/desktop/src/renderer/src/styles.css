@@ -1433,6 +1433,8 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .settings-content {
   max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
   padding: 24px 32px;
   display: flex;
   flex-direction: column;
@@ -1573,6 +1575,22 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .settings-input:focus { outline: none; border-color: var(--accent); }
 .settings-input::placeholder { color: var(--muted-2); }
+.settings-input--inline { max-width: 220px; flex-shrink: 0; }
+
+/* Multiline instructions */
+.settings-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 ui-sans-system, sans-serif;
+  resize: vertical;
+}
+.settings-textarea:focus { outline: none; border-color: var(--accent); }
+.settings-textarea::placeholder { color: var(--muted-2); }
+.settings-row--column { flex-direction: column; align-items: stretch; }
 
 /* Inline settings error */
 .settings-error-text { color: #dc2626; }

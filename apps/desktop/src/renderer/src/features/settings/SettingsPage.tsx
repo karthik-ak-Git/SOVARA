@@ -4,7 +4,8 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView } from '../../lib/ipc'
+import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
 
@@ -202,13 +203,6 @@ const MCP_PRESETS: McpPreset[] = [
 export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
 
-  // Agent settings
-  const [rootModel, setRootModel] = useState('no-default')
-  const [visionModel, setVisionModel] = useState('off')
-  const [webSearch, setWebSearch] = useState(false)
-  const [explorationAgents, setExplorationAgents] = useState(true)
-  const [customAutoReview, setCustomAutoReview] = useState(false)
-
   // Appearance settings
   const [sidebarBackground, setSidebarBackground] = useState('solid')
   const [uiColorTheme, setUiColorTheme] = useState('system')
@@ -229,6 +223,17 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
   const [skillsLoaded, setSkillsLoaded] = useState(false)
 
+  // Agent settings — discovered models + registered tools for the Agent page.
+  const [agentModels, setAgentModels] = useState<DiscoveredModel[]>([])
+  const [agentTools, setAgentTools] = useState<ToolDefinitionView[]>([])
+  const [agentMetaLoaded, setAgentMetaLoaded] = useState(false)
+  const [keyDraft, setKeyDraft] = useState<string | null>(null)
+  const [baseDraft, setBaseDraft] = useState<string | null>(null)
+  const [modelDraft, setModelDraft] = useState<string | null>(null)
+  const [instructionsDraft, setInstructionsDraft] = useState<string | null>(null)
+  const [testingSearch, setTestingSearch] = useState(false)
+  const [searchTest, setSearchTest] = useState<string | null>(null)
+
   // General settings — loaded from main (SQLite), every control below is live.
   const [appSettings, setAppSettingsState] = useState<AppSettingsState | null>(null)
   const [generalLoaded, setGeneralLoaded] = useState(false)
@@ -243,6 +248,10 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       const next = await setAppSettings(patch)
       setAppSettingsState(next)
       if (patch.updateFeedUrl !== undefined) setFeedDraft(null)
+      if (patch.webSearchApiKey !== undefined) setKeyDraft(null)
+      if (patch.webSearchBaseUrl !== undefined) setBaseDraft(null)
+      if (patch.webSearchModel !== undefined) setModelDraft(null)
+      if (patch.customInstructions !== undefined) setInstructionsDraft(null)
     } catch (e) {
       setGeneralError(e instanceof Error ? e.message : String(e))
     }
@@ -326,6 +335,48 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       }
     }
     loadGeneral()
+  }, [])
+
+  // Load agent metadata once (discovered models + registered tools for counts).
+  useEffect(() => {
+    const loadAgentMeta = async (): Promise<void> => {
+      try {
+        const [models, tools] = await Promise.all([
+          listDiscoveredModels().catch(() => []),
+          listTools().catch(() => []),
+        ])
+        setAgentModels(models)
+        setAgentTools(tools)
+      } finally {
+        setAgentMetaLoaded(true)
+      }
+    }
+    loadAgentMeta()
+  }, [])
+
+  const runSearchTest = useCallback(async (): Promise<void> => {
+    setTestingSearch(true)
+    setSearchTest(null)
+    setGeneralError(null)
+    try {
+      const res = await dispatchTool('web_search', { queries: ['current date and time'] })
+      if (res.blocked) {
+        setSearchTest(`Blocked: ${res.message ?? res.reason ?? 'not allowed'}`)
+      } else if (res.result !== undefined) {
+        try {
+          const parsed = JSON.parse(res.result) as { error?: string }
+          setSearchTest(parsed.error ? `Error: ${parsed.error}` : `OK — ${res.result.slice(0, 220)}${res.result.length > 220 ? '…' : ''}`)
+        } catch {
+          setSearchTest(`OK — ${res.result.slice(0, 220)}${res.result.length > 220 ? '…' : ''}`)
+        }
+      } else {
+        setSearchTest('No result returned.')
+      }
+    } catch (e) {
+      setSearchTest(`Error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setTestingSearch(false)
+    }
   }, [])
 
   const renderContent = (): ReactElement => {
@@ -423,10 +474,44 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
         )
       }
 
-      case 'agent':
+      case 'agent': {
+        const availableModels = agentModels.filter((m) => m.available)
+        const modelCount = agentMetaLoaded ? availableModels.length : null
+        const toolCount = agentMetaLoaded ? agentTools.length : null
+        const webSearch = appSettings?.webSearch ?? false
+        const hasKey = appSettings?.webSearchHasKey ?? false
+        const webStatus = !webSearch
+          ? 'Disabled — turn on Web search to let agents use it.'
+          : !hasKey
+            ? 'Enabled but missing an API key — paste a DeepSeek key below or export DEEPSEEK_API_KEY.'
+            : 'Ready — agents can call web_search (still gated by the permission level).'
+        const rootValue = appSettings?.rootModel ?? 'no-default'
+        const visionValue = appSettings?.visionModel ?? 'off'
+        const rootKnown = rootValue === 'no-default' || availableModels.some((m) => m.modelId === rootValue)
+        const visionKnown = visionValue === 'off' || availableModels.some((m) => m.modelId === visionValue)
+        const instructionsValue = instructionsDraft ?? appSettings?.customInstructions ?? ''
         return (
           <div className="settings-content">
             <h2 className="settings-section-title">Agent</h2>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Agents</div>
+              <div className="settings-card">
+                <InfoRow
+                  label="Registered agent tools"
+                  value={toolCount === null ? '…' : String(toolCount)}
+                  badge={agentTools.some((t) => t.name === 'web_search') ? 'web_search live' : undefined}
+                />
+                <InfoRow
+                  label="Discovered local models"
+                  value={modelCount === null ? '…' : String(modelCount)}
+                />
+                <InfoRow
+                  label="Exploration helpers"
+                  value={(appSettings?.explorationAgents ?? true) ? 'On' : 'Off'}
+                />
+              </div>
+            </div>
 
             <div className="settings-group">
               <div className="settings-group-header">Models</div>
@@ -434,16 +519,19 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">Root model</div>
-                    <div className="settings-row-desc">Optionally choose the default model for new Bionic sessions.</div>
+                    <div className="settings-row-desc">Default model for new Bionic sessions{modelCount !== null ? ` — ${modelCount} discovered` : ''}. Probe a runtime on the Models page to list more.</div>
                   </div>
                   <select
                     className="settings-select"
-                    value={rootModel}
-                    onChange={(e) => setRootModel(e.target.value)}
+                    value={rootKnown ? rootValue : 'no-default'}
+                    onChange={(e) => void applyPatch({ rootModel: e.target.value })}
                     aria-label="Root model"
                   >
                     <option value="no-default">No default</option>
-                    <option value="local">Local model</option>
+                    {availableModels.map((m) => (
+                      <option key={m.modelId} value={m.modelId}>{m.displayName}</option>
+                    ))}
+                    {!rootKnown ? <option value={rootValue}>{rootValue} (not probed)</option> : null}
                   </select>
                 </div>
                 <div className="settings-row">
@@ -453,12 +541,15 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                   </div>
                   <select
                     className="settings-select"
-                    value={visionModel}
-                    onChange={(e) => setVisionModel(e.target.value)}
+                    value={visionKnown ? visionValue : 'off'}
+                    onChange={(e) => void applyPatch({ visionModel: e.target.value })}
                     aria-label="Vision subagent model"
                   >
                     <option value="off">Off</option>
-                    <option value="local">Local model</option>
+                    {availableModels.map((m) => (
+                      <option key={m.modelId} value={m.modelId}>{m.displayName}</option>
+                    ))}
+                    {!visionKnown ? <option value={visionValue}>{visionValue} (not probed)</option> : null}
                   </select>
                 </div>
               </div>
@@ -469,13 +560,90 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
               <div className="settings-card">
                 <Toggle
                   checked={webSearch}
-                  onChange={setWebSearch}
+                  onChange={(v) => void applyPatch({ webSearch: v })}
                   label="Web search"
-                  description="Sign in to use the built-in web search and extraction tools."
+                  description="Let agents use the built-in DeepSeek web search (needs an API key below). Calls are still gated by the permission level."
                 />
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">DeepSeek API key</div>
+                    <div className="settings-row-desc">Stored only on this machine. {hasKey ? 'A key is saved — pasting a new one replaces it.' : 'No key saved yet.'} DEEPSEEK_API_KEY is used when empty.</div>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <input
+                    className="settings-input"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={hasKey ? '•••••••• (saved)' : 'sk-…'}
+                    value={keyDraft ?? ''}
+                    onChange={(e) => setKeyDraft(e.target.value)}
+                    onBlur={() => {
+                      if (keyDraft !== null && keyDraft.trim().length > 0) void applyPatch({ webSearchApiKey: keyDraft })
+                      else setKeyDraft(null)
+                    }}
+                    aria-label="DeepSeek API key"
+                  />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Search endpoint</div>
+                    <div className="settings-row-desc">Anthropic-compatible Messages base — /messages is appended. Default is DeepSeek's official endpoint.</div>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <input
+                    className="settings-input"
+                    type="url"
+                    inputMode="url"
+                    spellCheck={false}
+                    value={baseDraft ?? appSettings?.webSearchBaseUrl ?? ''}
+                    onChange={(e) => setBaseDraft(e.target.value)}
+                    onBlur={() => {
+                      if (baseDraft !== null && baseDraft !== (appSettings?.webSearchBaseUrl ?? '')) {
+                        void applyPatch({ webSearchBaseUrl: baseDraft })
+                      }
+                    }}
+                    aria-label="Search endpoint URL"
+                  />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Search model</div>
+                    <div className="settings-row-desc">Model used for the search turn (must support the web_search server tool).</div>
+                  </div>
+                  <input
+                    className="settings-input settings-input--inline"
+                    type="text"
+                    spellCheck={false}
+                    value={modelDraft ?? appSettings?.webSearchModel ?? ''}
+                    onChange={(e) => setModelDraft(e.target.value)}
+                    onBlur={() => {
+                      if (modelDraft !== null && modelDraft.trim().length > 0 && modelDraft !== (appSettings?.webSearchModel ?? '')) {
+                        void applyPatch({ webSearchModel: modelDraft })
+                      } else setModelDraft(null)
+                    }}
+                    aria-label="Search model"
+                  />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Status</div>
+                    <div className="settings-row-desc">{searchTest ?? webStatus}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-btn"
+                    onClick={() => void runSearchTest()}
+                    disabled={testingSearch}
+                  >
+                    {testingSearch ? 'Testing…' : 'Send test query'}
+                  </button>
+                </div>
                 <Toggle
-                  checked={explorationAgents}
-                  onChange={setExplorationAgents}
+                  checked={appSettings?.explorationAgents ?? true}
+                  onChange={(v) => void applyPatch({ explorationAgents: v })}
                   label="Exploration agents"
                   description="Allow assistants to spawn helper agents that search your project files in parallel."
                 />
@@ -486,15 +654,39 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
               <div className="settings-group-header">Command Auto Review</div>
               <div className="settings-card">
                 <Toggle
-                  checked={customAutoReview}
-                  onChange={setCustomAutoReview}
+                  checked={appSettings?.customAutoReview ?? false}
+                  onChange={(v) => void applyPatch({ customAutoReview: v })}
                   label="Custom instructions for Auto Review"
                   description="Additional preferences applied when shell commands are automatically reviewed."
                 />
+                {(appSettings?.customAutoReview ?? false) ? (
+                  <div className="settings-row settings-row--column">
+                    <textarea
+                      className="settings-textarea"
+                      rows={4}
+                      maxLength={4000}
+                      placeholder="e.g. Never run rm -rf outside the project folder. Prefer pnpm over npm."
+                      value={instructionsValue}
+                      onChange={(e) => setInstructionsDraft(e.target.value)}
+                      onBlur={() => {
+                        if (instructionsDraft !== null && instructionsDraft !== (appSettings?.customInstructions ?? '')) {
+                          void applyPatch({ customInstructions: instructionsDraft })
+                        }
+                      }}
+                      aria-label="Custom instructions for Auto Review"
+                    />
+                  </div>
+                ) : null}
+                {generalError ? (
+                  <div className="settings-row">
+                    <div className="settings-row-desc settings-error-text" role="alert">{generalError}</div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
         )
+      }
 
       case 'billing':
         return (

@@ -342,6 +342,7 @@ describe('Commit 6 — sovereignty proofs', () => {
           scan(p)
         } else if (p.endsWith('.ts') || p.endsWith('.tsx')) {
           if (p.endsWith('.test.ts') || p.endsWith('.test.tsx')) continue
+          const norm = p.replace(/\\/g, '/')
           const txt = fs.readFileSync(p, 'utf8')
           // Cloud control planes must never appear (the "No telemetry" UI
           // label and "no telemetry" comments are explicitly allowed).
@@ -349,8 +350,10 @@ describe('Commit 6 — sovereignty proofs', () => {
           for (const needle of ['api.openai.com']) {
             if (txt.includes(needle)) hits.push(`${p}: ${needle}`)
           }
-          // huggingface.co is allowed only in hfCatalog.ts
-          if (!p.includes('hfCatalog.ts') && txt.includes('huggingface.co')) {
+          // huggingface.co is allowed in hfCatalog.ts (Explore API client)
+          // and in main/window.ts CSP connect/img-src (Explore model images) —
+          // both are user-invoked Explore surfaces, never telemetry.
+          if (!norm.includes('hfCatalog.ts') && !norm.includes('main/window.ts') && txt.includes('huggingface.co')) {
             hits.push(`${p}: huggingface.co`)
           }
           // Telemetry *machinery* (sending/tracking), not the UI label.
