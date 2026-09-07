@@ -1703,6 +1703,10 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   animation: waveform-pulse 1.6s ease-in-out infinite;
 }
 .dictation-waveform-bar.live { animation: none; transition: height 90ms linear; }
+@keyframes waveform-pulse {
+  0%, 100% { height: 8px; opacity: 0.4; }
+  50% { height: 24px; opacity: 1; }
+}
 
 /* Transcribing spinner */
 .dictation-transcribing {

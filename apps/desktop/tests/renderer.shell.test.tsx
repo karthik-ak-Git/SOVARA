@@ -166,14 +166,18 @@ describe('Renderer shell — navigation & layout', () => {
     expect(onSelectChat).toHaveBeenCalledWith('c1')
   })
 
-  it('TopBar shows tabs and window controls', () => {
-    render(<TopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" />)
+  it('TopBar shows tabs and window controls', async () => {
+    const user = userEvent.setup()
+    const onCloseChat = vi.fn()
+    render(<TopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" onCloseChat={onCloseChat} />)
     expect(screen.getByRole('tab', { name: /Hello/ })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /New tab/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /Sovara Session/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Close/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Close Hello' }))
+    expect(onCloseChat).toHaveBeenCalledWith('c1')
   })
 
   it('AppShell renders topbar, sidebar, and main', () => {
