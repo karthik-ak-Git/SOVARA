@@ -12,14 +12,6 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
-import {
-  DEEPSEEK_SEARCH_DEFAULT_API_VERSION,
-  DEEPSEEK_SEARCH_DEFAULT_BASE_URL,
-  DEEPSEEK_SEARCH_DEFAULT_MAX_TOKENS,
-  DEEPSEEK_SEARCH_DEFAULT_MAX_USES,
-  DEEPSEEK_SEARCH_DEFAULT_MODEL,
-  WEB_SEARCH_TIMEOUT_MS,
-} from '../services/deepseekSearch'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -121,9 +113,6 @@ export class AppBackend {
     rootModel: string
     visionModel: string
     webSearch: boolean
-    webSearchHasKey: boolean
-    webSearchBaseUrl: string
-    webSearchModel: string
     explorationAgents: boolean
     customAutoReview: boolean
     customInstructions: string

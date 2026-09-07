@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { createMainWindow } from './window'
 import { registerIpcHandlers } from './ipc/handlers'
 import { disposeBackend } from './backendComposition'
+import { initVoiceServer } from './services/voiceServer'
 
 // Single-instance lock — second launch focuses existing window
 const gotLock = app.requestSingleInstanceLock()
@@ -19,6 +20,7 @@ app.on('second-instance', onSecondInstance)
 
 app.whenReady().then(() => {
   registerIpcHandlers()
+  initVoiceServer()
   mainWindow = createMainWindow()
 
   app.on('activate', () => {

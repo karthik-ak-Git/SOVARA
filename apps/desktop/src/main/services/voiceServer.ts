@@ -5,8 +5,9 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { existsSync } from 'fs'
+import { app } from 'electron'
 import { postLoopback, getLoopbackJson } from '../network/HttpClient'
 
 let server: ChildProcess | null = null
@@ -19,7 +20,9 @@ const HEALTH_URL = `http://127.0.0.1:${PORT}/health`
 const TRANSCRIBE_URL = `http://127.0.0.1:${PORT}/transcribe`
 
 function getPythonDir(): string {
-  const devPath = join(__dirname, '..', '..', '..', 'python')
+  // app.getAppPath() returns the project root in dev, asar in prod
+  const appRoot = app.getAppPath()
+  const devPath = join(appRoot, 'python')
   const prodPath = join(process.resourcesPath ?? '', 'python')
   return existsSync(devPath) ? devPath : prodPath
 }
@@ -147,9 +150,7 @@ export async function transcribeAudio(
   }>
 }
 
-/** Lazy start on import — non-blocking */
-initVoiceServer()
-
+/** Lazy start after app ready — non-blocking */
 export function initVoiceServer(): void {
   startVoiceServer().catch(() => {
     // Swallow — server may not be available yet
