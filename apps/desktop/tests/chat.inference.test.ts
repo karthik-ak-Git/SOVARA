@@ -548,7 +548,7 @@ describe('Commit 7 — ChatService', () => {
 
 describe('Commit 7 — IPC contracts', () => {
   it('chat payloads stay minimal: no URL/headers/body fields', () => {
-    expect(Object.keys(zChatSend.shape)).toEqual(['sessionId', 'content'])
+    expect(Object.keys(zChatSend.shape).sort()).toEqual(['content', 'sessionId', 'webSearch'].sort())
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi' }).success).toBe(true)
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi', endpoint: 'http://x' }).success).toBe(false)
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi', headers: {} }).success).toBe(false)

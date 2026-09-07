@@ -30,7 +30,7 @@ function disabledRuntime(): WebRuntime {
  * thunk keeps settings reads at dispatch time.
  */
 export class ToolStubAdapter implements ToolPort {
-  constructor(private readonly resolveWeb: () => WebRuntime = disabledRuntime) {}
+  constructor(private readonly web: WebRuntime = disabledRuntime()) {}
 
   list(): ToolDefinition[] {
     return [
@@ -58,9 +58,8 @@ export class ToolStubAdapter implements ToolPort {
   }
 
   private guard(): WebRuntime {
-    const rt = this.resolveWeb()
-    if (!rt.enabled) throw new CrawlUnavailableError('web tools disabled — enable Web search in Settings → Agent.')
-    return rt
+    if (!this.web.enabled) throw new CrawlUnavailableError('web tools disabled — enable Web search in Settings → Agent.')
+    return this.web
   }
 
   async dispatch(name: string, args: Record<string, unknown>): Promise<string> {

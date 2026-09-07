@@ -92,14 +92,64 @@ export function Composer({
     if (micLoading) return
 
     // If currently recording → stop and transcribe
-    if (micActive && mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop()
+    if (micActive) {
       setMicActive(false)
       setMicLoading(true)
+
+      // Stop capture and collect PCM
+      const chunks = pcmChunksRef.current
+      pcmChunksRef.current = []
+      processorRef.current?.disconnect()
+      processorRef.current = null
+      const ctx = audioCtxRef.current
+      const stream = streamRef.current
+      // Close context after grabbing data
+      if (ctx) {
+        try { await ctx.close() } catch { /* ignore */ }
+        audioCtxRef.current = null
+      }
+      stream?.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+
+      // Concatenate float32 chunks
+      const totalLen = chunks.reduce((s, c) => s + c.length, 0)
+      if (totalLen < 1600) { // <0.1s
+        setMicLoading(false)
+        return
+      }
+      const pcm = new Float32Array(totalLen)
+      let off = 0
+      for (const c of chunks) { pcm.set(c, off); off += c.length }
+
+      try {
+        // Convert float32 [-1,1] to int16 PCM for transport
+        const int16 = new Int16Array(pcm.length)
+        for (let i = 0; i < pcm.length; i++) {
+          const s = Math.max(-1, Math.min(1, pcm[i]))
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+        }
+        const bytes = new Uint8Array(int16.buffer)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        const base64 = btoa(binary)
+        const result = await transcribeAudio(base64, 'recording.pcm')
+        if (result.ok && result.text && result.text.trim()) {
+          const prefix = value.trim() ? `${value.trim()} ` : ''
+          const next = (prefix + result.text.trim()).slice(0, MAX_LENGTH)
+          onChange(next)
+          requestAnimationFrame(() => areaRef.current?.focus())
+        } else if (!result.ok) {
+          console.error('[Composer] Transcription error:', result.error)
+        }
+      } catch (err) {
+        console.error('[Composer] Transcription failed:', err)
+      } finally {
+        setMicLoading(false)
+      }
       return
     }
 
-    // Start recording
+    // Start recording — raw PCM via Web Audio (Zukuri: 16kHz float32 mono)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -107,68 +157,29 @@ export function Composer({
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
-        }
+          autoGainControl: true,
+        },
       })
-
       streamRef.current = stream
-      audioChunksRef.current = []
+      pcmChunksRef.current = []
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : ''
-
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-      mediaRecorderRef.current = recorder
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          audioChunksRef.current.push(e.data)
-        }
+      const audioCtx = new AudioContext({ sampleRate: 16000 })
+      audioCtxRef.current = audioCtx
+      const source = audioCtx.createMediaStreamSource(stream)
+      // ScriptProcessor is deprecated but universally supported in Electron/Chromium
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      processorRef.current = processor
+      processor.onaudioprocess = (e) => {
+        const data = e.inputBuffer.getChannelData(0)
+        pcmChunksRef.current.push(new Float32Array(data))
       }
+      source.connect(processor)
+      // Use a silent gain to keep processor alive without feedback
+      const gain = audioCtx.createGain()
+      gain.gain.value = 0
+      processor.connect(gain)
+      gain.connect(audioCtx.destination)
 
-      recorder.onstop = async () => {
-        // Cleanup stream
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(t => t.stop())
-          streamRef.current = null
-        }
-
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-        audioChunksRef.current = []
-
-        if (blob.size < 100) {
-          setMicLoading(false)
-          return
-        }
-
-        try {
-          // Send raw WebM blob as base64 — Python server decodes via av
-          const arrayBuffer = await blob.arrayBuffer()
-          const bytes = new Uint8Array(arrayBuffer)
-          let binary = ''
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i])
-          }
-          const base64 = btoa(binary)
-
-          const result = await transcribeAudio(base64, 'recording.webm')
-
-          if (result.ok && result.text && result.text.trim()) {
-            const prefix = value.trim() ? value.trim() + ' ' : ''
-            onChange(prefix + result.text.trim())
-          } else if (!result.ok) {
-            console.error('[Composer] Transcription error:', result.error)
-          }
-        } catch (err) {
-          console.error('[Composer] Transcription failed:', err)
-        } finally {
-          setMicLoading(false)
-        }
-      }
-
-      recorder.start(250)
       setMicActive(true)
     } catch (err) {
       console.error('[Composer] Microphone access denied:', err)
@@ -179,7 +190,9 @@ export function Composer({
   const submit = (): void => {
     const content = value.trim()
     if (content.length === 0 || disabled) return
-    onSend(content, attachments.length > 0 ? attachments : undefined, { webSearch })
+    const atts = attachments.length > 0 ? attachments : undefined
+    if (webSearch) onSend(content, atts, { webSearch: true })
+    else onSend(content, atts)
     setAttachments([])
   }
 
