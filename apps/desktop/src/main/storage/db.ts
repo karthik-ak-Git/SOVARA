@@ -186,7 +186,50 @@ export class SovaraDb {
   }
 
   insertSession(row: DbSessionRow): void {
-    this.stmtInsertSession.run(row.id, row.title, row.createdAt, row.updatedAt)
+    this.stmtInsertSession.run(row.id, row.title, row.createdAt, row.updatedAt, row.projectId ?? null)
+  }
+
+  listSessionsByProject(projectId: string): DbSessionRow[] {
+    return this.stmtListSessionsByProject.all(projectId) as unknown as DbSessionRow[]
+  }
+
+  listGlobalSessions(): DbSessionRow[] {
+    return this.stmtListGlobalSessions.all() as unknown as DbSessionRow[]
+  }
+
+  renameSession(id: string, title: string, updatedAt: number): void {
+    this.stmtRenameSession.run(title, updatedAt, id)
+  }
+
+  /** Permanent delete — caller removes JSONL dir + token rows. */
+  deleteSession(id: string): void {
+    this.stmtDeleteSession.run(id)
+    try {
+      this.db.prepare('DELETE FROM token_usage WHERE sessionId = ?').run(id)
+    } catch {
+      // ignore
+    }
+  }
+
+  // ── Projects ──
+  insertProject(row: DbProjectRow): void {
+    this.db.prepare('INSERT INTO projects (id, name, rootPath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)').run(row.id, row.name, row.rootPath, row.createdAt, row.updatedAt)
+  }
+
+  listProjects(): DbProjectRow[] {
+    return this.db.prepare('SELECT id, name, rootPath, createdAt, updatedAt FROM projects ORDER BY updatedAt DESC').all() as unknown as DbProjectRow[]
+  }
+
+  getProject(id: string): DbProjectRow | undefined {
+    return this.db.prepare('SELECT id, name, rootPath, createdAt, updatedAt FROM projects WHERE id = ?').get(id) as unknown as DbProjectRow | undefined
+  }
+
+  renameProject(id: string, name: string, updatedAt: number): void {
+    this.db.prepare('UPDATE projects SET name = ?, updatedAt = ? WHERE id = ?').run(name, updatedAt, id)
+  }
+
+  deleteProject(id: string): void {
+    this.db.prepare('DELETE FROM projects WHERE id = ?').run(id)
   }
 
   getSession(id: string): DbSessionRow | undefined {

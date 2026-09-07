@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zSessionArchive, zSessionId, zSessionsCreate } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate } from '@shared/ipc/schemas'
 import { VoiceTranscriber } from '../services/voiceTranscriber'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
@@ -54,7 +54,43 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('sessions:create', async (_e, raw: unknown) => {
     const parsed = zSessionsCreate.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid sessions:create payload: ${parsed.error.message}`)
-    return getBackend().ports.persistence.create(parsed.data.title)
+    return getBackend().ports.persistence.create(parsed.data.title, parsed.data.projectId ?? null)
+  })
+
+  ipcMain.handle('sessions:rename', async (_e, raw: unknown) => {
+    const parsed = zSessionRename.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid sessions:rename payload: ${parsed.error.message}`)
+    return getBackend().ports.persistence.rename(brand<'SessionId'>(parsed.data.sessionId), parsed.data.title)
+  })
+
+  ipcMain.handle('sessions:delete', async (_e, raw: unknown) => {
+    const parsed = zSessionId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid session id: ${parsed.error.message}`)
+    await getBackend().ports.persistence.deletePermanently(brand<'SessionId'>(parsed.data))
+    return { ok: true }
+  })
+
+  ipcMain.handle('projects:list', async () => {
+    return getBackend().ports.persistence.listProjects()
+  })
+
+  ipcMain.handle('projects:create', async (_e, raw: unknown) => {
+    const parsed = zProjectCreate.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid projects:create payload: ${parsed.error.message}`)
+    return getBackend().ports.persistence.createProject(parsed.data.name, parsed.data.rootPath)
+  })
+
+  ipcMain.handle('projects:rename', async (_e, raw: unknown) => {
+    const parsed = zProjectRename.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid projects:rename payload: ${parsed.error.message}`)
+    return getBackend().ports.persistence.renameProject(parsed.data.projectId, parsed.data.name)
+  })
+
+  ipcMain.handle('projects:delete', async (_e, raw: unknown) => {
+    const parsed = zProjectId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid projects:delete payload: ${parsed.error.message}`)
+    await getBackend().ports.persistence.deleteProject(parsed.data.projectId)
+    return { ok: true }
   })
 
   ipcMain.handle('sessions:get', async (_e, raw: unknown) => {

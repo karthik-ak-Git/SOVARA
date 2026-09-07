@@ -36,6 +36,12 @@ export function ensureSessionDirExists(sessionId: string, baseDir?: string): voi
   ensureDir(getSessionDir(sessionId, baseDir))
 }
 
+/** Permanent removal of a chat's local files (events JSONL + attachments). */
+export function deleteSessionDirSync(sessionId: string, baseDir?: string): void {
+  const dir = getSessionDir(sessionId, baseDir)
+  fs.rmSync(dir, { recursive: true, force: true })
+}
+
 export function getNextSeq(sessionId: string, baseDir?: string): number {
   const events = readEventsSync(sessionId, baseDir)
   return events.length

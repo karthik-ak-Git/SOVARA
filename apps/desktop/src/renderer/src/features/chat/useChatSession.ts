@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   cancelChatMessage,
   createSession,
+  deleteSession,
   getActiveModel,
   getSessionEvents,
   listSessions,
   onSessionEvents,
+  renameSession,
   sendChatMessage,
   type SessionEventView,
   type SessionHeaderView,
@@ -124,20 +126,60 @@ export function useChatSession() {
     [refreshEvents]
   )
 
-  const handleCreate = useCallback(async (): Promise<void> => {
+  const globalSessions = sessions.filter((s) => !s.projectId)
+  const projectSessions = useCallback(
+    (projectId: string): SessionHeaderView[] => sessions.filter((s) => s.projectId === projectId),
+    [sessions]
+  )
+
+  const handleCreate = useCallback(async (projectId?: string | null): Promise<SessionHeaderView | void> => {
     if (busy) return
     setBusy(true)
     setError(null)
     try {
-      const h = await createSession(`Session ${sessions.length + 1}`)
+      const scoped = projectSessions(projectId ?? '').length
+      const base = projectId ? scoped + 1 : sessions.filter((s) => !s.projectId).length + 1
+      const h = await createSession(`Session ${base}`, projectId ?? null)
       await refreshSessions()
       await switchSession(h.id)
+      return h
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
-  }, [busy, sessions.length, refreshSessions, switchSession])
+  }, [busy, sessions, projectSessions, refreshSessions, switchSession])
+
+  const handleRename = useCallback(async (id: string, title: string): Promise<void> => {
+    const clean = title.trim()
+    if (!clean) return
+    try {
+      await renameSession(id, clean)
+      await refreshSessions()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [refreshSessions])
+
+  const handleDelete = useCallback(async (id: string): Promise<void> => {
+    try {
+      await deleteSession(id)
+      const remaining = await refreshSessions()
+      if (selectedRef.current === id) {
+        // Select newest remaining in the same scope, else clear.
+        const deleted = sessions.find((s) => s.id === id)
+        const scope = remaining.filter((s) => (s.projectId ?? null) === (deleted?.projectId ?? null))
+        if (scope[0]) {
+          await switchSession(scope[0].id)
+        } else {
+          setSelectedId(null)
+          setEvents([])
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [refreshSessions, sessions, switchSession])
 
   const handleSend = useCallback(
     async (content: string): Promise<void> => {
@@ -178,6 +220,8 @@ export function useChatSession() {
 
   return {
     sessions,
+    globalSessions,
+    projectSessions,
     selectedId,
     events,
     draft,
@@ -189,6 +233,8 @@ export function useChatSession() {
     model,
     dismissError,
     handleCreate,
+    handleRename,
+    handleDelete,
     handleSend,
     handleCancel,
     switchSession,

@@ -25,13 +25,14 @@ describe('Commit 3 — SQLite + JSONL persistence', () => {
     expect(fs.existsSync(getDbPath(dir))).toBe(true)
     // WAL mode
     expect(db.getJournalMode().toLowerCase()).toBe('wal')
-    // schema_version = 1
-    expect(db.getMeta('schema_version')).toBe('1')
+    // schema_version = 2
+    expect(db.getMeta('schema_version')).toBe('2')
     expect(db.getMeta('installId')).toBeDefined()
     // tables exist
     const tables = db.raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     const names = tables.map((t) => t.name)
     expect(names).toContain('sessions')
+    expect(names).toContain('projects')
     expect(names).toContain('session_indexes')
     expect(names).toContain('model_library')
     expect(names).toContain('app_meta')
@@ -44,12 +45,12 @@ describe('Commit 3 — SQLite + JSONL persistence', () => {
     db1.close()
     // second open should not throw and keep version
     const db2 = new SovaraDb(dir)
-    expect(db2.getMeta('schema_version')).toBe('1')
+    expect(db2.getMeta('schema_version')).toBe('2')
     db2.close()
     // third open after deleting db file should recreate cleanly
     fs.rmSync(getDbPath(dir))
     const db3 = new SovaraDb(dir)
-    expect(db3.getMeta('schema_version')).toBe('1')
+    expect(db3.getMeta('schema_version')).toBe('2')
     db3.close()
   })
 

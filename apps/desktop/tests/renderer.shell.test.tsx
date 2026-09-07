@@ -106,10 +106,45 @@ describe('Renderer shell — navigation & layout', () => {
         recentChats={[]}
       />
     )
-    const projBtn = screen.getByRole('button', { name: /My App/ })
+    const projBtn = screen.getByRole('button', { name: 'Open project My App' })
     expect(projBtn).toBeInTheDocument()
     await user.click(projBtn)
     expect(onSelectProject).toHaveBeenCalledWith('p1')
+  })
+
+  it('renders per-project + button and calls onNewProjectChat', async () => {
+    const user = userEvent.setup()
+    const onNewProjectChat = vi.fn()
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[{ id: 'p1', name: 'My App', sessions: [] }]}
+        onNewProjectChat={onNewProjectChat}
+        recentChats={[]}
+      />
+    )
+    const addBtn = screen.getByRole('button', { name: 'New chat in My App' })
+    await user.click(addBtn)
+    expect(onNewProjectChat).toHaveBeenCalledWith('p1')
+  })
+
+  it('chat rows expose rename/delete menu', async () => {
+    const user = userEvent.setup()
+    const onDeleteChat = vi.fn()
+    window.confirm = vi.fn(() => true)
+    render(
+      <Sidebar
+        activeId="chat"
+        onNavigate={() => {}}
+        projects={[]}
+        recentChats={[{ id: 'c1', title: 'Hello World' }]}
+        onDeleteChat={onDeleteChat}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Chat options for Hello World' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(onDeleteChat).toHaveBeenCalledWith('c1')
   })
 
   it('renders recent chat titles and calls onSelectChat', async () => {

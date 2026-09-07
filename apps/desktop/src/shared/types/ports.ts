@@ -87,6 +87,15 @@ export interface SessionHeader {
   createdAt: number
   updatedAt: number
   archived?: number | null
+  /** Null/undefined = normal global chat; set = project-scoped chat (folder access + separate memory). */
+  projectId?: string | null
+}
+export interface ProjectHeader {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: number
+  updatedAt: number
 }
 export interface SessionEventView {
   seq: number
@@ -95,10 +104,17 @@ export interface SessionEventView {
   data: unknown
 }
 export interface PersistencePort {
-  create(title?: string): Promise<SessionHeader>
-  list(): Promise<SessionHeader[]>
+  create(title?: string, projectId?: string | null): Promise<SessionHeader>
+  list(projectId?: string | null): Promise<SessionHeader[]>
   listArchived(): Promise<SessionHeader[]>
   get(id: SessionId): Promise<SessionHeader | null>
+  rename(id: SessionId, title: string): Promise<SessionHeader>
+  /** Permanent delete — removes DB row + session files (events JSONL, attachments). */
+  deletePermanently(id: SessionId): Promise<void>
+  createProject(name: string, rootPath: string): Promise<ProjectHeader>
+  listProjects(): Promise<ProjectHeader[]>
+  renameProject(id: string, name: string): Promise<ProjectHeader>
+  deleteProject(id: string): Promise<void>
   archive(id: SessionId): Promise<void>
   unarchive(id: SessionId): Promise<void>
   appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView>

@@ -17,9 +17,13 @@ interface Props {
   onSelectSession?: (id: string) => void
   onNewProject?: () => void
   onNewChat?: () => void
+  onNewProjectChat?: (projectId: string) => void
+  onRenameChat?: (id: string, title: string) => void
+  onDeleteChat?: (id: string) => void
   recentChats?: Array<{ id: string; title: string }>
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
+  onCloseChat?: (id: string) => void
 }
 
 export function AppShell({
@@ -37,9 +41,13 @@ export function AppShell({
   onSelectSession = () => {},
   onNewProject = () => {},
   onNewChat = () => {},
+  onNewProjectChat = () => {},
+  onRenameChat = () => {},
+  onDeleteChat = () => {},
   recentChats = [],
   selectedChatId = null,
   onSelectChat = () => {},
+  onCloseChat = () => {},
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -52,6 +60,7 @@ export function AppShell({
         chats={recentChats}
         selectedChatId={selectedChatId}
         onSelectChat={onSelectChat}
+        onCloseChat={onCloseChat}
       />
       <div className="layout">
         {sidebarOpen ? (
@@ -66,6 +75,9 @@ export function AppShell({
           onSelectSession={onSelectSession}
           onNewProject={onNewProject}
           onNewChat={onNewChat}
+          onNewProjectChat={onNewProjectChat}
+          onRenameChat={onRenameChat}
+          onDeleteChat={onDeleteChat}
           recentChats={recentChats}
           selectedChatId={selectedChatId}
           onSelectChat={onSelectChat}

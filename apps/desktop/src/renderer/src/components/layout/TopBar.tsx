@@ -14,9 +14,10 @@ interface Props {
   chats?: ChatTab[]
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
+  onCloseChat?: (id: string) => void
 }
 
-export function TopBar({ activeTab = 'session', onTabSelect, sidebarOpen = true, onToggleSidebar = () => {}, chats = [], selectedChatId = null, onSelectChat }: Props): React.JSX.Element {
+export function TopBar({ activeTab = 'session', onTabSelect, sidebarOpen = true, onToggleSidebar = () => {}, chats = [], selectedChatId = null, onSelectChat, onCloseChat }: Props): React.JSX.Element {
   return (
     <header className="topbar" role="banner">
       <div className="topbar-drag-region" />
@@ -34,22 +35,39 @@ export function TopBar({ activeTab = 'session', onTabSelect, sidebarOpen = true,
           </span>
         ) : (
           chats.map((chat) => (
-            <button
+            <span
               key={chat.id}
-              type="button"
               role="tab"
               id={`tab-${chat.id}`}
               className={`topbar-tab ${selectedChatId === chat.id ? 'active' : ''}`}
               aria-selected={selectedChatId === chat.id}
               aria-controls="main-content"
-              onClick={() => {
-                onSelectChat?.(chat.id)
-                onTabSelect?.(chat.id)
-              }}
             >
-              <MessageSquare size={14} className="topbar-tab-icon" aria-hidden />
-              <span>{chat.title}</span>
-            </button>
+              <button
+                type="button"
+                className="topbar-tab-label"
+                aria-label={`Open ${chat.title}`}
+                onClick={() => {
+                  onSelectChat?.(chat.id)
+                  onTabSelect?.(chat.id)
+                }}
+              >
+                <MessageSquare size={14} className="topbar-tab-icon" aria-hidden />
+                <span>{chat.title}</span>
+              </button>
+              <button
+                type="button"
+                className="topbar-tab-close"
+                aria-label={`Close ${chat.title}`}
+                title={`Close ${chat.title}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCloseChat?.(chat.id)
+                }}
+              >
+                <X size={12} aria-hidden />
+              </button>
+            </span>
           ))
         )}
       </div>

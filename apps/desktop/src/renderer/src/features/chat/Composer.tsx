@@ -36,17 +36,21 @@ const MAX_HEIGHT_PX = 160
 
 type VoiceState = 'idle' | 'recording' | 'transcribing'
 
-/** Animated waveform bars for the dictation panel. */
-function WaveformBars(): ReactElement {
+/**
+ * Live level meter — ZukuriFlow-style recording feedback.
+ * Driven by a real AnalyserNode via `level` (0..1); falls back to a gentle
+ * idle animation when no analyser is attached.
+ */
+function LevelMeter({ level, active }: { level: number; active: boolean }): ReactElement {
   return (
     <div className="dictation-waveform" aria-hidden>
-      {Array.from({ length: 32 }, (_, i) => (
-        <div
-          key={i}
-          className="dictation-waveform-bar"
-          style={{ animationDelay: `${(i * 0.05) % 1.6}s` }}
-        />
-      ))}
+      {Array.from({ length: 32 }, (_, i) => {
+        const wave = 0.5 + 0.5 * Math.sin((i / 32) * Math.PI * 2)
+        const h = active
+          ? 4 + Math.round(level * 28 * (0.35 + 0.65 * wave))
+          : 4 + Math.round(3 * wave)
+        return <div key={i} className="dictation-waveform-bar live" style={{ height: `${h}px` }} />
+      })}
     </div>
   )
 }
@@ -71,16 +75,22 @@ export function Composer({
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const meterRafRef = useRef<number | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const pcmChunksRef = useRef<Float32Array[]>([])
   const nativeSampleRateRef = useRef<number>(16000)
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const recordStartRef = useRef<number>(0)
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const [showDictation, setShowDictation] = useState(false)
+  const [voiceLevel, setVoiceLevel] = useState(0)
+  const [elapsedSecs, setElapsedSecs] = useState(0)
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -101,6 +111,8 @@ export function Composer({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (meterRafRef.current) cancelAnimationFrame(meterRafRef.current)
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop())
       }
@@ -159,7 +171,20 @@ export function Composer({
     setAttachments((prev) => prev.filter((_, i) => i !== idx))
   }, [])
 
+  const stopMeter = useCallback((): void => {
+    if (meterRafRef.current) {
+      cancelAnimationFrame(meterRafRef.current)
+      meterRafRef.current = null
+    }
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current)
+      elapsedTimerRef.current = null
+    }
+    setVoiceLevel(0)
+  }, [])
+
   const stopRecording = useCallback((): void => {
+    stopMeter()
     if (recordingTimerRef.current) {
       clearTimeout(recordingTimerRef.current)
       recordingTimerRef.current = null
@@ -168,6 +193,7 @@ export function Composer({
       workletNodeRef.current.disconnect()
       workletNodeRef.current = null
     }
+    analyserRef.current = null
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
       streamRef.current = null
@@ -176,7 +202,7 @@ export function Composer({
       audioContextRef.current.close().catch(() => {})
       audioContextRef.current = null
     }
-  }, [])
+  }, [stopMeter])
 
   const startRecording = useCallback(async (): Promise<void> => {
     setVoiceError(null)
@@ -200,6 +226,31 @@ export function Composer({
       const source = ctx.createMediaStreamSource(stream)
       const workletNode = new AudioWorkletNode(ctx, 'pcm-processor')
       workletNodeRef.current = workletNode
+
+      // Live level meter (ZukuriFlow-style recording feedback).
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      analyserRef.current = analyser
+      source.connect(analyser)
+
+      const buf = new Uint8Array(analyser.frequencyBinCount)
+      const tickMeter = (): void => {
+        analyser.getByteTimeDomainData(buf)
+        let peak = 0
+        for (let i = 0; i < buf.length; i++) {
+          const v = Math.abs((buf[i] ?? 128) - 128) / 128
+          if (v > peak) peak = v
+        }
+        setVoiceLevel((prev) => prev * 0.6 + peak * 0.4)
+        meterRafRef.current = requestAnimationFrame(tickMeter)
+      }
+      meterRafRef.current = requestAnimationFrame(tickMeter)
+
+      recordStartRef.current = Date.now()
+      setElapsedSecs(0)
+      elapsedTimerRef.current = setInterval(() => {
+        setElapsedSecs(Math.floor((Date.now() - recordStartRef.current) / 1000))
+      }, 500)
 
       workletNode.port.onmessage = (e: MessageEvent<{ pcm: Float32Array }>) => {
         if (e.data?.pcm) {
@@ -231,9 +282,11 @@ export function Composer({
   const transcribeChunks = useCallback(async (nativeSampleRate?: number): Promise<void> => {
     const chunks = pcmChunksRef.current
     pcmChunksRef.current = []
+    const recordedSecs = (Date.now() - recordStartRef.current) / 1000
 
-    if (chunks.length === 0) {
+    if (chunks.length === 0 || recordedSecs < 0.4) {
       setVoiceState('idle')
+      setVoiceError('No speech detected — hold to record, then release.')
       return
     }
 
@@ -322,10 +375,24 @@ export function Composer({
   const closeDictation = useCallback((): void => {
     if (voiceState === 'recording') {
       stopRecording()
-      void transcribeChunks(nativeSampleRateRef.current)
+      setVoiceState('idle')
+      pcmChunksRef.current = []
     }
     setShowDictation(false)
-  }, [voiceState, stopRecording, transcribeChunks])
+  }, [voiceState, stopRecording])
+
+  const cancelDictation = useCallback((): void => {
+    stopRecording()
+    setVoiceState('idle')
+    setShowDictation(false)
+    pcmChunksRef.current = []
+  }, [stopRecording])
+
+  const formatElapsed = (s: number): string => {
+    const m = Math.floor(s / 60)
+    const r = s % 60
+    return `${m}:${String(r).padStart(2, '0')}`
+  }
 
   const micIcon = (): ReactElement => {
     if (voiceState === 'transcribing') return <Loader2 size={16} className="spin" aria-hidden />
@@ -426,37 +493,42 @@ export function Composer({
         </div>
       </div>
 
-      {/* Dictation panel — shown when recording or transcribing */}
+      {/* Speech-to-text tool — ZukuriFlow pipeline: record → VAD transcribe → refined text */}
       {showDictation && voiceState !== 'idle' ? (
-        <div className="dictation-panel">
+        <div className="dictation-panel" role="dialog" aria-label="Speech to text">
           <div className="dictation-header">
             <div className="dictation-header-left">
               <MicVocal size={14} aria-hidden />
-              <span className="dictation-title">Dictation</span>
+              <span className="dictation-title">Speech to Text</span>
+              <span className={`dictation-state-pill ${voiceState}`} aria-live="polite">
+                {voiceState === 'recording' ? `● Listening ${formatElapsed(elapsedSecs)}` : 'Processing…'}
+              </span>
             </div>
-            <button type="button" className="dictation-close" onClick={closeDictation} aria-label="Close dictation">
+            <button type="button" className="dictation-close" onClick={closeDictation} aria-label="Close speech to text">
               <X size={14} aria-hidden />
             </button>
           </div>
-          <p className="dictation-subtitle">
-            Speak and it becomes text. Adjust{' '}
-            <span className="dictation-link">settings</span>{' '}
-            or{' '}
-            <span className="dictation-link">how it's written</span>{' '}
-            any time.
-          </p>
-          {voiceState === 'recording' ? <WaveformBars /> : null}
+          <LevelMeter level={voiceLevel} active={voiceState === 'recording'} />
           {voiceState === 'transcribing' ? (
             <div className="dictation-transcribing">
               <Loader2 size={14} className="spin" aria-hidden />
-              <span>Transcribing…</span>
+              <span>Transcribing on-device with faster-whisper…</span>
             </div>
           ) : null}
-          <div className="dictation-model">
-            <span className="dictation-model-label">Dictate (Speech to Text)</span>
-            <span className="dictation-model-desc">
-              Types what you say into the input. Transcribes on-device with the <strong>faster-whisper</strong> multilingual model.
-            </span>
+          <div className="dictation-actions">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={cancelDictation} aria-label="Cancel recording">
+              Cancel
+            </button>
+            {voiceState === 'recording' ? (
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={handleVoiceToggle}
+                aria-label="Stop and transcribe"
+              >
+                Stop & Transcribe
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

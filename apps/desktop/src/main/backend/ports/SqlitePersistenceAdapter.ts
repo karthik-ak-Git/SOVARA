@@ -5,11 +5,11 @@
  * - Single-writer: all operations synchronous in Main, no concurrent races
  * - Renderer never sees filesystem paths
  */
-import type { PersistencePort, SessionEventView, SessionHeader } from '@shared/types/ports'
+import type { PersistencePort, ProjectHeader, SessionEventView, SessionHeader } from '@shared/types/ports'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import { SovaraDb } from '../../storage/db'
-import { appendEventSync, ensureSessionDirExists, readEventsSync } from '../../storage/jsonl'
+import { appendEventSync, deleteSessionDirSync, ensureSessionDirExists, readEventsSync } from '../../storage/jsonl'
 
 export class SqlitePersistenceAdapter implements PersistencePort {
   private readonly db: SovaraDb
@@ -25,12 +25,12 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     return Date.now() + this.seqMono++
   }
 
-  async create(title = 'New session'): Promise<SessionHeader> {
+  async create(title = 'New session', projectId: string | null = null): Promise<SessionHeader> {
     const id = brand<'SessionId'>(`sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${++this.seqMono}`)
     const now = this.nowMono()
-    const header: SessionHeader = { id, title: title.slice(0, 120) || 'New session', createdAt: now, updatedAt: now }
+    const header: SessionHeader = { id, title: title.slice(0, 120) || 'New session', createdAt: now, updatedAt: now, projectId }
     // DB insert + JSONL dir creation (empty log)
-    this.db.insertSession({ id, title: header.title, createdAt: header.createdAt, updatedAt: header.updatedAt })
+    this.db.insertSession({ id, title: header.title, createdAt: header.createdAt, updatedAt: header.updatedAt, projectId })
     // ensure session dir exists (even before first event) for explicit invariant
     try {
       ensureSessionDirExists(id, this.baseDir)
@@ -40,18 +40,85 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     return header
   }
 
-  async list(): Promise<SessionHeader[]> {
-    return this.db.listSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }))
+  async list(projectId?: string | null): Promise<SessionHeader[]> {
+    const rows = projectId === undefined
+      ? this.db.listSessions()
+      : projectId === null
+        ? this.db.listGlobalSessions()
+        : this.db.listSessionsByProject(projectId)
+    return rows.map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }))
+  }
+
+  async rename(id: SessionId, title: string): Promise<SessionHeader> {
+    const clean = title.trim().slice(0, 120)
+    if (!clean) throw new Error('title must not be empty')
+    const existing = this.db.getSession(id)
+    if (!existing) throw new Error(`session not found: ${id}`)
+    const now = this.nowMono()
+    this.db.renameSession(id, clean, now)
+    return { id: brand<'SessionId'>(existing.id), title: clean, createdAt: existing.createdAt, updatedAt: now, archived: existing.archived, projectId: existing.projectId ?? null }
+  }
+
+  async deletePermanently(id: SessionId): Promise<void> {
+    const existing = this.db.getSession(id)
+    if (!existing) throw new Error(`session not found: ${id}`)
+    // Files first, then DB row (row + token_usage rows).
+    try {
+      deleteSessionDirSync(id, this.baseDir)
+    } catch {
+      // ignore missing dir
+    }
+    this.db.deleteSession(id)
+  }
+
+  async createProject(name: string, rootPath: string): Promise<ProjectHeader> {
+    const clean = name.trim().slice(0, 120)
+    if (!clean) throw new Error('project name must not be empty')
+    if (!rootPath) throw new Error('project rootPath is required')
+    const now = this.nowMono()
+    const header: ProjectHeader = { id: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: clean, rootPath, createdAt: now, updatedAt: now }
+    this.db.insertProject(header)
+    return header
+  }
+
+  async listProjects(): Promise<ProjectHeader[]> {
+    return this.db.listProjects()
+  }
+
+  async renameProject(id: string, name: string): Promise<ProjectHeader> {
+    const clean = name.trim().slice(0, 120)
+    if (!clean) throw new Error('project name must not be empty')
+    const existing = this.db.getProject(id)
+    if (!existing) throw new Error(`project not found: ${id}`)
+    const now = this.nowMono()
+    this.db.renameProject(id, clean, now)
+    return { ...existing, name: clean, updatedAt: now }
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    const existing = this.db.getProject(id)
+    if (!existing) throw new Error(`project not found: ${id}`)
+    // Permanently remove every project-scoped chat's files, then rows.
+    const scoped = this.db.listSessionsByProject(id)
+    for (const s of scoped) {
+      try {
+        deleteSessionDirSync(s.id, this.baseDir)
+      } catch {
+        // ignore
+      }
+      this.db.deleteSession(s.id)
+    }
+    this.db.deleteProject(id)
   }
 
   async listArchived(): Promise<SessionHeader[]> {
-    return this.db.listArchivedSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }))
+    return this.db.listArchivedSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }))
   }
 
   async get(id: SessionId): Promise<SessionHeader | null> {
     const r = this.db.getSession(id)
     if (!r) return null
-    return { id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived }
+    return { id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }
   }
 
   async archive(id: SessionId): Promise<void> {

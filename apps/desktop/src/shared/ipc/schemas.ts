@@ -1,11 +1,27 @@
 import { z } from 'zod'
 
 export const zSessionsCreate = z
-  .object({ title: z.string().max(120).optional() })
+  .object({ title: z.string().max(120).optional(), projectId: z.string().min(1).max(128).nullable().optional() })
   .strict()
   .default({})
 
 export const zSessionId = z.string().min(1).max(128)
+
+export const zSessionRename = z
+  .object({ sessionId: zSessionId, title: z.string().min(1).max(120) })
+  .strict()
+
+export const zProjectCreate = z
+  .object({ name: z.string().min(1).max(120), rootPath: z.string().min(1).max(1024) })
+  .strict()
+
+export const zProjectId = z
+  .object({ projectId: z.string().min(1).max(128) })
+  .strict()
+
+export const zProjectRename = z
+  .object({ projectId: z.string().min(1).max(128), name: z.string().min(1).max(120) })
+  .strict()
 
 export const zSessionArchive = z
   .object({ sessionId: zSessionId })

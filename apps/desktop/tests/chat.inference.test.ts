@@ -10,7 +10,7 @@ import {
   classifyChatError,
 } from '../src/main/backend/ports/LocalOpenAIChatAdapter'
 import { ChatService, ChatServiceError, remoteModelId, toRequestMessages } from '../src/main/backend/ChatService'
-import type { LlmChatRequest, LlmChunk, PersistencePort, SessionEventView, SessionHeader } from '../src/shared/types/ports'
+import type { LlmChatRequest, LlmChunk, PersistencePort, ProjectHeader, SessionEventView, SessionHeader } from '../src/shared/types/ports'
 import type { SessionId } from '../src/shared/types/branded'
 import type { ModelWorkbench } from '../src/main/backend/ModelWorkbench'
 import { zChatCancel, zChatSend } from '../src/shared/ipc/schemas'
@@ -269,6 +269,20 @@ function makePersistence(): PersistencePort & { events: Map<string, SessionEvent
     },
     async archive(): Promise<void> {},
     async unarchive(): Promise<void> {},
+    async rename(id: SessionId): Promise<SessionHeader> {
+      return { id, title: 't', createdAt: 1, updatedAt: 1 }
+    },
+    async deletePermanently(): Promise<void> {},
+    async createProject(name: string, rootPath: string): Promise<ProjectHeader> {
+      return { id: 'proj-test', name, rootPath, createdAt: 1, updatedAt: 1 }
+    },
+    async listProjects(): Promise<ProjectHeader[]> {
+      return []
+    },
+    async renameProject(id: string, name: string): Promise<ProjectHeader> {
+      return { id, name, rootPath: '', createdAt: 1, updatedAt: 1 }
+    },
+    async deleteProject(): Promise<void> {},
     async appendEvent(sessionId: SessionId, type: string, data: unknown): Promise<SessionEventView> {
       const list = events.get(String(sessionId)) ?? []
       const ev: SessionEventView = { seq: list.length, time: Date.now(), type, data }

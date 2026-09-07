@@ -12,6 +12,7 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
 import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
+import { createProject, listProjects, pickFolder, type ProjectView } from './lib/ipc'
 
 interface Info {
   name: string
@@ -22,19 +23,12 @@ interface Info {
   arch: string
 }
 
-interface Project {
-  id: string
-  name: string
-  rootPath: string
-  sessions: Array<{ id: string; title: string }>
-}
-
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<Info | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [activeNav, setActiveNav] = useState<NavId>('chat')
   const [activeTab, setActiveTab] = useState('session')
-  const [projects, setProjects] = useState<Project[]>([])
+  const [projects, setProjects] = useState<ProjectView[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [execMode, setExecMode] = useState<ExecMode>('ask')
   const [reasoningEnabled, setReasoningEnabled] = useState(false)
@@ -46,21 +40,37 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (window.sovara) {
       window.sovara.invoke('app:getInfo').then((v) => setInfo(v as Info)).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      listProjects().then(setProjects).catch(() => {})
     }
   }, [])
 
-  const handleCreateProject = useCallback((name: string, rootPath: string): void => {
-    const id = `project-${Date.now()}`
-    setProjects((prev) => [
-      ...prev,
-      { id, name, rootPath, sessions: [] },
-    ])
-    setSelectedProjectId(id)
-    setProjectModalOpen(false)
+  const refreshProjects = useCallback((): void => {
+    listProjects().then(setProjects).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
   }, [])
 
+  const handleCreateProject = useCallback(async (name: string, _rootPath: string): Promise<void> => {
+    // Folder access is real: always pick the project folder from disk.
+    const picked = await pickFolder()
+    if (picked.canceled || !picked.filePath) return
+    try {
+      const p = await createProject(name, picked.filePath)
+      refreshProjects()
+      setSelectedProjectId(p.id)
+      setProjectModalOpen(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }, [refreshProjects])
+
   const handleNewSession = useCallback((): void => {
-    chat.handleCreate()
+    void chat.handleCreate(null)
+    setSelectedProjectId(null)
+    setActiveTab('session')
+  }, [chat])
+
+  const handleNewProjectChat = useCallback((projectId: string): void => {
+    setSelectedProjectId(projectId)
+    void chat.handleCreate(projectId)
     setActiveTab('session')
   }, [chat])
 
@@ -78,7 +88,8 @@ export function App(): React.JSX.Element {
     chat.handleSend(enrichedContent)
   }, [chat])
 
-  const selectedProject = projects.find((p) => p.id === selectedProjectId)
+  const projectChats = (projectId: string): Array<{ id: string; title: string }> =>
+    chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
 
   return (
     <>
@@ -89,24 +100,37 @@ export function App(): React.JSX.Element {
         onTabSelect={handleTabSelect}
         onNewSession={handleNewSession}
         footer={null}
-        projects={projects}
+        projects={projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))}
         selectedProjectId={selectedProjectId}
         selectedSessionId={chat.selectedId}
         onSelectProject={setSelectedProjectId}
         onSelectSession={(id) => {
+          const sess = chat.sessions.find((s) => s.id === id)
+          setSelectedProjectId(sess?.projectId ?? null)
           chat.switchSession(id)
           setActiveTab('session')
         }}
         onNewProject={() => setProjectModalOpen(true)}
         onNewChat={() => {
-          chat.handleCreate()
+          setSelectedProjectId(null)
+          void chat.handleCreate(null)
           setActiveTab('session')
         }}
-        recentChats={chat.sessions.map((s) => ({ id: s.id, title: s.title }))}
+        onNewProjectChat={handleNewProjectChat}
+        onRenameChat={(id, title) => void chat.handleRename(id, title)}
+        onDeleteChat={(id) => void chat.handleDelete(id)}
+        recentChats={chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))}
         selectedChatId={chat.selectedId}
         onSelectChat={(id) => {
+          setSelectedProjectId(null)
           chat.switchSession(id)
           setActiveTab('session')
+        }}
+        onCloseChat={(id) => {
+          const target = chat.sessions.find((s) => s.id === id)
+          if (window.confirm(`Close "${target?.title ?? 'chat'}" permanently? Chat files are removed and cannot be recovered.`)) {
+            void chat.handleDelete(id)
+          }
         }}
       >
         {activeNav === 'chat' ? (
@@ -129,7 +153,7 @@ export function App(): React.JSX.Element {
             activeModel={workbench.active}
             runtimes={workbench.runtimes}
             discoveredModels={workbench.models}
-            projectCount={selectedProject?.sessions.length ?? 0}
+            projectCount={selectedProjectId ? projectChats(selectedProjectId).length : 0}
             onNewProject={() => setProjectModalOpen(true)}
             execMode={execMode}
             onExecModeChange={setExecMode}

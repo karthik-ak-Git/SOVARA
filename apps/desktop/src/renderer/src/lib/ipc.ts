@@ -19,6 +19,15 @@ export interface SessionHeaderView {
   createdAt: number
   updatedAt: number
   archived?: number | null
+  projectId?: string | null
+}
+
+export interface ProjectView {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: number
+  updatedAt: number
 }
 
 export interface SessionEventView {
@@ -37,8 +46,36 @@ export async function listSessions(): Promise<SessionHeaderView[]> {
   return (await sovara().invoke('sessions:list')) as SessionHeaderView[]
 }
 
-export async function createSession(title: string): Promise<SessionHeaderView> {
-  return (await sovara().invoke('sessions:create', { title })) as SessionHeaderView
+export async function createSession(title: string, projectId?: string | null): Promise<SessionHeaderView> {
+  return (await sovara().invoke('sessions:create', { title, projectId: projectId ?? null })) as SessionHeaderView
+}
+
+export async function renameSession(sessionId: string, title: string): Promise<SessionHeaderView> {
+  return (await sovara().invoke('sessions:rename', { sessionId, title })) as SessionHeaderView
+}
+
+export async function deleteSession(sessionId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('sessions:delete', sessionId)) as { ok: boolean }
+}
+
+export async function listProjects(): Promise<ProjectView[]> {
+  return (await sovara().invoke('projects:list')) as ProjectView[]
+}
+
+export async function createProject(name: string, rootPath: string): Promise<ProjectView> {
+  return (await sovara().invoke('projects:create', { name, rootPath })) as ProjectView
+}
+
+export async function renameProject(projectId: string, name: string): Promise<ProjectView> {
+  return (await sovara().invoke('projects:rename', { projectId, name })) as ProjectView
+}
+
+export async function deleteProject(projectId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('projects:delete', { projectId })) as { ok: boolean }
+}
+
+export async function pickFolder(): Promise<{ canceled: boolean; filePath: string | null }> {
+  return (await sovara().invoke('dialog:pickFolder')) as { canceled: boolean; filePath: string | null }
 }
 
 export async function getSessionEvents(sessionId: string): Promise<SessionEventView[]> {
