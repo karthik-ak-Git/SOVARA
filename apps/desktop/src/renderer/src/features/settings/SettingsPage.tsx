@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView } from '../../lib/ipc'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
 
@@ -229,6 +229,44 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
   const [skillsLoaded, setSkillsLoaded] = useState(false)
 
+  // General settings — loaded from main (SQLite), every control below is live.
+  const [appSettings, setAppSettingsState] = useState<AppSettingsState | null>(null)
+  const [generalLoaded, setGeneralLoaded] = useState(false)
+  const [feedDraft, setFeedDraft] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<UpdateCheckView | null>(null)
+  const [generalError, setGeneralError] = useState<string | null>(null)
+
+  const applyPatch = useCallback(async (patch: Parameters<typeof setAppSettings>[0]): Promise<void> => {
+    setGeneralError(null)
+    try {
+      const next = await setAppSettings(patch)
+      setAppSettingsState(next)
+      if (patch.updateFeedUrl !== undefined) setFeedDraft(null)
+    } catch (e) {
+      setGeneralError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  const runUpdateCheck = useCallback(async (): Promise<void> => {
+    setChecking(true)
+    setGeneralError(null)
+    try {
+      const result = await checkForUpdatesNow()
+      setCheckResult(result)
+      // Refresh persisted last-check metadata shown under the button.
+      try {
+        setAppSettingsState(await getAppSettings())
+      } catch {
+        // status line already shows the result
+      }
+    } catch (e) {
+      setGeneralError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setChecking(false)
+    }
+  }, [])
+
   useEffect(() => {
     const loadUsage = async (): Promise<void> => {
       try {
@@ -276,27 +314,114 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     loadSkills()
   }, [activeSection])
 
+  // Load general settings once (version, toggles, feed, last check).
+  useEffect(() => {
+    const loadGeneral = async (): Promise<void> => {
+      try {
+        setAppSettingsState(await getAppSettings())
+      } catch {
+        // settings backend unavailable — rows show loading state
+      } finally {
+        setGeneralLoaded(true)
+      }
+    }
+    loadGeneral()
+  }, [])
+
   const renderContent = (): ReactElement => {
     switch (activeSection) {
-      case 'general':
+      case 'general': {
+        const channelLabel = appSettings?.updateChannel === 'beta' ? 'Beta' : 'Stable'
+        const feedValue = feedDraft ?? appSettings?.updateFeedUrl ?? ''
+        const lastCheck = checkResult?.message
+          ?? (appSettings?.lastUpdateCheckAt
+            ? `${appSettings.lastUpdateStatus === 'available' ? 'Update available' : appSettings.lastUpdateStatus === 'error' ? 'Last check failed' : appSettings.lastUpdateStatus === 'no-feed' ? 'No feed configured' : 'Up to date'} · ${new Date(appSettings.lastUpdateCheckAt).toLocaleString()}`
+            : 'Never checked')
         return (
           <div className="settings-content">
             <h2 className="settings-section-title">General</h2>
             <div className="settings-group">
               <div className="settings-group-header">App and updates</div>
               <div className="settings-card">
-                <InfoRow label="App version" value="1.0.0" badge="Stable" />
-                <Toggle checked={true} onChange={() => {}} label="Automatic updates" description="Download app updates in the background and show Update when they are ready." />
+                <InfoRow label="App version" value={appSettings?.version ?? (generalLoaded ? 'unknown' : '…')} badge={channelLabel} />
+                <Toggle
+                  checked={appSettings?.autoUpdates ?? true}
+                  onChange={(v) => void applyPatch({ autoUpdates: v })}
+                  label="Automatic updates"
+                  description="When a configured update feed reports a new release, download it in the background and show Update when it is ready."
+                />
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Update channel</div>
+                    <div className="settings-row-desc">Stable tracks tested releases. Beta includes pre-release builds.</div>
+                  </div>
+                  <select
+                    className="settings-select"
+                    value={appSettings?.updateChannel ?? 'stable'}
+                    onChange={(e) => void applyPatch({ updateChannel: e.target.value as 'stable' | 'beta' })}
+                    aria-label="Update channel"
+                  >
+                    <option value="stable">Stable</option>
+                    <option value="beta">Beta</option>
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Update feed</div>
+                    <div className="settings-row-desc">Release JSON ({'{ "version": "1.2.3" }'}) or a GitHub Releases API URL. Empty disables checks.</div>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <input
+                    className="settings-input"
+                    type="url"
+                    inputMode="url"
+                    placeholder="https://…/releases"
+                    value={feedValue}
+                    onChange={(e) => setFeedDraft(e.target.value)}
+                    onBlur={() => {
+                      if (feedDraft !== null && feedDraft !== (appSettings?.updateFeedUrl ?? '')) {
+                        void applyPatch({ updateFeedUrl: feedDraft })
+                      }
+                    }}
+                    aria-label="Update feed URL"
+                  />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Status</div>
+                    <div className="settings-row-desc">{lastCheck}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-btn settings-action-btn--primary"
+                    onClick={() => void runUpdateCheck()}
+                    disabled={checking}
+                  >
+                    {checking ? 'Checking…' : 'Check for updates'}
+                  </button>
+                </div>
+                {generalError ? (
+                  <div className="settings-row">
+                    <div className="settings-row-desc settings-error-text" role="alert">{generalError}</div>
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="settings-group">
               <div className="settings-group-header">Chat</div>
               <div className="settings-card">
-                <Toggle checked={true} onChange={() => {}} label="Session completion notifications" description="Show a system notification when a session finishes while its project isn't focused." />
+                <Toggle
+                  checked={appSettings?.sessionNotifications ?? true}
+                  onChange={(v) => void applyPatch({ sessionNotifications: v })}
+                  label="Session completion notifications"
+                  description="Show a system notification when a session finishes while its project isn't focused."
+                />
               </div>
             </div>
           </div>
         )
+      }
 
       case 'agent':
         return (

@@ -158,7 +158,7 @@ export class ModelWorkbench {
 
   getActiveModel(): ActiveModelState {
     const sel = this.config.getActiveSelection()
-    if (!sel) return { selection: null, available: false }
+    if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)
     if (!snap || !snap.entry.enabled) return { selection: sel, available: false }
     const found = snap.lastModels.find((m) => m.modelId === sel.modelId)
@@ -169,6 +169,30 @@ export class ModelWorkbench {
       displayName: found.displayName,
       runtimeDisplayName: snap.entry.displayName,
     }
+  }
+
+  /**
+   * Root-model fallback (Settings → Agent): when nothing is explicitly
+   * selected, the configured default resolves against probed runtimes.
+   * Read-only — it never writes a selection.
+   */
+  private resolveRootModel(): ActiveModelState {
+    const root = this.config.getAppSetting('root_model')
+    if (!root || root === 'no-default') return { selection: null, available: false }
+    for (const entry of this.config.listRuntimes()) {
+      if (!entry.enabled) continue
+      const snap = this.config.getRuntime(entry.id)
+      const found = snap?.lastModels.find((m) => m.modelId === root)
+      if (found && snap && snap.lastError === null) {
+        return {
+          selection: { runtimeId: entry.id, modelId: found.modelId },
+          available: true,
+          displayName: found.displayName,
+          runtimeDisplayName: entry.displayName,
+        }
+      }
+    }
+    return { selection: null, available: false }
   }
 
   dispose(): void {

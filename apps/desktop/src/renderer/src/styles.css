@@ -1143,7 +1143,23 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .composer-attachment-remove:hover { background: var(--danger); color: #fff; }
 .composer-icon-btn.active { background: var(--accent); color: #fff; }
-.composer-icon-btn.recording { background: var(--danger); color: #fff; }
+.composer-icon-btn.recording {
+  background: var(--danger);
+  color: #fff;
+  animation: pulse-record 1.2s ease-in-out infinite;
+}
+.composer-icon-btn.loading { opacity: 0.6; pointer-events: none; }
+
+@keyframes pulse-record {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 /* ═══════════════════════════════════════════════════════════════
    Permission Control
@@ -1544,6 +1560,23 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   flex-shrink: 0;
 }
 .settings-select:focus { outline: none; border-color: var(--accent); }
+
+/* Text input (update feed URL) */
+.settings-input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.4 ui-sans-system, sans-serif;
+}
+.settings-input:focus { outline: none; border-color: var(--accent); }
+.settings-input::placeholder { color: var(--muted-2); }
+
+/* Inline settings error */
+.settings-error-text { color: #dc2626; }
+[data-theme="dark"] .settings-error-text { color: #f87171; }
 
 /* Action button */
 .settings-action-btn {

@@ -156,6 +156,15 @@ export class RuntimeConfigStore {
     this.db.setMeta('exec_mode', mode)
   }
 
+  /** Generic persisted app setting (General section and friends). Null when unset. */
+  getAppSetting(key: string): string | null {
+    return this.db.getMeta(key) ?? null
+  }
+
+  setAppSetting(key: string, value: string): void {
+    this.db.setMeta(key, value)
+  }
+
   close(): void {
     this.db.close()
   }

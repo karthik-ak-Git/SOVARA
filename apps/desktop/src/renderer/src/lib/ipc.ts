@@ -188,8 +188,78 @@ export interface ToolDispatchResult {
   result?: string
 }
 
+export interface ToolDefinitionView {
+  name: string
+  toolset: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+export async function listTools(): Promise<ToolDefinitionView[]> {
+  return (await sovara().invoke('tools:list')) as ToolDefinitionView[]
+}
+
 export async function dispatchTool(name: string, args?: Record<string, unknown>): Promise<ToolDispatchResult> {
   return (await sovara().invoke('tools:dispatch', { name, args: args ?? {} })) as ToolDispatchResult
+}
+
+// ── General settings (Settings → General) + update feed ──
+export interface AppSettingsState {
+  theme: string
+  allowModelDownload: boolean
+  autoUpdates: boolean
+  sessionNotifications: boolean
+  updateFeedUrl: string
+  updateChannel: string
+  lastUpdateCheckAt: number | null
+  lastUpdateStatus: string | null
+  rootModel: string
+  visionModel: string
+  webSearch: boolean
+  webSearchHasKey: boolean
+  webSearchBaseUrl: string
+  webSearchModel: string
+  explorationAgents: boolean
+  customAutoReview: boolean
+  customInstructions: string
+  version: string
+}
+
+export interface AppSettingsPatch {
+  theme?: string
+  allowModelDownload?: boolean
+  autoUpdates?: boolean
+  sessionNotifications?: boolean
+  updateFeedUrl?: string
+  updateChannel?: string
+  rootModel?: string
+  visionModel?: string
+  webSearch?: boolean
+  webSearchApiKey?: string
+  webSearchBaseUrl?: string
+  webSearchModel?: string
+  explorationAgents?: boolean
+  customAutoReview?: boolean
+  customInstructions?: string
+}
+
+export interface UpdateCheckView {
+  status: 'current' | 'available' | 'no-feed' | 'error'
+  current: string
+  latest: string | null
+  message: string
+}
+
+export async function getAppSettings(): Promise<AppSettingsState> {
+  return (await sovara().invoke('settings:get')) as AppSettingsState
+}
+
+export async function setAppSettings(patch: AppSettingsPatch): Promise<AppSettingsState> {
+  return (await sovara().invoke('settings:set', patch)) as AppSettingsState
+}
+
+export async function checkForUpdatesNow(): Promise<UpdateCheckView> {
+  return (await sovara().invoke('updates:checkNow')) as UpdateCheckView
 }
 
 // ── Window controls (frameless window) ──

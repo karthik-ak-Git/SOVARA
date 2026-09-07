@@ -35,6 +35,9 @@ export const IPC_CHANNELS = {
   // Settings (preferences)
   'settings:get': { type: 'invoke' as const },
   'settings:set': { type: 'invoke' as const },
+  // App version + update feed (Settings → General)
+  'app:getVersion': { type: 'invoke' as const },
+  'updates:checkNow': { type: 'invoke' as const },
   // Usage stats
   'usage:getTotal': { type: 'invoke' as const },
   'usage:getByModel': { type: 'invoke' as const },

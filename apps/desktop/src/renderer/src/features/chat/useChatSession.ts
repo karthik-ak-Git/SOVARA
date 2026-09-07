@@ -4,6 +4,7 @@ import {
   createSession,
   deleteSession,
   getActiveModel,
+  getAppSettings,
   getSessionEvents,
   listSessions,
   onSessionEvents,
@@ -13,6 +14,30 @@ import {
   type SessionHeaderView,
 } from '@renderer/lib/ipc'
 import type { ActiveModelState } from '@shared/types/models'
+
+/**
+ * System notification when a session finishes while the window isn't
+ * focused. Honors Settings → General → "Session completion notifications".
+ * Permission is requested lazily, only when a notification is actually due.
+ */
+async function maybeNotifyCompletion(sessionTitle: string): Promise<void> {
+  if (typeof document !== 'undefined' && !document.hidden) return
+  if (typeof Notification === 'undefined') return
+  let enabled = true
+  try {
+    enabled = (await getAppSettings()).sessionNotifications
+  } catch {
+    // settings unavailable — default to notifying rather than staying silent
+  }
+  if (!enabled) return
+  try {
+    if (Notification.permission === 'default') await Notification.requestPermission()
+    if (Notification.permission !== 'granted') return
+    new Notification('Sovara — reply ready', { body: sessionTitle || 'A session finished.' })
+  } catch {
+    // notifications are best-effort
+  }
+}
 
 /**
  * Commit 7 — real local inference flow.
@@ -96,7 +121,12 @@ export function useChatSession() {
         setPhase('idle')
         if (id) {
           const seq = ++loadSeq.current
-          void refreshEvents(id, seq).then(() => refreshSessions())
+          void refreshEvents(id, seq).then(() => refreshSessions()).then((list) => {
+            if (ev.kind === 'assistant-done') {
+              const title = list.find((s) => s.id === id)?.title ?? ''
+              void maybeNotifyCompletion(title)
+            }
+          })
         }
       } else if (ev.kind === 'assistant-error') {
         setStreamingText('')

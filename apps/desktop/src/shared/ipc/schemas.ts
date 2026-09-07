@@ -95,7 +95,25 @@ export const zLibrarySetDirectory = z
   .object({ path: z.string().min(1).max(512) })
   .strict()
 
-export const zSettingsSet = z.record(z.unknown())
+export const zSettingsSet = z
+  .object({
+    theme: z.enum(['dark', 'light', 'system']).optional(),
+    allowModelDownload: z.boolean().optional(),
+    autoUpdates: z.boolean().optional(),
+    sessionNotifications: z.boolean().optional(),
+    updateFeedUrl: z.string().max(2048).optional(),
+    updateChannel: z.enum(['stable', 'beta']).optional(),
+    rootModel: z.string().max(256).optional(),
+    visionModel: z.string().max(256).optional(),
+    webSearch: z.boolean().optional(),
+    webSearchApiKey: z.string().max(512).optional(),
+    webSearchBaseUrl: z.string().max(512).optional(),
+    webSearchModel: z.string().max(128).optional(),
+    explorationAgents: z.boolean().optional(),
+    customAutoReview: z.boolean().optional(),
+    customInstructions: z.string().max(4000).optional(),
+  })
+  .strict()
 
 export const zExecMode = z.enum(['off', 'ask', 'review', 'allow'])
 

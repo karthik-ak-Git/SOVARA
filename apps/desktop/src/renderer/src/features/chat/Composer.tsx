@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, ArrowUp, Paperclip, X } from 'lucide-react'
+import { Plus, Globe, Mic, ArrowUp, Paperclip, X, Loader2 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
+import { transcribeAudioBlob } from '../../lib/voiceTranscription'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
 interface ComposerProps {
@@ -56,6 +57,10 @@ export function Composer({
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
   const [micActive, setMicActive] = useState(false)
+  const [micLoading, setMicLoading] = useState(false)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -72,6 +77,99 @@ export function Composer({
     if (wasDisabled.current && !disabled) areaRef.current?.focus()
     wasDisabled.current = disabled
   }, [disabled])
+
+  // Cleanup MediaRecorder on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+      }
+    }
+  }, [])
+
+  const handleMicClick = useCallback(async () => {
+    if (micLoading) return
+
+    // If currently recording → stop and transcribe
+    if (micActive && mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop()
+      setMicActive(false)
+      setMicLoading(true)
+      return
+    }
+
+    // Start recording
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        }
+      })
+
+      streamRef.current = stream
+      audioChunksRef.current = []
+
+      // Prefer webm/opus, fall back to whatever the browser supports
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : ''
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        // Cleanup stream
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop())
+          streamRef.current = null
+        }
+
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        audioChunksRef.current = []
+
+        if (blob.size < 100) {
+          // Too small — probably no actual audio
+          setMicLoading(false)
+          return
+        }
+
+        try {
+          // Transcribe using internal WASM whisper — no IPC needed
+          const result = await transcribeAudioBlob(blob)
+
+          if (result.text && result.text.trim()) {
+            // Append transcribed text to current draft
+            const prefix = value.trim() ? value.trim() + ' ' : ''
+            onChange(prefix + result.text.trim())
+          }
+        } catch (err) {
+          console.error('[Composer] Transcription failed:', err)
+        } finally {
+          setMicLoading(false)
+        }
+      }
+
+      recorder.start(250) // collect data every 250ms
+      setMicActive(true)
+    } catch (err) {
+      console.error('[Composer] Microphone access denied:', err)
+      setMicLoading(false)
+    }
+  }, [micActive, micLoading, value, onChange])
 
   const submit = (): void => {
     const content = value.trim()
@@ -175,11 +273,12 @@ export function Composer({
         <div className="composer-bionic-right">
           <button
             type="button"
-            className={`composer-icon-btn mic-btn ${micActive ? 'recording' : ''}`}
-            aria-label={micActive ? 'Microphone on' : 'Microphone off'}
-            onClick={() => setMicActive((v) => !v)}
+            className={`composer-icon-btn mic-btn ${micActive ? 'recording' : ''} ${micLoading ? 'loading' : ''}`}
+            aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
+            onClick={handleMicClick}
+            disabled={micLoading}
           >
-            <Mic size={16} aria-hidden />
+            {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
           </button>
           <ModelSelector
             active={active}

@@ -4,8 +4,9 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zToolDispatch } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
+import { checkForUpdates } from '../services/updateFeed'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
@@ -206,9 +207,27 @@ export function registerIpcHandlers(): void {
     return getBackend().workbench.getActiveModel()
   })
 
-  ipcMain.handle('settings:get', async () => ({ theme: 'dark', network: { allowModelDownload: false } }))
+  ipcMain.handle('settings:get', async () => {
+    return { ...getBackend().getAppSettings(), version: getBackend().getAppVersion() }
+  })
 
-  ipcMain.handle('settings:set', async (_e, _raw: unknown) => ({ ok: true }))
+  ipcMain.handle('settings:set', async (_e, raw: unknown) => {
+    const parsed = zSettingsSet.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid settings payload: ${parsed.error.message}`)
+    return { ...getBackend().setAppSettings(parsed.data), version: getBackend().getAppVersion() }
+  })
+
+  ipcMain.handle('app:getVersion', async () => {
+    return { version: getBackend().getAppVersion() }
+  })
+
+  ipcMain.handle('updates:checkNow', async () => {
+    const backend = getBackend()
+    const settings = backend.getAppSettings()
+    const result = await checkForUpdates(settings.updateFeedUrl, backend.getAppVersion())
+    backend.recordUpdateCheck(result.status)
+    return result
+  })
 
   // ── Exec permissions — the AI command levels, enforced on every dispatch ──
   ipcMain.handle('exec:getMode', async () => {
