@@ -111,21 +111,36 @@ export function Composer({
       stream?.getTracks().forEach(t => t.stop())
       streamRef.current = null
 
-      // Concatenate float32 chunks
+      // Concatenate float32 chunks (native rate) then resample to 16kHz — Handy FrameResampler
       const totalLen = chunks.reduce((s, c) => s + c.length, 0)
-      if (totalLen < 1600) { // <0.1s
+      if (totalLen < 800) {
         setMicLoading(false)
         return
       }
-      const pcm = new Float32Array(totalLen)
+      const nativePcm = new Float32Array(totalLen)
       let off = 0
-      for (const c of chunks) { pcm.set(c, off); off += c.length }
+      for (const c of chunks) { nativePcm.set(c, off); off += c.length }
+
+      const inRate = ctx?.sampleRate ?? 48000
+      let pcm16k: Float32Array
+      if (inRate === 16000) {
+        pcm16k = nativePcm
+      } else {
+        const targetLen = Math.round(nativePcm.length * 16000 / inRate)
+        pcm16k = new Float32Array(targetLen)
+        for (let i = 0; i < targetLen; i++) {
+          const srcIdx = i * (nativePcm.length - 1) / (targetLen - 1)
+          const lo = Math.floor(srcIdx)
+          const hi = Math.ceil(srcIdx)
+          const frac = srcIdx - lo
+          pcm16k[i] = nativePcm[lo] * (1 - frac) + nativePcm[hi] * frac
+        }
+      }
 
       try {
-        // Convert float32 [-1,1] to int16 PCM for transport
-        const int16 = new Int16Array(pcm.length)
-        for (let i = 0; i < pcm.length; i++) {
-          const s = Math.max(-1, Math.min(1, pcm[i]))
+        const int16 = new Int16Array(pcm16k.length)
+        for (let i = 0; i < pcm16k.length; i++) {
+          const s = Math.max(-1, Math.min(1, pcm16k[i]))
           int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
         }
         const bytes = new Uint8Array(int16.buffer)
@@ -149,11 +164,11 @@ export function Composer({
       return
     }
 
-    // Start recording — raw PCM via Web Audio (Zukuri: 16kHz float32 mono)
+    // Start recording — Handy-style: native rate capture + resample to 16kHz
+    // (Handy: cpal default rate + FrameResampler rubato; here Web Audio native + linear)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -163,18 +178,15 @@ export function Composer({
       streamRef.current = stream
       pcmChunksRef.current = []
 
-      const audioCtx = new AudioContext({ sampleRate: 16000 })
+      const audioCtx = new AudioContext() // native rate (avoids forcing hardware — Handy get_preferred_config)
       audioCtxRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
-      // ScriptProcessor is deprecated but universally supported in Electron/Chromium
       const processor = audioCtx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
       processor.onaudioprocess = (e) => {
-        const data = e.inputBuffer.getChannelData(0)
-        pcmChunksRef.current.push(new Float32Array(data))
+        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
       }
       source.connect(processor)
-      // Use a silent gain to keep processor alive without feedback
       const gain = audioCtx.createGain()
       gain.gain.value = 0
       processor.connect(gain)
