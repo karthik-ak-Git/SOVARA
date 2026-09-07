@@ -124,8 +124,8 @@ export function registerIpcHandlers(): void {
     try {
       // Real local inference via ChatService → LlmPort → loopback runtime.
       // Deltas stream back on `events:session`; the invoke resolves on
-      // completion with the durable seqs.
-      return await getBackend().chat.send(sid, parsed.data.content)
+      // completion with the durable seqs. Globe flag adds web context.
+      return await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'chat failed')
     }

@@ -21,6 +21,8 @@ export interface WebSearchSource {
   url: string
   title?: string
   snippet?: string
+  /** Full extracted page text (crawl4ai sidecar only; link discovery omits it). */
+  content?: string
 }
 
 export interface WebSearchOutcome {

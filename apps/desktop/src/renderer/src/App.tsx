@@ -135,13 +135,13 @@ export function App(): React.JSX.Element {
     .filter((s): s is (typeof chat.sessions)[number] => Boolean(s))
     .map((s) => ({ id: s.id, title: s.title }))
 
-  const handleSend = useCallback((content: string, attachments?: FileAttachment[]): void => {
+  const handleSend = useCallback((content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }): void => {
     let enrichedContent = content
     if (attachments && attachments.length > 0) {
       const fileSummary = attachments.map((a) => `[Attached: ${a.name} (${a.type})]`).join(' ')
       enrichedContent = `${fileSummary}\n\n${content}`
     }
-    chat.handleSend(enrichedContent)
+    chat.handleSend(enrichedContent, opts)
   }, [chat])
 
   const projectChats = (projectId: string): Array<{ id: string; title: string }> =>

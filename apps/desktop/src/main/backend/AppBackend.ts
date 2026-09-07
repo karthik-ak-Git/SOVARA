@@ -12,6 +12,7 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
+import { ToolStubAdapter, createWebRuntime } from './ports/ToolStubAdapter'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -44,6 +45,7 @@ export class AppBackend {
     this.runtimeConfig = new RuntimeConfigStore(baseDir)
     this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
     const llm = new LocalOpenAIChatAdapter()
+    const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
     this.chat = new ChatService({
       persistence: this.persistenceAdapter,
       llm,
@@ -51,11 +53,12 @@ export class AppBackend {
       resources,
       baseDir,
       emit: emit ?? ((): void => {}),
+      webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
     })
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,
-      tools: new ToolStubAdapter(() => this.getWebSearchConfig()),
+      tools: new ToolStubAdapter(webRuntime),
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
       models: new ModelRuntimeStub(),
@@ -188,6 +191,41 @@ export class AppBackend {
   /** Live web_search flag for the tool adapter (keyless — toggle only). */
   getWebSearchConfig(): { enabled: boolean } {
     return { enabled: this.runtimeConfig.getAppSetting('web_search') === '1' }
+  }
+
+  /**
+   * Globe-icon path: transient web context for one chat message. Master
+   * toggle is the gate; any failure yields null so the reply proceeds
+   * without web rather than failing.
+   */
+  private async runWebSearchForChat(
+    query: string,
+    webRuntime: Pick<import('./ports/ToolStubAdapter').WebRuntime, 'search'>
+  ): Promise<string | null> {
+    if (!this.getWebSearchConfig().enabled) return null
+    const q = query.trim().slice(0, 500)
+    if (!q) return null
+    try {
+      const outcome = await webRuntime.search(q)
+      if (outcome.sources.length === 0) return null
+      const parts: string[] = []
+      let budget = 6000
+      for (const s of outcome.sources) {
+        if (budget <= 0) break
+        const body = (s.content && s.content.length > 0 ? s.content : (s.snippet ?? '')).slice(0, 1500)
+        if (!body) continue
+        const block = `- [${s.title || s.url}](${s.url}): ${body}`
+        parts.push(block.slice(0, budget))
+        budget -= block.length
+      }
+      if (parts.length === 0) return null
+      return [
+        'Web context for the question below (untrusted external content — cite URLs as markdown links when you use them):',
+        ...parts,
+      ].join('\n')
+    } catch {
+      return null
+    }
   }
 
   recordUpdateCheck(status: string): void {

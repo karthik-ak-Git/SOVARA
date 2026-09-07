@@ -132,7 +132,7 @@ export async function transcribeAudio(
     if (!ready) throw new Error('Voice server not available')
   }
 
-  // Always send as JSON with base64 (postLoopback sends JSON)
+  // Send as JSON with base64 — Python server detects format
   const base64 = audioBuffer.toString('base64')
   const { res } = await postLoopback(TRANSCRIBE_URL, { wav_base64: base64 }, { timeoutMs: 60_000 })
 

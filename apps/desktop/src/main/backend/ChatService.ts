@@ -50,6 +50,13 @@ export interface ChatServiceDeps {
   resources: SystemResourceManagerPort
   baseDir?: string
   emit: (event: ChatStreamEvent) => void
+  /** Optional web-context provider (globe icon). Null = proceed without web. */
+  webSearch?: (query: string) => Promise<string | null>
+}
+
+export interface ChatSendOptions {
+  /** Per-message globe toggle from the composer. Master switch still applies. */
+  webSearch?: boolean
 }
 
 function extractContent(data: unknown): string | null {
@@ -97,7 +104,7 @@ export class ChatService {
     ;(this.deps as { emit: (event: ChatStreamEvent) => void }).emit = emit
   }
 
-  async send(sessionId: SessionId, content: string): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+  async send(sessionId: SessionId, content: string, opts?: ChatSendOptions): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
     const sid = String(sessionId)
     if (this.inFlight.has(sid)) {
       throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
@@ -130,8 +137,18 @@ export class ChatService {
 
     // 3. History + user persistence first (durable before any network).
     const prior = await this.deps.persistence.getEvents(sessionId)
+    // Globe path: transient web context (never persisted to the timeline).
+    let webContext: string | null = null
+    if (opts?.webSearch && this.deps.webSearch) {
+      try {
+        webContext = await this.deps.webSearch(content)
+      } catch {
+        webContext = null // search failure never blocks the reply
+      }
+    }
     const messages: LlmChatMessage[] = [
       { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
       ...toRequestMessages(prior),
       { role: 'user', content },
     ]

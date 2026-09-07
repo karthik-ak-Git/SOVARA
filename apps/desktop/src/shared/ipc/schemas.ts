@@ -30,7 +30,8 @@ export const zSessionArchive = z
 export const zChatSend = z
   .object({
     sessionId: z.string().min(1).max(128),
-    content: z.string().min(1).max(32_000)
+    content: z.string().min(1).max(32_000),
+    webSearch: z.boolean().optional()
   })
   .strict()
 

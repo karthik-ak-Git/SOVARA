@@ -19,7 +19,7 @@ interface ChatViewProps {
   error: string | null
   model?: ActiveModelState
   onDismissError?: () => void
-  onSend: (content: string, attachments?: FileAttachment[]) => void
+  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }) => void
   onCancel?: () => void
   onCreateSession: () => void
   onSwitchSession: (id: string) => void

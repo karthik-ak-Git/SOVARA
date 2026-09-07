@@ -96,11 +96,12 @@ export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
 
 export async function sendChatMessage(
   sessionId: string,
-  content: string
+  content: string,
+  opts?: { webSearch?: boolean }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   // Long-lived invoke: resolves when generation completes and the single
   // durable assistant event is persisted. Deltas arrive via onSessionEvents.
-  return (await sovara().invoke('chat:send', { sessionId, content })) as {
+  return (await sovara().invoke('chat:send', { sessionId, content, ...opts })) as {
     ok: boolean
     userSeq: number
     assistantSeq: number

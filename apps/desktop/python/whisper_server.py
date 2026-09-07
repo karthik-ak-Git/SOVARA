@@ -8,10 +8,7 @@ import io
 import sys
 import json
 import time
-import tempfile
-import os
-import wave
-import struct
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +22,11 @@ CORS(app)
 model = None
 model_name = "base"
 
+# Silence threshold — audio below this RMS is considered silence
+SILENCE_RMS_THRESHOLD = 0.005
+# Minimum audio length in samples (0.3s at 16kHz)
+MIN_SAMPLES = 4800
+
 
 def load_model(name: str = "base"):
     """Load faster-whisper model. Uses CPU with int8 for speed."""
@@ -36,7 +38,7 @@ def load_model(name: str = "base"):
     print(f"[voice] Model loaded: {name}", flush=True)
 
 
-# ── Jargon mapping (106 entries from ZukuriFlow) ──
+# ── Jargon mapping (from ZukuriFlow) ──
 JARGON_MAP = {
     "python": "Python",
     "typescript": "TypeScript",
@@ -169,42 +171,119 @@ JARGON_MAP = {
 }
 
 
+TECHNICAL_INITIAL_PROMPT = (
+    "This is a technical recording containing specialized terminology. "
+    "Common terms include: Python, SQL, RAG, LangGraph, SDE, API, REST, GraphQL, "
+    "Docker, Kubernetes, AWS, React, Vue, TypeScript, JavaScript, FastAPI, "
+    "PostgreSQL, MongoDB, Redis, Nginx, Git, CI/CD, DevOps, LLM, GPT, Claude, OpenAI. "
+    "Transcribe accurately with proper capitalization and punctuation."
+)
+
 def refine_text(text: str) -> str:
-    """Apply jargon mapping, spacing fixes, sentence capitalization."""
-    if not text.strip():
-        return text
+    """Wispr-style refinement — exact ZukuriFlow logic."""
+    if not text or not text.strip():
+        return ""
+    refined = text.strip()
+    # Jargon mapping with word boundaries (case-insensitive)
+    for term_lower, term_proper in JARGON_MAP.items():
+        pattern = r"\b" + re.escape(term_lower) + r"\b"
+        refined = re.sub(pattern, term_proper, refined, flags=re.IGNORECASE)
+    # Spacing
+    refined = re.sub(r"\s+", " ", refined)
+    refined = re.sub(r"\s+([.,!?;:])", r"\1", refined)
+    refined = re.sub(r"([.,!?;:])([A-Za-z])", r"\1 \2", refined)
+    # Capitalize sentences
+    if refined:
+        refined = refined[0].upper() + refined[1:]
+    refined = re.sub(r"([.!?])\s+([a-z])", lambda m: m.group(1) + " " + m.group(2).upper(), refined)
+    # Ending punctuation
+    if refined and refined[-1] not in ".!?":
+        refined += "."
+    # Contractions
+    contractions = {
+        r"\bim\b": "I'm", r"\bive\b": "I've", r"\bill\b": "I'll", r"\bid\b": "I'd",
+        r"\byoure\b": "you're", r"\byouve\b": "you've", r"\byoull\b": "you'll", r"\byoud\b": "you'd",
+        r"\bhes\b": "he's", r"\bshes\b": "she's", r"\bits\b": "it's",
+        r"\bwere\b": "we're", r"\bweve\b": "we've", r"\bwell\b": "we'll", r"\bwed\b": "we'd",
+        r"\btheyre\b": "they're", r"\btheyve\b": "they've", r"\btheyll\b": "they'll", r"\btheyd\b": "they'd",
+        r"\bdont\b": "don't", r"\bdoesnt\b": "doesn't", r"\bdidnt\b": "didn't",
+        r"\bcant\b": "can't", r"\bcouldnt\b": "couldn't", r"\bwouldnt\b": "wouldn't",
+        r"\bshouldnt\b": "shouldn't", r"\bwont\b": "won't", r"\bisnt\b": "isn't",
+        r"\barent\b": "aren't", r"\bwasnt\b": "wasn't", r"\bwerent\b": "weren't",
+        r"\bhasnt\b": "hasn't", r"\bhavent\b": "haven't", r"\bhadnt\b": "hadn't",
+    }
+    for pat, rep in contractions.items():
+        refined = re.sub(pat, rep, refined, flags=re.IGNORECASE)
+    return refined
 
-    # Apply jargon (word-boundary aware, case-insensitive)
-    words = text.split()
-    refined = []
-    for word in words:
-        lower = word.lower().strip(".,!?;:")
-        punct = ""
-        if word and word[-1] in ".,!?;:":
-            punct = word[-1]
-        replacement = JARGON_MAP.get(lower, word)
-        refined.append(replacement + punct)
-    text = " ".join(refined)
 
-    # Spacing fixes
-    text = " ".join(text.split())
-    text = text.replace(" .", ".").replace(" ,", ",").replace(" !", "!").replace(" ?", "?")
+def decode_audio(raw_bytes: bytes) -> np.ndarray:
+    """Decode audio bytes (WebM/Opus, WAV, raw PCM) to float32 mono 16kHz numpy array."""
+    if raw_bytes[:4] == b'RIFF':
+        import wave
+        with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+            sr = wf.getframerate()
+            nch = wf.getnchannels()
+            frames = wf.readframes(wf.getnframes())
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            if nch == 2:
+                audio = audio.reshape(-1, 2).mean(axis=1)
+            if sr != 16000:
+                duration = len(audio) / sr
+                target_len = int(duration * 16000)
+                audio = np.interp(
+                    np.linspace(0, len(audio) - 1, target_len),
+                    np.arange(len(audio)), audio
+                ).astype(np.float32)
+                print(f"[voice] Resampled WAV {sr}Hz -> 16000Hz", flush=True)
+            return audio
 
-    # Sentence capitalization
-    import re
-    text = re.sub(r'(^|[.!?]\s+)(\w)', lambda m: m.group(1) + m.group(2).upper(), text)
+    if raw_bytes[:4] == b'\x1a\x45\xdf\xa3':
+        import av
+        container = av.open(io.BytesIO(raw_bytes))
+        audio_frames: list[np.ndarray] = []
+        src_rate: int | None = None
+        for frame in container.decode(audio=0):
+            if src_rate is None:
+                src_rate = frame.sample_rate
+            arr = frame.to_ndarray()
+            # arr is (channels, samples) for planar or (samples, channels)
+            if arr.ndim == 2:
+                # average channels to mono
+                arr = arr.mean(axis=0) if arr.shape[0] <= 2 else arr.flatten()
+            else:
+                arr = arr.flatten()
+            # av Opus returns float32 planar in [-1,1] or s16 — normalize if needed
+            if arr.dtype == np.int16:
+                arr = arr.astype(np.float32) / 32768.0
+            else:
+                arr = arr.astype(np.float32)
+            audio_frames.append(arr)
+        container.close()
+        if not audio_frames:
+            return np.array([], dtype=np.float32)
+        audio = np.concatenate(audio_frames).astype(np.float32)
+        if src_rate and src_rate != 16000:
+            print(f"[voice] Resampling {src_rate}Hz -> 16000Hz ({len(audio)} -> ", end="", flush=True)
+            duration = len(audio) / src_rate
+            target_len = int(duration * 16000)
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, target_len),
+                np.arange(len(audio)), audio
+            ).astype(np.float32)
+            print(f"{len(audio)} samples)", flush=True)
+        return audio
 
-    # Ensure trailing punctuation
-    if text and text[-1] not in ".!?":
-        text += "."
-
-    return text
+    # Fallback: raw PCM int16 at 16kHz mono
+    return np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def pcm_to_float32(pcm_data: bytes, sample_rate: int = 16000) -> np.ndarray:
-    """Convert raw PCM int16 to float32 numpy array."""
-    samples = np.frombuffer(pcm_data, dtype=np.int16)
-    return samples.astype(np.float32) / 32768.0
+def is_silence(audio: np.ndarray) -> bool:
+    """Check if audio is silence (RMS below threshold)."""
+    if len(audio) < MIN_SAMPLES:
+        return True
+    rms = np.sqrt(np.mean(audio ** 2))
+    return rms < SILENCE_RMS_THRESHOLD
 
 
 @app.route("/health", methods=["GET"])
@@ -221,49 +300,43 @@ def transcribe():
 
     content_type = request.content_type or ""
 
-    if "application/octet-stream" in content_type:
-        # Raw PCM int16 mono
-        pcm_data = request.get_data()
-        audio = pcm_to_float32(pcm_data)
-    elif "application/json" in content_type:
+    if "application/json" in content_type:
         data = request.get_json()
         if not data or "wav_base64" not in data:
             return jsonify({"error": "missing wav_base64 in JSON body"}), 400
         import base64
-        raw_b64 = data["wav_base64"]
-        raw_bytes = base64.b64decode(raw_b64)
-        # Decode any audio format (WebM/Opus, WAV, MP3, etc.) via av
-        import av
-        container = av.open(io.BytesIO(raw_bytes))
-        audio_frames = []
-        for frame in container.decode(audio=0):
-            audio_frames.append(frame.to_ndarray().flatten())
-        container.close()
-        if audio_frames:
-            audio = np.concatenate(audio_frames).astype(np.float32)
-            # Normalize int16 to float32 if needed
-            if audio.max() > 1.0 or audio.min() < -1.0:
-                audio = audio / 32768.0
-        else:
-            audio = np.array([], dtype=np.float32)
+        raw_bytes = base64.b64decode(data["wav_base64"])
+        audio = decode_audio(raw_bytes)
+    elif "application/octet-stream" in content_type:
+        raw_bytes = request.get_data()
+        audio = decode_audio(raw_bytes)
     else:
-        # Try treating body as raw audio bytes
-        pcm_data = request.get_data()
-        audio = pcm_to_float32(pcm_data)
+        raw_bytes = request.get_data()
+        audio = decode_audio(raw_bytes)
 
-    if len(audio) < 1600:  # Less than 0.1s at 16kHz
-        return jsonify({"text": "", "raw": "", "language": "unknown", "duration": 0, "transcribeTime": 0})
+    # ── Silence detection — prevent Whisper hallucination ──
+    if is_silence(audio):
+        print(f"[voice] Silence detected (len={len(audio)}, rms={np.sqrt(np.mean(audio**2)):.6f})", flush=True)
+        return jsonify({
+            "text": "",
+            "raw": "",
+            "language": "unknown",
+            "duration": len(audio) / 16000,
+            "transcribeTime": time.time() - t0,
+        })
 
-    # Transcribe with VAD
+    print(f"[voice] Audio: {len(audio)} samples, {len(audio)/16000:.2f}s, rms={np.sqrt(np.mean(audio**2)):.4f}", flush=True)
+
+    # Transcribe — exact ZukuriFlow WhisperEngine params
     segments, info = model.transcribe(
         audio,
+        language="en",
+        initial_prompt=TECHNICAL_INITIAL_PROMPT,
         beam_size=5,
-        language=None,  # auto-detect
+        best_of=5,
+        temperature=0.0,
         vad_filter=True,
-        vad_parameters=dict(
-            min_silence_duration_ms=500,
-            speech_pad_ms=200,
-        ),
+        vad_parameters=dict(threshold=0.5, min_speech_duration_ms=250, min_silence_duration_ms=500),
     )
 
     raw_parts = []
@@ -274,7 +347,7 @@ def transcribe():
     text = refine_text(raw)
     elapsed = time.time() - t0
 
-    print(f"[voice] Transcribed in {elapsed:.2f}s: \"{text[:60]}...\"", flush=True)
+    print(f"[voice] Transcribed in {elapsed:.2f}s: \"{text[:80]}\"", flush=True)
 
     return jsonify({
         "text": text,

@@ -226,7 +226,7 @@ export function useChatSession() {
   }, [refreshSessions, sessions, switchSession])
 
   const handleSend = useCallback(
-    async (content: string): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean }): Promise<void> => {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
@@ -234,7 +234,7 @@ export function useChatSession() {
       setStreamingText('')
       setError(null)
       try {
-        await sendChatMessage(selectedId, text)
+        await sendChatMessage(selectedId, text, opts)
         setDraft('')
         const seq = ++loadSeq.current
         await refreshEvents(selectedId, seq)

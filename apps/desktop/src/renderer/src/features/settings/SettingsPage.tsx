@@ -227,9 +227,6 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [agentModels, setAgentModels] = useState<DiscoveredModel[]>([])
   const [agentTools, setAgentTools] = useState<ToolDefinitionView[]>([])
   const [agentMetaLoaded, setAgentMetaLoaded] = useState(false)
-  const [keyDraft, setKeyDraft] = useState<string | null>(null)
-  const [baseDraft, setBaseDraft] = useState<string | null>(null)
-  const [modelDraft, setModelDraft] = useState<string | null>(null)
   const [instructionsDraft, setInstructionsDraft] = useState<string | null>(null)
   const [testingSearch, setTestingSearch] = useState(false)
   const [searchTest, setSearchTest] = useState<string | null>(null)
@@ -248,9 +245,6 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       const next = await setAppSettings(patch)
       setAppSettingsState(next)
       if (patch.updateFeedUrl !== undefined) setFeedDraft(null)
-      if (patch.webSearchApiKey !== undefined) setKeyDraft(null)
-      if (patch.webSearchBaseUrl !== undefined) setBaseDraft(null)
-      if (patch.webSearchModel !== undefined) setModelDraft(null)
       if (patch.customInstructions !== undefined) setInstructionsDraft(null)
     } catch (e) {
       setGeneralError(e instanceof Error ? e.message : String(e))
@@ -479,12 +473,9 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
         const modelCount = agentMetaLoaded ? availableModels.length : null
         const toolCount = agentMetaLoaded ? agentTools.length : null
         const webSearch = appSettings?.webSearch ?? false
-        const hasKey = appSettings?.webSearchHasKey ?? false
         const webStatus = !webSearch
           ? 'Disabled — turn on Web search to let agents use it.'
-          : !hasKey
-            ? 'Enabled but missing an API key — paste a DeepSeek key below or export DEEPSEEK_API_KEY.'
-            : 'Ready — agents can call web_search (still gated by the permission level).'
+          : 'Ready — keyless search via the local crawl4ai sidecar (links + page content).'
         const rootValue = appSettings?.rootModel ?? 'no-default'
         const visionValue = appSettings?.visionModel ?? 'off'
         const rootKnown = rootValue === 'no-default' || availableModels.some((m) => m.modelId === rootValue)
@@ -562,71 +553,8 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                   checked={webSearch}
                   onChange={(v) => void applyPatch({ webSearch: v })}
                   label="Web search"
-                  description="Let agents use the built-in DeepSeek web search (needs an API key below). Calls are still gated by the permission level."
+                  description="Let agents and the chat globe use keyless web search (local crawl4ai sidecar — no API key). Calls are still gated by the permission level."
                 />
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">DeepSeek API key</div>
-                    <div className="settings-row-desc">Stored only on this machine. {hasKey ? 'A key is saved — pasting a new one replaces it.' : 'No key saved yet.'} DEEPSEEK_API_KEY is used when empty.</div>
-                  </div>
-                </div>
-                <div className="settings-row">
-                  <input
-                    className="settings-input"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={hasKey ? '•••••••• (saved)' : 'sk-…'}
-                    value={keyDraft ?? ''}
-                    onChange={(e) => setKeyDraft(e.target.value)}
-                    onBlur={() => {
-                      if (keyDraft !== null && keyDraft.trim().length > 0) void applyPatch({ webSearchApiKey: keyDraft })
-                      else setKeyDraft(null)
-                    }}
-                    aria-label="DeepSeek API key"
-                  />
-                </div>
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">Search endpoint</div>
-                    <div className="settings-row-desc">Anthropic-compatible Messages base — /messages is appended. Default is DeepSeek's official endpoint.</div>
-                  </div>
-                </div>
-                <div className="settings-row">
-                  <input
-                    className="settings-input"
-                    type="url"
-                    inputMode="url"
-                    spellCheck={false}
-                    value={baseDraft ?? appSettings?.webSearchBaseUrl ?? ''}
-                    onChange={(e) => setBaseDraft(e.target.value)}
-                    onBlur={() => {
-                      if (baseDraft !== null && baseDraft !== (appSettings?.webSearchBaseUrl ?? '')) {
-                        void applyPatch({ webSearchBaseUrl: baseDraft })
-                      }
-                    }}
-                    aria-label="Search endpoint URL"
-                  />
-                </div>
-                <div className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-label">Search model</div>
-                    <div className="settings-row-desc">Model used for the search turn (must support the web_search server tool).</div>
-                  </div>
-                  <input
-                    className="settings-input settings-input--inline"
-                    type="text"
-                    spellCheck={false}
-                    value={modelDraft ?? appSettings?.webSearchModel ?? ''}
-                    onChange={(e) => setModelDraft(e.target.value)}
-                    onBlur={() => {
-                      if (modelDraft !== null && modelDraft.trim().length > 0 && modelDraft !== (appSettings?.webSearchModel ?? '')) {
-                        void applyPatch({ webSearchModel: modelDraft })
-                      } else setModelDraft(null)
-                    }}
-                    aria-label="Search model"
-                  />
-                </div>
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">Status</div>

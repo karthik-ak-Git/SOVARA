@@ -8,7 +8,7 @@ import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shar
 interface ComposerProps {
   value: string
   onChange: (value: string) => void
-  onSend: (content: string, attachments?: FileAttachment[]) => void
+  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }) => void
   onCancel?: () => void
   disabled?: boolean
   busy?: boolean
@@ -58,9 +58,10 @@ export function Composer({
   const [webSearch, setWebSearch] = useState(false)
   const [micActive, setMicActive] = useState(false)
   const [micLoading, setMicLoading] = useState(false)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
   const streamRef = useRef<MediaStream | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const pcmChunksRef = useRef<Float32Array[]>([])
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase === 'streaming'
 
@@ -78,15 +79,12 @@ export function Composer({
     wasDisabled.current = disabled
   }, [disabled])
 
-  // Cleanup MediaRecorder on unmount
+  // Cleanup audio on unmount
   useEffect(() => {
     return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop()
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop())
-      }
+      processorRef.current?.disconnect()
+      if (audioCtxRef.current?.state !== 'closed') void audioCtxRef.current?.close()
+      streamRef.current?.getTracks().forEach(t => t.stop())
     }
   }, [])
 
@@ -146,7 +144,7 @@ export function Composer({
         }
 
         try {
-          // Convert blob to base64
+          // Send raw WebM blob as base64 — Python server decodes via av
           const arrayBuffer = await blob.arrayBuffer()
           const bytes = new Uint8Array(arrayBuffer)
           let binary = ''
@@ -181,7 +179,7 @@ export function Composer({
   const submit = (): void => {
     const content = value.trim()
     if (content.length === 0 || disabled) return
-    onSend(content, attachments.length > 0 ? attachments : undefined)
+    onSend(content, attachments.length > 0 ? attachments : undefined, { webSearch })
     setAttachments([])
   }
 
