@@ -310,9 +310,9 @@ describe('Commit 6 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference) and voiceTranscriber (local faster-whisper server)
+        // Exceptions: HttpClient (loopback inference), voiceTranscriber (local faster-whisper server), and hfCatalog (HuggingFace Hub API)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/voiceTranscriber\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/voiceTranscriber\.ts|main\/services\/hfCatalog\.ts)$/)
       }
     }
   })
@@ -345,8 +345,13 @@ describe('Commit 6 — sovereignty proofs', () => {
           const txt = fs.readFileSync(p, 'utf8')
           // Cloud control planes must never appear (the "No telemetry" UI
           // label and "no telemetry" comments are explicitly allowed).
-          for (const needle of ['api.openai.com', 'huggingface.co']) {
+          // Exception: hfCatalog.ts legitimately calls HuggingFace Hub API for Explore feature.
+          for (const needle of ['api.openai.com']) {
             if (txt.includes(needle)) hits.push(`${p}: ${needle}`)
+          }
+          // huggingface.co is allowed only in hfCatalog.ts
+          if (!p.includes('hfCatalog.ts') && txt.includes('huggingface.co')) {
+            hits.push(`${p}: huggingface.co`)
           }
           // Telemetry *machinery* (sending/tracking), not the UI label.
           for (const re of [/sendTelemetry\s*\(/, /trackEvent\s*\(/, /analytics\.(track|identify|page)\s*\(/, /posthog/i, /segment\.(io|com)/i]) {

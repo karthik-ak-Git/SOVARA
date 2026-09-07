@@ -1,4 +1,4 @@
-import { Grid3X3, Plus, Minus, Square, X } from 'lucide-react'
+import { Grid3X3, Plus, Minus, Square, X, Bot } from 'lucide-react'
 import { minimizeWindow, maximizeWindow, closeWindow } from '../../lib/ipc'
 
 interface Props {
@@ -30,8 +30,10 @@ export function TopBar({ activeTab = 'new-tab', onTabSelect, onNewSession }: Pro
         <button
           type="button"
           role="tab"
+          id="tab-new-tab"
           className={`topbar-tab ${activeTab === 'new-tab' ? 'active' : ''}`}
           aria-selected={activeTab === 'new-tab'}
+          aria-controls="main-content"
           onClick={() => onTabSelect?.('new-tab')}
         >
           <span>New tab</span>
@@ -39,11 +41,13 @@ export function TopBar({ activeTab = 'new-tab', onTabSelect, onNewSession }: Pro
         <button
           type="button"
           role="tab"
+          id="tab-session"
           className={`topbar-tab ${activeTab === 'session' ? 'active' : ''}`}
           aria-selected={activeTab === 'session'}
+          aria-controls="main-content"
           onClick={() => onTabSelect?.('session')}
         >
-          <span className="topbar-tab-icon" aria-hidden>◆</span>
+          <Bot size={14} className="topbar-tab-icon" aria-hidden />
           <span>Sovara Session</span>
         </button>
       </div>

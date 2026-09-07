@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
   Settings, User, Cpu, Mic, CreditCard, Palette, MessageSquare,
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
-  RotateCcw, ChevronRight, ArrowLeft, Check, Cloud
+  RotateCcw, ChevronRight, Check, Cloud
 } from 'lucide-react'
 import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource } from '../../lib/ipc'
 import { ExplorePage } from '../explore/ExplorePage'
@@ -201,11 +201,7 @@ const MCP_PRESETS: McpPreset[] = [
   },
 ]
 
-interface SettingsPageProps {
-  onBack?: () => void
-}
-
-export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
+export function SettingsPage(): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt')
   const [autoTranscribe, setAutoTranscribe] = useState(true)
@@ -514,35 +510,33 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
             <div className="settings-group">
               <div className="settings-group-header">Usage</div>
               <div className="settings-card">
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                <p className="settings-usage-desc">
                   Usage is based on API calls made through local inference runtimes. No external billing is required.
                 </p>
                 {usageLoaded && totalUsage.totalTokens > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Total tokens used:</span>
-                      <span style={{ fontWeight: 600 }}>{totalUsage.totalTokens.toLocaleString()}</span>
+                  <div className="settings-usage-stats">
+                    <div className="settings-usage-row">
+                      <span className="settings-usage-label">Total tokens used:</span>
+                      <span className="settings-usage-value settings-usage-value--bold">{totalUsage.totalTokens.toLocaleString()}</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Prompt tokens:</span>
-                      <span>{totalUsage.promptTokens.toLocaleString()}</span>
+                    <div className="settings-usage-row">
+                      <span className="settings-usage-label">Prompt tokens:</span>
+                      <span className="settings-usage-value">{totalUsage.promptTokens.toLocaleString()}</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Completion tokens:</span>
-                      <span>{totalUsage.completionTokens.toLocaleString()}</span>
+                    <div className="settings-usage-row">
+                      <span className="settings-usage-label">Completion tokens:</span>
+                      <span className="settings-usage-value">{totalUsage.completionTokens.toLocaleString()}</span>
                     </div>
                   </div>
                 )}
                 {usageLoaded && modelUsage.length > 0 && (
-                  <div style={{ marginTop: '1rem' }}>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      By Model
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div className="settings-model-usage">
+                    <div className="settings-model-usage-title">By Model</div>
+                    <div className="settings-model-usage-list">
                       {modelUsage.map((m) => (
-                        <div key={m.model} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', padding: '0.5rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{m.model}</span>
-                          <span>{m.totalTokens.toLocaleString()} tokens ({m.requestCount} requests)</span>
+                        <div key={m.model} className="settings-model-usage-row">
+                          <span className="settings-model-usage-name">{m.model}</span>
+                          <span className="settings-model-usage-detail">{m.totalTokens.toLocaleString()} tokens ({m.requestCount} requests)</span>
                         </div>
                       ))}
                     </div>
@@ -571,7 +565,7 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
 
             <div className="settings-group">
               <div className="settings-group-header">Archived sessions</div>
-              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+              <p className="settings-row-desc settings-row-desc--spaced">
                 Archived sessions stay intact but do not appear in the sidebar.
               </p>
               <div className="settings-card">
@@ -687,7 +681,7 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
 
             <div className="settings-group">
               <div className="settings-group-header">Popular MCPs</div>
-              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+              <p className="settings-row-desc settings-row-desc--spaced">
                 Hand-picked MCP servers with a simple setup.
               </p>
               <div className="mcp-grid">
@@ -754,7 +748,7 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
 
             <div className="settings-group">
               <div className="settings-group-header">Use skills found in other apps</div>
-              <p className="settings-row-desc" style={{ marginBottom: '0.75rem' }}>
+              <p className="settings-row-desc settings-row-desc--spaced">
                 SOVARA can detect and use skills installed in compatible directories on this device.
               </p>
               {!skillsLoaded ? (
@@ -809,16 +803,12 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
 
       case 'explore':
         return (
-          <ExplorePage
-            onBack={() => onBack?.()}
-          />
+          <ExplorePage onBack={() => setActiveSection('general')} />
         )
 
       case 'library':
         return (
-          <LibraryPage
-            onBack={() => onBack?.()}
-          />
+          <LibraryPage onBack={() => setActiveSection('general')} />
         )
 
       default:
@@ -838,12 +828,6 @@ export function SettingsPage({ onBack }: SettingsPageProps): ReactElement {
   return (
     <div className="settings-page">
       <div className="settings-sidebar">
-        <div className="settings-sidebar-header">
-          <button type="button" className="settings-back-btn" onClick={onBack} aria-label="Back to app">
-            <ArrowLeft size={16} aria-hidden />
-            <span>Back to app</span>
-          </button>
-        </div>
         <nav className="settings-nav" aria-label="Settings navigation">
           {NAV_GROUPS.map((group) => (
             <div key={group.label} className="settings-nav-group">

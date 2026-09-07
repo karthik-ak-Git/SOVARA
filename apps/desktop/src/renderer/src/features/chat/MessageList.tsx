@@ -70,7 +70,6 @@ export function MessageList({ events, thinking = false, streamingText = '', onRe
       ) : null}
     </>
   )
-  void onRemove
   return (
     <div
       ref={scrollRef}

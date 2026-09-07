@@ -8,7 +8,7 @@ import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLo
 import { VoiceTranscriber } from '../services/voiceTranscriber'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
-import { MODEL_CATALOG, sortModels, filterModels } from '../services/hfCatalog'
+import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility } from '../services/hardwareCheck'
 import type { HardwareInfo } from '@shared/types/explore'
 
@@ -235,26 +235,23 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('explore:listModels', async (_e, raw: unknown) => {
     const parsed = zExploreListModels.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid explore:listModels payload: ${parsed.error.message}`)
-    let models = [...MODEL_CATALOG]
-    if (parsed.data.query) {
-      models = filterModels(models, parsed.data.query)
-    }
-    return sortModels(models, parsed.data.sortBy ?? 'recommended')
+    const models = await fetchModelsFromHf(
+      parsed.data.sortBy ?? 'recommended',
+      parsed.data.query ?? ''
+    )
+    return models
   })
 
   ipcMain.handle('explore:getModel', async (_e, raw: unknown) => {
     const parsed = zExploreGetModel.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getModel payload: ${parsed.error.message}`)
-    const model = MODEL_CATALOG.find((m) => m.id === parsed.data.modelId)
-    if (!model) throw new Error(`unknown model: ${parsed.data.modelId}`)
-    return model
+    return fetchModelFromHf(parsed.data.modelId)
   })
 
   ipcMain.handle('explore:getCompatibility', async (_e, raw: unknown) => {
     const parsed = zExploreGetCompatibility.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
-    const model = MODEL_CATALOG.find((m) => m.id === parsed.data.modelId)
-    if (!model) throw new Error(`unknown model: ${parsed.data.modelId}`)
+    const model = await fetchModelFromHf(parsed.data.modelId)
     // Get hardware info from system resources
     const resources = await getBackend().ports.resources.getSnapshot()
     const hw: HardwareInfo = {

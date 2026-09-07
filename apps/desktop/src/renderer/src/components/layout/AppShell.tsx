@@ -60,7 +60,7 @@ export function AppShell({
           selectedChatId={selectedChatId}
           onSelectChat={onSelectChat}
         />
-        <main className="main" role="main" tabIndex={-1} id="main-content">
+        <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content">
           {children}
         </main>
       </div>
