@@ -81,6 +81,7 @@ function ChatRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(chat.title)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const dotsRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -106,8 +107,9 @@ function ChatRow({
     if (!menuOpen && dotsRef.current) {
       // position:fixed — escapes the sidebar's overflow-x:hidden clipping
       const r = dotsRef.current.getBoundingClientRect()
-      setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - 150) })
+      setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - 160) })
     }
+    setConfirmingDelete(false)
     setMenuOpen((v) => !v)
   }
 
@@ -176,19 +178,40 @@ function ChatRow({
             >
               <Pencil size={12} aria-hidden /> Rename
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="nav-chat-menu-item danger"
-              onClick={() => {
-                setMenuOpen(false)
-                if (window.confirm(`Delete "${chat.title}" permanently? Chat files are removed and cannot be recovered.`)) {
-                  onDelete?.(chat.id)
-                }
-              }}
-            >
-              <Trash2 size={12} aria-hidden /> Delete
-            </button>
+            {confirmingDelete ? (
+              <div className="nav-chat-confirm" role="group" aria-label={`Delete ${chat.title} permanently?`}>
+                <span className="nav-chat-confirm-text">Delete permanently? Files cannot be recovered.</span>
+                <div className="nav-chat-confirm-actions">
+                  <button
+                    type="button"
+                    className="nav-chat-confirm-cancel"
+                    onClick={() => setConfirmingDelete(false)}
+                  >
+                    Keep
+                  </button>
+                  <button
+                    type="button"
+                    className="nav-chat-confirm-delete"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setConfirmingDelete(false)
+                      onDelete?.(chat.id)
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                className="nav-chat-menu-item danger"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                <Trash2 size={12} aria-hidden /> Delete
+              </button>
+            )}
           </div>
         ) : null}
       </div>

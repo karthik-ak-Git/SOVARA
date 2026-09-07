@@ -132,7 +132,6 @@ describe('Renderer shell — navigation & layout', () => {
   it('chat rows expose rename/delete menu', async () => {
     const user = userEvent.setup()
     const onDeleteChat = vi.fn()
-    window.confirm = vi.fn(() => true)
     render(
       <Sidebar
         activeId="chat"
@@ -143,7 +142,10 @@ describe('Renderer shell — navigation & layout', () => {
       />
     )
     await user.click(screen.getByRole('button', { name: 'Chat options for Hello World' }))
+    // Two-step inline confirm — no native popup.
     await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(onDeleteChat).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(onDeleteChat).toHaveBeenCalledWith('c1')
   })
 

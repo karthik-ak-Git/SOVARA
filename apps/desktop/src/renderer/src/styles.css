@@ -426,6 +426,32 @@ body {
 .nav-chat-menu-item:hover { background: var(--panel-2); }
 .nav-chat-menu-item.danger { color: var(--danger); }
 .nav-chat-menu-item.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* Inline two-step delete confirm (no native popup) */
+.nav-chat-confirm { padding: 6px 8px; }
+.nav-chat-confirm-text { display: block; font-size: 11px; color: var(--muted); line-height: 1.4; margin-bottom: 8px; }
+.nav-chat-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.nav-chat-confirm-cancel {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.nav-chat-confirm-cancel:hover { background: var(--panel-2); }
+.nav-chat-confirm-delete {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: none;
+  background: var(--danger);
+  color: #fff;
+  cursor: pointer;
+}
+.nav-chat-confirm-delete:hover { filter: brightness(1.08); }
 .nav-chat-rename {
   flex: 1;
   min-width: 0;
