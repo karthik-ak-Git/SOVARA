@@ -1,344 +1,230 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import {
-  ArrowLeft, Search, Download, Eye, Wrench, Clock, X, Filter,
-  ChevronDown, ExternalLink, RefreshCw, Star, ThumbsUp, FileCode, Shield,
-  Tag, Cpu, Layers, BookOpen, Box, Check, AlertTriangle, Ban, Sparkles, TrendingUp, Calendar,
-  Pause, Play, Copy, FolderCheck, HardDrive, Info, FileText, ChevronUp, Loader2, Settings2, Brain, Zap
+  ArrowLeft, BadgeCheck, Brain, Check, ChevronDown, ChevronsUpDown, Download,
+  ExternalLink, Eye, FileCode, Loader2, MessageSquare, RefreshCw, Search, Star,
+  Wrench, X, Pause, Play,
 } from 'lucide-react'
 import {
-  listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations, getHardwareProfile,
+  listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, isDownloaded, getActiveDownloads, openExternal,
-  startValidation, getValidation, listValidations, getFullHardwareProfile,
   type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
-  type ValidationJob, type HardwareProfileFull,
 } from '../../lib/ipc'
-import type { HardwareInfo } from '@shared/types/explore'
 
-// ── Formatting ───────────────────────────────────────────────────────
-function formatBytes(bytes: number): string {
+// ── Formatting (fresh, LM Studio labels) ─────────────────────────────
+function fmtSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return 'size unknown'
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  const gb = bytes / 1024 ** 3
+  if (gb >= 1) return `${gb.toFixed(2)} GB`
+  const mb = bytes / 1024 ** 2
+  if (mb >= 1) return `${mb.toFixed(1)} MB`
   return `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
-function formatDownloads(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
-  return String(n)
+function fmtCount(n: number): string {
+  if (!Number.isFinite(n)) return '0'
+  return n.toLocaleString('en-US')
 }
-function formatDate(iso: string): string {
+function fmtAgo(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return 'recently'
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  if (!Number.isFinite(diffMs) || diffMs < 0) return 'recently'
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-  if (diffDays === 0) return 'today'
-  if (diffDays === 1) return 'yesterday'
-  if (diffDays < 30) return `${diffDays} days ago`
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`
-  return `${Math.floor(diffDays / 365)} years ago`
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000)
+  if (days <= 0) return 'today'
+  if (days === 1) return '1 day ago'
+  if (days < 30) return `${days} days ago`
+  if (days < 365) return `${Math.floor(days / 30)} months ago`
+  return `${Math.floor(days / 365)} years ago`
 }
-function formatDateLong(iso: string): string {
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return 'recently'
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-  } catch { return 'recently' }
+function shortName(name: string, max = 34): string {
+  return name.length > max ? `${name.slice(0, max - 1)}…` : name
 }
 
-// ── Markdown ─────────────────────────────────────────────────────────
-function escapeHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') }
-function inlineMd(text: string): string {
-  let t = escapeHtml(text)
-  t = t.replace(/`([^`]+)`/g, '<code class="md-code-inline">$1</code>')
-  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" class="md-link" data-external="true">$1</a>')
-  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, '<img alt="$1" src="$2" class="md-img" loading="lazy" />')
-  return t
+// ── Minimal markdown (fresh) ─────────────────────────────────────────
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
-function renderMarkdown(md: string): string {
+function inlineMd(t: string): string {
+  let s = esc(t)
+  s = s.replace(/`([^`]+)`/g, '<code class="explorer-md-code">$1</code>')
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  return s
+}
+function renderReadme(md: string): string {
+  const out: string[] = []
   const lines = md.split('\n')
-  let html = ''
-  let inCode = false
-  let codeBuf: string[] = []
-  let listBuf: string[] = []
-  let inList = false
-  let tableBuf: string[][] | null = null
-  const flushList = (): void => { if (inList) { html += `<ul class="md-ul">${listBuf.join('')}</ul>`; listBuf = []; inList = false } }
-  const flushTable = (): void => {
-    if (tableBuf && tableBuf.length > 0) {
-      const header = tableBuf[0]
-      const rows = tableBuf.slice(1).filter((r) => !r.every((c) => /^[-:\s]+$/.test(c)))
-      html += '<div class="md-table-wrap"><table class="md-table"><thead><tr>'
-      header.forEach((c) => { html += `<th>${inlineMd(c.trim())}</th>` })
-      html += '</tr></thead><tbody>'
-      rows.forEach((r) => { html += '<tr>'; r.forEach((c) => { html += `<td>${inlineMd(c.trim())}</td>` }); html += '</tr>' })
-      html += '</tbody></table></div>'; tableBuf = null
-    }
+  let bullets: string[] = []
+  const flush = (): void => {
+    if (bullets.length) { out.push(`<ul class="explorer-md-ul">${bullets.map((b) => `<li>${inlineMd(b)}</li>`).join('')}</ul>`); bullets = [] }
   }
-  const flushCode = (): void => { if (codeBuf.length > 0) { html += `<pre class="md-pre"><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`; codeBuf = [] } }
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i].replace(/\r$/, '')
-    if (raw.startsWith('```')) { if (inCode) { flushCode(); inCode = false } else { flushList(); flushTable(); inCode = true } continue }
-    if (inCode) { codeBuf.push(raw); continue }
-    if (raw.includes('|') && i + 1 < lines.length && /^\s*\|?[\s-|:]+\|[\s-|:]*$/.test(lines[i + 1])) {
-      flushList(); const header = raw.split('|').map((s) => s.trim()).filter(Boolean); tableBuf = [header]; i += 1
-      while (i + 1 < lines.length && lines[i + 1].includes('|')) { i += 1; const cleaned = lines[i].split('|').map((s) => s.trim()); if (cleaned[0] === '') cleaned.shift(); if (cleaned[cleaned.length - 1] === '') cleaned.pop(); if (cleaned.length > 0) tableBuf.push(cleaned) }
-      flushTable(); continue
-    }
-    if (/^\s*[-*]\s+/.test(raw)) { const item = raw.replace(/^\s*[-*]\s+/, ''); if (!inList) inList = true; listBuf.push(`<li>${inlineMd(item)}</li>`); continue }
-    if (/^\s*$/.test(raw)) { flushList(); continue }
-    if (/^#{1,6}\s+/.test(raw)) { flushList(); flushTable(); const m = raw.match(/^(#{1,6})\s+(.*)$/)!; const level = m[1].length; const tag = `h${Math.min(level + 1, 6)}`; html += `<${tag} class="md-h${level}">${inlineMd(m[2])}</${tag}>`; continue }
-    if (/^>\s+/.test(raw)) { flushList(); flushTable(); html += `<blockquote class="md-quote">${inlineMd(raw.replace(/^>\s+/, ''))}</blockquote>`; continue }
-    if (/^---+/.test(raw.trim())) { flushList(); flushTable(); html += '<hr class="md-hr"/>'; continue }
-    flushList(); flushTable(); html += `<p class="md-p">${inlineMd(raw)}</p>`
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, '')
+    if (/^\s*[-*]\s+/.test(line)) { bullets.push(line.replace(/^\s*[-*]\s+/, '')); continue }
+    flush()
+    if (/^\s*$/.test(line)) continue
+    const h = line.match(/^(#{1,4})\s+(.*)$/)
+    if (h) { const lv = h[1].length; out.push(`<h${lv + 1} class="explorer-md-h${lv}">${inlineMd(h[2])}</h${lv + 1}>`); continue }
+    out.push(`<p class="explorer-md-p">${inlineMd(line)}</p>`)
   }
-  flushList(); flushTable(); flushCode(); return html
+  flush()
+  return out.join('')
 }
 
-// ── UI primitives ────────────────────────────────────────────────────
-function ModelIcon({ type, size = 36 }: { type: ExploreModel['iconType']; size?: number }): ReactElement {
-  const colors: Record<string, string> = { qwen: '#7c3aed', google: '#4285f4', meta: '#0668e1', mistral: '#ff6f00', microsoft: '#00a4ef', deepseek: '#0066ff', hf: '#ff9d00' }
-  const labels: Record<string, string> = { qwen: 'Q', google: 'G', meta: 'M', mistral: 'M', microsoft: 'Ms', deepseek: 'D', hf: 'HF' }
-  return <div className="explore-model-icon" style={{ background: colors[type] || '#6b7280', width: size, height: size, fontSize: size * 0.4 }}>{labels[type] || '?'}</div>
-}
-function CapBadge({ cap }: { cap: string }): ReactElement {
-  const map: Record<string, string> = { Vision: 'cap--vision', Tools: 'cap--tools', Reasoning: 'cap--reasoning', Code: 'cap--code', Chat: 'cap--chat', Embeddings: 'cap--embed' }
-  const icons: Record<string, ReactElement> = { Vision: <Eye size={11} />, Tools: <Wrench size={11} />, Reasoning: <Brain size={11} />, Code: <FileCode size={11} />, Chat: <Tag size={11} />, Embeddings: <Layers size={11} /> }
-  return <span className={`explore-cap-badge ${map[cap] ?? ''}`}>{icons[cap] ?? null} {cap}</span>
-}
-function CompatibilityBadge({ result }: { result: CompatibilityResult | null }): ReactElement | null {
-  if (!result) return null
-  if (result.message.includes('Partial GPU Offload')) {
-    return <div className="compat-badge compat-badge--info"><HardDrive size={12} /> Partial GPU Offload Possible</div>
+// ── Brand mark ───────────────────────────────────────────────────────
+function ModelMark({ model, size = 40 }: { model: ExploreModel; size?: number }): ReactElement {
+  const t = model.iconType
+  const style: Record<string, { bg: string; fg: string; label: string }> = {
+    qwen: { bg: '#7c3aed', fg: '#fff', label: 'Q' },
+    google: { bg: '#ffffff', fg: '#4285f4', label: 'G' },
+    meta: { bg: '#0668e1', fg: '#fff', label: 'M' },
+    mistral: { bg: '#ff6f00', fg: '#fff', label: 'M' },
+    microsoft: { bg: '#0f6cbd', fg: '#fff', label: 'B' },
+    deepseek: { bg: '#4d6bfe', fg: '#fff', label: 'D' },
+    hf: { bg: '#ff9d00', fg: '#fff', label: 'HF' },
   }
-  if (result.severity === 'too-large') return <div className="compat-badge compat-badge--error"><Ban size={12} /> Too large for this device</div>
-  if (result.severity === 'tight') return <div className="compat-badge compat-badge--warning"><AlertTriangle size={12} /> Tight fit</div>
-  return <div className="compat-badge compat-badge--success"><Check size={12} /> Fits this device</div>
-}
-function hasGguf(model: ExploreModel): boolean { return model.files.some((f) => f.format === 'GGUF') || model.tags.some((t) => t.toLowerCase().includes('gguf')) }
-
-function ValidationStatusBadge({ status }: { status: ValidationJob['status'] }): ReactElement {
-  const map: Record<string, { cls: string; label: string; icon: ReactElement }> = {
-    NOT_TESTED: { cls: 'val--not', label: 'Not tested', icon: <Info size={11} /> },
-    ESTIMATED_COMPATIBLE: { cls: 'val--est', label: 'Estimated compatible', icon: <Eye size={11} /> },
-    ESTIMATED_INCOMPATIBLE: { cls: 'val--bad', label: 'Estimated incompatible', icon: <Ban size={11} /> },
-    TESTING: { cls: 'val--testing', label: 'Testing…', icon: <Loader2 size={11} className="spin" /> },
-    LOAD_FAILED: { cls: 'val--bad', label: 'Load failed', icon: <Ban size={11} /> },
-    INFERENCE_FAILED: { cls: 'val--bad', label: 'Inference failed', icon: <AlertTriangle size={11} /> },
-    VERIFIED: { cls: 'val--ok', label: 'Verified', icon: <Check size={11} /> },
-    VERIFIED_WITH_LIMITATIONS: { cls: 'val--warn', label: 'Verified with limitations', icon: <AlertTriangle size={11} /> },
-  }
-  const m = map[status] ?? map.NOT_TESTED
-  return <span className={`explore-val-badge ${m.cls}`}>{m.icon} {m.label}</span>
-}
-
-// ── Options ──────────────────────────────────────────────────────────
-const PIPELINE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '', label: 'All tasks' },
-  { value: 'text-generation', label: 'Text generation' },
-  { value: 'image-text-to-text', label: 'Vision / multimodal' },
-  { value: 'text2text-generation', label: 'Text2Text' },
-  { value: 'conversational', label: 'Conversational' },
-  { value: 'code', label: 'Code' },
-  { value: 'fill-mask', label: 'Fill-mask' },
-  { value: 'sentence-similarity', label: 'Embeddings' },
-]
-const TAG_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '', label: 'All tags' },
-  { value: 'gguf', label: 'GGUF' },
-  { value: 'reasoning', label: 'Reasoning' },
-  { value: 'code', label: 'Code' },
-  { value: 'vision', label: 'Vision' },
-  { value: 'instruct', label: 'Instruct' },
-  { value: 'multilingual', label: 'Multilingual' },
-]
-
-// ── Download Manager ─────────────────────────────────────────────────
-function DownloadManager({ downloads, onPause, onResume, onCancel }: {
-  downloads: Record<string, DownloadEventView>
-  onPause: (modelId: string, rfilename: string) => void
-  onResume: (modelId: string, rfilename: string, url: string) => void
-  onCancel: (modelId: string, rfilename: string) => void
-}): ReactElement | null {
-  const items = Object.values(downloads)
-  if (items.length === 0) return null
+  const s = style[t] ?? style.hf
+  const isWhite = s.bg === '#ffffff'
   return (
-    <div className="explore-download-manager" role="region" aria-label="Active downloads">
-      <div className="explore-dm-header">
-        <HardDrive size={14} /> Background downloads
-        <span className="explore-dm-count">{items.length}</span>
-        <span className="explore-dm-hint">2 concurrent · pause/resume</span>
-      </div>
-      <div className="explore-dm-list">
-        {items.map((ev) => {
-          const pct = ev.totalBytes ? Math.min(100, Math.round((ev.receivedBytes / ev.totalBytes) * 100)) : null
-          const isPaused = ev.state === 'paused'
-          const isQueued = ev.state === 'queued'
-          return (
-            <div key={`${ev.modelId}\n${ev.rfilename}`} className="explore-dm-item">
-              <div className="explore-dm-item-main">
-                <div className="explore-dm-item-title">{ev.modelId.split('/').pop()} · {(ev.rfilename ?? '').split('/').pop()}</div>
-                <div className="explore-dm-item-meta">
-                  {isQueued ? 'Queued' : isPaused ? 'Paused' : ev.state} {pct !== null ? `· ${pct}%` : ''} · {formatBytes(ev.receivedBytes)}{ev.totalBytes ? ` / ${formatBytes(ev.totalBytes)}` : ''}
-                </div>
-                <div className="explore-dm-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}>
-                  <div className="explore-dm-progress-bar" style={{ width: `${pct ?? (isPaused || isQueued ? 0 : 8)}%` }} />
-                </div>
-              </div>
-              <div className="explore-dm-actions">
-                {isPaused ? <button type="button" className="explore-dm-btn" aria-label="Resume" onClick={() => onResume(ev.modelId, ev.rfilename, '')} title="Resume"><Play size={12} /></button>
-                  : isQueued ? <span className="explore-dm-queued"><Loader2 size={12} className="spin" /></span>
-                    : <button type="button" className="explore-dm-btn" aria-label="Pause" onClick={() => onPause(ev.modelId, ev.rfilename)} title="Pause"><Pause size={12} /></button>}
-                <button type="button" className="explore-dm-btn explore-dm-btn--danger" aria-label="Cancel" onClick={() => onCancel(ev.modelId, ev.rfilename)} title="Cancel"><X size={12} /></button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
+    <div
+      className="explorer-mark"
+      aria-hidden
+      style={{
+        width: size, height: size, fontSize: size <= 40 ? 15 : 22,
+        background: s.bg, color: s.fg,
+        border: isWhite ? '1px solid var(--border)' : 'none',
+      }}
+    >
+      {t === 'google' ? <span style={{ fontWeight: 800 }}>G</span> : s.label}
     </div>
   )
 }
 
-// ── Page ─────────────────────────────────────────────────────────────
-interface ExplorePageProps { onBack: () => void }
+function CapIcon({ cap }: { cap: string }): ReactElement | null {
+  if (cap === 'Vision') return <Eye size={13} />
+  if (cap === 'Tools') return <Wrench size={13} />
+  if (cap === 'Reasoning') return <span className="explorer-cap-glyph" aria-hidden>Ⓘ</span>
+  if (cap === 'Code') return <FileCode size={13} />
+  if (cap === 'Chat' || cap === 'Text') return <MessageSquare size={13} />
+  if (cap === 'Embeddings') return <Brain size={13} />
+  return null
+}
 
-export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
-  const [models, setModels] = useState<ExploreModel[]>([])
-  const [selectedModel, setSelectedModel] = useState<ExploreModel | null>(null)
-  const [compatibility, setCompatibility] = useState<CompatibilityResult | null>(null)
-  const [compatLoading, setCompatLoading] = useState(false)
-  const [recommendations, setRecommendations] = useState<FileRecommendationView[] | null>(null)
-  const [recLoading, setRecLoading] = useState(false)
-  const [hardware, setHardware] = useState<HardwareInfo | null>(null)
+type FitKind = 'full' | 'partial' | 'cpu' | 'large'
+function fitKind(c: CompatibilityResult | null): FitKind {
+  if (!c) return 'large'
+  if (c.severity === 'too-large') return 'large'
+  if (c.message.toLowerCase().includes('partial')) return 'partial'
+  if (c.message.toLowerCase().includes('cpu')) return 'cpu'
+  return 'full'
+}
+function FitBadge({ result }: { result: CompatibilityResult | null }): ReactElement | null {
+  if (!result) return null
+  const k = fitKind(result)
+  if (k === 'full') return <span className="explorer-fit explorer-fit--full"><span aria-hidden>🚀</span> Full GPU offload possible</span>
+  if (k === 'partial') return <span className="explorer-fit explorer-fit--partial">▦ Partial GPU offload possible</span>
+  if (k === 'cpu') return <span className="explorer-fit explorer-fit--cpu">✓ Likely fits on CPU</span>
+  return <span className="explorer-fit explorer-fit--large"><X size={12} /> Likely too large</span>
+}
+
+// ── Sort options (LM Studio order) ───────────────────────────────────
+const SORTS = [
+  { value: 'Recommended', label: 'Recommended' },
+  { value: 'trending', label: 'Trending' },
+  { value: 'downloads', label: 'Most downloaded' },
+  { value: 'likes', label: 'Most liked' },
+  { value: 'lastModified', label: 'Recently updated' },
+]
+
+interface Props { onBack: () => void }
+
+export function ExplorePage({ onBack }: Props): ReactElement {
+  const [query, setQuery] = useState('')
+  const [debounced, setDebounced] = useState('')
   const [sortBy, setSortBy] = useState('Recommended')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [pipelineFilter, setPipelineFilter] = useState('')
-  const [tagFilter, setTagFilter] = useState('')
-  const [showSortMenu, setShowSortMenu] = useState(false)
-  const [showFilters, setShowFilters] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [listError, setListError] = useState<string | null>(null)
-  const [selectedFile, setSelectedFile] = useState<number>(0)
+  const [sortOpen, setSortOpen] = useState(false)
+  const [models, setModels] = useState<ExploreModel[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ExploreModel | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
+  const [compat, setCompat] = useState<CompatibilityResult | null>(null)
+  const [recs, setRecs] = useState<FileRecommendationView[] | null>(null)
+  const [fileIdx, setFileIdx] = useState(0)
+  const [fileOpen, setFileOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [spinning, setSpinning] = useState(false)
   const [downloads, setDownloads] = useState<Record<string, DownloadEventView>>({})
-  const [libraryStatus, setLibraryStatus] = useState<Record<string, boolean>>({})
-  const [showDownloads, setShowDownloads] = useState(true)
+  const [downloadsOpen, setDownloadsOpen] = useState(false)
+  const [installed, setInstalled] = useState<Record<string, boolean>>({})
   const [downloadTo, setDownloadTo] = useState('This device')
-  const [validationJob, setValidationJob] = useState<ValidationJob | null>(null)
-  const [validationBusy, setValidationBusy] = useState(false)
-  const [fullHardware, setFullHardware] = useState<HardwareProfileFull | null>(null)
-  const validationPoll = useRef<number | null>(null)
-  const searchTimer = useRef<number | null>(null)
+  const timer = useRef<number | null>(null)
+  const sortRef = useRef<HTMLDivElement>(null)
+  const fileRef = useRef<HTMLDivElement>(null)
 
-  const selectModel = useCallback((model: ExploreModel): void => {
-    setSelectedModel(model)
-    setDetail(null)
-    setDetailError(null)
-    setSelectedFile(0)
-    setRecommendations(null)
+  const selected = useMemo(
+    () => models.find((m) => m.id === selectedId) ?? null,
+    [models, selectedId],
+  )
+  const active = detail ?? selected
+
+  // Debounce search like LM Studio (350ms)
+  useEffect(() => {
+    if (timer.current) window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => setDebounced(query), 350)
+    return () => { if (timer.current) window.clearTimeout(timer.current) }
+  }, [query])
+
+  const reload = useCallback(async (q: string, s: string): Promise<void> => {
+    setLoading(true); setError(null)
+    try {
+      const rows = await listExploreModels({ sortBy: s, query: q, limit: 30 })
+      setModels(rows)
+      if (rows.length > 0) setSelectedId((prev) => (prev && rows.some((r) => r.id === prev) ? prev : rows[0].id))
+      else setSelectedId(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load models.')
+    } finally {
+      setLoading(false); setSpinning(false)
+    }
   }, [])
 
-  useEffect(() => {
-    if (searchTimer.current) window.clearTimeout(searchTimer.current)
-    searchTimer.current = window.setTimeout(() => setDebouncedQuery(searchQuery), 350)
-    return () => { if (searchTimer.current) window.clearTimeout(searchTimer.current) }
-  }, [searchQuery])
+  useEffect(() => { void reload(debounced, sortBy) }, [debounced, sortBy, reload])
 
-  useEffect(() => { void getHardwareProfile().then(setHardware).catch(() => {}); void getFullHardwareProfile().then(setFullHardware).catch(() => {}) }, [])
-
+  // Detail + fit (LM Studio: per-file estimate, recommended preselected)
   useEffect(() => {
-    let cancelled = false
-    const load = async (): Promise<void> => {
-      setLoading(true); setListError(null)
-      try {
-        const result = await listExploreModels({ sortBy, query: debouncedQuery, pipelineTag: pipelineFilter, tag: tagFilter })
-        if (cancelled) return
-        setModels(result)
-        if (result.length > 0 && !selectedModel) selectModel(result[0] as ExploreModel)
-        else if (result.length === 0) setSelectedModel(null)
-      } catch (e) { if (!cancelled) setListError(e instanceof Error ? e.message : 'Could not load models.') }
-      finally { if (!cancelled) setLoading(false) }
-    }
-    void load()
-    return () => { cancelled = true }
-  }, [sortBy, debouncedQuery, pipelineFilter, tagFilter])
+    if (!selected) { setDetail(null); return }
+    let dead = false
+    setDetailLoading(true); setCompat(null); setRecs(null); setFileIdx(0); setFileOpen(false)
+    getExploreModel(selected.id)
+      .then((d) => { if (!dead) setDetail(d) })
+      .catch(() => { if (!dead) setDetail(null) })
+      .finally(() => { if (!dead) setDetailLoading(false) })
+    getModelCompatibility(selected.id).then((c) => { if (!dead) setCompat(c) }).catch(() => {})
+    getFileRecommendations(selected.id)
+      .then((r) => {
+        if (dead) return
+        setRecs(r)
+        const best = r.find((x) => x.rank === 0)
+        if (best && best.severity !== 'too-large') setFileIdx(best.index)
+      })
+      .catch(() => {})
+    return () => { dead = true }
+  }, [selected?.id])
 
+  // Installed flags per file
   useEffect(() => {
-    if (!selectedModel) { setDetail(null); return }
-    let cancelled = false
-    setDetailLoading(true); setDetailError(null)
-    getExploreModel(selectedModel.id).then((d) => { if (!cancelled) setDetail(d) }).catch((e: unknown) => { if (!cancelled) setDetailError(e instanceof Error ? e.message : 'Could not load model details.') }).finally(() => { if (!cancelled) setDetailLoading(false) })
-    return () => { cancelled = true }
-  }, [selectedModel?.id])
-
-  useEffect(() => {
-    if (!selectedModel) return
-    setCompatibility(null); setCompatLoading(true); setSelectedFile(0)
-    getModelCompatibility(selectedModel.id).then(setCompatibility).catch(() => setCompatibility(null)).finally(() => setCompatLoading(false))
-    setRecLoading(true); setRecommendations(null)
-    getFileRecommendations(selectedModel.id).then(setRecommendations).catch(() => setRecommendations(null)).finally(() => setRecLoading(false))
-  }, [selectedModel?.id])
-
-  useEffect(() => {
-    if (recommendations && recommendations.length > 0 && detail) {
-      const best = recommendations[0]
-      if (best && best.severity !== 'too-large') setSelectedFile(best.index)
-    }
-  }, [recommendations, detail])
-
-  useEffect(() => {
-    const m = detail ?? selectedModel
+    const m = detail ?? selected
     if (!m) return
-    let cancelled = false
-    const checkAll = async (): Promise<void> => {
-      const next: Record<string, boolean> = {}
-      await Promise.all(m.files.map(async (f) => {
-        if (!f.rfilename) return
-        try { const r = await isDownloaded(m.id, f.rfilename); if (!cancelled) next[f.rfilename] = r.downloaded } catch { /* ignore */ }
-      }))
-      if (!cancelled) setLibraryStatus(next)
-    }
-    void checkAll()
-    return () => { cancelled = true }
-  }, [detail, selectedModel])
-
-  // ── Validation: load cached + live job for selected model ──
-  useEffect(() => {
-    if (!selectedModel) { setValidationJob(null); return }
-    let cancelled = false
-    const load = async (): Promise<void> => {
+    let dead = false
+    void Promise.all(m.files.map(async (f) => {
+      if (!f.rfilename) return
       try {
-        const jobs = await listValidations()
-        if (cancelled) return
-        const hit = jobs.filter((j) => j.modelId === selectedModel.id).sort((a, b) => b.createdAt - a.createdAt)[0]
-        setValidationJob(hit ?? null)
-      } catch { if (!cancelled) setValidationJob(null) }
-    }
-    void load()
-    return () => { cancelled = true }
-  }, [selectedModel?.id])
+        const r = await isDownloaded(m.id, f.rfilename)
+        if (!dead && r.downloaded) setInstalled((p) => ({ ...p, [f.rfilename as string]: true }))
+      } catch { /* ignore */ }
+    }))
+    return () => { dead = true }
+  }, [detail, selected])
 
-  useEffect(() => {
-    if (!validationJob || validationJob.status !== 'TESTING') return
-    if (validationPoll.current) window.clearInterval(validationPoll.current)
-    validationPoll.current = window.setInterval(async () => {
-      try {
-        const j = await getValidation(validationJob.jobId)
-        setValidationJob(j)
-        if (j.status !== 'TESTING' && validationPoll.current) { window.clearInterval(validationPoll.current); validationPoll.current = null }
-      } catch { /* keep polling */ }
-    }, 800)
-    return () => { if (validationPoll.current) { window.clearInterval(validationPoll.current); validationPoll.current = null } }
-  }, [validationJob?.jobId, validationJob?.status])
-
+  // Download events
   useEffect(() => {
     const dispose = onDownloadEvents((ev) => {
       setDownloads((prev) => {
@@ -348,449 +234,300 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
         else next[k] = ev
         return next
       })
-      if (ev.state === 'done') setLibraryStatus((prev) => ({ ...prev, [ev.rfilename]: true }))
+      if (ev.state === 'done') setInstalled((p) => ({ ...p, [ev.rfilename]: true }))
     })
-    void getActiveDownloads().then(() => {}).catch(() => {})
+    void getActiveDownloads().catch(() => {})
     return dispose
   }, [])
 
-  const startFileDownload = useCallback(async (model: ExploreModel, fileIndex: number): Promise<void> => {
-    const file = model.files[fileIndex]
-    if (!file?.downloadUrl || !file.rfilename) return
-    try { await downloadModelFile(model.id, file.rfilename, file.downloadUrl) } catch { /* invoke failure */ }
-  }, [])
-  const cancelFileDownload = useCallback(async (modelId: string, rfilename: string): Promise<void> => { try { await cancelModelDownload(modelId, rfilename) } catch { /* ignore */ } }, [])
-  const pauseFileDownload = useCallback(async (modelId: string, rfilename: string): Promise<void> => { try { await pauseModelDownload(modelId, rfilename) } catch { /* ignore */ } }, [])
-  const resumeFileDownload = useCallback(async (model: ExploreModel, fileIndex: number): Promise<void> => {
-    const file = model.files[fileIndex]
-    if (!file?.downloadUrl || !file.rfilename) return
-    try { await resumeModelDownload(model.id, file.rfilename, file.downloadUrl) } catch { /* ignore */ }
-  }, [])
-  const handleRefresh = useCallback(async (): Promise<void> => {
-    setLoading(true)
-    try { const result = await listExploreModels({ sortBy, query: debouncedQuery, pipelineTag: pipelineFilter, tag: tagFilter }); setModels(result) } catch { /* ignore */ } finally { setLoading(false) }
-  }, [sortBy, debouncedQuery, pipelineFilter, tagFilter])
-  const handleOpenExternal = useCallback(async (url: string): Promise<void> => { try { await openExternal(url) } catch { window.open(url, '_blank', 'noopener') } }, [])
-
-  const handleValidateWithFile = useCallback(async (model: ExploreModel, fileIndex: number): Promise<void> => {
-    setValidationBusy(true)
-    try {
-      // Prefer library path if already downloaded; backend will resolve via scanLibrary
-      const job = await startValidation(model.id)
-      void fileIndex
-      setValidationJob(job)
-    } catch { /* ignore */ }
-    finally { setValidationBusy(false) }
+  // Close popups on outside click / Escape
+  useEffect(() => {
+    const onDoc = (e: MouseEvent): void => {
+      if (sortRef.current && !sortRef.current.contains(e.target as Node)) setSortOpen(false)
+      if (fileRef.current && !fileRef.current.contains(e.target as Node)) setFileOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') { setSortOpen(false); setFileOpen(false); setDownloadsOpen(false) }
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
   }, [])
 
-  const sortOptions = useMemo(() => [
-    { value: 'Recommended', label: 'Recommended', icon: Sparkles },
-    { value: 'trending', label: 'Trending', icon: TrendingUp },
-    { value: 'likes', label: 'Most liked', icon: Star },
-    { value: 'downloads', label: 'Most downloaded', icon: Download },
-    { value: 'lastModified', label: 'Recently updated', icon: Calendar },
-  ], [])
+  const activeFile = active?.files[fileIdx]
+  const dlKey = active && activeFile?.rfilename ? `${active.id}\n${activeFile.rfilename}` : null
+  const dl = dlKey ? downloads[dlKey] : undefined
+  const pct = dl && dl.totalBytes ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : null
+  const isInstalled = activeFile?.rfilename ? Boolean(installed[activeFile.rfilename]) : false
+  const readmeHtml = useMemo(() => (active?.readme ? renderReadme(active.readme) : ''), [active?.readme])
+  const dlCount = Object.keys(downloads).length
 
-  const activeFiltersCount = (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0)
-  const hasQuery = debouncedQuery.trim().length > 0 || pipelineFilter || tagFilter
+  const doDownload = useCallback(async (): Promise<void> => {
+    if (!active || !activeFile?.downloadUrl || !activeFile.rfilename) return
+    try { await downloadModelFile(active.id, activeFile.rfilename, activeFile.downloadUrl) } catch { /* toast-less */ }
+  }, [active, activeFile])
+
+  const refresh = useCallback((): void => {
+    setSpinning(true)
+    void reload(debounced, sortBy)
+  }, [debounced, sortBy, reload])
 
   return (
-    <div className="explore-page">
-      <div className="explore-sidebar">
-        <div className="explore-sidebar-header">
-          <button type="button" className="explore-back-btn" onClick={onBack}>
-            <ArrowLeft size={14} /> Back to app
+    <div className="explorer">
+      {/* Top bar: < > Explore ····· Downloads N */}
+      <header className="explorer-topbar">
+        <div className="explorer-topbar-left">
+          <button type="button" className="explorer-navarrow" aria-label="Back" onClick={onBack}><ArrowLeft size={15} /></button>
+          <button type="button" className="explorer-navarrow explorer-navarrow--dim" aria-label="Forward" disabled><ArrowLeft size={15} style={{ transform: 'rotate(180deg)' }} /></button>
+          <h1 className="explorer-title">Explore</h1>
+        </div>
+        <div className="explorer-topbar-right">
+          <button
+            type="button" className="explorer-downloads-btn"
+            aria-expanded={downloadsOpen} onClick={() => setDownloadsOpen((v) => !v)}
+          >
+            <Download size={14} /> Downloads {dlCount > 0 ? <span className="explorer-downloads-count">{dlCount}</span> : null}
           </button>
-          <div className="explore-title-row">
-            <h1 className="explore-title">Explore</h1>
-            <span className="explore-subtitle">Hugging Face · real-time · no mocks</span>
-          </div>
         </div>
-
-        <div className="explore-search-wrap">
-          <Search size={15} className="explore-search-icon" />
-          <input type="text" className="explore-search" placeholder="Search Hugging Face and staff picks" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-          {searchQuery ? <button type="button" className="explore-search-clear" aria-label="Clear search" onClick={() => setSearchQuery('')}><X size={13} /></button> : null}
-        </div>
-
-        <div className="explore-toolbar">
-          <div className="explore-staff-picks">
-            <span className="explore-staff-label">Staff picks</span>
-            <button type="button" className="explore-refresh-btn" onClick={handleRefresh} title="Refresh"><RefreshCw size={12} /></button>
+        {downloadsOpen ? (
+          <div className="explorer-downloads-pop" role="region" aria-label="Downloads">
+            {dlCount === 0
+              ? <div className="explorer-downloads-empty">No active downloads.</div>
+              : Object.values(downloads).map((ev) => {
+                const p = ev.totalBytes ? Math.min(100, Math.round((ev.receivedBytes / ev.totalBytes) * 100)) : 0
+                return (
+                  <div key={`${ev.modelId}\n${ev.rfilename}`} className="explorer-dl-row">
+                    <div className="explorer-dl-info">
+                      <div className="explorer-dl-name">{(ev.rfilename ?? '').split('/').pop()}</div>
+                      <div className="explorer-dl-meta">{ev.state} · {p}% · {fmtSize(ev.receivedBytes)}</div>
+                      <div className="explorer-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p}>
+                        <span className="explorer-progress-fill" style={{ width: `${p}%` }} />
+                      </div>
+                    </div>
+                    <div className="explorer-dl-actions">
+                      {ev.state === 'paused'
+                        ? <button type="button" aria-label="Resume" onClick={() => void resumeModelDownload(ev.modelId, ev.rfilename, '')}><Play size={13} /></button>
+                        : <button type="button" aria-label="Pause" onClick={() => void pauseModelDownload(ev.modelId, ev.rfilename)}><Pause size={13} /></button>}
+                      <button type="button" aria-label="Cancel" onClick={() => void cancelModelDownload(ev.modelId, ev.rfilename)}><X size={13} /></button>
+                    </div>
+                  </div>
+                )
+              })}
           </div>
-          <div className="explore-sort-wrap">
-            <button type="button" className="explore-sort-btn" aria-haspopup="menu" aria-expanded={showSortMenu} onClick={() => setShowSortMenu(!showSortMenu)}>
-              <Sparkles size={12} /> {sortOptions.find((o) => o.value === sortBy)?.label ?? 'Recommended'} <ChevronDown size={13} className={showSortMenu ? 'rotated' : ''} />
+        ) : null}
+      </header>
+
+      <div className="explorer-body">
+        {/* Left: search + staff picks + list */}
+        <aside className="explorer-listcol" aria-label="Model list">
+          <div className="explorer-searchwrap">
+            <Search size={15} className="explorer-search-icon" />
+            <input
+              className="explorer-search" type="text" value={query}
+              placeholder="Search Hugging Face and staff picks"
+              aria-label="Search Hugging Face and staff picks"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query ? <button type="button" className="explorer-search-clear" aria-label="Clear search" onClick={() => setQuery('')}><X size={13} /></button> : null}
+          </div>
+
+          <div className="explorer-listhead">
+            <button type="button" className="explorer-staff" onClick={refresh} title="Refresh staff picks">
+              Staff picks <RefreshCw size={12} className={spinning ? 'explorer-spin' : ''} />
             </button>
-            {showSortMenu && (
-              <div className="explore-sort-menu" role="menu">
-                {sortOptions.map((opt) => {
-                  const Icon = opt.icon
-                  return (
-                    <button key={opt.value} type="button" role="menuitemradio" aria-checked={sortBy === opt.value} className={`explore-sort-option ${sortBy === opt.value ? 'explore-sort-option--active' : ''}`} onClick={() => { setSortBy(opt.value); setShowSortMenu(false) }}>
-                      <Icon size={12} className="explore-sort-option-icon" /> {opt.label} {sortBy === opt.value && <Check size={12} className="explore-check" />}
+            <div className="explorer-sort" ref={sortRef}>
+              <button
+                type="button" className="explorer-sort-btn"
+                aria-haspopup="listbox" aria-expanded={sortOpen}
+                onClick={() => setSortOpen((v) => !v)}
+              >
+                {SORTS.find((s) => s.value === sortBy)?.label ?? 'Recommended'}
+                <ChevronsUpDown size={13} className={`explorer-sort-chev ${sortOpen ? 'open' : ''}`} />
+              </button>
+              {sortOpen ? (
+                <div className="explorer-sort-menu" role="listbox">
+                  {SORTS.map((o) => (
+                    <button
+                      key={o.value} type="button" role="option" aria-selected={sortBy === o.value}
+                      className={`explorer-sort-item ${sortBy === o.value ? 'active' : ''}`}
+                      onClick={() => { setSortBy(o.value); setSortOpen(false) }}
+                    >
+                      {o.label} {sortBy === o.value ? <Check size={12} /> : null}
                     </button>
-                  )
-                })}
-              </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="explorer-list" role="listbox" aria-label="Models">
+            {loading ? (
+              Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="explorer-skel" style={{ ['--i' as string]: i }}>
+                  <div className="explorer-skel-icon" />
+                  <div className="explorer-skel-lines"><span /><span className="short" /></div>
+                </div>
+              ))
+            ) : error ? (
+              <div className="explorer-empty">{error}<button type="button" className="explorer-retry" onClick={refresh}>Retry</button></div>
+            ) : models.length === 0 ? (
+              <div className="explorer-empty">No text, vision, tools, code or thinking models found.</div>
+            ) : (
+              models.map((m, i) => {
+                const isActive = m.id === selectedId
+                const caps = m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c)).slice(0, 3)
+                return (
+                  <button
+                    key={m.id} type="button" role="option" aria-selected={isActive}
+                    className={`explorer-row ${isActive ? 'active' : ''}`}
+                    style={{ ['--i' as string]: Math.min(i, 10) }}
+                    onClick={() => setSelectedId(m.id)}
+                  >
+                    <ModelMark model={m} />
+                    <span className="explorer-row-main">
+                      <span className="explorer-row-titlerow">
+                        <span className="explorer-row-title">{shortName(m.name, 30)}</span>
+                        <BadgeCheck size={14} className="explorer-verified" />
+                      </span>
+                      <span className="explorer-row-desc">{shortName(m.longDescription || m.description, 52)}</span>
+                      <span className="explorer-row-time">{fmtAgo(m.updatedAt)}</span>
+                    </span>
+                    <span className="explorer-row-caps" aria-hidden>
+                      {caps.length > 0 ? caps.map((c) => <span key={c} className="explorer-row-cap"><CapIcon cap={c} /></span>) : null}
+                    </span>
+                  </button>
+                )
+              })
             )}
           </div>
-        </div>
+        </aside>
 
-        <div className="explore-filter-row">
-          <button type="button" className={`explore-filter-btn ${showFilters ? 'explore-filter-btn--active' : ''}`} onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
-            <Filter size={12} /> Filters {activeFiltersCount ? <span className="explore-filter-dot">{activeFiltersCount}</span> : null}
-          </button>
-          <span className="explore-filter-hint">{models.length} models</span>
-        </div>
+        {/* Right: detail */}
+        <section className="explorer-detail" aria-label="Model details">
+          {!active ? (
+            <div className="explorer-detail-empty">Select a model to see download options.</div>
+          ) : (
+            <div className="explorer-detail-inner" key={active.id}>
+              <div className="explorer-detail-head">
+                <ModelMark model={active} size={56} />
+                <div className="explorer-detail-titles">
+                  <h2 className="explorer-detail-name">{active.name}</h2>
+                  <div className="explorer-detail-slug">{active.slug}</div>
+                </div>
+              </div>
 
-        {showFilters && (
-          <div className="explore-filters-panel">
-            <div className="explore-filter-group">
-              <label className="explore-filter-label"><Tag size={11} /> Task</label>
-              <select className="explore-filter-select" value={pipelineFilter} onChange={(e) => setPipelineFilter(e.target.value)}>
-                {PIPELINE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            <div className="explore-filter-group">
-              <label className="explore-filter-label"><Layers size={11} /> Tag</label>
-              <select className="explore-filter-select" value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}>
-                {TAG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-            {hasQuery ? <button type="button" className="explore-filter-clear" onClick={() => { setSearchQuery(''); setPipelineFilter(''); setTagFilter(''); setDebouncedQuery('') }}>Clear all</button> : null}
-          </div>
-        )}
+              <div className="explorer-stats">
+                <span className="explorer-stat"><Download size={13} /> {fmtCount(active.downloads)}</span>
+                <span className="explorer-stat"><Star size={13} /> {fmtCount(active.likes)}</span>
+                {active.staffPick ? <span className="explorer-stat"><BadgeCheck size={13} /> Staff Pick</span> : null}
+                <span className="explorer-stat explorer-stat--plain">Updated {fmtAgo(active.updatedAt)}</span>
+                <button
+                  type="button" className="explorer-openweb"
+                  onClick={() => void openExternal(`https://huggingface.co/${active.slug}`).catch(() => window.open(`https://huggingface.co/${active.slug}`, '_blank'))}
+                >
+                  Open on Web <ExternalLink size={12} />
+                </button>
+              </div>
 
-        {(pipelineFilter || tagFilter) && (
-          <div className="explore-active-chips">
-            {pipelineFilter ? <span className="explore-active-chip">task: {pipelineFilter}<button type="button" aria-label="Remove task filter" onClick={() => setPipelineFilter('')}><X size={10} /></button></span> : null}
-            {tagFilter ? <span className="explore-active-chip">tag: {tagFilter}<button type="button" aria-label="Remove tag filter" onClick={() => setTagFilter('')}><X size={10} /></button></span> : null}
-          </div>
-        )}
-
-        <div className="explore-model-list">
-          {loading ? <div className="explore-loading"><Loader2 size={14} className="spin" /> Loading…</div>
-            : listError ? <div className="explore-empty">{listError}<button type="button" className="explore-retry-btn" onClick={handleRefresh}>Retry</button></div>
-              : models.length === 0 ? <div className="explore-empty">No models found. Try different search.</div>
-                : models.map((model) => (
-                  <ModelListItem key={model.id} model={model} active={selectedModel?.id === model.id} onSelect={() => selectModel(model)} />
-                ))}
-        </div>
-      </div>
-
-      <div className="explore-detail">
-        {selectedModel ? (
-          <ExploreDetail
-            summary={selectedModel}
-            detail={detail}
-            detailLoading={detailLoading}
-            detailError={detailError}
-            compatibility={compatibility}
-            compatLoading={compatLoading}
-            recommendations={recommendations}
-            recLoading={recLoading}
-            hardware={hardware}
-            selectedFile={selectedFile}
-            onSelectFile={setSelectedFile}
-            downloads={downloads}
-            libraryStatus={libraryStatus}
-            downloadTo={downloadTo}
-            onDownloadToChange={setDownloadTo}
-            onDownload={startFileDownload}
-            onCancelDownload={cancelFileDownload}
-            onPause={pauseFileDownload}
-            onResume={resumeFileDownload}
-            onOpenExternal={handleOpenExternal}
-            validationJob={validationJob}
-            fullHardware={fullHardware}
-            validationBusy={validationBusy}
-            onValidate={handleValidateWithFile}
-          />
-        ) : (
-          <div className="explore-detail-empty">
-            <Box size={28} className="explore-empty-icon" />
-            <p>Select a model to see details</p>
-            <span className="explore-empty-hint">Staff picks · Trending · Filter by task & tag</span>
-          </div>
-        )}
-        {Object.keys(downloads).length > 0 && (
-          <div className="explore-dm-dock">
-            <button type="button" className="explore-dm-toggle" onClick={() => setShowDownloads((v) => !v)}>
-              {showDownloads ? <ChevronDown size={12} /> : <ChevronUp size={12} />} Downloads ({Object.keys(downloads).length})
-            </button>
-            {showDownloads ? <DownloadManager downloads={downloads} onPause={pauseFileDownload} onResume={(id, f) => { const m = detail ?? selectedModel; const file = m?.files.find((x) => x.rfilename === f); if (file?.downloadUrl) void resumeModelDownload(id, f, file.downloadUrl) }} onCancel={cancelFileDownload} /> : null}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ModelListItem({ model, active, onSelect }: { model: ExploreModel; active: boolean; onSelect: () => void }): ReactElement {
-  return (
-    <button type="button" className={`explore-list-item ${active ? 'explore-list-item--active' : ''}`} onClick={onSelect} aria-pressed={active}>
-      <ModelIcon type={model.iconType} size={36} />
-      <div className="explore-list-item-body">
-        <div className="explore-list-item-name">
-          <span className="explore-list-item-title">{model.name}</span>
-          <span className="explore-list-item-check" title="Staff pick">✓</span>
-        </div>
-        <div className="explore-list-item-desc">{model.description}</div>
-        <div className="explore-list-item-meta">
-          <span className="explore-list-item-time">{formatDate(model.updatedAt)}</span>
-          <span className="explore-list-item-icons">
-            <Eye size={12} aria-label="Vision" /> <Wrench size={12} aria-label="Tools" />
-          </span>
-        </div>
-      </div>
-      <div className="explore-list-item-actions">
-        <Eye size={12} className="explore-list-eye" />
-        <Wrench size={12} className="explore-list-wrench" />
-      </div>
-    </button>
-  )
-}
-
-function ExploreDetail(props: {
-  summary: ExploreModel
-  detail: ExploreModel | null
-  detailLoading: boolean
-  detailError: string | null
-  compatibility: CompatibilityResult | null
-  compatLoading: boolean
-  recommendations: FileRecommendationView[] | null
-  recLoading: boolean
-  hardware: HardwareInfo | null
-  selectedFile: number
-  onSelectFile: (i: number) => void
-  downloads: Record<string, DownloadEventView>
-  libraryStatus: Record<string, boolean>
-  downloadTo: string
-  onDownloadToChange: (v: string) => void
-  onDownload: (model: ExploreModel, fileIndex: number) => void
-  onCancelDownload: (modelId: string, rfilename: string) => void
-  onPause: (modelId: string, rfilename: string) => void
-  onResume: (model: ExploreModel, fileIndex: number) => void
-  onOpenExternal: (url: string) => void
-  validationJob: ValidationJob | null
-  fullHardware: HardwareProfileFull | null
-  validationBusy: boolean
-  onValidate: (model: ExploreModel, fileIndex: number) => void
-}): ReactElement {
-  const { summary, detail, detailLoading, detailError } = props
-  const selectedModel = detail ?? summary
-  const activeFile = selectedModel.files[props.selectedFile]
-  const dlKey = activeFile?.rfilename ? `${selectedModel.id}\n${activeFile.rfilename}` : null
-  const dl = dlKey ? props.downloads[dlKey] : undefined
-  const pct = dl && dl.totalBytes ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : null
-  const readmeHtml = useMemo(() => selectedModel.readme ? renderMarkdown(selectedModel.readme) : '', [selectedModel.readme])
-  const isInstalled = activeFile?.rfilename ? Boolean(props.libraryStatus[activeFile.rfilename]) : false
-  const recForActive = props.recommendations?.find((r) => r.index === props.selectedFile)
-
-  const [showFileDropdown, setShowFileDropdown] = useState(false)
-  const handleReadmeClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement
-    const anchor = target.closest('a[data-external="true"]') as HTMLAnchorElement | null
-    if (anchor?.href) { e.preventDefault(); void props.onOpenExternal(anchor.href) }
-  }, [props])
-
-  // Derive display values for header
-  const totalDownloads = formatDownloads(selectedModel.downloads)
-  const likes = formatDownloads(selectedModel.likes)
-
-  return (
-    <div className="explore-detail-content">
-      <div className="explore-detail-header">
-        <ModelIcon type={selectedModel.iconType} size={52} />
-        <div className="explore-detail-head-text">
-          <h2 className="explore-detail-name">{selectedModel.name}</h2>
-          <div className="explore-detail-slug">{selectedModel.slug}</div>
-        </div>
-      </div>
-
-      <div className="explore-stats-bar">
-        <span className="explore-stat"><Download size={13} /> {totalDownloads}</span>
-        <span className="explore-stat"><Star size={13} /> {likes}</span>
-        <span className="explore-stat explore-stat--staff"><Shield size={12} /> Staff Pick</span>
-        <span className="explore-stat"><Clock size={13} /> Updated {formatDate(selectedModel.updatedAt)}</span>
-        <button type="button" className="explore-open-web" onClick={() => void props.onOpenExternal(`https://huggingface.co/${selectedModel.slug}`)}>Open on Web <ExternalLink size={11} /></button>
-      </div>
-
-      <div className="explore-download-options">
-        <div className="explore-download-options-head">
-          <h3 className="explore-section-title"><Download size={14} /> Download Options</h3>
-          <div className="explore-download-to">
-            Download to <select className="explore-download-select" value={props.downloadTo} onChange={(e) => props.onDownloadToChange(e.target.value)}><option>This device</option><option>External</option></select>
-          </div>
-        </div>
-
-        <div className="explore-download-card">
-          {detailLoading ? <div className="explore-compat-loading"><Loader2 size={12} className="spin" /> Loading files…</div>
-            : detailError ? <div className="explore-empty">{detailError}</div>
-              : selectedModel.files.length === 0 ? <div className="explore-empty">No files</div>
-                : (
-                  <div className="explore-file-dropdown">
-                    <button type="button" className="explore-file-dropdown-btn" onClick={() => setShowFileDropdown((v) => !v)} aria-expanded={showFileDropdown}>
-                      <span className="explore-file-dropdown-format">{activeFile?.format ?? 'GGUF'}</span>
-                      <span className="explore-file-dropdown-name">{activeFile ? `${selectedModel.name} · ${activeFile.quantization ?? activeFile.format} · ${formatBytes(activeFile.sizeBytes ?? activeFile.sizeGB * 1024 ** 3)}` : 'Select file'}</span>
-                      <span className="explore-file-dropdown-recommended">Recommended</span>
-                      <ChevronDown size={14} className={showFileDropdown ? 'rotated' : ''} />
+              {/* Download Options — LM Studio fit badge + file dropdown + Download */}
+              <h3 className="explorer-section-title">Download Options
+                <span className="explorer-dlto">Download to
+                  <button type="button" className="explorer-dlto-btn" onClick={() => setDownloadTo((v) => (v === 'This device' ? 'External' : 'This device'))}>
+                    {downloadTo} <ChevronDown size={12} />
+                  </button>
+                </span>
+              </h3>
+              <div className="explorer-card">
+                {detailLoading ? (
+                  <div className="explorer-loading"><Loader2 size={13} className="explorer-spin" /> Loading files…</div>
+                ) : active.files.length === 0 ? (
+                  <div className="explorer-empty">No GGUF/MLX files published for this model.</div>
+                ) : (
+                  <div className="explorer-filewrap" ref={fileRef}>
+                    <button
+                      type="button" className="explorer-filebtn"
+                      aria-expanded={fileOpen} onClick={() => setFileOpen((v) => !v)}
+                    >
+                      <span className="explorer-format-pill">{activeFile?.format ?? 'GGUF'}</span>
+                      <span className="explorer-file-name">{shortName(activeFile?.rfilename?.split('/').pop() ?? active.name, 34)}</span>
+                      {activeFile?.quantization ? <span className="explorer-quant-pill">{activeFile.quantization}</span> : null}
+                      <span className="explorer-file-size">{fmtSize(activeFile?.sizeBytes ?? 0)}</span>
+                      {recs?.find((r) => r.index === fileIdx && r.rank === 0) ? <span className="explorer-rec-pill">Recommended</span> : null}
+                      <ChevronDown size={14} className={`explorer-file-chev ${fileOpen ? 'open' : ''}`} />
                     </button>
-                    {showFileDropdown ? (
-                      <div className="explore-file-dropdown-list">
-                        {selectedModel.files.map((file, i) => {
-                          const installed = file.rfilename ? Boolean(props.libraryStatus[file.rfilename]) : false
-                          const rec = props.recommendations?.find((r) => r.index === i)
-                          const isRec = rec?.rank === 0 && rec.severity !== 'too-large'
-                          return (
-                            <button key={file.rfilename ?? i} type="button" className={`explore-file-option ${props.selectedFile === i ? 'explore-file-option--active' : ''}`} onClick={() => { props.onSelectFile(i); setShowFileDropdown(false) }}>
-                              <span className="explore-file-option-format">{file.format}</span>
-                              <span className="explore-file-option-name">{(file.rfilename ?? '').split('/').pop()}</span>
-                              {file.quantization && <span className="explore-file-option-quant">{file.quantization}</span>}
-                              <span className="explore-file-option-size">{formatBytes(file.sizeBytes ?? file.sizeGB * 1024 ** 3)}</span>
-                              {isRec ? <span className="explore-file-option-rec">Recommended</span> : null}
-                              {installed ? <FolderCheck size={11} className="explore-file-option-installed" /> : null}
-                              {rec ? <span className={`explore-file-option-sev sev--${rec.severity}`} title={rec.reason} /> : null}
-                            </button>
-                          )
-                        })}
+                    {fileOpen ? (
+                      <div className="explorer-filemenu" role="listbox">
+                        {active.files.map((f, i) => (
+                          <button
+                            key={f.rfilename ?? i} type="button" role="option" aria-selected={i === fileIdx}
+                            className={`explorer-fileitem ${i === fileIdx ? 'active' : ''}`}
+                            onClick={() => { setFileIdx(i); setFileOpen(false) }}
+                          >
+                            <span className="explorer-format-pill">{f.format}</span>
+                            <span className="explorer-file-name">{shortName((f.rfilename ?? '').split('/').pop() || f.format, 30)}</span>
+                            <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
+                            {installed[f.rfilename ?? ''] ? <Check size={12} className="explorer-file-check" /> : null}
+                          </button>
+                        ))}
                       </div>
                     ) : null}
                   </div>
                 )}
-
-          <div className="explore-offload-row">
-            {props.compatLoading || props.recLoading ? <span className="explore-compat-loading"><Loader2 size={11} className="spin" /> Checking system…</span>
-              : props.compatibility?.message.includes('Partial GPU Offload') ? <span className="explore-offload-badge"><HardDrive size={11} /> Partial GPU Offload Possible</span>
-                : props.compatibility ? <><CompatibilityBadge result={props.compatibility} /><span className="explore-compat-msg">{props.compatibility.message}</span></>
-                  : null}
-          </div>
-
-          <div className="explore-download-action">
-            {(() => {
-              if (!activeFile) return null
-              if (isInstalled) return <div className="explore-installed-row"><FolderCheck size={14} /> Already in library</div>
-              if (dl) {
-                const isPaused = dl.state === 'paused'
-                const isQueued = dl.state === 'queued'
-                return (
-                  <div className="explore-download-progress">
-                    <div className="explore-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}>
-                      <div className="explore-download-progress-bar" style={{ width: `${pct ?? (isPaused || isQueued ? 0 : 8)}%` }} />
+                <div className="explorer-fitrow"><FitBadge result={compat} /></div>
+                <div className="explorer-downloaderow">
+                  {isInstalled ? (
+                    <div className="explorer-installed">✓ Already in library</div>
+                  ) : dl ? (
+                    <div className="explorer-progress-row">
+                      <div className="explorer-progress explorer-progress--big" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}>
+                        <span className="explorer-progress-fill" style={{ width: `${pct ?? 4}%` }} />
+                      </div>
+                      <span className="explorer-progress-label">{dl.state === 'paused' ? 'Paused' : `${pct ?? 0}%`}</span>
+                      {dl.state === 'paused'
+                        ? <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl ?? '')}><Play size={12} /> Resume</button>
+                        : <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void pauseModelDownload(active.id, activeFile.rfilename)}><Pause size={12} /> Pause</button>}
+                      <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Cancel download" onClick={() => activeFile?.rfilename && void cancelModelDownload(active.id, activeFile.rfilename)}><X size={12} /></button>
                     </div>
-                    <span className="explore-download-progress-label">{isQueued ? 'Queued' : isPaused ? 'Paused' : `${pct ?? 0}%`}</span>
-                    {!isQueued ? (isPaused ? <button type="button" className="explore-resume-btn" onClick={() => props.onResume(selectedModel, props.selectedFile)}><Play size={12} /> Resume Download {pct ?? 0}%</button> : <button type="button" className="explore-pause-btn" onClick={() => props.onPause(selectedModel.id, activeFile.rfilename as string)}><Pause size={12} /> Pause</button>) : null}
-                    <button type="button" className="explore-cancel-btn" onClick={() => props.onCancelDownload(selectedModel.id, activeFile.rfilename as string)}><X size={12} /></button>
-                  </div>
-                )
-              }
-              // Not downloading — show Resume/Download button like reference
-              const hasProgress = false // could check for .part existence via libraryStatus
-              return (
-                <button type="button" className="explore-primary-download-btn" disabled={!activeFile.downloadUrl} onClick={() => props.onDownload(selectedModel, props.selectedFile)}>
-                  <Download size={14} /> Download {formatBytes(activeFile.sizeBytes ?? activeFile.sizeGB * 1024 ** 3)}
-                </button>
-              )
-            })()}
-          </div>
-        </div>
-      </div>
-
-      <div className="explore-validation-card" role="region" aria-label="Hardware validation">
-        <div className="explore-validation-head">
-          <h3 className="explore-card-title"><Cpu size={14} /> Hardware Validation</h3>
-          <ValidationStatusBadge status={props.validationJob?.status ?? 'NOT_TESTED'} />
-        </div>
-        {props.fullHardware ? (
-          <div className="explore-validation-hw">
-            <span className="explore-validation-hw-item"><Cpu size={11} /> {props.fullHardware.cpu.name} · {props.fullHardware.cpu.cores}c/{props.fullHardware.cpu.threads}t</span>
-            <span className="explore-validation-hw-item"><HardDrive size={11} /> RAM {Math.round(props.fullHardware.memory.ram_total_mb/1024)}GB avail {Math.round(props.fullHardware.memory.ram_available_mb/1024)}GB</span>
-            <span className="explore-validation-hw-item"><Zap size={11} /> {props.fullHardware.gpu.name ?? 'No GPU'} {props.fullHardware.gpu.vram_total_mb ? `· ${Math.round(props.fullHardware.gpu.vram_total_mb/1024)}GB VRAM avail ${Math.round((props.fullHardware.gpu.vram_available_mb||0)/1024)}GB` : ''} · {props.fullHardware.backend.name}</span>
-          </div>
-        ) : null}
-        {props.validationJob ? (
-          <div className="explore-validation-body">
-            <div className="explore-validation-phase">
-              <span className="explore-validation-phase-label">{props.validationJob.phase}</span>
-              <span className="explore-validation-progress-text">{props.validationJob.progress}%</span>
-            </div>
-            <div className="explore-validation-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.validationJob.progress}>
-              <div className="explore-validation-bar" style={{ width: `${props.validationJob.progress}%` }} />
-            </div>
-            {props.validationJob.status === 'TESTING' ? <div className="explore-validation-hint"><Loader2 size={11} className="spin" /> {props.validationJob.phase} — isolated pools, no VRAM+RAM summing</div> : null}
-            {props.validationJob.result ? (
-              <div className="explore-validation-result">
-                <div className="explore-validation-metrics">
-                  <span>Backend: <strong>{props.validationJob.result.backend}</strong> {props.validationJob.result.gpu_offload ? '· GPU offload YES' : '· CPU'}</span>
-                  {props.validationJob.result.peak_ram_mb ? <span>Peak RAM {props.validationJob.result.peak_ram_mb}MB</span> : null}
-                  {props.validationJob.result.peak_vram_mb ? <span>Peak VRAM {props.validationJob.result.peak_vram_mb}MB</span> : null}
-                  {props.validationJob.result.latency_ms ? <span>Latency {props.validationJob.result.latency_ms}ms</span> : null}
+                  ) : (
+                    <button type="button" className="explorer-download-btn" disabled={!activeFile?.downloadUrl} onClick={doDownload}>
+                      <Download size={15} /> Download <span className="explorer-download-size">{fmtSize(activeFile?.sizeBytes ?? 0)}</span>
+                    </button>
+                  )}
                 </div>
-                {props.validationJob.result.limitations?.length ? <div className="explore-validation-limit">Limitations: {props.validationJob.result.limitations.join('; ')}</div> : null}
-                {props.validationJob.result.reason ? <div className="explore-validation-reason">Reason: {props.validationJob.result.reason}</div> : null}
               </div>
-            ) : props.validationJob.error ? <div className="explore-validation-error">{props.validationJob.error}</div> : null}
-            {props.validationJob.status !== 'TESTING' ? <div className="explore-validation-distinction"><Info size={11} /> <span><strong>ESTIMATED</strong> predicts · <strong>LOADED</strong> proves runtime init · <strong>VERIFIED</strong> proves inference on this machine</span></div> : null}
-          </div>
-        ) : (
-          <div className="explore-validation-empty">Not tested on this device. Verification requires real load + inference — see estimate above.</div>
-        )}
-        <div className="explore-validation-actions">
-          {isInstalled ? (
-            <button type="button" className="explore-validate-btn" disabled={props.validationBusy || props.validationJob?.status === 'TESTING'} onClick={() => props.onValidate(selectedModel, props.selectedFile)}>
-              {props.validationBusy || props.validationJob?.status === 'TESTING' ? <><Loader2 size={12} className="spin" /> Validating…</> : props.validationJob?.status === 'VERIFIED' || props.validationJob?.status === 'VERIFIED_WITH_LIMITATIONS' ? <><Check size={12} /> Re-validate</> : <><Zap size={12} /> Validate on this device</>}
-            </button>
-          ) : (
-            <span className="explore-validation-hint">Download the selected file first, then Validate will load the real GGUF and run inference on this hardware</span>
+
+              {/* Details */}
+              <h3 className="explorer-section-title">Details</h3>
+              <div className="explorer-card">
+                <p className="explorer-details-desc">{active.longDescription}</p>
+                <div className="explorer-meta">
+                  <span className="explorer-meta-label">Parameters</span>
+                  <span className="explorer-pill">{active.parameters}</span>
+                  <span className="explorer-meta-label">Architecture</span>
+                  <span className="explorer-pill">{active.architecture}</span>
+                  <span className="explorer-meta-label">Formats</span>
+                  <span className="explorer-pill-group">
+                    {[...new Set(active.files.map((f) => f.format))].map((f) => <span key={f} className="explorer-pill">{f}</span>)}
+                  </span>
+                </div>
+                <div className="explorer-meta">
+                  <span className="explorer-meta-label">Capabilities</span>
+                  <span className="explorer-pill-group">
+                    {active.capabilities.map((c) => <span key={c} className="explorer-cap"><CapIcon cap={c} /> {c}</span>)}
+                  </span>
+                </div>
+              </div>
+
+              {/* README */}
+              <h3 className="explorer-section-title explorer-section-title--upper">README</h3>
+              <div className="explorer-card explorer-readme">
+                {readmeHtml
+                  ? <div className="explorer-md" dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+                  : <div className="explorer-md"><h2 className="explorer-md-h1">{active.name}</h2><p className="explorer-md-p">{active.longDescription}</p></div>}
+              </div>
+            </div>
           )}
-          {props.validationJob?.result?.gpu_offload === false && props.fullHardware?.gpu.vram_total_mb ? <span className="explore-validation-warn"><AlertTriangle size={11} /> GPU exists ≠ GPU used — verified CPU fallback</span> : null}
-        </div>
-      </div>
-
-      <div className="explore-details-card">
-        <h3 className="explore-card-title">Details</h3>
-        <p className="explore-details-desc">{selectedModel.longDescription} Apache 2.0 licensed.</p>
-        <div className="explore-details-grid">
-          <div className="explore-details-row">
-            <span className="explore-details-label">Parameters</span><span className="explore-details-pill">{selectedModel.parameters}</span>
-            <span className="explore-details-label">Architecture</span><span className="explore-details-pill">{selectedModel.architecture}</span>
-            <span className="explore-details-label">Formats</span>
-            <span className="explore-details-pills">
-              {[...new Set(selectedModel.files.map((f) => f.format))].map((fmt) => <span key={fmt} className="explore-details-pill">{fmt}</span>)}
-              {[...new Set(selectedModel.files.map((f) => f.format))].length === 0 ? <span className="explore-details-pill">GGUF</span> : null}
-            </span>
-          </div>
-          <div className="explore-details-row">
-            <span className="explore-details-label">Capabilities</span>
-            <span className="explore-details-pills">
-              {selectedModel.capabilities.map((cap) => <span key={cap} className="explore-cap-pill"><Zap size={10} /> {cap}</span>)}
-            </span>
-          </div>
-        </div>
-        {props.hardware ? (() => {
-          const rec = props.recommendations?.[0];
-          const sev = rec?.severity;
-          const badgeCls = sev === 'too-large' ? 'explore-hw-badge--bad' : sev === 'tight' ? 'explore-hw-badge--tight' : props.hardware.gpuAvailable ? 'explore-hw-badge--gpu' : 'explore-hw-badge--cpu';
-          return (
-          <div className="explore-hw-footer">
-            <HardDrive size={11} /> {props.hardware.gpuAvailable && props.hardware.totalVramMB ? `${props.hardware.gpuName} · ${(props.hardware.totalVramMB / 1024).toFixed(1)} GB VRAM` : 'CPU only'} · RAM {(props.hardware.totalRamMB / 1024).toFixed(1)} GB
-            <span className={`explore-hw-badge ${badgeCls}`}>{props.hardware.gpuAvailable ? 'VRAM' : 'RAM'}: Requires ~{(rec?.estimatedRamGB ?? 0).toFixed(1)} GB</span>
-          </div>
-          );
-        })() : null}
-      </div>
-
-      <div className="explore-readme-card">
-        <h3 className="explore-card-title">README</h3>
-        {selectedModel.readme ? (
-          <div className="explore-readme explore-readme--md" onClick={handleReadmeClick} dangerouslySetInnerHTML={{ __html: readmeHtml }} />
-        ) : (
-          <div className="explore-readme">
-            <h4>{selectedModel.name}</h4>
-            <p>{selectedModel.longDescription}</p>
-          </div>
-        )}
+        </section>
       </div>
     </div>
   )

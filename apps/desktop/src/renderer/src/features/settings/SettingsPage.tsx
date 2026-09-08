@@ -7,8 +7,8 @@ import {
 } from 'lucide-react'
 import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
-import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
+import { ExplorePage } from '../explore/ExplorePage'
 
 type SettingsSection =
   | 'general'
@@ -1600,7 +1600,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
          )
       }
 
-       case 'explore':
+      case 'explore':
         return (
           <ExplorePage onBack={() => setActiveSection('general')} />
         )

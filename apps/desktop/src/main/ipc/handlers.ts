@@ -11,8 +11,8 @@ import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
-import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
-import { estimateCompatibility, recommendFiles } from '../services/hardwareCheck'
+import { listExplorerModels, getExplorerModel } from '../services/explorerCatalog'
+import { estimateExplorerFit, fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import { getHardwareProfile } from '../services/hardwareProfile'
 import type { HardwareInfo } from '@shared/types/explore'
 
@@ -371,36 +371,47 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('explore:listModels', async (_e, raw: unknown) => {
     const parsed = zExploreListModels.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid explore:listModels payload: ${parsed.error.message}`)
-    const models = await fetchModelsFromHf({
-      sortBy: parsed.data.sortBy ?? 'recommended',
-      query: parsed.data.query ?? '',
-      pipelineTag: parsed.data.pipelineTag ?? '',
-      tag: parsed.data.tag ?? '',
-      limit: parsed.data.limit ?? 50,
+    // Fresh LM Studio-parity catalog: 5 families only (text/vision/tools/code/thinking).
+    // Legacy pipelineTag/tag filters are folded into the query scope — text families only.
+    const scopeQuery = [parsed.data.query ?? '', parsed.data.pipelineTag ?? '', parsed.data.tag ?? '']
+      .map((s) => s.trim()).filter(Boolean).join(' ')
+    return listExplorerModels({
+      sortBy: parsed.data.sortBy ?? 'Recommended',
+      query: scopeQuery,
+      limit: parsed.data.limit ?? 30,
     })
-    return models
   })
 
   ipcMain.handle('explore:getModel', async (_e, raw: unknown) => {
     const parsed = zExploreGetModel.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getModel payload: ${parsed.error.message}`)
-    return fetchModelFromHf(parsed.data.modelId)
+    return getExplorerModel(parsed.data.modelId)
   })
 
   ipcMain.handle('explore:getCompatibility', async (_e, raw: unknown) => {
     const parsed = zExploreGetCompatibility.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
-    const model = await fetchModelFromHf(parsed.data.modelId)
+    const model = await getExplorerModel(parsed.data.modelId)
     const hw: HardwareInfo = getHardwareProfile()
-    return estimateCompatibility(model, hw)
+    const file = model.files[0]
+    if (!file) return { fitsInMemory: false, estimatedRamUsageGB: 0, message: 'No downloadable files.', severity: 'too-large' as const }
+    return toCompatibility(estimateExplorerFit(file, model, hw))
   })
 
   ipcMain.handle('explore:getRecommendations', async (_e, raw: unknown) => {
     const parsed = zExploreGetRecommendations.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getRecommendations payload: ${parsed.error.message}`)
-    const model = await fetchModelFromHf(parsed.data.modelId)
+    const model = await getExplorerModel(parsed.data.modelId)
     const hw: HardwareInfo = getHardwareProfile()
-    return recommendFiles(model, hw)
+    // New fit rows mapped to the legacy FileRecommendationView shape the renderer expects.
+    return fitExplorerFiles(model, hw).map((r, rank) => ({
+      file: model.files[r.index],
+      index: r.index,
+      estimatedRamGB: r.needGB,
+      severity: r.fit === 'willNotFit' ? 'too-large' as const : r.fit === 'partialGPUOffload' ? 'tight' as const : 'good' as const,
+      rank,
+      reason: r.message,
+    }))
   })
 
   ipcMain.handle('explore:getHardwareProfile', async () => {
