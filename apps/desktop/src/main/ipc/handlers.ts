@@ -376,6 +376,7 @@ export function registerIpcHandlers(): void {
       query: parsed.data.query ?? '',
       pipelineTag: parsed.data.pipelineTag ?? '',
       tag: parsed.data.tag ?? '',
+      limit: parsed.data.limit ?? 50,
     })
     return models
   })

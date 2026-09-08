@@ -374,6 +374,7 @@ export interface ExploreListOpts {
   query?: string
   pipelineTag?: string
   tag?: string
+  limit?: number
 }
 
 export async function listExploreModels(

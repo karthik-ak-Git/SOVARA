@@ -97,6 +97,7 @@ export const zExploreListModels = z
     query: z.string().optional(),
     pipelineTag: z.string().max(64).optional(),
     tag: z.string().max(64).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   })
   .strict()
   .default({})
