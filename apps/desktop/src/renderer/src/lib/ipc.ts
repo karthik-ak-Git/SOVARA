@@ -207,6 +207,9 @@ export async function dispatchTool(name: string, args?: Record<string, unknown>)
 // ── General settings (Settings → General) + update feed ──
 export interface AppSettingsState {
   theme: string
+  sidebarBackground: string
+  inlineDiffLayout: string
+  renameAfterFork: boolean
   allowModelDownload: boolean
   autoUpdates: boolean
   sessionNotifications: boolean
@@ -225,6 +228,9 @@ export interface AppSettingsState {
 
 export interface AppSettingsPatch {
   theme?: string
+  sidebarBackground?: string
+  inlineDiffLayout?: string
+  renameAfterFork?: boolean
   allowModelDownload?: boolean
   autoUpdates?: boolean
   sessionNotifications?: boolean

@@ -238,6 +238,17 @@ body {
 }
 .sidebar::-webkit-scrollbar { width: 6px; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+/* ponytail: translucent sidebar is pure CSS, no JS canvas */
+[data-sidebar="translucent"] .sidebar {
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+[data-sidebar="translucent"] .settings-sidebar {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
 .nav-section { display: flex; flex-direction: column; gap: 2px; }
 .nav-label {
   display: flex;

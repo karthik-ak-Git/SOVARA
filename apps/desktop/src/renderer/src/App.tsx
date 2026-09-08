@@ -11,7 +11,7 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
 import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
-import { createProject, listProjects, pickFolder, getExecMode, setExecMode, type ProjectView, type ExecMode } from './lib/ipc'
+import { createProject, listProjects, pickFolder, getExecMode, setExecMode, getAppSettings, type ProjectView, type ExecMode } from './lib/ipc'
 
 interface Info {
   name: string
@@ -41,6 +41,15 @@ export function App(): React.JSX.Element {
       window.sovara.invoke('app:getInfo').then((v) => setInfo(v as Info)).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       listProjects().then(setProjects).catch(() => {})
       getExecMode().then(setExecModeState).catch(() => {})
+      // ponytail: apply persisted appearance before first paint — CSS does the rest, no extra dep
+      getAppSettings().then((s) => {
+        const resolved = s.theme === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : s.theme
+        document.documentElement.setAttribute('data-theme', resolved)
+        document.documentElement.setAttribute('data-sidebar', s.sidebarBackground)
+        document.documentElement.setAttribute('data-diff', s.inlineDiffLayout)
+      }).catch(() => {})
     }
   }, [])
 

@@ -71,10 +71,15 @@ async def _crawl_pages(urls, max_chars: int):
     return pages
 
 
+AD_MARKERS = ("duckduckgo.com/y.js", "/aclick", "ad_domain=", "ad_provider=")
+
+
 def _resolve_href(href: str):
     href = (href or "").strip()
     if not href:
         return None
+    if any(m in href for m in AD_MARKERS):
+        return None  # sponsored/tracking links are not sources
     if href.startswith("/l/") or href.startswith("//duckduckgo.com/l/"):
         q = href.split("?", 1)[1] if "?" in href else ""
         params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
@@ -85,6 +90,8 @@ def _resolve_href(href: str):
             target = unquote(target)
         except Exception:
             return None
+        if any(m in target for m in AD_MARKERS):
+            return None  # unwrapped target is still a sponsored/tracking link
         return target if target.startswith(("http://", "https://")) else None
     absolute = ("https:" + href) if href.startswith("//") else href
     return absolute if absolute.startswith(("http://", "https://")) else None

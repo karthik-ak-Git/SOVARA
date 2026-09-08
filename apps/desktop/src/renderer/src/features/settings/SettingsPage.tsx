@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -203,9 +203,9 @@ const MCP_PRESETS: McpPreset[] = [
 export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
 
-  // Appearance settings
+  // Appearance — theme is persisted (appSettings); the other two are
+  // visual-only with no backend field, so they stay local.
   const [sidebarBackground, setSidebarBackground] = useState('solid')
-  const [uiColorTheme, setUiColorTheme] = useState('system')
   const [inlineDiffLayout, setInlineDiffLayout] = useState('unified')
 
   // Token utilization
@@ -213,8 +213,8 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
   const [usageLoaded, setUsageLoaded] = useState(false)
 
-  // Sessions settings
-  const [renameAfterFork, setRenameAfterFork] = useState(true)
+  // Sessions — renameAfterFork is persisted via appSettings, not local state
+  // ponytail: no local mirror, single source is appSettings + applyPatch (consumer reads via getAppSettings when fork lands)
   const [archivedSessions, setArchivedSessions] = useState<SessionHeaderView[]>([])
   const [archivedLoaded, setArchivedLoaded] = useState(false)
 
@@ -229,6 +229,28 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [instructionsDraft, setInstructionsDraft] = useState<string | null>(null)
   const [testingSearch, setTestingSearch] = useState(false)
   const [searchTest, setSearchTest] = useState<string | null>(null)
+  const [engineStatus, setEngineStatus] = useState<PythonStatusView | null>(null)
+  const [retryingEngine, setRetryingEngine] = useState(false)
+
+  const refreshEngineStatus = useCallback(async (): Promise<void> => {
+    try {
+      setEngineStatus(await getPythonSetupStatus())
+    } catch {
+      // setup IPC unavailable — row keeps its loading state
+    }
+  }, [])
+
+  const retryEngineSetup = useCallback(async (): Promise<void> => {
+    setRetryingEngine(true)
+    try {
+      setEngineStatus(await ensurePythonSetup())
+    } catch {
+      // error state surfaces on the next refresh
+    } finally {
+      setRetryingEngine(false)
+      void refreshEngineStatus()
+    }
+  }, [refreshEngineStatus])
 
   // General settings — loaded from main (SQLite), every control below is live.
   const [appSettings, setAppSettingsState] = useState<AppSettingsState | null>(null)
@@ -345,7 +367,31 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       }
     }
     loadAgentMeta()
-  }, [])
+    void refreshEngineStatus()
+  }, [refreshEngineStatus])
+
+  // Apply appearance to document — single source is appSettings, native CSS does the rest.
+  useEffect(() => {
+    if (!appSettings) return
+    const theme = appSettings.theme as string
+    const resolved = theme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme
+    document.documentElement.setAttribute('data-theme', resolved)
+    document.documentElement.setAttribute('data-sidebar', appSettings.sidebarBackground)
+    document.documentElement.setAttribute('data-diff', appSettings.inlineDiffLayout)
+  }, [appSettings?.theme, appSettings?.sidebarBackground, appSettings?.inlineDiffLayout])
+
+  // Follow OS theme when "system" is selected — stdlib matchMedia, no dep.
+  useEffect(() => {
+    if (appSettings?.theme !== 'system') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (): void => {
+      document.documentElement.setAttribute('data-theme', mq.matches ? 'dark' : 'light')
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [appSettings?.theme])
 
   const runSearchTest = useCallback(async (): Promise<void> => {
     setTestingSearch(true)
@@ -556,6 +602,22 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 />
                 <div className="settings-row">
                   <div className="settings-row-text">
+                    <div className="settings-row-label">Web engine</div>
+                    <div className="settings-row-desc">{engineStatus?.message ?? 'Checking…'}</div>
+                  </div>
+                  {(engineStatus && (engineStatus.phase === 'error' || engineStatus.phase === 'no-python')) ? (
+                    <button
+                      type="button"
+                      className="settings-action-btn"
+                      onClick={() => void retryEngineSetup()}
+                      disabled={retryingEngine}
+                    >
+                      {retryingEngine ? 'Retrying…' : 'Retry setup'}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
                     <div className="settings-row-label">Status</div>
                     <div className="settings-row-desc">{searchTest ?? webStatus}</div>
                   </div>
@@ -723,21 +785,30 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
             <div className="settings-group">
               <div className="settings-card">
                 <Toggle
-                  checked={renameAfterFork}
-                  onChange={setRenameAfterFork}
+                  checked={appSettings?.renameAfterFork ?? true}
+                  onChange={(v) => void applyPatch({ renameAfterFork: v })}
                   label="Rename after fork"
                   description="Use the previous session name and the first message sent in a fork to suggest a new name."
                 />
               </div>
+              {generalError ? (
+                <div className="settings-card">
+                  <div className="settings-row"><div className="settings-row-desc settings-error-text" role="alert">{generalError}</div></div>
+                </div>
+              ) : null}
             </div>
 
             <div className="settings-group">
-              <div className="settings-group-header">Archived sessions</div>
+              <div className="settings-group-header">
+                Archived sessions {archivedLoaded ? <span className="settings-badge">{archivedSessions.length}</span> : null}
+              </div>
               <p className="settings-row-desc settings-row-desc--spaced">
                 Archived sessions stay intact but do not appear in the sidebar.
               </p>
               <div className="settings-card">
-                {archivedSessions.length === 0 ? (
+                {!archivedLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : archivedSessions.length === 0 ? (
                   <div className="settings-row">
                     <span className="muted">No archived sessions.</span>
                   </div>
@@ -766,10 +837,14 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
           </div>
         )
 
-      case 'appearance':
+      case 'appearance': {
+        const sb = appSettings?.sidebarBackground ?? 'solid'
+        const themeVal = appSettings?.theme ?? 'dark'
+        const diff = appSettings?.inlineDiffLayout ?? 'unified'
         return (
           <div className="settings-content">
             <h2 className="settings-section-title">Appearance</h2>
+            <p className="usage-subtitle">Changes apply instantly and persist locally. No restart required.</p>
 
             <div className="settings-group">
               <div className="settings-group-header">Interface</div>
@@ -777,13 +852,14 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">Sidebar background</div>
-                    <div className="settings-row-desc">Choose the translucent shell look or a solid sidebar surface.</div>
+                    <div className="settings-row-desc">Solid uses the panel color. Translucent adds a blurred shell behind the sidebar.</div>
                   </div>
                   <select
                     className="settings-select"
-                    value={sidebarBackground}
-                    onChange={(e) => setSidebarBackground(e.target.value)}
+                    value={sb}
+                    onChange={(e) => void applyPatch({ sidebarBackground: e.target.value })}
                     aria-label="Sidebar background"
+                    disabled={!generalLoaded}
                   >
                     <option value="solid">Solid</option>
                     <option value="translucent">Translucent</option>
@@ -793,12 +869,12 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">UI color theme</div>
-                    <div className="settings-row-desc">Choose the app-wide color theme.</div>
+                    <div className="settings-row-desc">System follows the OS setting. Light / Dark override it.</div>
                   </div>
                   <select
                     className="settings-select"
-                    value={uiColorTheme}
-                    onChange={(e) => setUiColorTheme(e.target.value)}
+                    value={appSettings?.theme ?? 'dark'}
+                    onChange={(e) => void applyPatch({ theme: e.target.value })}
                     aria-label="UI color theme"
                   >
                     <option value="system">System</option>
@@ -810,22 +886,29 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">Inline diff layout</div>
-                    <div className="settings-row-desc">Choose how inline file-change diffs appear in the transcript.</div>
+                    <div className="settings-row-desc">How file-change diffs render in the transcript.</div>
                   </div>
                   <select
                     className="settings-select"
-                    value={inlineDiffLayout}
-                    onChange={(e) => setInlineDiffLayout(e.target.value)}
+                    value={diff}
+                    onChange={(e) => void applyPatch({ inlineDiffLayout: e.target.value })}
                     aria-label="Inline diff layout"
+                    disabled={!generalLoaded}
                   >
                     <option value="unified">Unified</option>
                     <option value="split">Split</option>
                   </select>
                 </div>
               </div>
+              {generalError ? (
+                <div className="settings-card">
+                  <div className="settings-row"><div className="settings-row-desc settings-error-text" role="alert">{generalError}</div></div>
+                </div>
+              ) : null}
             </div>
           </div>
         )
+      }
 
       case 'connected-apps':
         return (

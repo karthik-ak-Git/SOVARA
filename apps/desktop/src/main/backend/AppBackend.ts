@@ -105,6 +105,9 @@ export class AppBackend {
   // ── General settings (Settings → General), all persisted in app_meta ──
   getAppSettings(): {
     theme: string
+    sidebarBackground: string
+    inlineDiffLayout: string
+    renameAfterFork: boolean
     allowModelDownload: boolean
     autoUpdates: boolean
     sessionNotifications: boolean
@@ -123,6 +126,9 @@ export class AppBackend {
     const lastCheck = get('last_update_check_at')
     return {
       theme: get('theme') ?? 'dark',
+      sidebarBackground: get('sidebar_background') ?? 'solid',
+      inlineDiffLayout: get('inline_diff_layout') ?? 'unified',
+      renameAfterFork: (get('rename_after_fork') ?? '1') === '1',
       allowModelDownload: get('allow_model_download') === '1',
       autoUpdates: (get('auto_updates') ?? '1') === '1',
       sessionNotifications: (get('session_notifications') ?? '1') === '1',
@@ -141,6 +147,9 @@ export class AppBackend {
 
   setAppSettings(patch: {
     theme?: string
+    sidebarBackground?: string
+    inlineDiffLayout?: string
+    renameAfterFork?: boolean
     allowModelDownload?: boolean
     autoUpdates?: boolean
     sessionNotifications?: boolean
@@ -158,6 +167,15 @@ export class AppBackend {
       if (!['dark', 'light', 'system'].includes(patch.theme)) throw new Error('invalid theme')
       set('theme', patch.theme)
     }
+    if (patch.sidebarBackground !== undefined) {
+      if (!['solid', 'translucent'].includes(patch.sidebarBackground)) throw new Error('invalid sidebarBackground')
+      set('sidebar_background', patch.sidebarBackground)
+    }
+    if (patch.inlineDiffLayout !== undefined) {
+      if (!['unified', 'split'].includes(patch.inlineDiffLayout)) throw new Error('invalid inlineDiffLayout')
+      set('inline_diff_layout', patch.inlineDiffLayout)
+    }
+    if (patch.renameAfterFork !== undefined) set('rename_after_fork', patch.renameAfterFork ? '1' : '0')
     if (patch.allowModelDownload !== undefined) set('allow_model_download', patch.allowModelDownload ? '1' : '0')
     if (patch.autoUpdates !== undefined) set('auto_updates', patch.autoUpdates ? '1' : '0')
     if (patch.sessionNotifications !== undefined) set('session_notifications', patch.sessionNotifications ? '1' : '0')

@@ -96,8 +96,8 @@ export function getPythonDir(): string {
   return existsSync(devPath) ? devPath : prodPath
 }
 
-export function requirementsHash(): string {
-  const reqPath = join(getPythonDir(), 'requirements.txt')
+export function requirementsHash(pythonDir?: string): string {
+  const reqPath = join(pythonDir ?? getPythonDir(), 'requirements.txt')
   const content = existsSync(reqPath) ? readFileSync(reqPath) : Buffer.alloc(0)
   return createHash('sha256').update(content).digest('hex').slice(0, 16)
 }

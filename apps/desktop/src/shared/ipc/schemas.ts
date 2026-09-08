@@ -99,6 +99,9 @@ export const zLibrarySetDirectory = z
 export const zSettingsSet = z
   .object({
     theme: z.enum(['dark', 'light', 'system']).optional(),
+    sidebarBackground: z.enum(['solid', 'translucent']).optional(),
+    inlineDiffLayout: z.enum(['unified', 'split']).optional(),
+    renameAfterFork: z.boolean().optional(),
     allowModelDownload: z.boolean().optional(),
     autoUpdates: z.boolean().optional(),
     sessionNotifications: z.boolean().optional(),
