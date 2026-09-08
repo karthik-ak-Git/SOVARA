@@ -393,6 +393,13 @@ export function registerIpcHandlers(): void {
     if (!server) throw new Error('unknown mcp server')
     return server
   })
+  ipcMain.handle('mcp:probe', async (_e, raw: unknown) => {
+    const parsed = zMcpId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid mcp:probe payload: ${parsed.error.message}`)
+    const server = await getBackend().probeMcpServer(parsed.data.id)
+    if (!server) throw new Error('unknown mcp server')
+    return server
+  })
 
   // ── Voice transcription (local faster-whisper) ──
   ipcMain.handle('voice:status', async () => {

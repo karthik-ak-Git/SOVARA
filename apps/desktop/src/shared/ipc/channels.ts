@@ -72,6 +72,7 @@ export const IPC_CHANNELS = {
   'mcp:add': { type: 'invoke' as const },
   'mcp:remove': { type: 'invoke' as const },
   'mcp:toggle': { type: 'invoke' as const },
+  'mcp:probe': { type: 'invoke' as const },
   // Voice transcription (local faster-whisper)
   'voice:transcribe': { type: 'invoke' as const },
   'voice:status': { type: 'invoke' as const },

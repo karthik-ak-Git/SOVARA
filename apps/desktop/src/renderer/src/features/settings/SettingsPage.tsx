@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -162,36 +162,64 @@ interface McpPreset {
   icon: string
 }
 
-// ponytail: real brand marks — inline SVG, no external asset fetch, no new dep
+// ponytail: dynamic brand marks — fetch real logos, never hard-code SVG paths
+// Uses SimpleIcons CDN for known brands + favicon fallback for custom http endpoints.
+// No new dep: native <img> + onError fallback to initials.
 function McpLogo({ id, size = 28 }: { id: string; size?: number }): ReactElement {
   const s = size
-  const common: React.SVGProps<SVGSVGElement> = { width: s, height: s, viewBox: '0 0 40 40', role: 'img', 'aria-hidden': true }
-  switch (id) {
-    case 'github':
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="#24292F" /><path d="M20 9.2c-5.6 0-10.1 4.5-10.1 10.1 0 4.5 2.9 8.3 6.9 9.6.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.8 1 .8-.2 1.6-.3 2.5-.3.9 0 1.7.1 2.5.3 1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.3 4.7-4.6 5 .4.3.8.9.8 1.9v2.8c0 .3.2.6.7.5 4-1.3 6.9-5.1 6.9-9.6 0-5.6-4.5-10.1-10.1-10.1z" fill="#fff" /></svg>
-      )
-    case 'linear':
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="#5E6AD2" /><path d="M12 14l8-4 4 2-8 4-4-2z M12 18l8-4 4 2-8 4-4-2z M12 22l8-4 4 2-8 4-4-2z" fill="#fff" opacity={0.95} /></svg>
-      )
-    case 'notion':
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="#000" /><text x="20" y="26" textAnchor="middle" fontSize="18" fontWeight="800" fill="#fff" fontFamily="ui-sans-system">N</text></svg>
-      )
-    case 'sentry':
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="#362D59" /><path d="M13 14l7-3 7 3-7 11-7-11z M13 20l7 5 7-5" stroke="#fff" strokeWidth="1.8" fill="none" strokeLinejoin="round" /><circle cx="20" cy="18" r="1.4" fill="#FF5A52" /></svg>
-      )
-    case 'atlassian':
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="#0052CC" /><path d="M20 10l8 14H12z" fill="#fff" /></svg>
-      )
-    default:
-      return (
-        <svg {...common}><rect width="40" height="40" rx="8" fill="var(--panel-2)" stroke="var(--border)" /><text x="20" y="26" textAnchor="middle" fontSize="14" fontWeight="700" fill="var(--muted)">{id.slice(0, 2).toUpperCase()}</text></svg>
-      )
+  const [failed, setFailed] = useState(false)
+  // Derive CDN slug — id is already a brand slug (github, linear, etc.) or provider-derived
+  const slug = id.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const src = `https://cdn.simpleicons.org/${slug}`
+  useEffect(() => setFailed(false), [src])
+  if (failed || !slug) {
+    return (
+      <div style={{ width: s, height: s, borderRadius: 8, background: 'var(--panel-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: Math.round(s * 0.4), fontWeight: 700, color: 'var(--muted)' }}>
+        {id.slice(0, 2).toUpperCase()}
+      </div>
+    )
   }
+  return (
+    <img
+      src={src}
+      alt=""
+      width={s}
+      height={s}
+      style={{ width: s, height: s, borderRadius: 8, background: '#fff', padding: 4, boxSizing: 'border-box', border: '1px solid var(--border)' }}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+function McpServerLogo({ server, size = 32 }: { server: McpServerView; size?: number }): ReactElement {
+  // For http servers, try favicon of the endpoint host first (more accurate for custom MCPs)
+  const [faviconFailed, setFaviconFailed] = useState(false)
+  useEffect(() => setFaviconFailed(false), [server.id])
+  if (server.transport === 'http' && server.endpoint && !faviconFailed) {
+    try {
+      const host = new URL(server.endpoint).hostname
+      const favSrc = `https://icon.horse/icon/${host}`
+      // Also try SimpleIcons for provider as secondary if favicon 404 — chain via McpLogo fallback
+      return (
+        <img
+          src={favSrc}
+          alt=""
+          width={size}
+          height={size}
+          style={{ width: size, height: size, borderRadius: 8, background: '#fff', padding: 4, border: '1px solid var(--border)' }}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setFaviconFailed(true)}
+        />
+      )
+    } catch {
+      // fall through to brand logo
+    }
+  }
+  const lid = server.provider.toLowerCase().includes('github') ? 'github' : server.provider.toLowerCase().includes('linear') ? 'linear' : server.provider.toLowerCase().includes('notion') ? 'notion' : server.provider.toLowerCase().includes('sentry') ? 'sentry' : server.provider.toLowerCase().includes('atlassian') ? 'atlassian' : server.provider.toLowerCase().includes('jira') || server.provider.toLowerCase().includes('confluence') ? 'atlassian' : server.name.toLowerCase()
+  return <McpLogo id={lid} size={size} />
 }
 
 const MCP_PRESETS: McpPreset[] = [
@@ -444,11 +472,22 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     return () => mq.removeEventListener('change', onChange)
   }, [appSettings?.theme])
 
-  // MCP — load when Connected Apps is active
+  // MCP — load when Connected Apps is active, then probe any stale probing servers
   const reloadMcp = useCallback(async (): Promise<void> => {
     try {
       const servers = await listMcpServers()
       setMcpServers(servers)
+      // probe any server stuck in probing (e.g. added but not yet verified)
+      for (const s of servers) {
+        if (s.enabled && s.status === 'probing') {
+          try {
+            const probed = await probeMcpServer(s.id)
+            setMcpServers((prev) => prev.map((p) => (p.id === probed.id ? probed : p)))
+          } catch {
+            // keep probing state, will retry on next toggle
+          }
+        }
+      }
     } catch {
       // unavailable
     } finally {
@@ -486,14 +525,23 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       return
     }
     try {
-      await addMcpServer({
+      const created = await addMcpServer({
         name,
         provider: mcpForm.provider.trim() || 'Custom',
         transport: mcpForm.transport,
         ...(mcpForm.transport === 'stdio' ? { command: mcpForm.command.trim() } : { endpoint: mcpForm.endpoint.trim() }),
       })
       setMcpDialogOpen(false)
-      await reloadMcp()
+      // optimistic add, then real probe
+      setMcpServers((prev) => [created, ...prev.filter((p) => p.id !== created.id)])
+      setMcpLoaded(true)
+      try {
+        const probed = await probeMcpServer(created.id)
+        setMcpServers((prev) => prev.map((p) => (p.id === probed.id ? probed : p)))
+      } catch {
+        // probe failure keeps the probing/connected state as stored; reload will sync
+        void reloadMcp()
+      }
     } catch (e) {
       setMcpError(e instanceof Error ? e.message : String(e))
     }
@@ -1041,16 +1089,15 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                   </div>
                 ) : (
                   mcpServers.map((s) => {
-                    const lid = s.provider.toLowerCase().includes('github') ? 'github' : s.provider.toLowerCase().includes('linear') ? 'linear' : s.provider.toLowerCase().includes('notion') ? 'notion' : s.provider.toLowerCase().includes('sentry') ? 'sentry' : s.provider.toLowerCase().includes('atlassian') ? 'atlassian' : s.name.toLowerCase()
                     const created = s.createdAt ? new Date(s.createdAt).toLocaleDateString() : ''
                     return (
                       <div key={s.id} className="settings-row">
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, flexShrink: 0 }}><McpLogo id={lid} size={32} /></div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, flexShrink: 0 }}><McpServerLogo server={s} size={32} /></div>
                         <div className="settings-row-text">
                           <div className="settings-row-label">
-                            <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: s.enabled ? 'var(--success)' : 'var(--muted-2)', marginRight: 6, verticalAlign: 'middle' }} aria-hidden />
+                            <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: s.status === 'connected' ? 'var(--success)' : s.status === 'error' ? 'var(--danger)' : s.status === 'probing' ? 'var(--warn)' : 'var(--muted-2)', marginRight: 6, verticalAlign: 'middle' }} aria-hidden />
                             {s.name} <span className="badge" style={{ marginLeft: 6, fontSize: 10 }}>{s.transport}</span>
-                            {!s.enabled ? <span className="muted small"> · disabled</span> : <span className="muted small"> · connected</span>}
+                            {s.status === 'probing' ? <span className="muted small"> · connecting…</span> : s.status === 'error' ? <span className="muted small" style={{ color: 'var(--danger)' }}> · {s.lastError ?? 'error'}</span> : !s.enabled || s.status === 'disconnected' ? <span className="muted small"> · disabled</span> : <span className="muted small"> · connected</span>}
                             {created ? <span className="muted small"> · {created}</span> : null}
                           </div>
                           <div className="settings-row-desc" style={{ wordBreak: 'break-all' }}>
@@ -1063,11 +1110,16 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                           className={`settings-toggle ${s.enabled ? 'settings-toggle--on' : ''}`}
                           onClick={async () => {
                             const next = !s.enabled
-                            setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: next } : p)))
+                            setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: next, status: next ? 'probing' : 'disconnected', lastError: undefined } as McpServerView : p)))
                             try {
-                              await toggleMcpServer(s.id, next)
+                              const toggled = await toggleMcpServer(s.id, next)
+                              setMcpServers((prev) => prev.map((p) => (p.id === toggled.id ? toggled : p)))
+                              if (next) {
+                                const probed = await probeMcpServer(s.id)
+                                setMcpServers((prev) => prev.map((p) => (p.id === probed.id ? probed : p)))
+                              }
                             } catch {
-                              setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: !next } : p)))
+                              setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: !next, status: !next ? 'disconnected' : 'error' } as McpServerView : p)))
                             }
                           }}
                           role="switch"
@@ -1076,6 +1128,23 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                         >
                           <span className="settings-toggle-thumb" />
                         </button>
+                        {s.status === 'error' ? (
+                          <button
+                            type="button"
+                            className="settings-action-btn"
+                            onClick={async () => {
+                              setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, status: 'probing' as const, lastError: undefined } : p)))
+                              try {
+                                const probed = await probeMcpServer(s.id)
+                                setMcpServers((prev) => prev.map((p) => (p.id === probed.id ? probed : p)))
+                              } catch (e) {
+                                setMcpError(e instanceof Error ? e.message : String(e))
+                              }
+                            }}
+                          >
+                            Retry
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="settings-action-btn"

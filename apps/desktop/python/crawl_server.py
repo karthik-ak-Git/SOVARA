@@ -1,20 +1,28 @@
-"""Sovara web sidecar: search-result discovery + crawl4ai page extraction.
+"""Sovara web sidecar: search-result discovery + page extraction.
 
 Endpoints (loopback only, Flask like whisper_server.py):
-  GET  /health          -> {"ready": true, "crawl4ai": bool}
-  POST /search          {query, max_pages=3} -> {sources: [{url, title, snippet, content}]}
-  POST /crawl           {urls: [...], max_chars=6000} -> {pages: [{url, title, markdown}]}
+  GET  /health          -> {"ready": true, "crawl4ai": bool, "cdp": bool}
+  POST /search          {query, max_pages=3} -> {sources: [{url, title, snippet, content, engine}]}
+  POST /crawl           {urls: [...], max_chars=6000} -> {pages: [{url, title, markdown, engine}]}
 
-Search flow: DuckDuckGo HTML for result links (keyless), then crawl4ai
-extracts the top pages to markdown. If crawl4ai/the browser is missing,
-/search still returns discovered links with snippets (content empty) and
-/crawl reports per-URL errors — the desktop falls back gracefully.
+Extraction ladder per page (first success wins):
+  1. CDP browser control — persistent Chromium driven over the DevTools
+     protocol: real rendering, selector waits, auto-scroll for lazy
+     content, then HTML captured post-JS. Fixes JS-shell pages that
+     static fetch returns empty.
+  2. crawl4ai one-shot crawl (own managed browser).
+  3. Links/snippets only (/search) or per-URL error (/crawl).
+
+If crawl4ai/the browser is missing, /search still returns discovered links
+with snippets (content empty) and /crawl reports per-URL errors — the
+desktop falls back gracefully.
 """
 
 import asyncio
 import json
 import re
 import sys
+import threading
 from html import unescape
 from urllib.parse import quote_plus, unquote
 
@@ -39,6 +47,12 @@ try:
 except ImportError:
     HAVE_CRAWL4AI = False
 
+try:
+    from playwright.async_api import async_playwright
+    HAVE_PLAYWRIGHT = True
+except ImportError:
+    HAVE_PLAYWRIGHT = False
+
 app = Flask(__name__)
 CORS(app)
 
@@ -47,6 +61,123 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 MAX_PAGES_DEFAULT = 3
 MAX_CHARS_DEFAULT = 6000
+
+
+# ── Browser control (CDP) ────────────────────────────────────────────
+# A persistent Chromium owned by one dedicated event-loop thread (playwright
+# objects are loop-bound — never share them across asyncio.run calls).
+# Pages are driven over the DevTools protocol: navigate, wait for a
+# selector / network calm, auto-scroll lazy content, then capture the
+# post-JS DOM for the extraction pipeline below.
+
+class BrowserLoop:
+    def __init__(self):
+        self._loop = None
+        self._thread = None
+        self._lock = threading.Lock()
+        self._browser = None
+        self._pw = None
+
+    def _ensure_thread(self):
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return self._loop
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+            self._thread.start()
+            return self._loop
+
+    def run(self, coro, timeout: float):
+        loop = self._ensure_thread()
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        return fut.result(timeout)
+
+    async def _ensure_browser(self):
+        if self._browser and self._browser.is_connected():
+            return self._browser
+        if self._pw is None:
+            self._pw = await async_playwright().start()
+        try:
+            if self._browser:
+                await self._browser.close()
+        except Exception:
+            pass
+        # Full chromium (not headless-shell): some sites gate on shell UA.
+        self._browser = await self._pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        return self._browser
+
+    async def fetch_rendered(self, url: str, wait_selector: str = "",
+                             scroll: bool = True, timeout_ms: int = 45000):
+        """Render url over CDP; returns post-JS HTML. Raises on failure."""
+        browser = await self._ensure_browser()
+        context = await browser.new_context(
+            viewport={"width": 1366, "height": 900},
+            user_agent=BROWSER_UA,
+            locale="en-US",
+        )
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if wait_selector:
+                try:
+                    await page.wait_for_selector(wait_selector, timeout=8000)
+                except Exception:
+                    pass  # selector is a hint, not a gate
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass  # JS-heavy pages may never calm; scroll anyway
+            if scroll:
+                last_height = 0
+                for _ in range(8):
+                    height = await page.evaluate(
+                        "() => document.documentElement.scrollHeight"
+                    )
+                    if height == last_height:
+                        break
+                    last_height = height
+                    await page.evaluate(
+                        "() => window.scrollBy(0, window.innerHeight)"
+                    )
+                    await page.wait_for_timeout(700)
+                await page.evaluate("() => window.scrollTo(0, 0)")
+            try:
+                # Dismiss trivial cookie walls so content isn't occluded.
+                for label in ("Accept all", "Accept All", "Accept cookies", "Got it"):
+                    btn = page.get_by_role("button", name=label)
+                    try:
+                        if await btn.count() > 0:
+                            await btn.first.click(timeout=1500)
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            return await page.content()
+        finally:
+            try:
+                await context.close()
+            except Exception:
+                pass
+
+    def reset(self):
+        with self._lock:
+            self._browser = None
+
+
+BROWSER = BrowserLoop()
+
+
+def cdp_available() -> bool:
+    return HAVE_PLAYWRIGHT
+
+
+def render_html(url: str, timeout: float = 60.0) -> str:
+    """Blocking CDP render for Flask handlers. Raises on failure."""
+    return BROWSER.run(BROWSER.fetch_rendered(url), timeout)
 
 def _link_ratio(line: str) -> float:
     """Fraction of the line occupied by markdown links/images (nav ≈ 1.0)."""
@@ -76,6 +207,20 @@ def trim_boilerplate(md: str) -> str:
     return "\n".join(lines[start:]).strip()
 
 
+def html_to_markdown(html: str, query: str = "") -> str:
+    """Shared extraction: HTML -> query-focused (or plain) markdown."""
+    if not (html or "").strip():
+        return ""
+    try:
+        gen = DefaultMarkdownGenerator().generate_markdown(
+            html,
+            **({"content_filter": BM25ContentFilter(user_query=query, bm25_threshold=1.2)} if query else {}),
+        )
+        return (gen.fit_markdown or gen.raw_markdown or "").strip()
+    except Exception:
+        return ""
+
+
 async def _crawl_pages(urls, max_chars: int, query: str = ""):
     if not HAVE_CRAWL4AI:
         return [{"url": u, "title": "", "markdown": "", "error": "crawl4ai not installed"} for u in urls]
@@ -93,44 +238,59 @@ async def _crawl_pages(urls, max_chars: int, query: str = ""):
         excluded_tags=["nav", "header", "footer", "aside", "form", "script", "style"],
         remove_overlay_elements=True,
     )
-    generator = DefaultMarkdownGenerator()
-    bm25 = BM25ContentFilter(user_query=query, bm25_threshold=1.2) if query else None
     pages = []
     try:
         async with AsyncWebCrawler(config=BrowserConfig(headless=True, verbose=False)) as crawler:
             for url in urls:
+                # Ladder: CDP render first (real JS + lazy content), then the
+                # one-shot crawl4ai fetch. First non-empty markdown wins.
+                attempts = []
+                if cdp_available():
+                    try:
+                        rendered = render_html(url)
+                        attempts.append(("cdp", html_to_markdown(rendered, query)))
+                    except Exception as exc:
+                        BROWSER.reset()
+                        attempts.append(("cdp-error", f"CDP render failed: {exc}"))
                 try:
                     result = await crawler.arun(url=url, config=run_config)
-                    if not result or not result.success:
+                    if result and result.success:
+                        pruned_html = (getattr(result, "fit_html", "") or "").strip()
+                        source_html = pruned_html or (getattr(result, "cleaned_html", "") or "")
+                        if source_html:
+                            attempts.append(("crawl4ai", html_to_markdown(source_html, query)))
+                        if not attempts:
+                            attempts.append(("crawl4ai", (result.markdown or "").strip()))
+                        title = (result.metadata or {}).get("title", "")
+                    else:
+                        title = ""
                         err = (result.error_message if result else "") or "extraction failed"
-                        pages.append({"url": url, "title": "", "markdown": "", "error": err})
-                        continue
-                    pruned_html = (getattr(result, "fit_html", "") or "").strip()
-                    source_html = pruned_html or (getattr(result, "cleaned_html", "") or "")
-                    md = ""
-                    if source_html:
-                        try:
-                            gen = generator.generate_markdown(
-                                source_html,
-                                **({"content_filter": bm25} if bm25 else {}),
-                            )
-                            md = (gen.fit_markdown or gen.raw_markdown or "").strip()
-                        except Exception:
-                            md = ""
-                    if not md:
-                        md = (result.markdown or "").strip()
-                    # NOTE: DefaultMarkdownGenerator.fit_markdown already
-                    # excludes boilerplate; trim the fallback raw path too.
-                    text = trim_boilerplate(md)[:max_chars]
-                    if not text.strip():
-                        text = md[:max_chars]
-                    if not text.strip():
-                        pages.append({"url": url, "title": "", "markdown": "", "error": "empty page after filtering"})
-                        continue
-                    meta = result.metadata or {}
-                    pages.append({"url": url, "title": meta.get("title", ""), "markdown": text})
+                        attempts.append(("crawl4ai-error", err))
                 except Exception as exc:  # per-URL failure must not fail the batch
-                    pages.append({"url": url, "title": "", "markdown": "", "error": str(exc)[:300]})
+                    title = ""
+                    attempts.append(("crawl4ai-error", str(exc)[:300]))
+                md, engine, error = "", "links", ""
+                for origin, text in attempts:
+                    if origin.endswith("-error"):
+                        error = text
+                    elif text.strip():
+                        md, engine = text, origin
+                        error = ""
+                        break
+                if not md.strip():
+                    pages.append({"url": url, "title": "", "markdown": "", "engine": engine,
+                                  "error": error or "empty page after filtering"})
+                    continue
+                # NOTE: DefaultMarkdownGenerator.fit_markdown already
+                # excludes boilerplate; trim the fallback raw path too.
+                text = trim_boilerplate(md)[:max_chars]
+                if not text.strip():
+                    text = md[:max_chars]
+                if not text.strip():
+                    pages.append({"url": url, "title": "", "markdown": "", "engine": engine,
+                                  "error": "empty page after filtering"})
+                    continue
+                pages.append({"url": url, "title": title, "markdown": text, "engine": engine})
     except Exception as exc:
         return [{"url": u, "title": "", "markdown": "", "error": f"crawler start failed: {exc}"} for u in urls]
     return pages
@@ -213,6 +373,7 @@ def discover_links(query: str, limit: int = 8):
             "title": link["title"],
             "snippet": snippets.get(link["url"], ""),
             "content": "",
+            "engine": "links",
         })
     return out
 
@@ -238,7 +399,7 @@ def _run(coro):
 
 @app.get("/health")
 def health():
-    return jsonify({"ready": True, "crawl4ai": HAVE_CRAWL4AI})
+    return jsonify({"ready": True, "crawl4ai": HAVE_CRAWL4AI, "cdp": cdp_available()})
 
 
 @app.post("/search")
@@ -269,6 +430,7 @@ def search():
                 page = pages[0] if pages else {}
                 if page.get("markdown", "").strip():
                     link["content"] = page["markdown"]
+                    link["engine"] = page.get("engine", "links")
                     if not link["title"] and page.get("title"):
                         link["title"] = page["title"]
                     got += 1

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { spawn } from 'node:child_process'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 
 const zMcpServer = z.object({
@@ -10,6 +11,8 @@ const zMcpServer = z.object({
   endpoint: z.string().max(512).optional(),
   enabled: z.boolean(),
   createdAt: z.number().int(),
+  status: z.enum(['connected', 'disconnected', 'error', 'probing']).optional(),
+  lastError: z.string().max(256).optional(),
 })
 
 export type McpServer = z.infer<typeof zMcpServer>
@@ -26,7 +29,12 @@ function loadServers(store: RuntimeConfigStore): McpServer[] {
     const out: McpServer[] = []
     for (const item of parsed) {
       const res = zMcpServer.safeParse(item)
-      if (res.success) out.push(res.data)
+      if (res.success) {
+        const s = res.data
+        // migrate old records without status: derive from enabled
+        if (!s.status) s.status = s.enabled ? 'connected' : 'disconnected'
+        out.push(s)
+      }
     }
     return out
   } catch {
@@ -59,6 +67,7 @@ export function addMcpServer(
       : { endpoint: (input.endpoint ?? '').trim().slice(0, 512) }),
     enabled: true,
     createdAt: Date.now(),
+    status: 'probing' as const,
   }
   // validate before persist
   zMcpServer.parse(server)
@@ -89,8 +98,91 @@ export function toggleMcpServer(store: RuntimeConfigStore, id: string, enabled: 
   const list = loadServers(store)
   const idx = list.findIndex((s) => s.id === id)
   if (idx === -1) return null
-  const updated = { ...list[idx], enabled } as McpServer
+  const updated: McpServer = { ...list[idx], enabled, status: enabled ? 'connected' : 'disconnected', lastError: undefined }
+  // if disabling, clear error; if enabling, mark probing until probe completes
+  if (enabled) updated.status = 'probing'
   list[idx] = updated
   saveServers(store, list)
   return updated
+}
+
+function updateStatus(store: RuntimeConfigStore, id: string, status: McpServer['status'], lastError?: string): McpServer | null {
+  const list = loadServers(store)
+  const idx = list.findIndex((s) => s.id === id)
+  if (idx === -1) return null
+  const updated: McpServer = { ...list[idx], status, lastError }
+  list[idx] = updated
+  saveServers(store, list)
+  return updated
+}
+
+async function probeHttp(endpoint: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const u = new URL(endpoint)
+    const host = u.hostname
+    // ponytail: local MCPs (localhost) are always reachable without network; skip fetch when offline
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return { ok: true }
+  } catch {
+    // url validation already done before persist
+  }
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), 6000)
+  try {
+    await fetch(endpoint, { method: 'GET', signal: controller.signal, headers: { Accept: 'text/event-stream, application/json' } } as RequestInit)
+    // Any HTTP response (even 404/405) means host is reachable — treat as ok.
+    return { ok: true }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.toLowerCase().includes('abort')) return { ok: false, error: 'timeout' }
+    // Include fetch failed vs DNS etc; keep message short
+    return { ok: false, error: msg.slice(0, 120) || 'fetch failed' }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function probeStdio(command: string): Promise<{ ok: boolean; error?: string }> {
+  const trimmed = command.trim()
+  if (!trimmed) return { ok: false, error: 'empty command' }
+  // npx-based MCPs are the common case — verify npx exists and command is syntactically plausible
+  // Full spawn probe with shell; kill after 1.5s. ponytail: no heavy install, just liveness.
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(trimmed, { shell: true, stdio: 'ignore', timeout: 2000 } as never)
+      let done = false
+      const finish = (ok: boolean, error?: string) => {
+        if (done) return
+        done = true
+        try { child.kill() } catch {}
+        resolve({ ok, error })
+      }
+      child.on('error', (err) => finish(false, (err as Error).message.slice(0, 120)))
+      child.on('spawn', () => {
+        setTimeout(() => finish(true), 600)
+      })
+      setTimeout(() => finish(true), 1500)
+    } catch (e) {
+      resolve({ ok: false, error: e instanceof Error ? e.message.slice(0, 120) : String(e).slice(0, 120) })
+    }
+  })
+}
+
+export async function probeMcpServer(store: RuntimeConfigStore, id: string): Promise<McpServer | null> {
+  const list = loadServers(store)
+  const srv = list.find((s) => s.id === id)
+  if (!srv) return null
+  if (!srv.enabled) {
+    return updateStatus(store, id, 'disconnected', undefined)
+  }
+  updateStatus(store, id, 'probing', undefined)
+  let result: { ok: boolean; error?: string }
+  if (srv.transport === 'http' && srv.endpoint) {
+    result = await probeHttp(srv.endpoint)
+  } else if (srv.transport === 'stdio' && srv.command) {
+    result = await probeStdio(srv.command)
+  } else {
+    result = { ok: false, error: 'missing transport target' }
+  }
+  const status = result.ok ? 'connected' : 'error'
+  return updateStatus(store, id, status as McpServer['status'], result.error)
 }

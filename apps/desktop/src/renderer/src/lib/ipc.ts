@@ -417,6 +417,8 @@ export interface McpServerView {
   endpoint?: string
   enabled: boolean
   createdAt: number
+  status?: 'connected' | 'disconnected' | 'error' | 'probing'
+  lastError?: string
 }
 
 export async function listMcpServers(): Promise<McpServerView[]> {
@@ -439,6 +441,10 @@ export async function removeMcpServer(id: string): Promise<{ ok: boolean }> {
 
 export async function toggleMcpServer(id: string, enabled: boolean): Promise<McpServerView> {
   return (await sovara().invoke('mcp:toggle', { id, enabled })) as McpServerView
+}
+
+export async function probeMcpServer(id: string): Promise<McpServerView> {
+  return (await sovara().invoke('mcp:probe', { id })) as McpServerView
 }
 
 // ── Voice transcription (local faster-whisper) ──

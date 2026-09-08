@@ -12,7 +12,7 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
-import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, type McpServer } from '../services/mcpStore'
+import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type McpServer } from '../services/mcpStore'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -258,6 +258,9 @@ export class AppBackend {
   }
   toggleMcpServer(id: string, enabled: boolean): McpServer | null {
     return toggleMcpServer(this.runtimeConfig, id, enabled)
+  }
+  probeMcpServer(id: string): Promise<McpServer | null> {
+    return probeMcpServer(this.runtimeConfig, id)
   }
 
   recordUpdateCheck(status: string): void {
