@@ -12,7 +12,7 @@ import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSki
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
 import { listExplorerModels, getExplorerModel } from '../services/explorerCatalog'
-import { estimateExplorerFit, fitExplorerFiles, toCompatibility } from '../services/explorerFit'
+import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import { getHardwareProfile } from '../services/hardwareProfile'
 import type { HardwareInfo } from '@shared/types/explore'
 
@@ -393,9 +393,12 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
     const model = await getExplorerModel(parsed.data.modelId)
     const hw: HardwareInfo = getHardwareProfile()
-    const file = model.files[0]
-    if (!file) return { fitsInMemory: false, estimatedRamUsageGB: 0, message: 'No downloadable files.', severity: 'too-large' as const }
-    return toCompatibility(estimateExplorerFit(file, model, hw))
+    // Default badge = the TOP RECOMMENDED file (LM Studio preselects the
+    // recommended quant), not files[0] — per-file state then follows selection.
+    const fits = fitExplorerFiles(model, hw)
+    const top = fits.find((f) => f.isRecommended) ?? fits[0]
+    if (!top) return { fitsInMemory: false, estimatedRamUsageGB: 0, message: 'No downloadable files.', severity: 'too-large' as const }
+    return toCompatibility(top)
   })
 
   ipcMain.handle('explore:getRecommendations', async (_e, raw: unknown) => {

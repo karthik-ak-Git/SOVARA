@@ -121,12 +121,17 @@ export function estimateExplorerFit(
         message: `Full GPU offload possible — ~${need1} GB fits your ${vram.toFixed(1)} GB GPU.`,
       }
     }
-    // Partial: exceeds VRAM but fits RAM → layers split GPU/CPU (slower)
+    // Partial: exceeds VRAM but fits RAM → layers split GPU/CPU (slower).
+    // Free-RAM aware: still runnable when only total fits, but flag it so the
+    // badge state is honest about needing headroom (LM Studio guardrail behavior).
     if (need <= cap.ramGB) {
+      const tightRam = need > cap.freeRamGB * 0.92
       return {
-        fit: 'partialGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: 'high',
+        fit: 'partialGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : 'high',
         passesGuardrails: true,
-        message: `Partial GPU offload possible — ~${need1} GB exceeds ${vram.toFixed(1)} GB VRAM but fits RAM.`,
+        message: tightRam
+          ? `Partial GPU offload possible — ~${need1} GB exceeds ${vram.toFixed(1)} GB VRAM and RAM is tight (${cap.freeRamGB.toFixed(1)} GB free). Close apps first.`
+          : `Partial GPU offload possible — ~${need1} GB exceeds ${vram.toFixed(1)} GB VRAM but fits RAM.`,
       }
     }
     return {
@@ -136,12 +141,15 @@ export function estimateExplorerFit(
     }
   }
 
-  // CPU-only / unified-memory path
+  // CPU-only / unified-memory path (free-RAM aware like the GPU path)
   if (need <= cap.ramGB) {
+    const tightRam = need > cap.freeRamGB * 0.92
     return {
-      fit: 'fitWithoutGPU', needGB: need, fileGB, kvGB: kv, confidence: 'high',
+      fit: 'fitWithoutGPU', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : 'high',
       passesGuardrails: true,
-      message: `Likely fits on CPU — ~${need1} GB fits system memory.`,
+      message: tightRam
+        ? `Likely fits on CPU — ~${need1} GB fits but RAM is tight (${cap.freeRamGB.toFixed(1)} GB free). Close apps first.`
+        : `Likely fits on CPU — ~${need1} GB fits system memory.`,
     }
   }
   return {

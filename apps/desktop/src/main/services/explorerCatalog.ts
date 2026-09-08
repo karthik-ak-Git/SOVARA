@@ -2,7 +2,10 @@
  * Explorer catalog — fresh LM Studio-parity Hugging Face listing.
  *
  * Sources (LM Studio only, no git history):
- * - HF public API: GET https://huggingface.co/api/models?search=&sort=trendingScore|downloads|likes|lastModified&direction=-1&limit=&filter=&expand[]=
+ * - HF public API: GET https://huggingface.co/api/models?search=&sort=trendingScore|downloads|likes|lastModified&direction=-1&limit=&expand=
+ *   (valid expands: author, cardData, gated, lastModified, safetensors, siblings,
+ *   likes, downloads, tags, pipeline_tag, trendingScore, createdAt — usedStorage is
+ *   NOT a valid list expand and returns 400)
  * - LM Studio docs: in-app downloader searches HF by keyword, `user/model`, or full HF URL paste;
  *   staff picks shown when query empty (lmstudio.ai/models + `lms get` fuzzyFindStaffPicks).
  * - HF x LM Studio guide: trending GGUF entry https://huggingface.co/models?library=gguf&sort=trending
@@ -49,14 +52,14 @@ export type ExplorerCapability = 'Text' | 'Vision' | 'Tools' | 'Code' | 'Thinkin
 // Curated staff picks (mirrors lmstudio.ai/models trending order, screenshot order).
 // Fetched individually so the Recommended view is stable even when HF trending shifts.
 export const STAFF_PICKS: string[] = [
-  'qwen/qwen3.8-27b',
+  'Qwen/Qwen3.8-27B',
   'prismml/bonsai-27b',
   'google/gemma-4-12b',
   'google/gemma-4-26b-a4b',
   'google/gemma-4-31b',
   'google/gemma-4-12b-qat',
   'google/gemma-4-31b-qat',
-  'qwen/qwen3.6-27b',
+  'Qwen/Qwen3.6-27B',
   'google/gemma-4-4b',
   'google/gemma-4-2b',
 ]
@@ -291,9 +294,11 @@ async function searchHf(query: string, sortBy: string | undefined, limit: number
   params.set('limit', String(Math.min(Math.max(limit, 1), 100)))
   const q = query.trim()
   if (q) params.set('search', q)
-  // Ask HF for the fields LM Studio needs (keeps siblings for GGUF file rows)
-  for (const f of ['downloads', 'likes', 'trendingScore', 'pipeline_tag', 'tags', 'gated', 'createdAt', 'lastModified', 'siblings', 'usedStorage']) {
-    params.append('expand[]', f)
+  // Ask HF for the fields LM Studio needs (siblings keep GGUF file rows).
+  // NOTE: `expand` (repeated param) with only server-valid keys — `usedStorage`
+  // and `expand[]` bracket form with invalid keys return 400.
+  for (const f of ['author', 'cardData', 'gated', 'lastModified', 'safetensors', 'siblings', 'likes', 'downloads', 'tags', 'pipeline_tag', 'trendingScore', 'createdAt']) {
+    params.append('expand', f)
   }
   const res = await hfGet(`${HF_MODELS_API}?${params.toString()}`).catch((e) => {
     throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face timed out.' : 'Could not reach Hugging Face.')
@@ -330,8 +335,9 @@ export async function listExplorerModels(opts: ExplorerListOpts = {}): Promise<E
     return searchHf(parsed.modelId as string, sortBy, limit)
   }
 
-  if (parsed.kind === 'empty' && sortParam(sortBy) === 'trendingScore') {
-    // Staff picks first — parallel, bounded, order-preserving
+  if (parsed.kind === 'empty' && (sortBy ?? 'Recommended').toLowerCase() === 'recommended') {
+    // Staff picks first — parallel, bounded, order-preserving.
+    // Misses (renamed/gated repos) are skipped; empty result falls through to live trending.
     const settled = await Promise.all(STAFF_PICKS.map((id) => fetchOne(id)))
     const picks = settled.filter((m): m is ExploreModel => m !== null)
     if (picks.length > 0) return picks.slice(0, Math.max(limit, picks.length))

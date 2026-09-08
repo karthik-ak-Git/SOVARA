@@ -38,38 +38,178 @@ function shortName(name: string, max = 34): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name
 }
 
-// ── Minimal markdown (fresh) ─────────────────────────────────────────
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// ── README viewer: full-ish markdown (fresh) ─────────────────────────
+// Blocks: fenced code (+copy), tables, headings, quotes, hr, ul/ol,
+// paragraphs. Inline: images, links, bold, italic, strike, code.
+// Relative image/asset URLs resolve against the HF repo so provider
+// images and diagrams load instead of 404ing.
+interface ReadmeDoc { html: string; code: string[] }
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
-function inlineMd(t: string): string {
-  let s = esc(t)
-  s = s.replace(/`([^`]+)`/g, '<code class="explorer-md-code">$1</code>')
+function resolveAsset(src: string, modelSlug: string): string {
+  const s = src.trim()
+  if (/^(https?:|data:|blob:)/i.test(s)) return s
+  if (s.startsWith('/')) return `https://huggingface.co${s}`
+  return `https://huggingface.co/${modelSlug}/resolve/main/${s.replace(/^\.\//, '')}`
+}
+function inlineReadme(t: string, modelSlug: string): string {
+  // Pull `code` spans aside so inner * _ ~ [ ] are not formatted.
+  const stash: string[] = []
+  let s = escHtml(t)
+  s = s.replace(/`([^`\n]+)`/g, (_m, c: string) => {
+    stash.push(`<code class="explorer-md-code">${c}</code>`)
+    return `ZZCODE${stash.length - 1}CODEZZ`
+  })
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, src: string) =>
+    `<img class="explorer-md-img" alt="${alt}" src="${resolveAsset(src, modelSlug)}" loading="lazy" />`)
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)(?:\s+"[^"]*")?\)/g, '<a href="$2" data-ext="1" class="explorer-md-link">$1</a>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>')
+  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>')
+  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" data-ext="1" class="explorer-md-link">$2</a>')
+  s = s.replace(/ZZCODE(\d+)CODEZZ/g, (_m, i: string) => stash[Number(i)] ?? '')
   return s
 }
-function renderReadme(md: string): string {
+function renderReadmeDoc(md: string, modelSlug: string): ReadmeDoc {
+  const code: string[] = []
   const out: string[] = []
   const lines = md.split('\n')
-  let bullets: string[] = []
-  const flush = (): void => {
-    if (bullets.length) { out.push(`<ul class="explorer-md-ul">${bullets.map((b) => `<li>${inlineMd(b)}</li>`).join('')}</ul>`); bullets = [] }
+  let ul: string[] = []
+  let ol: string[] = []
+  let quote: string[] = []
+  const flushLists = (): void => {
+    if (ul.length) { out.push(`<ul class="explorer-md-ul">${ul.map((b) => `<li>${inlineReadme(b, modelSlug)}</li>`).join('')}</ul>`); ul = [] }
+    if (ol.length) { out.push(`<ol class="explorer-md-ol">${ol.map((b) => `<li>${inlineReadme(b, modelSlug)}</li>`).join('')}</ol>`); ol = [] }
+    if (quote.length) { out.push(`<blockquote class="explorer-md-quote">${quote.map((b) => inlineReadme(b, modelSlug)).join('<br/>')}</blockquote>`); quote = [] }
   }
-  for (const raw of lines) {
-    const line = raw.replace(/\r$/, '')
-    if (/^\s*[-*]\s+/.test(line)) { bullets.push(line.replace(/^\s*[-*]\s+/, '')); continue }
-    flush()
-    if (/^\s*$/.test(line)) continue
-    const h = line.match(/^(#{1,4})\s+(.*)$/)
-    if (h) { const lv = h[1].length; out.push(`<h${lv + 1} class="explorer-md-h${lv}">${inlineMd(h[2])}</h${lv + 1}>`); continue }
-    out.push(`<p class="explorer-md-p">${inlineMd(line)}</p>`)
+  const isTableDelim = (l: string): boolean => /^\s*\|?[\s\-:|]+\|[\s\-:|]*$/.test(l) && l.includes('-')
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].replace(/\r$/, '')
+    // Fenced code
+    const fence = raw.match(/^```\s*([\w+-]*)\s*$/)
+    if (fence) {
+      flushLists()
+      const lang = (fence[1] || 'code').slice(0, 24)
+      const buf: string[] = []
+      i += 1
+      while (i < lines.length && !lines[i].startsWith('```')) { buf.push(lines[i].replace(/\r$/, '')); i += 1 }
+      const body = buf.join('\n')
+      const idx = code.length
+      code.push(body)
+      out.push(
+        `<div class="explorer-codeblock"><div class="explorer-codeblock-bar"><span>${escHtml(lang)}</span>` +
+        `<button type="button" data-copy-idx="${idx}" class="explorer-copy-btn">Copy</button></div>` +
+        `<pre class="explorer-codeblock-pre"><code>${escHtml(body) || ' '}</code></pre></div>`,
+      )
+      continue
+    }
+    // Table (header + delimiter + rows)
+    if (raw.includes('|') && i + 1 < lines.length && isTableDelim(lines[i + 1])) {
+      flushLists()
+      const cells = (l: string): string[] => l.split('|').map((c) => c.trim()).filter((c, k, a) => !(k === 0 && c === '') && !(k === a.length - 1 && c === ''))
+      const head = cells(raw)
+      i += 1 // skip delimiter
+      const rows: string[][] = []
+      while (i + 1 < lines.length && lines[i + 1].includes('|') && !isTableDelim(lines[i + 1]) && lines[i + 1].trim() !== '') {
+        i += 1
+        rows.push(cells(lines[i]))
+      }
+      const headHtml = head.map((c) => '<th>' + inlineReadme(c, modelSlug) + '</th>').join('')
+      const bodyHtml = rows.map((r) => '<tr>' + r.map((c) => '<td>' + inlineReadme(c, modelSlug) + '</td>').join('') + '</tr>').join('')
+      out.push(
+        '<div class="explorer-md-tablewrap"><table class="explorer-md-table"><thead><tr>' +
+        headHtml +
+        '</tr></thead><tbody>' +
+        bodyHtml +
+        '</tbody></table></div>',
+      )
+      continue
+    }
+    if (/^\s*([-*+])\s+/.test(raw)) { ol = []; quote = []; ul.push(raw.replace(/^\s*[-*+]\s+/, '')); continue }
+    if (/^\s*\d+[.)]\s+/.test(raw)) { ul = []; quote = []; ol.push(raw.replace(/^\s*\d+[.)]\s+/, '')); continue }
+    if (/^\s*>\s?/.test(raw)) { ul = []; ol = []; quote.push(raw.replace(/^\s*>\s?/, '')); continue }
+    flushLists()
+    if (/^\s*$/.test(raw)) continue
+    if (/^---+$/.test(raw.trim())) { out.push('<hr class="explorer-md-hr"/>'); continue }
+    const h = raw.match(/^(#{1,6})\s+(.*)$/)
+    if (h) { const lv = Math.min(h[1].length, 4); out.push(`<h${lv + 1} class="explorer-md-h${lv}">${inlineReadme(h[2], modelSlug)}</h${lv + 1}>`); continue }
+    out.push(`<p class="explorer-md-p">${inlineReadme(raw, modelSlug)}</p>`)
   }
-  flush()
-  return out.join('')
+  flushLists()
+  return { html: out.join(''), code }
 }
 
-// ── Brand mark ───────────────────────────────────────────────────────
-function ModelMark({ model, size = 40 }: { model: ExploreModel; size?: number }): ReactElement {
+function ReadmeViewer({ markdown, modelSlug, onOpenLink }: {
+  markdown: string
+  modelSlug: string
+  onOpenLink: (url: string) => void
+}): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState<number | null>(null)
+  const doc = useMemo(() => renderReadmeDoc(markdown, modelSlug), [markdown, modelSlug])
+  const codeRef = useRef<string[]>(doc.code)
+  codeRef.current = doc.code
+  const long = markdown.split('\n').length > 45 || doc.html.length > 6000
+
+  const onClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = e.target as HTMLElement
+    const copyBtn = el.closest('[data-copy-idx]') as HTMLElement | null
+    if (copyBtn) {
+      const idx = Number(copyBtn.getAttribute('data-copy-idx'))
+      const text = codeRef.current[idx] ?? ''
+      const done = (): void => {
+        setCopied(idx)
+        window.setTimeout(() => setCopied((c) => (c === idx ? null : c)), 1400)
+      }
+      if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done).catch(done)
+      else done()
+      return
+    }
+    const anchor = el.closest('a[data-ext="1"]') as HTMLAnchorElement | null
+    if (anchor?.href) { e.preventDefault(); onOpenLink(anchor.href) }
+  }, [onOpenLink])
+
+  const onImgError = useCallback((e: React.SyntheticEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement
+    if (t instanceof HTMLImageElement) t.style.display = 'none'
+  }, [])
+
+  return (
+    <div className={`explorer-readme-view ${expanded ? 'expanded' : ''}`}>
+      <div
+        className={`explorer-md ${long && !expanded ? 'clamped' : ''}`}
+        onClick={onClick}
+        onErrorCapture={onImgError}
+        dangerouslySetInnerHTML={{ __html: doc.html }}
+      />
+      {copied !== null ? <span className="sr-only" role="status">Code copied</span> : null}
+      {long ? (
+        <button type="button" className="explorer-readme-toggle" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+// ── Provider avatar: real brand logo via SimpleIcons CDN (CSP-allowed),
+// HF org avatar attempt, letter mark fallback — mirrors SettingsPage McpLogo.
+function brandSlugFor(model: ExploreModel): string | null {
+  const a = (model.author || '').toLowerCase()
+  if (a.includes('google') || a.includes('gemma')) return 'google'
+  if (a.includes('meta') || a.includes('llama')) return 'meta'
+  if (a.includes('microsoft') || a.includes('phi')) return 'microsoft'
+  if (a.includes('mistral') || a.includes('mixtral')) return 'mistralai'
+  if (a.includes('nvidia')) return 'nvidia'
+  if (a.includes('apple')) return 'apple'
+  if (a.includes('deepseek')) return 'deepseek'
+  if (model.iconType === 'hf') return 'huggingface'
+  const slug = a.replace(/[^a-z0-9]/g, '')
+  return slug || null
+}
+function LetterMark({ model, size }: { model: ExploreModel; size: number }): ReactElement {
   const t = model.iconType
   const style: Record<string, { bg: string; fg: string; label: string }> = {
     qwen: { bg: '#7c3aed', fg: '#fff', label: 'Q' },
@@ -81,7 +221,6 @@ function ModelMark({ model, size = 40 }: { model: ExploreModel; size?: number })
     hf: { bg: '#ff9d00', fg: '#fff', label: 'HF' },
   }
   const s = style[t] ?? style.hf
-  const isWhite = s.bg === '#ffffff'
   return (
     <div
       className="explorer-mark"
@@ -89,10 +228,33 @@ function ModelMark({ model, size = 40 }: { model: ExploreModel; size?: number })
       style={{
         width: size, height: size, fontSize: size <= 40 ? 15 : 22,
         background: s.bg, color: s.fg,
-        border: isWhite ? '1px solid var(--border)' : 'none',
+        border: s.bg === '#ffffff' ? '1px solid var(--border)' : 'none',
       }}
     >
-      {t === 'google' ? <span style={{ fontWeight: 800 }}>G</span> : s.label}
+      <span style={{ fontWeight: 800 }}>{s.label}</span>
+    </div>
+  )
+}
+function ModelMark({ model, size = 40 }: { model: ExploreModel; size?: number }): ReactElement {
+  const [failed, setFailed] = useState(false)
+  const slug = brandSlugFor(model)
+  useEffect(() => setFailed(false), [model.id, size])
+  if (!slug || failed) return <LetterMark model={model} size={size} />
+  return (
+    <div
+      className="explorer-mark explorer-mark--img"
+      aria-hidden
+      style={{ width: size, height: size }}
+    >
+      <img
+        src={`https://cdn.simpleicons.org/${slug}`}
+        alt=""
+        width={Math.round(size * 0.62)}
+        height={Math.round(size * 0.62)}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
     </div>
   )
 }
@@ -122,6 +284,34 @@ function FitBadge({ result }: { result: CompatibilityResult | null }): ReactElem
   if (k === 'partial') return <span className="explorer-fit explorer-fit--partial">▦ Partial GPU offload possible</span>
   if (k === 'cpu') return <span className="explorer-fit explorer-fit--cpu">✓ Likely fits on CPU</span>
   return <span className="explorer-fit explorer-fit--large"><X size={12} /> Likely too large</span>
+}
+
+// ── Per-file fit state (LM Studio: every quant row carries its own badge,
+// header badge follows the SELECTED file — never a stale model-level value)
+function recCompat(rec: FileRecommendationView | undefined): CompatibilityResult | null {
+  if (!rec) return null
+  return {
+    fitsInMemory: rec.severity !== 'too-large',
+    estimatedRamUsageGB: rec.estimatedRamGB,
+    estimatedVramUsageGB: rec.estimatedRamGB,
+    message: rec.reason,
+    severity: rec.severity,
+  }
+}
+function MiniFit({ rec }: { rec: FileRecommendationView | undefined }): ReactElement | null {
+  if (!rec) return null
+  const msg = rec.reason.toLowerCase()
+  const cls = rec.severity === 'too-large'
+    ? 'explorer-minifit--large'
+    : msg.includes('partial') ? 'explorer-minifit--partial' : 'explorer-minifit--full'
+  const label = rec.severity === 'too-large'
+    ? 'Likely too large'
+    : msg.includes('partial') ? 'Partial GPU offload possible' : msg.includes('cpu') ? 'Likely fits on CPU' : 'Full GPU offload possible'
+  return (
+    <span className={`explorer-minifit ${cls}`} title={rec.reason}>
+      {rec.severity === 'too-large' ? <X size={10} /> : null} {label}
+    </span>
+  )
 }
 
 // ── Sort options (LM Studio order) ───────────────────────────────────
@@ -202,8 +392,10 @@ export function ExplorePage({ onBack }: Props): ReactElement {
       .then((r) => {
         if (dead) return
         setRecs(r)
-        const best = r.find((x) => x.rank === 0)
-        if (best && best.severity !== 'too-large') setFileIdx(best.index)
+        // LM Studio preselects the TOP RECOMMENDED quant (rank 0) even when it
+        // does not fit — the badge states that honestly instead of hiding it.
+        const best = r.find((x) => x.rank === 0) ?? r[0]
+        if (best) setFileIdx(best.index)
       })
       .catch(() => {})
     return () => { dead = true }
@@ -255,12 +447,24 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   }, [])
 
   const activeFile = active?.files[fileIdx]
+  // Dropdown order: backend rank (TOP RECOMMENDED first), then the rest —
+  // never truncated, the menu scrolls. Header badge always reflects the
+  // SELECTED file's own fit so its state updates on every selection.
+  const menuOrder = useMemo((): number[] => {
+    if (!active) return []
+    if (recs && recs.length === active.files.length) return recs.map((r) => r.index)
+    return active.files.map((_, i) => i)
+  }, [active, recs])
+  const selectedRec = recs?.find((r) => r.index === fileIdx)
+  const headerFit: CompatibilityResult | null = recCompat(selectedRec) ?? compat
   const dlKey = active && activeFile?.rfilename ? `${active.id}\n${activeFile.rfilename}` : null
   const dl = dlKey ? downloads[dlKey] : undefined
   const pct = dl && dl.totalBytes ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : null
   const isInstalled = activeFile?.rfilename ? Boolean(installed[activeFile.rfilename]) : false
-  const readmeHtml = useMemo(() => (active?.readme ? renderReadme(active.readme) : ''), [active?.readme])
   const dlCount = Object.keys(downloads).length
+  const openReadmeLink = useCallback((url: string): void => {
+    void openExternal(url).catch(() => window.open(url, '_blank', 'noopener'))
+  }, [])
 
   const doDownload = useCallback(async (): Promise<void> => {
     if (!active || !activeFile?.downloadUrl || !activeFile.rfilename) return
@@ -457,23 +661,33 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                     </button>
                     {fileOpen ? (
                       <div className="explorer-filemenu" role="listbox">
-                        {active.files.map((f, i) => (
-                          <button
-                            key={f.rfilename ?? i} type="button" role="option" aria-selected={i === fileIdx}
-                            className={`explorer-fileitem ${i === fileIdx ? 'active' : ''}`}
-                            onClick={() => { setFileIdx(i); setFileOpen(false) }}
-                          >
-                            <span className="explorer-format-pill">{f.format}</span>
-                            <span className="explorer-file-name">{shortName((f.rfilename ?? '').split('/').pop() || f.format, 30)}</span>
-                            <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
-                            {installed[f.rfilename ?? ''] ? <Check size={12} className="explorer-file-check" /> : null}
-                          </button>
-                        ))}
+                        {menuOrder.map((i) => {
+                          const f = active.files[i]
+                          if (!f) return null
+                          const rec = recs?.find((r) => r.index === i)
+                          const isRec = rec?.rank === 0
+                          return (
+                            <button
+                              key={f.rfilename ?? i} type="button" role="option" aria-selected={i === fileIdx}
+                              className={`explorer-fileitem ${i === fileIdx ? 'active' : ''}`}
+                              onClick={() => { setFileIdx(i); setFileOpen(false) }}
+                            >
+                              {i === fileIdx ? <Check size={13} className="explorer-file-check" /> : <span className="explorer-file-checkspacer" />}
+                              <span className="explorer-format-pill">{f.format}</span>
+                              <span className="explorer-file-name">{shortName((f.rfilename ?? '').split('/').pop() || f.format, 26)}</span>
+                              {f.quantization ? <span className="explorer-quant-pill">{f.quantization}</span> : null}
+                              {isRec ? <span className="explorer-rec-pill">Recommended</span> : null}
+                              <MiniFit rec={rec} />
+                              <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
+                              {installed[f.rfilename ?? ''] ? <span className="explorer-file-done" title="In library">✓</span> : null}
+                            </button>
+                          )
+                        })}
                       </div>
                     ) : null}
                   </div>
                 )}
-                <div className="explorer-fitrow"><FitBadge result={compat} /></div>
+                <div className="explorer-fitrow"><FitBadge result={headerFit} /></div>
                 <div className="explorer-downloaderow">
                   {isInstalled ? (
                     <div className="explorer-installed">✓ Already in library</div>
@@ -518,11 +732,11 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                 </div>
               </div>
 
-              {/* README */}
+              {/* README viewer: full markdown, images, code copy, expand */}
               <h3 className="explorer-section-title explorer-section-title--upper">README</h3>
               <div className="explorer-card explorer-readme">
-                {readmeHtml
-                  ? <div className="explorer-md" dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+                {active.readme
+                  ? <ReadmeViewer markdown={active.readme} modelSlug={active.slug} onOpenLink={openReadmeLink} />
                   : <div className="explorer-md"><h2 className="explorer-md-h1">{active.name}</h2><p className="explorer-md-p">{active.longDescription}</p></div>}
               </div>
             </div>

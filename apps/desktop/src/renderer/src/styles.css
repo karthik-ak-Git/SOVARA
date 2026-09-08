@@ -3273,11 +3273,18 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .explorer-rec-pill { font-size: 10px; font-weight: 600; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border-soft); padding: 2px 8px; border-radius: 999px; flex-shrink: 0; }
 .explorer-file-chev { transition: transform 180ms ease; color: var(--muted-2); flex-shrink: 0; }
 .explorer-file-chev.open { transform: rotate(180deg); }
-.explorer-filemenu { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(0,0,0,.13); padding: 4px; max-height: 260px; overflow-y: auto; animation: explorerMenuIn 140ms ease-out; }
-.explorer-fileitem { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 7px; border: none; background: transparent; cursor: pointer; font-size: 12px; transition: background 120ms ease; text-align: left; }
+.explorer-filemenu { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(0,0,0,.13); padding: 4px; max-height: 340px; overflow-y: auto; scrollbar-width: thin; animation: explorerMenuIn 140ms ease-out; }
+.explorer-fileitem { display: flex; align-items: center; gap: 7px; width: 100%; padding: 8px 10px; border-radius: 7px; border: none; background: transparent; cursor: pointer; font-size: 12px; transition: background 120ms ease; text-align: left; flex-wrap: wrap; }
 .explorer-fileitem:hover { background: var(--panel-2); }
 .explorer-fileitem.active { background: var(--panel-2); font-weight: 700; }
-.explorer-file-check { color: var(--success); margin-left: auto; flex-shrink: 0; }
+.explorer-file-check { color: var(--text); flex-shrink: 0; }
+.explorer-file-checkspacer { width: 13px; flex-shrink: 0; }
+.explorer-file-done { color: var(--success); font-size: 12px; font-weight: 800; flex-shrink: 0; }
+/* Per-quant fit state inside the dropdown — same 4 LM Studio states as the header badge */
+.explorer-minifit { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px; color: #fff; white-space: nowrap; animation: explorerPop 160ms ease-out; }
+.explorer-minifit--full { background: #16a34a; }
+.explorer-minifit--partial { background: #d97706; }
+.explorer-minifit--large { background: #dc2626; }
 .explorer-fitrow { min-height: 24px; display: flex; }
 .explorer-fit { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 6px; color: #fff; animation: explorerPop 180ms ease-out; }
 .explorer-fit--full { background: #16a34a; }
@@ -3314,4 +3321,32 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .explorer-md-p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
 .explorer-md-ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.6; }
 .explorer-md-code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border-soft); padding: 1px 5px; border-radius: 5px; }
+/* ── README viewer: provider images, code blocks, tables, quotes ── */
+.explorer-mark--img { background: #fff; border: 1px solid var(--border); overflow: hidden; }
+.explorer-mark--img img { display: block; object-fit: contain; }
+.explorer-readme-view { display: flex; flex-direction: column; gap: 0; }
+.explorer-md.clamped { max-height: 340px; overflow: hidden; position: relative; }
+.explorer-md.clamped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; background: linear-gradient(to bottom, transparent, var(--bg-soft)); pointer-events: none; }
+[data-theme="dark"] .explorer-md.clamped::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
+.explorer-readme-toggle { align-self: center; margin-top: 10px; padding: 6px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; transition: border-color 150ms ease, transform 150ms ease; }
+.explorer-readme-toggle:hover { border-color: var(--accent); transform: translateY(-1px); }
+.explorer-md-h4 { margin: 8px 0 0; font-size: 12px; font-weight: 700; }
+.explorer-md-ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.6; }
+.explorer-md-quote { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--panel-2); border-radius: 0 8px 8px 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.explorer-md-hr { border: none; border-top: 1px solid var(--border-soft); margin: 6px 0; }
+.explorer-md-link { color: #2563eb; text-decoration: none; word-break: break-all; cursor: pointer; }
+.explorer-md-link:hover { text-decoration: underline; }
+.explorer-md-img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border-soft); margin: 4px 0; }
+.explorer-md-tablewrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: 8px; }
+.explorer-md-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.explorer-md-table th, .explorer-md-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-soft); text-align: left; vertical-align: top; }
+.explorer-md-table thead th { background: var(--panel-2); font-weight: 700; white-space: nowrap; }
+.explorer-md-table tbody tr:last-child td { border-bottom: none; }
+.explorer-codeblock { border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; background: #0d1117; }
+[data-theme="dark"] .explorer-codeblock { border-color: var(--border); }
+.explorer-codeblock-bar { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; background: rgba(255,255,255,.05); color: #9ca3af; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.explorer-copy-btn { padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18); background: transparent; color: #e5e7eb; font-size: 10px; font-weight: 600; cursor: pointer; transition: background 150ms ease; }
+.explorer-copy-btn:hover { background: rgba(255,255,255,.12); }
+.explorer-codeblock-pre { margin: 0; padding: 10px 12px; overflow-x: auto; }
+.explorer-codeblock-pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.6; color: #e6edf3; white-space: pre; }
 @media (prefers-reduced-motion: reduce) { .explorer, .explorer-row, .explorer-detail-inner, .explorer-sort-menu, .explorer-filemenu, .explorer-fit, .explorer-md { animation: none !important; transition: none !important; } }
