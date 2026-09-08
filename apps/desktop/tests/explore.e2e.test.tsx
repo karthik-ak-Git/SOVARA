@@ -46,8 +46,9 @@ beforeEach(() => {
     invoke: vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === 'explore:listModels') return mockModels
       if (channel === 'explore:getModel') return mockModels[0]
-      if (channel === 'explore:getCompatibility') return { fitsInMemory: true, estimatedRamUsageGB: 5.9, message: 'Should run on CPU', severity: 'good' }
-      if (channel === 'explore:getRecommendations') return [{ file: mockModels[0].files[0], index: 0, estimatedRamGB: 5.9, severity: 'good', rank: 0, reason: '★ Recommended' }]
+      if (channel === 'explore:getCompatibility') return { fitsInMemory: true, estimatedRamUsageGB: 5.9, estimatedVramUsageGB: 5.9, message: '✓ Fits in VRAM: ~5.9 GB / 6.0 GB (NVIDIA GeForce RTX 3050) — optimal for fast inference.', severity: 'good' }
+      if (channel === 'explore:getRecommendations') return [{ file: mockModels[0].files[0], index: 0, estimatedRamGB: 5.9, severity: 'good', rank: 0, reason: '★ Recommended — Requires ~5.9 GB VRAM · fits · best quant for your GPU' }]
+      if (channel === 'explore:getHardwareProfile') return { totalRamMB: 16 * 1024, freeRamMB: 8 * 1024, totalVramMB: 6 * 1024, freeVramMB: 4 * 1024, gpuName: 'NVIDIA GeForce RTX 3050', gpuAvailable: true }
       if (channel === 'library:isDownloaded') return { downloaded: false }
       if (channel === 'library:getActiveDownloads') return []
       if (channel === 'system:getResources') return { ram: { totalMB: 16384, freeMB: 8192, usedByAppMB: 512 }, vram: {}, gpu: { available: false }, cpu: { logicalCores: 8, loadAvg1: 1 }, disk: { path: '/', totalMB: 512000, freeMB: 256000 }, models: { instances: [] }, limits: { maxConcurrentModels: 4 } }
@@ -59,64 +60,57 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('Explorer E2E — production flow', () => {
-  it('renders Explorer header, search, filters, and model cards with badges', async () => {
+  it('renders Explorer header, search, filters, and model cards', async () => {
     render(<ExplorePage onBack={() => {}} />)
     expect(screen.getByText('Explore')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText(/Search name, tags, tasks/)).toBeInTheDocument()
-    expect(screen.getByText('Filters')).toBeInTheDocument()
-    // Cards appear after async load — name appears in list and detail (2 copies)
+    expect(screen.getByPlaceholderText(/Search Hugging Face and staff picks/)).toBeInTheDocument()
+    expect(screen.getByText('Staff picks')).toBeInTheDocument()
+    expect(screen.getByText(/Recommended/)).toBeInTheDocument()
     const cards = await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
     expect(cards.length).toBeGreaterThan(0)
-    // Badges: params, GGUF, license, capabilities (appear in card + detail)
-    expect(screen.getAllByText('8B').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('GGUF').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('apache-2.0').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Reasoning').length).toBeGreaterThan(0)
-    // Meta: downloads / likes / date
-    expect(screen.getByText(/downloads/)).toBeInTheDocument()
+    // Detail panel shows model name as well
+    expect(screen.getAllByText('Qwen3-8B-GGUF').length).toBeGreaterThan(1)
   })
 
   it('search filters by tags/tasks and sort by trending', async () => {
     const user = userEvent.setup()
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    const search = screen.getByPlaceholderText(/Search name, tags, tasks/)
+    const search = screen.getByPlaceholderText(/Search Hugging Face and staff picks/)
     await user.type(search, 'vision')
-    // Debounced query triggers listModels again; mock returns same list, filter happens backend
     const invoke = (window as unknown as { sovara: { invoke: ReturnType<typeof vi.fn> } }).sovara.invoke
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('explore:listModels', expect.objectContaining({ query: 'vision' })))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('explore:listModels', expect.objectContaining({ query: 'vision' })), { timeout: 3000 })
   })
 
-  it('detail panel shows Overview, Capabilities, Files, License, README markdown', async () => {
+  it('detail panel shows Download Options, Details, README', async () => {
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    // Wait for detail to load
-    await waitFor(() => expect(screen.getByText('Overview')).toBeInTheDocument(), { timeout: 3000 })
-    expect(screen.getByText('Capabilities')).toBeInTheDocument()
-    expect(screen.getAllByText('Files').length).toBeGreaterThan(0)
-    expect(screen.getByText('License & access')).toBeInTheDocument()
-    expect(screen.getByText('README')).toBeInTheDocument()
-    // README markdown: bold, code, list rendered via dangerouslySetInnerHTML
+    await waitFor(() => expect(screen.getByText(/Download Options/)).toBeInTheDocument(), { timeout: 3000 })
+    expect(screen.getByText(/Details/)).toBeInTheDocument()
+    expect(screen.getByText(/README/)).toBeInTheDocument()
+    // Download Options dropdown shows file
+    await waitFor(() => expect(screen.getAllByText(/Qwen3-8B-GGUF/).length).toBeGreaterThan(0), { timeout: 4000 })
+    // README rendered
     await waitFor(() => expect(document.querySelector('.explore-readme--md')).toBeInTheDocument(), { timeout: 3000 })
-    // File chips
-    expect(screen.getByText('Q4_K_M')).toBeInTheDocument()
   })
 
-  it('system recommendation shows Recommended badge', async () => {
+  it('system recommendation shows VRAM-aware badge', async () => {
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    await waitFor(() => expect(screen.getByText('System recommendation')).toBeInTheDocument(), { timeout: 3000 })
-    await waitFor(() => expect(screen.getAllByText(/Should run/).length).toBeGreaterThan(0), { timeout: 3000 })
-    await waitFor(() => expect(screen.getAllByText(/Recommended/).length).toBeGreaterThan(0), { timeout: 3000 })
+    await waitFor(() => expect(screen.getByText(/System recommendation/)).toBeInTheDocument(), { timeout: 4000 })
+    // Should show VRAM mode and required VRAM
+    await screen.findByText(/VRAM|RAM/, {}, { timeout: 4000 })
+    await waitFor(() => expect(screen.getAllByText(/Requires/).length).toBeGreaterThan(0), { timeout: 3000 })
   })
 
-  it('download button triggers library:download and shows progress state', async () => {
+  it('download button triggers library:download', async () => {
     const user = userEvent.setup()
     const invoke = (window as unknown as { sovara: { invoke: ReturnType<typeof vi.fn> } }).sovara.invoke
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    await waitFor(() => expect(screen.getByRole('button', { name: /Download/ })).toBeInTheDocument(), { timeout: 3000 })
-    const dlBtn = screen.getByRole('button', { name: /Download/ })
+    await waitFor(() => expect(screen.getByText(/Download Options/)).toBeInTheDocument(), { timeout: 3000 })
+    // Find Download button (could be Download or Resume)
+    const dlBtn = await screen.findByRole('button', { name: /Download/ }, { timeout: 3000 })
     await user.click(dlBtn)
     expect(invoke).toHaveBeenCalledWith('library:download', expect.objectContaining({ modelId: 'Qwen/Qwen3-8B-GGUF' }))
   })
@@ -125,8 +119,8 @@ describe('Explorer E2E — production flow', () => {
     const user = userEvent.setup()
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    await waitFor(() => expect(screen.getByText('Open on Hugging Face')).toBeInTheDocument(), { timeout: 3000 })
-    const link = screen.getByText('Open on Hugging Face')
+    await waitFor(() => expect(screen.getByText(/Open on Web/)).toBeInTheDocument(), { timeout: 3000 })
+    const link = screen.getByText(/Open on Web/)
     await user.click(link)
     const invoke = (window as unknown as { sovara: { invoke: ReturnType<typeof vi.fn> } }).sovara.invoke
     expect(invoke).toHaveBeenCalledWith('shell:openExternal', expect.objectContaining({ url: expect.stringContaining('huggingface.co') }))

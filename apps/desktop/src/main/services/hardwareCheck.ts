@@ -16,7 +16,6 @@ export interface FileRecommendation {
  */
 export function estimateCompatibility(model: ExploreModel, hw: HardwareInfo): CompatibilityResult {
   if (!model.files || model.files.length === 0) {
-    // Fallback to repo size / params even when no files listed
     const fallbackGB = (() => {
       if (model.repoSizeBytes) return model.repoSizeBytes / (1024 ** 3)
       const m = model.parameters.match(/([\d.]+)B/i)
@@ -25,16 +24,21 @@ export function estimateCompatibility(model: ExploreModel, hw: HardwareInfo): Co
     })()
     if (fallbackGB > 0) {
       const need = fallbackGB * 1.12
-      const hw2 = hw
-      const totalVramGB2 = hw2.totalVramMB ? hw2.totalVramMB / 1024 : undefined
-      if (hw2.gpuAvailable && totalVramGB2) {
-        if (need > totalVramGB2) return { fitsInMemory: false, estimatedRamUsageGB: need, estimatedVramUsageGB: need, message: `Requires ~${need.toFixed(1)} GB VRAM (from ${fallbackGB.toFixed(1)} GB weights) but GPU has ${totalVramGB2.toFixed(1)} GB.`, severity: 'too-large' }
+      const totalVramGB2 = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
+      if (hw.gpuAvailable && totalVramGB2) {
+        if (need > totalVramGB2) {
+          // Check partial offload: can spill to RAM?
+          const totalRamGB = hw.totalRamMB / 1024
+          if (need <= totalVramGB2 + totalRamGB * 0.7) {
+            return { fitsInMemory: true, estimatedRamUsageGB: need, estimatedVramUsageGB: need, message: `Partial GPU Offload Possible — requires ~${need.toFixed(1)} GB, GPU has ${totalVramGB2.toFixed(1)} GB, rest offloads to RAM.`, severity: 'tight' }
+          }
+          return { fitsInMemory: false, estimatedRamUsageGB: need, estimatedVramUsageGB: need, message: `Requires ~${need.toFixed(1)} GB VRAM (from ${fallbackGB.toFixed(1)} GB weights) but GPU has ${totalVramGB2.toFixed(1)} GB.`, severity: 'too-large' }
+        }
         return { fitsInMemory: true, estimatedRamUsageGB: need, estimatedVramUsageGB: need, message: `✓ Requires ~${need.toFixed(1)} GB VRAM — fits your ${(totalVramGB2).toFixed(1)} GB GPU.`, severity: 'good' }
       }
     }
     return { fitsInMemory: false, estimatedRamUsageGB: 0, message: 'No downloadable files found for this model.', severity: 'too-large' }
   }
-  // Pick the smallest estimated file as baseline (VRAM-aware)
   let smallestFile = model.files[0]
   let smallestEst = estimateFileGB(smallestFile, model)
   for (const f of model.files) {
@@ -49,16 +53,27 @@ export function estimateCompatibility(model: ExploreModel, hw: HardwareInfo): Co
   const totalVramGB = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
   const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
 
-  // VRAM-aware primary path: models load in VRAM, not just RAM
+  // VRAM-aware primary path: models load in VRAM
   if (hw.gpuAvailable && totalVramGB) {
     const vram = totalVramGB
-    const freeV = freeVramGB ?? vram * 0.85
+    const freeV = freeVramGB ?? vram * 0.82
+    const totalRamGB = hw.totalRamMB / 1024
     if (estimatedNeedGB > vram) {
+      // Partial offload check — like LM Studio/Ollama
+      if (estimatedNeedGB <= vram + totalRamGB * 0.65) {
+        return {
+          fitsInMemory: true,
+          estimatedRamUsageGB: estimatedNeedGB,
+          estimatedVramUsageGB: estimatedNeedGB,
+          message: `Partial GPU Offload Possible — requires ~${estimatedNeedGB.toFixed(1)} GB, GPU has ${vram.toFixed(1)} GB, remainder offloads to RAM (${totalRamGB.toFixed(0)} GB). Slower but runnable.`,
+          severity: 'tight',
+        }
+      }
       return {
         fitsInMemory: false,
         estimatedRamUsageGB: estimatedNeedGB,
         estimatedVramUsageGB: estimatedNeedGB,
-        message: `Needs ~${estimatedNeedGB.toFixed(1)} GB VRAM but GPU has ${vram.toFixed(1)} GB. Try a smaller quant (Q4_K_M) or CPU offload.`,
+        message: `Requires ~${estimatedNeedGB.toFixed(1)} GB VRAM but GPU has ${vram.toFixed(1)} GB. Too large even with offload.`,
         severity: 'too-large',
       }
     }
