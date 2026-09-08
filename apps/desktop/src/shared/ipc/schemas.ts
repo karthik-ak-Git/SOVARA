@@ -195,3 +195,9 @@ export const zMcpInstallFromUrl = z
 export const zMcpId = z.object({ id: z.string().min(1).max(64) }).strict()
 
 export const zMcpToggle = z.object({ id: z.string().min(1).max(64), enabled: z.boolean() }).strict()
+
+export const zValidationStart = z
+  .object({ modelId: z.string().min(1).max(256), libraryPath: z.string().max(1024).optional(), ctxLen: z.number().int().min(256).max(131072).optional() })
+  .strict()
+
+export const zValidationGet = z.object({ jobId: z.string().min(1).max(64) }).strict()

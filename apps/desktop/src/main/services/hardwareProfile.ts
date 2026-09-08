@@ -98,3 +98,51 @@ export function getVramAwareCompatibilityMessage(hw: HardwareInfo): string {
   }
   return `CPU mode · RAM: ${Math.round(hw.totalRamMB / 1024)}GB · No dedicated GPU detected`
 }
+
+// ── Full profile per MODEL_HARDWARE_VALIDATION 3-4 ──────────────────
+import type { HardwareProfileFull } from '@shared/types/validation'
+
+function detectCpu(): HardwareProfileFull['cpu'] {
+  const cpus = os.cpus()
+  const model = cpus[0]?.model?.trim() || 'Unknown CPU'
+  const threads = cpus.length || 1
+  // physical cores unknown without wmic; use threads as fallback
+  const cores = threads
+  return { name: model, cores, threads }
+}
+
+function detectBackend(): HardwareProfileFull['backend'] {
+  // Real backend detection is runtime-specific; report the primary adapter family.
+  // GPU availability already covers CUDA/Metal; this field is for ValidationResult persistence.
+  const hw = getHardwareProfile()
+  if (hw.gpuAvailable) return { name: 'CUDA', available: true }
+  return { name: 'CPU', available: true }
+}
+
+export function getFullHardwareProfile(): HardwareProfileFull {
+  const hw = getHardwareProfile()
+  const cpu = detectCpu()
+  const totalMB = hw.totalRamMB
+  const freeMB = hw.freeRamMB
+  const usedMB = Math.max(0, totalMB - freeMB)
+  const osName = os.platform() === 'win32' ? 'Windows' : os.platform() === 'darwin' ? 'macOS' : os.platform()
+  return {
+    os: osName,
+    osVersion: os.release(),
+    architecture: os.arch(),
+    cpu,
+    memory: { ram_total_mb: totalMB, ram_available_mb: freeMB, ram_used_mb: usedMB },
+    gpu: {
+      name: hw.gpuName,
+      vendor: hw.gpuName?.toLowerCase().includes('nvidia') ? 'NVIDIA' : hw.gpuName ? 'Unknown' : undefined,
+      vram_total_mb: hw.totalVramMB,
+      vram_available_mb: hw.freeVramMB,
+    },
+    backend: detectBackend(),
+  }
+}
+
+export function hardwareFingerprint(hw: HardwareProfileFull): string {
+  // Used for ValidationStore cache invalidation (docs 25)
+  return [hw.cpu.name, hw.gpu.name ?? 'no-gpu', String(hw.memory.ram_total_mb), String(hw.gpu.vram_total_mb ?? 0), hw.backend.name, hw.architecture, hw.os].join('|')
+}

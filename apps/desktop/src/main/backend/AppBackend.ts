@@ -13,6 +13,9 @@ import { SystemResourceStub } from './ports/SystemResourceStub'
 import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
+import { ValidationRunner } from '../services/modelValidationRunner'
+import { ValidationStore } from '../services/validationStore'
+import { getFullHardwareProfile } from '../services/hardwareProfile'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
 import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, getMcpDirPath, ensureMcpDir, installMcpFromUrl, type McpServer } from '../services/mcpStore'
 import { loadEnabledSkillsContent } from '../services/skillsScanner'
@@ -45,6 +48,9 @@ export class AppBackend {
   public readonly workbench: ModelWorkbench
   /** Commit 7 — real local inference orchestration behind LlmPort. */
   public readonly chat: ChatService
+  /** Validation per MODEL_HARDWARE_VALIDATION spec — isolated-pool estimator + real load/infer */
+  public readonly validation: ValidationRunner
+  public readonly validationStore: ValidationStore
   private readonly runtimeConfig: RuntimeConfigStore
 
   constructor(baseDir?: string, emit?: (event: import('@shared/types/chat').ChatStreamEvent) => void) {
@@ -52,6 +58,8 @@ export class AppBackend {
     const resources = new SystemResourceStub()
     this.runtimeConfig = new RuntimeConfigStore(baseDir)
     this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
+    this.validation = new ValidationRunner()
+    this.validationStore = new ValidationStore(baseDir)
     const llm = new LocalOpenAIChatAdapter()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
@@ -176,6 +184,51 @@ export class AppBackend {
 
   deleteLibraryEntry(entryPath: string): void {
     return deleteLibraryEntry(this.getLibraryDir(), entryPath)
+  }
+
+  // ── Validation per MODEL_HARDWARE_VALIDATION (DETECT→PROFILE→ESTIMATE→PRE→LOAD→INFER→MEASURE→VALIDATE) ──
+  getFullHardwareProfile(): import('@shared/types/validation').HardwareProfileFull {
+    return getFullHardwareProfile()
+  }
+
+  async startValidation(modelId: string, libraryPath?: string, ctxLen?: number): Promise<import('@shared/types/validation').ValidationJob> {
+    // Resolve libraryPath if not provided: try to find file in library by modelId
+    let resolvedPath = libraryPath
+    let exploreModel: import('@shared/types/explore').ExploreModel | undefined
+    if (!resolvedPath) {
+      // Try to locate downloaded file first
+      const lib = this.scanLibrary()
+      const hit = lib.find((e) => e.name === modelId.replace(/\//g, '__') || e.path.includes(modelId.split('/').pop() ?? ''))
+      if (hit) resolvedPath = hit.path
+    }
+    // For cache check we could short-circuit, but spec says background job, so always run
+    const job = await this.validation.start(modelId, resolvedPath, exploreModel, { ctxLen })
+    // Persist result on completion (fire-and-forget watcher)
+    const poll = setInterval(() => {
+      const j = this.validation.getJob(job.jobId)
+      if (!j) { clearInterval(poll); return }
+      if (j.status === 'VERIFIED' || j.status === 'VERIFIED_WITH_LIMITATIONS' || j.status === 'LOAD_FAILED' || j.status === 'INFERENCE_FAILED' || j.status === 'ESTIMATED_INCOMPATIBLE') {
+        clearInterval(poll)
+        if (j.result && j.hardware && j.modelProfile) {
+          try { this.validationStore.put(j.result, j.hardware, j.modelProfile) } catch {}
+        }
+      }
+    }, 400)
+    // safety clear after 2min
+    setTimeout(() => clearInterval(poll), 130_000)
+    return job
+  }
+
+  getValidation(jobId: string): import('@shared/types/validation').ValidationJob | null {
+    return this.validation.getJob(jobId) ?? null
+  }
+
+  listValidations(): import('@shared/types/validation').ValidationJob[] {
+    return this.validation.listJobs()
+  }
+
+  listValidationCache(): import('@shared/types/validation').ValidationStoreEntry[] {
+    return this.validationStore.list()
   }
 
   /** AI command permission level (persisted, default 'ask'). */

@@ -61,6 +61,11 @@ export const IPC_CHANNELS = {
   'explore:getCompatibility': { type: 'invoke' as const },
   'explore:getRecommendations': { type: 'invoke' as const },
   'explore:getHardwareProfile': { type: 'invoke' as const },
+  'validation:getFullProfile': { type: 'invoke' as const },
+  'validation:start': { type: 'invoke' as const },
+  'validation:get': { type: 'invoke' as const },
+  'validation:list': { type: 'invoke' as const },
+  'validation:storeList': { type: 'invoke' as const },
   // Library (downloaded models)
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },

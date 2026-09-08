@@ -10,7 +10,7 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility, recommendFiles } from '../services/hardwareCheck'
 import { getHardwareProfile } from '../services/hardwareProfile'
@@ -404,6 +404,32 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('explore:getHardwareProfile', async () => {
     return getHardwareProfile()
+  })
+
+  ipcMain.handle('validation:getFullProfile', async () => {
+    return getBackend().getFullHardwareProfile()
+  })
+
+  ipcMain.handle('validation:start', async (_e, raw: unknown) => {
+    const parsed = zValidationStart.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid validation:start payload: ${parsed.error.message}`)
+    return getBackend().startValidation(parsed.data.modelId, parsed.data.libraryPath, parsed.data.ctxLen)
+  })
+
+  ipcMain.handle('validation:get', async (_e, raw: unknown) => {
+    const parsed = zValidationGet.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid validation:get payload: ${parsed.error.message}`)
+    const job = getBackend().getValidation(parsed.data.jobId)
+    if (!job) throw new Error('unknown job')
+    return job
+  })
+
+  ipcMain.handle('validation:list', async () => {
+    return getBackend().listValidations()
+  })
+
+  ipcMain.handle('validation:storeList', async () => {
+    return getBackend().listValidationCache()
   })
 
   // ── Library (downloaded models) ──

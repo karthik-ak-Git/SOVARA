@@ -561,3 +561,23 @@ export async function getVoiceStatus(): Promise<{ ready: boolean }> {
 export async function transcribeAudio(audioBase64: string, filename: string): Promise<VoiceTranscribeResult> {
   return (await sovara().invoke('voice:transcribe', { audio: audioBase64, filename })) as VoiceTranscribeResult
 }
+
+// ── Validation per MODEL_HARDWARE_VALIDATION ──
+import type { ValidationJob, HardwareProfileFull, ValidationStoreEntry } from '@shared/types/validation'
+export type { ValidationJob, HardwareProfileFull, ValidationStoreEntry } from '@shared/types/validation'
+
+export async function getFullHardwareProfile(): Promise<HardwareProfileFull> {
+  return (await sovara().invoke('validation:getFullProfile')) as HardwareProfileFull
+}
+export async function startValidation(modelId: string, libraryPath?: string, ctxLen?: number): Promise<ValidationJob> {
+  return (await sovara().invoke('validation:start', { modelId, libraryPath, ctxLen })) as ValidationJob
+}
+export async function getValidation(jobId: string): Promise<ValidationJob> {
+  return (await sovara().invoke('validation:get', { jobId })) as ValidationJob
+}
+export async function listValidations(): Promise<ValidationJob[]> {
+  return (await sovara().invoke('validation:list')) as ValidationJob[]
+}
+export async function listValidationCache(): Promise<ValidationStoreEntry[]> {
+  return (await sovara().invoke('validation:storeList')) as ValidationStoreEntry[]
+}
