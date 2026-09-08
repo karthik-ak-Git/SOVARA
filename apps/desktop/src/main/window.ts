@@ -39,8 +39,8 @@ export function createMainWindow(): BrowserWindow {
   })
 
   // ── CSP (sovereign default: no external connects except loopback + Hugging Face Hub for Explore/downloads) ──
-  const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com"
-  const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co data:"
+  const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com https://cdn.simpleicons.org"
+  const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co https://cdn.simpleicons.org data: https:"
   const isDev = Boolean(process.env['ELECTRON_RENDERER_URL'])
   const devCsp =
     `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`

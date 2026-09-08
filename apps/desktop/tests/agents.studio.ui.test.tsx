@@ -8,7 +8,13 @@ import { AgentsPage } from '../src/renderer/src/features/agents/AgentsPage'
 
 beforeEach(() => {
   ;(window as unknown as { sovara: unknown }).sovara = {
-    invoke: async () => null,
+    invoke: async (channel: string) => {
+      if (channel === 'mcp:list') return []
+      if (channel === 'mcp:getDir') return { path: 'C:\\\\Users\\\\Test\\\\mcp', exists: true }
+      if (channel === 'mcp:openFolder') return { ok: true, path: 'C:\\\\Users\\\\Test\\\\mcp' }
+      if (channel === 'mcp:installFromUrl') return { server: { id: 'test', name: 'test', provider: 'Test', transport: 'stdio', command: 'npx -y test', enabled: true, createdAt: Date.now(), status: 'connected' }, steps: [], detectedCommand: 'npx -y test', localPath: 'C:\\\\mcp\\\\test' }
+      return null
+    },
     on: () => () => {},
   } as unknown as Window['sovara']
 })
@@ -73,7 +79,7 @@ describe('Agent Studio — greenfield command center', () => {
 
     await user.click(screen.getByRole('tab', { name: /Connected Apps/ }))
     expect(screen.getAllByText(/MCP only/).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Tool manifest/)).toBeInTheDocument()
+    expect(await screen.findByText(/Tool manifest/, {}, { timeout: 2000 })).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /^Memory/ }))
     expect(screen.getByText(/Memory inspector/)).toBeInTheDocument()

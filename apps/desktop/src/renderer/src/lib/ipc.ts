@@ -399,6 +399,10 @@ export async function getFileRecommendations(modelId: string): Promise<FileRecom
   return (await sovara().invoke('explore:getRecommendations', { modelId })) as FileRecommendationView[]
 }
 
+export async function getHardwareProfile(): Promise<import('@shared/types/explore').HardwareInfo> {
+  return (await sovara().invoke('explore:getHardwareProfile')) as import('@shared/types/explore').HardwareInfo
+}
+
 // ── Library (downloaded models) ──
 export interface LibraryModel {
   name: string
@@ -477,7 +481,7 @@ export function onDownloadEvents(callback: (event: DownloadEventView) => void): 
   })
 }
 
-// ── MCP servers (Connected Apps) ──
+// ── MCP servers (Connected Apps) — global MCP folder + AI URL install ──
 export interface McpServerView {
   id: string
   name: string
@@ -487,8 +491,10 @@ export interface McpServerView {
   endpoint?: string
   enabled: boolean
   createdAt: number
-  status?: 'connected' | 'disconnected' | 'error' | 'probing'
+  status?: 'connected' | 'disconnected' | 'error' | 'probing' | 'installing'
   lastError?: string
+  url?: string
+  localPath?: string
 }
 
 export async function listMcpServers(): Promise<McpServerView[]> {
@@ -503,6 +509,18 @@ export async function addMcpServer(input: {
   endpoint?: string
 }): Promise<McpServerView> {
   return (await sovara().invoke('mcp:add', input)) as McpServerView
+}
+
+export async function installMcpFromUrl(url: string): Promise<{ server: McpServerView; steps: string[]; detectedCommand: string; localPath: string }> {
+  return (await sovara().invoke('mcp:installFromUrl', { url })) as { server: McpServerView; steps: string[]; detectedCommand: string; localPath: string }
+}
+
+export async function getMcpDir(): Promise<{ path: string; exists: boolean }> {
+  return (await sovara().invoke('mcp:getDir')) as { path: string; exists: boolean }
+}
+
+export async function openMcpFolder(): Promise<{ ok: boolean; path: string }> {
+  return (await sovara().invoke('mcp:openFolder')) as { ok: boolean; path: string }
 }
 
 export async function removeMcpServer(id: string): Promise<{ ok: boolean }> {

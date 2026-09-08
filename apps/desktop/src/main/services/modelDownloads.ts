@@ -313,6 +313,23 @@ export async function startDownload(
       await finished(nodeStream.pipe(out))
       emit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total ?? received })
       renameSync(part, dest)
+      // Write sidecar with minimal provenance (C drive global location)
+      try {
+        const sidecar = `${dest}.json`
+        const meta = {
+          modelId: cleanId,
+          rfilename: cleanFile,
+          downloadUrl: url.toString(),
+          savedAt: new Date().toISOString(),
+          sizeBytes: received,
+          libraryDir: root,
+          // Minimal system snapshot at download time (VRAM-aware)
+          hardware: (() => {
+            try { const os = require('node:os'); return { totalRamMB: Math.round(os.totalmem() / (1024 * 1024)), freeRamMB: Math.round(os.freemem() / (1024 * 1024)) } } catch { return {} }
+          })(),
+        }
+        require('node:fs').writeFileSync(sidecar, JSON.stringify(meta, null, 2), 'utf8')
+      } catch { /* best-effort sidecar */ }
       emit({ ...base, state: 'done', receivedBytes: received, totalBytes: total ?? received })
     } catch (e) {
       if (ctrl.signal.aborted) {

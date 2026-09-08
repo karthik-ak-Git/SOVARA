@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -127,11 +127,18 @@ describe('Explorer: hfCatalog production helpers', () => {
 describe('Explorer: download manager integration', () => {
   let tmpDir: string
   let cfg: RuntimeConfigStore
+  let origFetch: typeof global.fetch
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-prod-dl-'))
     const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-prod-cfg-'))
     cfg = new RuntimeConfigStore(cfgDir)
     __resetDownloadsForTests()
+    origFetch = global.fetch
+  })
+  afterEach(() => {
+    global.fetch = origFetch
+    __resetDownloadsForTests()
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   it('scanLibrary ignores .part files and returns library sync state', () => {

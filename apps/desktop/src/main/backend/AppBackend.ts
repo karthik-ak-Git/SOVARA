@@ -14,7 +14,7 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
-import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type McpServer } from '../services/mcpStore'
+import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, getMcpDirPath, ensureMcpDir, installMcpFromUrl, type McpServer } from '../services/mcpStore'
 import { loadEnabledSkillsContent } from '../services/skillsScanner'
 import {
   resolveLibraryDir, setLibraryDir, scanLibrary, startDownload,
@@ -54,8 +54,9 @@ export class AppBackend {
     this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
     const llm = new LocalOpenAIChatAdapter()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
-    // Ensure global workspace exists (ponytail: one folder, no config UI needed)
+    // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
     this.ensureGlobalWorkspace()
+    try { this.ensureMcpDir() } catch {}
     this.chat = new ChatService({
       persistence: this.persistenceAdapter,
       llm,
@@ -376,14 +377,34 @@ export class AppBackend {
   }
 
   // ── MCP servers (Connected Apps) — ponytail: app_meta JSON list, no new table/migration ──
+  // Global MCP folder: the single source of truth on disk (see paths.getMcpDir)
+  getMcpDir(): string {
+    return getMcpDirPath()
+  }
+  ensureMcpDir(): string {
+    return ensureMcpDir()
+  }
   listMcpServers(): McpServer[] {
+    // Ensure folder exists so the UI can show it even when empty
+    try { ensureMcpDir() } catch {}
     return listMcpServers(this.runtimeConfig)
   }
   addMcpServer(input: { name: string; provider?: string; transport: 'stdio' | 'http'; command?: string; endpoint?: string }): McpServer {
     return addMcpServer(this.runtimeConfig, input)
   }
+  installMcpFromUrl(url: string): Promise<import('../services/mcpStore').McpUrlInstallResult> {
+    return installMcpFromUrl(this.runtimeConfig, url)
+  }
   removeMcpServer(id: string): boolean {
-    return removeMcpServer(this.runtimeConfig, id)
+    const server = listMcpServers(this.runtimeConfig).find((s) => s.id === id)
+    const ok = removeMcpServer(this.runtimeConfig, id)
+    // Best-effort cleanup of the cloned folder (keeps disk tidy)
+    if (ok && server?.localPath) {
+      try {
+        if (fs.existsSync(server.localPath)) fs.rmSync(server.localPath, { recursive: true, force: true })
+      } catch {}
+    }
+    return ok
   }
   toggleMcpServer(id: string, enabled: boolean): McpServer | null {
     return toggleMcpServer(this.runtimeConfig, id, enabled)

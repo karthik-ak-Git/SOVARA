@@ -58,6 +58,7 @@ export const IPC_CHANNELS = {
   'explore:getModel': { type: 'invoke' as const },
   'explore:getCompatibility': { type: 'invoke' as const },
   'explore:getRecommendations': { type: 'invoke' as const },
+  'explore:getHardwareProfile': { type: 'invoke' as const },
   // Library (downloaded models)
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },
@@ -79,9 +80,12 @@ export const IPC_CHANNELS = {
   // Tools (gated by exec permission level)
   'tools:list': { type: 'invoke' as const },
   'tools:dispatch': { type: 'invoke' as const },
-  // MCP servers (Connected Apps)
+  // MCP servers (Connected Apps) — global MCP folder + URL AI install
   'mcp:list': { type: 'invoke' as const },
   'mcp:add': { type: 'invoke' as const },
+  'mcp:installFromUrl': { type: 'invoke' as const },
+  'mcp:getDir': { type: 'invoke' as const },
+  'mcp:openFolder': { type: 'invoke' as const },
   'mcp:remove': { type: 'invoke' as const },
   'mcp:toggle': { type: 'invoke' as const },
   'mcp:probe': { type: 'invoke' as const },

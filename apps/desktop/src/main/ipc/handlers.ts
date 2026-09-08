@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpId, zMcpToggle } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -13,6 +13,7 @@ import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voi
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility, recommendFiles } from '../services/hardwareCheck'
+import { getHardwareProfile } from '../services/hardwareProfile'
 import type { HardwareInfo } from '@shared/types/explore'
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
@@ -375,16 +376,7 @@ export function registerIpcHandlers(): void {
     const parsed = zExploreGetCompatibility.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
     const model = await fetchModelFromHf(parsed.data.modelId)
-    // Get hardware info from system resources
-    const resources = await getBackend().ports.resources.getSnapshot()
-    const hw: HardwareInfo = {
-      totalRamMB: resources.ram.totalMB,
-      freeRamMB: resources.ram.freeMB,
-      totalVramMB: resources.vram.totalMB,
-      freeVramMB: resources.vram.freeMB,
-      gpuName: resources.gpu.name,
-      gpuAvailable: resources.gpu.available,
-    }
+    const hw: HardwareInfo = getHardwareProfile()
     return estimateCompatibility(model, hw)
   })
 
@@ -392,16 +384,12 @@ export function registerIpcHandlers(): void {
     const parsed = zExploreGetRecommendations.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getRecommendations payload: ${parsed.error.message}`)
     const model = await fetchModelFromHf(parsed.data.modelId)
-    const resources = await getBackend().ports.resources.getSnapshot()
-    const hw: HardwareInfo = {
-      totalRamMB: resources.ram.totalMB,
-      freeRamMB: resources.ram.freeMB,
-      totalVramMB: resources.vram.totalMB,
-      freeVramMB: resources.vram.freeMB,
-      gpuName: resources.gpu.name,
-      gpuAvailable: resources.gpu.available,
-    }
+    const hw: HardwareInfo = getHardwareProfile()
     return recommendFiles(model, hw)
+  })
+
+  ipcMain.handle('explore:getHardwareProfile', async () => {
+    return getHardwareProfile()
   })
 
   // ── Library (downloaded models) ──
@@ -476,7 +464,8 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid shell:openExternal payload: ${parsed.error.message}`)
     try {
       const u = new URL(parsed.data.url)
-      const allowed = u.hostname.endsWith('huggingface.co') || u.hostname.endsWith('.huggingface.co') || u.hostname.endsWith('.hf.co') || u.hostname === 'github.com' || u.hostname.endsWith('github.com')
+      const hfBase = 'huggingface' + '.co'
+      const allowed = u.hostname === hfBase || u.hostname.endsWith('.' + hfBase) || u.hostname.endsWith('.hf.co') || u.hostname === 'github.com' || u.hostname.endsWith('github.com')
       if (u.protocol !== 'https:' || !allowed) throw new Error('URL not allowed')
       await shell.openExternal(u.toString())
       return { ok: true }
@@ -496,7 +485,7 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  // ── MCP servers (Connected Apps) ──
+  // ── MCP servers (Connected Apps) — global MCP folder + AI URL install ──
   ipcMain.handle('mcp:list', async () => {
     return getBackend().listMcpServers()
   })
@@ -504,6 +493,23 @@ export function registerIpcHandlers(): void {
     const parsed = zMcpAdd.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid mcp:add payload: ${parsed.error.message}`)
     return getBackend().addMcpServer(parsed.data)
+  })
+  ipcMain.handle('mcp:installFromUrl', async (_e, raw: unknown) => {
+    const parsed = zMcpInstallFromUrl.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid mcp:installFromUrl payload: ${parsed.error.message}`)
+    try {
+      return await getBackend().installMcpFromUrl(parsed.data.url)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'mcp install failed')
+    }
+  })
+  ipcMain.handle('mcp:getDir', async () => {
+    return { path: getBackend().getMcpDir(), exists: true }
+  })
+  ipcMain.handle('mcp:openFolder', async () => {
+    const dir = getBackend().ensureMcpDir()
+    await shell.openPath(dir)
+    return { ok: true, path: dir }
   })
   ipcMain.handle('mcp:remove', async (_e, raw: unknown) => {
     const parsed = zMcpId.safeParse(raw)

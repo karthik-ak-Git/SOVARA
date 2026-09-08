@@ -47,3 +47,12 @@ export function getEventsPath(sessionId: string, baseDir?: string): string {
 export function getAttachmentsDir(sessionId: string, baseDir?: string): string {
   return path.join(getSessionDir(sessionId, baseDir), 'attachments')
 }
+
+export function getMcpDir(baseDir?: string): string {
+  return path.join(getSovaraDataDir(baseDir), 'mcp')
+}
+
+export function getMcpFolderPath(mcpId: string, baseDir?: string): string {
+  const safe = mcpId.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 64)
+  return path.join(getMcpDir(baseDir), safe)
+}

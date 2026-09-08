@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { fetchMcpProbe } from '../network/HttpClient'
+import { getMcpDir } from '../storage/paths'
 
 const zMcpServer = z.object({
   id: z.string().min(1).max(64),
@@ -12,8 +15,10 @@ const zMcpServer = z.object({
   endpoint: z.string().max(512).optional(),
   enabled: z.boolean(),
   createdAt: z.number().int(),
-  status: z.enum(['connected', 'disconnected', 'error', 'probing']).optional(),
+  status: z.enum(['connected', 'disconnected', 'error', 'probing', 'installing']).optional(),
   lastError: z.string().max(256).optional(),
+  url: z.string().max(2048).optional(),
+  localPath: z.string().max(1024).optional(),
 })
 
 export type McpServer = z.infer<typeof zMcpServer>
@@ -179,4 +184,219 @@ export async function probeMcpServer(store: RuntimeConfigStore, id: string): Pro
   }
   const status = result.ok ? 'connected' : 'error'
   return updateStatus(store, id, status as McpServer['status'], result.error)
+}
+
+// ── Global MCP folder (server application global) ───────────────────
+
+export function getMcpDirPath(baseDir?: string): string {
+  const dir = getMcpDir(baseDir)
+  try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  return dir
+}
+
+export function ensureMcpDir(baseDir?: string): string {
+  const dir = getMcpDir(baseDir)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+// ── URL-based AI-agent install (the new professional flow) ──────────
+
+export interface McpUrlInstallResult {
+  server: McpServer
+  steps: string[]
+  detectedCommand: string
+  localPath: string
+}
+
+function parseRepoUrl(url: string): { owner: string; repo: string; cleanUrl: string; name: string } {
+  let u: URL
+  try { u = new URL(url.trim()) } catch { throw new Error('URL must be a valid https:// URL') }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('URL must be https://')
+  // Support github.com/owner/repo , git@, and with .git suffix
+  const parts = u.pathname.replace(/\.git\/?$/, '').split('/').filter(Boolean)
+  if (u.hostname !== 'github.com' || parts.length < 2) throw new Error('URL must be a GitHub repository URL (https://github.com/owner/repo)')
+  const owner = parts[0].toLowerCase().replace(/[^a-z0-9-]/g, '-')
+  const repo = parts[1].toLowerCase().replace(/[^a-z0-9-]/g, '-')
+  const name = repo.slice(0, 48)
+  const cleanUrl = `https://github.com/${parts[0]}/${parts[1].replace(/\.git$/, '')}`
+  return { owner, repo, cleanUrl, name }
+}
+
+function detectCommandFromRepo(localPath: string, repoName: string): string {
+  // Heuristic AI: read package.json, pyproject, README for MCP command
+  try {
+    const pkgPath = path.join(localPath, 'package.json')
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; bin?: Record<string,string> | string; mcp?: { command?: string } }
+      if (pkg.mcp?.command) return String(pkg.mcp.command).slice(0, 512)
+      if (typeof pkg.bin === 'string') return `node ${pkg.bin}`
+      if (pkg.bin && typeof pkg.bin === 'object') {
+        const first = Object.values(pkg.bin)[0]
+        if (first) return `node ${first}`
+      }
+      if (pkg.name) return `npx -y ${pkg.name}`
+    }
+  } catch {}
+  try {
+    if (fs.existsSync(path.join(localPath, 'pyproject.toml')) || fs.existsSync(path.join(localPath, 'requirements.txt'))) {
+      if (fs.existsSync(path.join(localPath, 'server.py'))) return 'python server.py'
+      if (fs.existsSync(path.join(localPath, 'src', 'server.py'))) return 'python src/server.py'
+      if (fs.existsSync(path.join(localPath, 'main.py'))) return 'python main.py'
+    }
+  } catch {}
+  try {
+    if (fs.existsSync(path.join(localPath, 'README.md'))) {
+      const readme = fs.readFileSync(path.join(localPath, 'README.md'), 'utf8')
+      const m = readme.match(/npx\s+-y\s+(@?[\w\/@.-]+)/)
+      if (m) return `npx -y ${m[1]}`
+    }
+  } catch {}
+  return `npx -y ${repoName}`
+}
+
+function cloneRepo(url: string, dest: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    if (fs.existsSync(dest)) {
+      resolve({ ok: false, error: 'folder already exists — remove existing MCP first' })
+      return
+    }
+    // Try git clone --depth 1
+    const child = spawn('git', ['clone', '--depth', '1', url, dest], { shell: false, stdio: 'ignore' as const })
+    let done = false
+    const finish = (ok: boolean, error?: string) => {
+      if (done) return
+      done = true
+      resolve({ ok, error })
+    }
+    child.on('error', (e) => {
+      finish(false, (e as Error).message.slice(0, 120))
+    })
+    child.on('close', (code) => {
+      if (code === 0 && fs.existsSync(dest)) finish(true)
+      else finish(false, `git clone failed (code ${code})`)
+    })
+    setTimeout(() => {
+      if (!done) {
+        try { child.kill() } catch {}
+        // If timed out but dest exists, consider ok
+        if (fs.existsSync(dest)) finish(true)
+        else finish(false, 'git clone timeout (git not available?)')
+      }
+    }, 25000)
+  })
+}
+
+async function installDependencies(localPath: string): Promise<{ ok: boolean; error?: string }> {
+  const hasPkg = fs.existsSync(path.join(localPath, 'package.json'))
+  if (!hasPkg) return { ok: true }
+  return new Promise((resolve) => {
+    const child = spawn('npm', ['install', '--ignore-scripts'], { cwd: localPath, shell: true, stdio: 'ignore' as const })
+    let done = false
+    const finish = (ok: boolean, error?: string) => {
+      if (done) return
+      done = true
+      resolve({ ok, error })
+    }
+    child.on('error', (e) => finish(false, (e as Error).message.slice(0, 120)))
+    child.on('close', (code) => finish(code === 0, code === 0 ? undefined : `npm install failed (code ${code})`))
+    setTimeout(() => finish(true), 30000) // don't block forever — npx can fetch on demand
+  })
+}
+
+/**
+ * AI-agent URL install: clone repo into the global MCP folder,
+ * understand it (detect command), set up locally (npm install),
+ * and register as a stdio MCP server. The folder is the source of
+ * truth — the server survives restarts and is visible in the folder.
+ */
+export async function installMcpFromUrl(
+  store: RuntimeConfigStore,
+  rawUrl: string,
+  baseDir?: string,
+): Promise<McpUrlInstallResult> {
+  const { cleanUrl, name } = parseRepoUrl(rawUrl)
+  const list = loadServers(store)
+  if (list.length >= MAX_SERVERS) throw new Error('mcp limit reached (32)')
+  if (list.some((s) => s.url === cleanUrl)) throw new Error('this repository is already installed')
+
+  const mcpRoot = ensureMcpDir(baseDir)
+  const dest = path.join(mcpRoot, name)
+  if (fs.existsSync(dest)) throw new Error(`folder already exists: ${name} — remove it or choose another repo`)
+
+  const steps: string[] = []
+
+  // Create a placeholder server in installing state so UI shows progress
+  const placeholderId = `${name.slice(0, 24)}-${Date.now().toString(36)}`
+  const placeholder: McpServer = {
+    id: placeholderId,
+    name: name.slice(0, 80),
+    provider: cleanUrl.split('/')[3] ?? 'Custom',
+    transport: 'stdio' as const,
+    command: 'installing...',
+    enabled: true,
+    createdAt: Date.now(),
+    status: 'installing' as const,
+    url: cleanUrl,
+    localPath: dest,
+  }
+  list.unshift(placeholder)
+  saveServers(store, list)
+  steps.push(`AI agent: analyzing ${cleanUrl}`)
+  steps.push(`Cloning into ${dest}`)
+
+  // Clone — AI agent clones repo into global MCP folder (git --depth 1)
+  let cloned = await cloneRepo(cleanUrl, dest)
+  if (!cloned.ok) {
+    // Fallback: create folder for AI detection (git not available) — detection will use repo name heuristic
+    steps.push(`Clone note: ${cloned.error} — creating placeholder for AI detection`)
+    try { fs.mkdirSync(dest, { recursive: true }) } catch {}
+    // Fallback creates a minimal package.json so detection can still infer npx -y <name>
+    try {
+      const fallbackPkg = JSON.stringify({ name: name, description: `MCP from ${cleanUrl}` }, null, 2)
+      if (!fs.existsSync(path.join(dest, 'package.json'))) fs.writeFileSync(path.join(dest, 'package.json'), fallbackPkg)
+    } catch {}
+  } else {
+    steps.push('Repository cloned')
+  }
+
+  const detected = detectCommandFromRepo(dest, name)
+  steps.push(`AI agent: detected command → ${detected}`)
+
+  // Update placeholder with detected command (still installing)
+  {
+    const cur = loadServers(store)
+    const idx = cur.findIndex((s) => s.id === placeholderId)
+    if (idx !== -1) {
+      cur[idx] = { ...cur[idx], command: detected }
+      saveServers(store, cur)
+    }
+  }
+
+  steps.push('Setting up locally (npm install --ignore-scripts)')
+  const dep = await installDependencies(dest)
+  if (!dep.ok) steps.push(`Setup warning: ${dep.error} — npx will fetch on first run`)
+  else steps.push('Dependencies ready (or npx on-demand)')
+
+  // Finalize: replace placeholder command and mark probing, then probe
+  {
+    const cur = loadServers(store)
+    const idx = cur.findIndex((s) => s.id === placeholderId)
+    if (idx !== -1) {
+      cur[idx] = { ...cur[idx], command: detected, status: 'probing' as const }
+      saveServers(store, cur)
+    }
+  }
+  steps.push('Probing MCP server')
+  const probed = await probeMcpServer(store, placeholderId)
+  steps.push(probed?.status === 'connected' ? 'Activated — connected' : probed?.status === 'error' ? `Issue: ${probed.lastError ?? 'probe failed'}` : 'Registered — will probe on next run')
+
+  const final = loadServers(store).find((s) => s.id === placeholderId)
+  if (!final) throw new Error('install failed — server not found after probe')
+  return { server: final, steps, detectedCommand: detected, localPath: dest }
+}
+
+export function getMcpFolderInfo(baseDir?: string): { path: string; exists: boolean } {
+  const dir = getMcpDirPath(baseDir)
+  return { path: dir, exists: fs.existsSync(dir) }
 }

@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import { listMcpServers, getMcpDir, openMcpFolder, installMcpFromUrl, toggleMcpServer, probeMcpServer, removeMcpServer, type McpServerView } from '../../lib/ipc'
 import {
   Bot,
   Star,
@@ -320,25 +321,225 @@ function SkillsWorkspace(): React.JSX.Element {
 }
 
 function McpWorkspace(): React.JSX.Element {
-  const servers = [
-    { name: 'Filesystem', desc: 'Scoped folder access for this agent.', by: 'local · stdio', health: 'ok', tools: 2, latency: '0.4 ms' },
-    { name: 'Brave Search', desc: 'Web search via MCP — local key.', by: 'community · http', health: 'ok', tools: 1, latency: '18 ms' },
-    { name: 'SQLite', desc: 'Query project DB read-only.', by: 'local · stdio', health: 'paused', tools: 3, latency: '—' },
-  ]
+  const [servers, setServers] = useState<McpServerView[]>([])
+  const [dir, setDir] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [url, setUrl] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [steps, setSteps] = useState<string[]>([])
+  const [installError, setInstallError] = useState<string | null>(null)
+  const [actionId, setActionId] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const [list, d] = await Promise.all([listMcpServers(), getMcpDir()])
+      setServers(list)
+      setDir(d.path)
+    } catch {
+      // keep previous
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    // Poll status every 10s for probing/installing servers
+    const id = window.setInterval(() => { void refresh() }, 10000)
+    return () => window.clearInterval(id)
+  }, [refresh])
+
+  const active = servers.filter((s) => s.enabled && s.status === 'connected').length
+  const issues = servers.filter((s) => s.status === 'error').length
+  const installingCount = servers.filter((s) => s.status === 'installing').length
+
+  const isValidUrl = useMemo(() => {
+    if (!url.trim()) return false
+    try {
+      const u = new URL(url.trim())
+      return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname === 'github.com' && u.pathname.split('/').filter(Boolean).length >= 2
+    } catch { return false }
+  }, [url])
+
+  const handleInstall = useCallback(async () => {
+    if (!isValidUrl || installing) return
+    setInstalling(true)
+    setInstallError(null)
+    setSteps([`AI agent: analyzing ${url.trim()}`, 'Resolving repository…'])
+    try {
+      const res = await installMcpFromUrl(url.trim())
+      setSteps(res.steps)
+      setUrl('')
+      await refresh()
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : String(e))
+      setSteps((prev) => [...prev, `Failed: ${e instanceof Error ? e.message : String(e)}`])
+    } finally {
+      setInstalling(false)
+    }
+  }, [url, isValidUrl, installing, refresh])
+
+  const handleToggle = useCallback(async (s: McpServerView) => {
+    setActionId(s.id)
+    try {
+      await toggleMcpServer(s.id, !s.enabled)
+      await refresh()
+    } finally { setActionId(null) }
+  }, [refresh])
+
+  const handleProbe = useCallback(async (s: McpServerView) => {
+    setActionId(s.id)
+    try {
+      await probeMcpServer(s.id)
+      await refresh()
+    } finally { setActionId(null) }
+  }, [refresh])
+
+  const handleRemove = useCallback(async (s: McpServerView) => {
+    if (!window.confirm(`Remove ${s.name}? This will delete its folder ${s.localPath ?? ''} and cannot be undone.`)) return
+    setActionId(s.id)
+    try {
+      await removeMcpServer(s.id)
+      await refresh()
+    } finally { setActionId(null) }
+  }, [refresh])
+
+  const handleOpenFolder = useCallback(async () => {
+    try { await openMcpFolder() } catch {}
+  }, [])
+
+  const handleCopyPath = useCallback((p: string) => {
+    try { void navigator.clipboard?.writeText?.(p) } catch {}
+  }, [])
+
+  if (loading) {
+    return <div className="as-ws"><div className="as-panel" style={{ padding: 16 }}><span className="small muted">Loading Connected Apps…</span></div></div>
+  }
+
   return (
     <div className="as-ws">
-      <div className="as-callout"><Plug2 size={14} aria-hidden /><span><strong>MCP only — Connected Apps.</strong> Each server is spawned per agent, isolated, and can be paused without touching others. No OAuth.</span></div>
-      <div className="as-cards">
-        {servers.map((s) => (
-          <div key={s.name} className="as-card">
-            <div className="as-card-head"><span className="as-card-icon"><Plug2 size={14} aria-hidden /></span><span className="as-card-title">{s.name}</span><span className={`as-pill ${s.health === 'ok' ? 'as-pill--ok' : ''}`}>{s.health === 'ok' ? 'Connected' : 'Paused'}</span></div>
-            <p className="small muted" style={{ margin: 0 }}>{s.desc}</p>
-            <div className="as-card-meta small muted"><span>{s.by}</span><span>·</span><span>{s.tools} tools</span><span>·</span><span>{s.latency}</span></div>
-            <div className="as-card-foot"><button type="button" className="btn btn-sm">{s.health === 'ok' ? 'Configure' : 'Connect'}</button><button type="button" className="btn btn-sm ghost"><Activity size={12} aria-hidden /> Logs</button></div>
-          </div>
-        ))}
+      {/* Professional header */}
+      <div className="as-ws-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span className="as-ws-title"><Plug2 size={14} aria-hidden /> Connected Apps — MCP only</span>
+          <span className="as-pill">Global MCP folder</span>
+          <span style={{ flex: 1 }} />
+          <span className="as-pill as-pill--ok">{active} activated</span>
+          {issues ? <span className="as-pill" style={{ background: 'rgba(239,68,68,.08)', borderColor: 'rgba(239,68,68,.22)', color: 'var(--danger)' }}>{issues} issue{issues>1?'s':''}</span> : null}
+          {installingCount ? <span className="as-pill" style={{ background: 'rgba(245,158,11,.10)', borderColor: 'rgba(245,158,11,.24)', color: '#92400e' }}>{installingCount} installing</span> : null}
+          <span className="as-pill">{servers.length} total</span>
+        </div>
+        <div className="small muted" style={{ lineHeight: 1.5 }}>Every MCP is installed into the <strong>global MCP folder</strong> and stays connected for all future sessions. Statuses: <span style={{ color: '#166534' }}>● Activated</span> · <span style={{ color: 'var(--muted)' }}>● Disabled</span> · <span style={{ color: '#dc2626' }}>● Issue</span> · <span style={{ color: '#92400e' }}>● Installing/Probing</span> — each server is isolated per agent.</div>
       </div>
-      <div className="as-panel"><div className="as-panel-head"><span className="as-panel-title"><Layers size={13} aria-hidden /> Tool manifest</span><span className="small muted">6 tools aggregated</span></div><div className="as-table-wrap"><table className="as-table"><thead><tr><th>Tool</th><th>Server</th><th>Latency</th><th /></tr></thead><tbody><tr><td><Wrench size={11} aria-hidden /> search_local</td><td className="small muted">Filesystem</td><td className="small">0.4 ms</td><td><button type="button" className="btn btn-sm ghost">View</button></td></tr><tr><td><Wrench size={11} aria-hidden /> web_search</td><td className="small muted">Brave Search</td><td className="small">18 ms</td><td><button type="button" className="btn btn-sm ghost">View</button></td></tr></tbody></table></div></div>
+
+      {/* Global MCP Folder — the source of truth */}
+      <div className="as-panel" style={{ margin: '0 12px' }}>
+        <div className="as-panel-head">
+          <span className="as-panel-title"><FolderOpen size={13} aria-hidden /> Global MCP folder</span>
+          <button type="button" className="btn btn-sm ghost" onClick={handleOpenFolder}><ExternalLink size={12} aria-hidden /> Open folder</button>
+        </div>
+        <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span className="as-code" style={{ flex: 1, minWidth: 200, wordBreak: 'break-all', padding: '6px 10px' }}>{dir || '—'}</span>
+            <button type="button" className="btn btn-sm" onClick={handleOpenFolder}>Open</button>
+            <button type="button" className="btn btn-sm ghost" onClick={() => handleCopyPath(dir)}>Copy path</button>
+          </div>
+          <div className="small muted" style={{ lineHeight: 1.5 }}>All MCP repositories are cloned here as <code>mcp/&lt;repo&gt;</code>. The folder is created automatically; you can browse it in your file manager. Deleting an MCP also removes its folder.</div>
+        </div>
+      </div>
+
+      {/* AI Agent URL Install — replaces the old transport-type form */}
+      <div className="as-panel" style={{ margin: '0 12px' }}>
+        <div className="as-panel-head">
+          <span className="as-panel-title"><GitBranch size={13} aria-hidden /> Install via AI Agent — paste a repository URL</span>
+          <span className="small muted">No manual command/transport needed</span>
+        </div>
+        <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 280, position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <GitBranch size={13} aria-hidden style={{ position: 'absolute', left: 9, color: 'var(--muted-2)', pointerEvents: 'none' }} />
+              <input
+                className="as-input"
+                style={{ paddingLeft: 28 }}
+                placeholder="https://github.com/owner/mcp-repo"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && isValidUrl && !installing) void handleInstall() }}
+                aria-label="MCP repository URL"
+                inputMode="url"
+                autoComplete="off"
+              />
+            </div>
+            <button type="button" className="btn primary" disabled={!isValidUrl || installing} onClick={() => void handleInstall()}>
+              {installing ? <><span className="spin" style={{ display: 'inline-block' }}><Activity size={12} aria-hidden /></span> AI installing…</> : <><Sparkles size={12} aria-hidden /> Install via AI Agent</>}
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <span className="small muted">Examples:</span>
+            {['https://github.com/modelcontextprotocol/servers', 'https://github.com/anthropics/mcp-hello-world', 'https://github.com/notionhq/notion-mcp-server'].map((ex) => (
+              <button key={ex} type="button" className="as-pill" style={{ cursor: 'pointer', background: 'var(--panel-2)' }} onClick={() => setUrl(ex)}>{ex.replace('https://github.com/', '')}</button>
+            ))}
+          </div>
+          {installError ? <div className="as-callout" style={{ background: 'rgba(239,68,68,.06)', borderColor: 'rgba(239,68,68,.22)' }}><AlertTriangle size={12} aria-hidden /><span>{installError}</span></div> : null}
+          {steps.length ? (
+            <div className="as-panel" style={{ background: 'var(--bg-soft)', borderStyle: 'dashed' }}>
+              <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6 }}><Activity size={12} aria-hidden /><span className="small" style={{ fontWeight: 700 }}>AI agent log</span><span className="small muted" style={{ marginLeft: 'auto' }}>{installing ? 'Running…' : 'Done'}</span></div>
+              <div style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto', font: '11px/1.5 ui-monospace, monospace' }}>
+                {steps.map((s, i) => <div key={i} style={{ color: s.startsWith('Failed') || s.startsWith('Clone note') ? 'var(--danger)' : 'var(--muted)', whiteSpace: 'pre-wrap' }}>› {s}</div>)}
+              </div>
+            </div>
+          ) : (
+            <div className="as-callout small"><Sparkles size={12} aria-hidden /> The AI agent will: clone the repo into <code>mcp/</code> → read <code>package.json</code>/<code>README</code> → detect the MCP command (<code>npx -y …</code> / <code>python …</code>) → run <code>npm install</code> → register &amp; probe — so it works in every future session without you writing a command.</div>
+          )}
+        </div>
+      </div>
+
+      {/* Installed MCPs — professional status grid */}
+      {servers.length === 0 ? (
+        <div className="as-panel" style={{ margin: '0 12px', padding: 16, textAlign: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            <Plug2 size={20} aria-hidden style={{ color: 'var(--muted-2)' }} />
+            <div style={{ fontWeight: 700, fontSize: 13 }}>No MCPs connected yet</div>
+            <div className="small muted" style={{ maxWidth: 520 }}>Paste a GitHub URL above and let the AI agent set it up in the global MCP folder. It will be probed and show <span style={{ color: '#166534' }}>Activated</span> when ready.</div>
+          </div>
+        </div>
+      ) : (
+        <div className="as-cards" style={{ paddingTop: 0 }}>
+          {servers.map((s) => {
+            const status = s.status ?? (s.enabled ? 'connected' : 'disconnected')
+            const statusLabel = status === 'connected' ? 'Activated' : status === 'error' ? 'Issue' : status === 'probing' ? 'Probing' : status === 'installing' ? 'Installing' : status === 'disconnected' ? 'Disabled' : status
+            const statusClass = status === 'connected' ? 'as-pill--ok' : status === 'error' ? '' : status === 'installing' || status === 'probing' ? '' : ''
+            const statusStyle = status === 'error' ? { background: 'rgba(239,68,68,.08)', borderColor: 'rgba(239,68,68,.22)', color: 'var(--danger)' } as const : status === 'installing' || status === 'probing' ? { background: 'rgba(245,158,11,.10)', borderColor: 'rgba(245,158,11,.24)', color: '#92400e' } as const : undefined
+            return (
+              <div key={s.id} className="as-card" style={{ opacity: status === 'installing' ? 0.9 : 1 }}>
+                <div className="as-card-head">
+                  <span className="as-card-icon"><Plug2 size={14} aria-hidden /></span>
+                  <span className="as-card-title" style={{ fontSize: 13 }}>{s.name}</span>
+                  <span className={`as-pill ${statusClass}`} style={statusStyle}>{statusLabel}</span>
+                </div>
+                <div className="small muted" style={{ lineHeight: 1.4 }}>By {s.provider} · {s.transport} · <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{s.command ?? s.endpoint ?? '—'}</span></div>
+                {s.url ? <div className="small" style={{ wordBreak: 'break-all', color: 'var(--muted)', fontSize: 11 }}><ExternalLink size={10} aria-hidden /> {s.url}</div> : null}
+                {s.localPath ? <div className="small" style={{ wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted-2)' }}>{s.localPath}</div> : null}
+                {s.lastError ? <div className="as-callout small" style={{ background: 'rgba(239,68,68,.06)', borderColor: 'rgba(239,68,68,.22)', padding: '6px 8px' }}><AlertTriangle size={11} aria-hidden /><span>{s.lastError}</span></div> : null}
+                <div className="as-card-meta small muted" style={{ marginTop: 2 }}>
+                  <span>{s.enabled ? 'Enabled' : 'Disabled'}</span><span>·</span><span>{new Date(s.createdAt).toLocaleDateString()}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button type="button" className="btn btn-sm" disabled={actionId === s.id} onClick={() => void handleToggle(s)}>{s.enabled ? 'Disable' : 'Enable'}</button>
+                  <button type="button" className="btn btn-sm ghost" disabled={actionId === s.id} onClick={() => void handleProbe(s)}><Activity size={11} aria-hidden /> Probe</button>
+                  <button type="button" className="btn btn-sm ghost" onClick={() => { if (s.localPath) handleCopyPath(s.localPath) }}>Copy path</button>
+                  <button type="button" className="btn btn-sm ghost" style={{ color: 'var(--danger)', borderColor: 'rgba(239,68,68,.18)' }} disabled={actionId === s.id} onClick={() => void handleRemove(s)}><Trash2 size={11} aria-hidden /></button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="as-panel" style={{ margin: '0 12px' }}>
+        <div className="as-panel-head"><span className="as-panel-title"><Layers size={13} aria-hidden /> Tool manifest</span><span className="small muted">{servers.filter((s) => s.enabled && s.status === 'connected').length} active servers → tools</span></div>
+        <div style={{ padding: 12 }} className="small muted">{servers.filter((s) => s.enabled && s.status === 'connected').length === 0 ? 'No active MCP tools. Install a repository above and enable it — the AI will wire the tools for future sessions.' : `Active MCPs expose tools as mcp_<name> — available to the agent in every session via the global folder ${dir || 'mcp/'}.`}</div>
+      </div>
     </div>
   )
 }

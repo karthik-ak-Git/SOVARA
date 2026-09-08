@@ -15,7 +15,8 @@ interface HfCardData {
 interface HfModelResponse {
   id: string
   author: string
-  lastModified: string
+  lastModified?: string
+  createdAt?: string
   likes: number
   downloads: number
   tags: string[]
@@ -203,10 +204,19 @@ async function fillFileSizes(files: ExploreModelFile[], maxFiles = 12): Promise<
   }))
 }
 
+function normalizeDate(raw?: string): string {
+  if (raw) {
+    const d = new Date(raw)
+    if (!isNaN(d.getTime())) return d.toISOString()
+  }
+  return new Date().toISOString()
+}
+
 function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
   const name = hf.id.split('/').pop() || hf.id
   const author = hf.author || hf.id.split('/')[0]
   const card = hf.cardData ?? {}
+  const updatedAt = normalizeDate(hf.lastModified ?? hf.createdAt)
 
   return {
     id: hf.id,
@@ -215,15 +225,15 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
     author,
     description: `${name} by ${author}`,
     longDescription: `${name} is a model by ${author} available on Hugging Face.`,
-    downloads: hf.downloads,
-    likes: hf.likes,
+    downloads: typeof hf.downloads === 'number' ? hf.downloads : 0,
+    likes: typeof hf.likes === 'number' ? hf.likes : 0,
     staffPick: false,
-    updatedAt: hf.lastModified,
+    updatedAt,
     parameters: formatParams(hf.safetensors?.total, hf.tags, hf.id),
     architecture: extractArchitecture(hf.tags, hf.id),
     capabilities: detectCapabilities(hf.tags, hf.pipeline_tag, hf.id),
     files: detectGgufFiles(hf.id, hf.siblings || []),
-    tags: hf.tags,
+    tags: Array.isArray(hf.tags) ? hf.tags : [],
     iconType: detectIconType(author),
     ...(typeof card.license === 'string' ? { license: card.license } : {}),
     ...(Array.isArray(card.language) ? { languages: card.language } : {}),
@@ -318,7 +328,27 @@ export async function fetchModelsFromHf(
   }
 
   const data: HfModelResponse[] = await response.json()
-  return data.map(mapHfModelToExplore)
+  let models = data.map(mapHfModelToExplore)
+  // Default view: hide heavy image/audio/video models unless user explicitly searched/filtered
+  const hasExplicitSearch = Boolean(finalQuery) || Boolean(pipelineTag) || Boolean(tag)
+  if (!hasExplicitSearch) {
+    const blockedTags = new Set(['text-to-image', 'image-to-image', 'unconditional-image-generation', 'image-generation', 'text-to-video', 'image-to-video', 'video-classification', 'automatic-speech-recognition', 'text-to-speech', 'audio-to-audio', 'audio-classification', 'image-segmentation', 'depth-estimation'])
+    const blockedPipeline = new Set(['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'automatic-speech-recognition', 'text-to-speech', 'audio-classification'])
+    models = models.filter((m) => {
+      const pt = (m.pipelineTag ?? '').toLowerCase()
+      if (blockedPipeline.has(pt)) return false
+      // Also block if tags contain image/audio/video generation but not text-generation
+      const t = m.tags.map((x) => x.toLowerCase())
+      if (t.includes('text-to-image') || t.includes('image-generation') || t.includes('text-to-video') || t.includes('audio')) {
+        // Keep only if also has text-generation or vision (image-text-to-text is allowed)
+        if (pt === 'image-text-to-text') return true
+        return false
+      }
+      if (blockedTags.has(pt)) return false
+      return true
+    })
+  }
+  return models
 }
 
 export async function fetchModelFromHf(modelId: string): Promise<ExploreModel> {

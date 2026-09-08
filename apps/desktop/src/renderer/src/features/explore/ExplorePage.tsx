@@ -6,11 +6,12 @@ import {
   Pause, Play, Copy, FolderCheck, HardDrive, Info, FileText, ChevronUp, Loader2
 } from 'lucide-react'
 import {
-  listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations,
+  listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations, getHardwareProfile,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, isDownloaded, getActiveDownloads, openExternal,
   type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
 } from '../../lib/ipc'
+import type { HardwareInfo } from '@shared/types/explore'
 
 // ── Formatting ───────────────────────────────────────────────────────
 function formatBytes(bytes: number): string {
@@ -26,8 +27,11 @@ function formatDownloads(n: number): string {
 }
 function formatDate(iso: string): string {
   const d = new Date(iso)
+  if (isNaN(d.getTime())) return 'recently'
   const now = new Date()
-  const diffDays = Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24))
+  const diffMs = now.getTime() - d.getTime()
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'recently'
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
   if (diffDays === 0) return 'today'
   if (diffDays === 1) return 'yesterday'
   if (diffDays < 30) return `${diffDays} days ago`
@@ -35,7 +39,11 @@ function formatDate(iso: string): string {
   return `${Math.floor(diffDays / 365)} years ago`
 }
 function formatDateLong(iso: string): string {
-  try { return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) } catch { return iso }
+  try {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return 'recently'
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  } catch { return 'recently' }
 }
 
 // ── Markdown ─────────────────────────────────────────────────────────
@@ -246,6 +254,7 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
   const [compatLoading, setCompatLoading] = useState(false)
   const [recommendations, setRecommendations] = useState<FileRecommendationView[] | null>(null)
   const [recLoading, setRecLoading] = useState(false)
+  const [hardware, setHardware] = useState<HardwareInfo | null>(null)
   const [sortBy, setSortBy] = useState('recommended')
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')

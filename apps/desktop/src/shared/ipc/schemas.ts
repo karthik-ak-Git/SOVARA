@@ -186,6 +186,10 @@ export const zMcpAdd = z
   })
   .strict()
 
+export const zMcpInstallFromUrl = z
+  .object({ url: z.string().min(8).max(2048).url() })
+  .strict()
+
 export const zMcpId = z.object({ id: z.string().min(1).max(64) }).strict()
 
 export const zMcpToggle = z.object({ id: z.string().min(1).max(64), enabled: z.boolean() }).strict()

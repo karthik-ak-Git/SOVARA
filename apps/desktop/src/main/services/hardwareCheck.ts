@@ -15,60 +15,72 @@ export interface FileRecommendation {
  * (accounts for runtime overhead beyond the raw weights).
  */
 export function estimateCompatibility(model: ExploreModel, hw: HardwareInfo): CompatibilityResult {
-  // Pick the smallest available file as the baseline
+  if (!model.files || model.files.length === 0) {
+    return { fitsInMemory: false, estimatedRamUsageGB: 0, message: 'No downloadable files found for this model.', severity: 'too-large' }
+  }
+  // Pick the smallest available file as the baseline for overall model check
   const smallestFile = model.files.reduce((min, f) => (f.sizeGB < min.sizeGB ? f : min), model.files[0])
   const fileSizeGB = smallestFile.sizeGB
+  const multiplier = smallestFile.format === 'MLX' ? 1.1 : 1.22
+  const estimatedNeedGB = fileSizeGB * multiplier
 
-  // Runtime overhead multiplier: GGUF needs ~1.2x, MLX ~1.1x
-  const multiplier = smallestFile.format === 'MLX' ? 1.1 : 1.2
-  const estimatedRamGB = fileSizeGB * multiplier
+  const totalRamGB = hw.totalRamMB / 1024
+  const totalVramGB = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
+  const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
 
-  // Check available memory
-  const availableGB = Math.max(hw.freeRamMB / 1024, (hw.freeVramMB ?? 0) / 1024)
-  const totalSystemGB = hw.totalRamMB / 1024
-
-  if (estimatedRamGB > totalSystemGB) {
-    return {
-      fitsInMemory: false,
-      estimatedRamUsageGB: estimatedRamGB,
-      message: `Likely too large. Needs ~${estimatedRamGB.toFixed(1)} GB but system has ${totalSystemGB.toFixed(0)} GB total.`,
-      severity: 'too-large',
+  // VRAM-aware primary path: models load in VRAM, not just RAM
+  if (hw.gpuAvailable && totalVramGB) {
+    const vram = totalVramGB
+    const freeV = freeVramGB ?? vram * 0.85
+    if (estimatedNeedGB > vram) {
+      return {
+        fitsInMemory: false,
+        estimatedRamUsageGB: estimatedNeedGB,
+        estimatedVramUsageGB: estimatedNeedGB,
+        message: `Needs ~${estimatedNeedGB.toFixed(1)} GB VRAM but GPU has ${vram.toFixed(1)} GB. Try a smaller quant (Q4_K_M) or CPU offload.`,
+        severity: 'too-large',
+      }
     }
-  }
-
-  if (estimatedRamGB > availableGB * 0.9) {
-    return {
-      fitsInMemory: false,
-      estimatedRamUsageGB: estimatedRamGB,
-      message: `Might be tight. Needs ~${estimatedRamGB.toFixed(1)} GB but only ${availableGB.toFixed(1)} GB free.`,
-      severity: 'tight',
-    }
-  }
-
-  if (hw.gpuAvailable && hw.totalVramMB) {
-    const vramGB = hw.totalVramMB / 1024
-    if (estimatedRamGB > vramGB) {
+    if (estimatedNeedGB > freeV * 0.92) {
       return {
         fitsInMemory: true,
-        estimatedRamUsageGB: estimatedRamGB,
-        estimatedVramUsageGB: estimatedRamGB,
-        message: `Will fit in system RAM (${totalSystemGB.toFixed(0)} GB) but may exceed GPU VRAM (${vramGB.toFixed(0)} GB). CPU inference likely.`,
+        estimatedRamUsageGB: estimatedNeedGB,
+        estimatedVramUsageGB: estimatedNeedGB,
+        message: `Fits VRAM but tight: ~${estimatedNeedGB.toFixed(1)} GB / ${vram.toFixed(1)} GB free ${freeV.toFixed(1)} GB. Close other GPU apps.`,
         severity: 'tight',
       }
     }
     return {
       fitsInMemory: true,
-      estimatedRamUsageGB: estimatedRamGB,
-      estimatedVramUsageGB: estimatedRamGB,
-      message: `Should run on GPU. Needs ~${estimatedRamGB.toFixed(1)} GB, GPU has ${vramGB.toFixed(0)} GB VRAM.`,
+      estimatedRamUsageGB: estimatedNeedGB,
+      estimatedVramUsageGB: estimatedNeedGB,
+      message: `✓ Fits in VRAM: ~${estimatedNeedGB.toFixed(1)} GB / ${vram.toFixed(1)} GB (${hw.gpuName ?? 'GPU'}) — optimal for fast inference.`,
       severity: 'good',
     }
   }
 
+  // CPU-only fallback: check RAM
+  const availableRamGB = hw.freeRamMB / 1024
+  if (estimatedNeedGB > totalRamGB) {
+    return {
+      fitsInMemory: false,
+      estimatedRamUsageGB: estimatedNeedGB,
+      message: `Likely too large for CPU. Needs ~${estimatedNeedGB.toFixed(1)} GB but system has ${totalRamGB.toFixed(0)} GB RAM. No dedicated GPU detected.`,
+      severity: 'too-large',
+    }
+  }
+  if (estimatedNeedGB > availableRamGB * 0.9) {
+    return {
+      fitsInMemory: false,
+      estimatedRamUsageGB: estimatedNeedGB,
+      message: `Might be tight on CPU: needs ~${estimatedNeedGB.toFixed(1)} GB, only ${availableRamGB.toFixed(1)} GB free. Close apps or pick smaller quant.`,
+      severity: 'tight',
+    }
+  }
   return {
     fitsInMemory: true,
-    estimatedRamUsageGB: estimatedRamGB,
-    message: `Should run on CPU. Needs ~${estimatedRamGB.toFixed(1)} GB, system has ${totalSystemGB.toFixed(0)} GB RAM.`,
+    estimatedRamUsageGB: estimatedNeedGB,
+    message: `Will run on CPU (no VRAM): ~${estimatedNeedGB.toFixed(1)} GB / ${totalRamGB.toFixed(0)} GB RAM. GPU acceleration not available — expect slower inference.`,
     severity: 'good',
   }
 }
@@ -76,18 +88,24 @@ export function estimateCompatibility(model: ExploreModel, hw: HardwareInfo): Co
 function severityForFile(file: ExploreModelFile, hw: HardwareInfo): { severity: CompatibilityResult['severity']; estimatedRamGB: number; fits: boolean } {
   const bytes = file.sizeBytes ?? file.sizeGB * 1024 ** 3
   const sizeGB = bytes > 0 ? bytes / (1024 ** 3) : file.sizeGB
-  const multiplier = file.format === 'MLX' ? 1.1 : 1.2
-  const estimatedRamGB = (sizeGB || 0) * multiplier
-  if (estimatedRamGB === 0) return { severity: 'good', estimatedRamGB: 0, fits: true }
-  const totalSystemGB = hw.totalRamMB / 1024
-  const availableGB = Math.max(hw.freeRamMB / 1024, (hw.freeVramMB ?? 0) / 1024)
-  if (estimatedRamGB > totalSystemGB) return { severity: 'too-large', estimatedRamGB, fits: false }
-  if (estimatedRamGB > availableGB * 0.9) return { severity: 'tight', estimatedRamGB, fits: false }
-  if (hw.gpuAvailable && hw.totalVramMB) {
-    const vramGB = hw.totalVramMB / 1024
-    if (estimatedRamGB > vramGB) return { severity: 'tight', estimatedRamGB, fits: true }
+  const multiplier = file.format === 'MLX' ? 1.1 : 1.22
+  const estimatedNeedGB = (sizeGB || 0) * multiplier
+  if (estimatedNeedGB === 0) return { severity: 'good', estimatedRamGB: 0, fits: true }
+  const totalVramGB = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
+  const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
+  // VRAM primary
+  if (hw.gpuAvailable && totalVramGB) {
+    const vram = totalVramGB
+    const freeV = freeVramGB ?? vram * 0.85
+    if (estimatedNeedGB > vram) return { severity: 'too-large', estimatedRamGB: estimatedNeedGB, fits: false }
+    if (estimatedNeedGB > freeV * 0.92) return { severity: 'tight', estimatedRamGB: estimatedNeedGB, fits: true }
+    return { severity: 'good', estimatedRamGB: estimatedNeedGB, fits: true }
   }
-  return { severity: 'good', estimatedRamGB, fits: true }
+  const totalRamGB = hw.totalRamMB / 1024
+  const availableRamGB = hw.freeRamMB / 1024
+  if (estimatedNeedGB > totalRamGB) return { severity: 'too-large', estimatedRamGB: estimatedNeedGB, fits: false }
+  if (estimatedNeedGB > availableRamGB * 0.9) return { severity: 'tight', estimatedRamGB: estimatedNeedGB, fits: false }
+  return { severity: 'good', estimatedRamGB: estimatedNeedGB, fits: true }
 }
 
 function quantRank(q?: string): number {
