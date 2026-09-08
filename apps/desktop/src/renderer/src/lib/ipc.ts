@@ -357,6 +357,14 @@ export async function removeBionicSkill(id: string): Promise<{ ok: boolean }> {
   return (await sovara().invoke('skills:removeBionic', { id })) as { ok: boolean }
 }
 
+export async function listDetailedSkills(): Promise<Array<{ name: string; path: string; skills: BionicSkillView[] }>> {
+  return (await sovara().invoke('skills:listDetailed')) as Array<{ name: string; path: string; skills: BionicSkillView[] }>
+}
+
+export async function importSkillFromUrl(url: string): Promise<BionicSkillView> {
+  return (await sovara().invoke('skills:importFromUrl', { url })) as BionicSkillView
+}
+
 // ── Explore (HuggingFace catalog) ──
 import type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
 export type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'

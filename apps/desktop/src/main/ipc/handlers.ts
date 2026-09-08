@@ -4,11 +4,11 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
-import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled } from '../services/skillsScanner'
+import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
@@ -351,6 +351,20 @@ export function registerIpcHandlers(): void {
     const ok = await deleteBionicSkill(parsed.data.id)
     if (!ok) throw new Error('skill not found')
     return { ok: true }
+  })
+
+  ipcMain.handle('skills:listDetailed', async () => {
+    return listDetailedSkillsForSources((getBackend() as unknown as { runtimeConfig: { getAppSetting: (k: string) => string | null } }).runtimeConfig)
+  })
+
+  ipcMain.handle('skills:importFromUrl', async (_e, raw: unknown) => {
+    const parsed = zSkillImportFromUrl.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid skills:importFromUrl payload: ${parsed.error.message}`)
+    try {
+      return await importSkillFromUrl(parsed.data.url)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'skill import failed')
+    }
   })
 
   // ── Explore (HuggingFace catalog) ──

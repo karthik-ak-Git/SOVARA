@@ -217,6 +217,20 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
   const author = hf.author || hf.id.split('/')[0]
   const card = hf.cardData ?? {}
   const updatedAt = normalizeDate(hf.lastModified ?? hf.createdAt)
+  const files = detectGgufFiles(hf.id, hf.siblings || [])
+  // Fix sizes for UI: if HEAD not yet done and we have repo size, seed it
+  if (files.length === 1 && (files[0].sizeBytes === 0 || files[0].sizeBytes === undefined) && typeof hf.usedStorage === 'number' && hf.usedStorage > 0) {
+    const totalGB = hf.usedStorage / (1024 ** 3)
+    // For safetensors with many shards, first file is part of total; estimate full as repo size
+    // For UI clarity, show total repo size on the single entry
+    files[0].sizeBytes = hf.usedStorage
+    files[0].sizeGB = totalGB
+  }
+  // If still no files but we know it's a large repo, create synthetic entry so UI shows required VRAM
+  let finalFiles = files
+  if (finalFiles.length === 0 && typeof hf.usedStorage === 'number' && hf.usedStorage > 512 * 1024 * 1024) {
+    finalFiles = [{ format: 'safetensors', sizeGB: hf.usedStorage / (1024 ** 3), sizeBytes: hf.usedStorage, downloadUrl: `https://huggingface.co/${hf.id}/tree/main`, rfilename: 'model.safetensors' }]
+  }
 
   return {
     id: hf.id,
@@ -232,7 +246,7 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
     parameters: formatParams(hf.safetensors?.total, hf.tags, hf.id),
     architecture: extractArchitecture(hf.tags, hf.id),
     capabilities: detectCapabilities(hf.tags, hf.pipeline_tag, hf.id),
-    files: detectGgufFiles(hf.id, hf.siblings || []),
+    files: finalFiles,
     tags: Array.isArray(hf.tags) ? hf.tags : [],
     iconType: detectIconType(author),
     ...(typeof card.license === 'string' ? { license: card.license } : {}),

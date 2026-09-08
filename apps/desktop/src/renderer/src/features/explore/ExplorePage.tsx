@@ -288,6 +288,11 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
     return () => { if (searchTimer.current) window.clearTimeout(searchTimer.current) }
   }, [searchQuery])
 
+  // Hardware profile (VRAM-aware)
+  useEffect(() => {
+    void getHardwareProfile().then(setHardware).catch(() => {})
+  }, [])
+
   // Load models
   useEffect(() => {
     let cancelled = false
@@ -506,6 +511,7 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
             compatLoading={compatLoading}
             recommendations={recommendations}
             recLoading={recLoading}
+            hardware={hardware}
             selectedFile={selectedFile}
             onSelectFile={setSelectedFile}
             downloads={downloads}
@@ -595,6 +601,7 @@ function ExploreDetail(props: {
   compatLoading: boolean
   recommendations: FileRecommendationView[] | null
   recLoading: boolean
+  hardware: HardwareInfo | null
   selectedFile: number
   onSelectFile: (i: number) => void
   downloads: Record<string, DownloadEventView>
@@ -667,6 +674,14 @@ function ExploreDetail(props: {
 
       <Section title="System recommendation" icon={<HardDrive size={14} />} badge={props.compatLoading || props.recLoading ? 'checking…' : undefined}>
         <>
+          {props.hardware ? (
+            <div className="explore-hw-profile">
+              <span className="explore-hw-item"><HardDrive size={11} /> {props.hardware.gpuAvailable && props.hardware.totalVramMB ? `${props.hardware.gpuName ?? 'GPU'} · ${(props.hardware.totalVramMB / 1024).toFixed(1)} GB VRAM` : 'CPU only'} </span>
+              <span className="explore-hw-dot">·</span>
+              <span className="explore-hw-item">RAM {(props.hardware.totalRamMB / 1024).toFixed(1)} GB ({(props.hardware.freeRamMB / 1024).toFixed(1)} GB free)</span>
+              <span className={`explore-hw-badge ${props.hardware.gpuAvailable ? 'explore-hw-badge--gpu' : 'explore-hw-badge--cpu'}`}>{props.hardware.gpuAvailable ? 'VRAM mode' : 'CPU mode'}</span>
+            </div>
+          ) : null}
           <div className="explore-compat">
             {props.compatLoading || props.recLoading ? <span className="explore-compat-loading"><Loader2 size={12} className="spin" /> Checking system…</span>
               : (
@@ -689,7 +704,7 @@ function ExploreDetail(props: {
                 </>
               )}
           </div>
-          <div className="explore-rec-hint"><Info size={12} /> Recommendation balances quality (higher quant) vs fit. Largest good file is preferred.</div>
+          <div className="explore-rec-hint"><Info size={12} /> VRAM-aware: model loads in GPU VRAM. Recommendation picks largest quant that fits VRAM (or RAM if no GPU). Like Ollama/LM Studio.</div>
         </>
       </Section>
 
@@ -724,8 +739,10 @@ function ExploreDetail(props: {
                     const installed = file.rfilename ? Boolean(props.libraryStatus[file.rfilename]) : false
                     const rec = props.recommendations?.find((r) => r.index === i)
                     const isRec = rec?.rank === 0 && rec.severity !== 'too-large'
+                    const FormatIcon = file.format === 'GGUF' ? HardDrive : file.format === 'safetensors' ? Box : FileText
                     return (
                       <button key={file.rfilename ?? i} type="button" className={`explore-file-chip ${props.selectedFile === i ? 'explore-file-chip--active' : ''} ${isRec ? 'explore-file-chip--rec' : ''} ${installed ? 'explore-file-chip--installed' : ''}`} onClick={() => props.onSelectFile(i)}>
+                        <FormatIcon size={12} className="explore-file-icon" />
                         <span className="explore-file-format">{file.format}</span>
                         <span className="explore-file-name">{(file.rfilename ?? '').split('/').pop() || selectedModel.name}</span>
                         {file.quantization && <span className="explore-file-quant">{file.quantization}</span>}

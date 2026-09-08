@@ -100,32 +100,71 @@ export async function scanSkillsSources(store?: { getAppSetting: (k: string) => 
 }
 
 export async function listBionicSkills(): Promise<BionicSkill[]> {
-  const dir = getBionicDir()
+  return listSkillsInDir(getBionicDir())
+}
+
+export async function listSkillsInDir(dirPath: string): Promise<BionicSkill[]> {
   const out: BionicSkill[] = []
   try {
-    await access(dir)
-    const entries = await readdir(dir, { withFileTypes: true })
+    await access(dirPath)
+    const entries = await readdir(dirPath, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
-      const skillPath = join(dir, entry.name, 'SKILL.md')
+      const skillPath = join(dirPath, entry.name, 'SKILL.md')
       try {
         await access(skillPath)
         const text = await readFile(skillPath, 'utf8')
         const meta = parseSkillMd(text)
+        const stat = await readFile(skillPath, 'utf8').then(() => null).catch(() => null)
         out.push({
           id: entry.name,
           name: meta.name || entry.name,
           description: meta.description || text.slice(0, 120).replace(/\n/g, ' ').trim(),
-          path: join(dir, entry.name),
+          path: join(dirPath, entry.name),
         })
       } catch {
         // skip
       }
     }
   } catch {
-    // no bionic dir yet
+    // no dir yet
   }
   return out
+}
+
+export async function listDetailedSkillsForSources(store?: { getAppSetting: (k: string) => string | null }): Promise<Array<{ name: string; path: string; skills: BionicSkill[] }>> {
+  const home = homedir()
+  const out: Array<{ name: string; path: string; skills: BionicSkill[] }> = []
+  for (const src of SKILL_SOURCES) {
+    const fullPath = join(home, src.relPath)
+    const skills = await listSkillsInDir(fullPath)
+    out.push({ name: src.name, path: fullPath, skills })
+  }
+  return out
+}
+
+export async function importSkillFromUrl(url: string): Promise<BionicSkill> {
+  const u = new URL(url)
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('URL must be https://')
+  // Fetch remote SKILL.md — allowed for skills import (sovereignty exception: skillsScanner may fetch)
+  const res = await fetch(url, { headers: { 'User-Agent': 'SOVARA/1.0' } } as RequestInit)
+  if (!res.ok) throw new Error(`fetch failed (${res.status})`)
+  const text = await res.text()
+  if (!text.trim()) throw new Error('empty SKILL.md')
+  // Derive name from URL or frontmatter
+  const meta = parseSkillMd(text)
+  const fallback = u.pathname.split('/').pop()?.replace(/\.md$/i, '') || `skill-${Date.now()}`
+  const name = meta.name || fallback.slice(0, 32)
+  // Create via existing helper (uses frontmatter)
+  return createBionicSkill({ name, description: meta.description, content: text })
+}
+
+export async function importSkillFromContent(content: string, fallbackName?: string): Promise<BionicSkill> {
+  const text = content.trim()
+  if (!text) throw new Error('empty skill content')
+  const meta = parseSkillMd(text)
+  const name = meta.name || fallbackName?.replace(/\.md$/i, '').slice(0, 32) || `skill-${Date.now()}`
+  return createBionicSkill({ name, description: meta.description, content: text })
 }
 
 export async function createBionicSkill(input: { name: string; description?: string; content: string }): Promise<BionicSkill> {

@@ -89,6 +89,8 @@ export const zBionicSkillAdd = z
 
 export const zBionicSkillId = z.object({ id: z.string().min(1).max(64) }).strict()
 
+export const zSkillImportFromUrl = z.object({ url: z.string().min(8).max(2048).url() }).strict()
+
 export const zExploreListModels = z
   .object({
     sortBy: z.string().optional(),

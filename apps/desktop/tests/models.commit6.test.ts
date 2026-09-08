@@ -310,9 +310,9 @@ describe('Commit 6 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), hfCatalog (Hub API) and modelDownloads (Hub file downloads)
+        // Exceptions: HttpClient (loopback inference), hfCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/modelDownloads\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts)$/)
       }
     }
   })
@@ -355,8 +355,8 @@ describe('Commit 6 — sovereignty proofs', () => {
           // ExplorePage.tsx (user-initiated "Open on Web" link to the repo
           // — no data collection), and in main/window.ts CSP connect/img-src
           // (Explore model images) — all are user-invoked Explore surfaces,
-          // never telemetry.
-          if (!norm.includes('hfCatalog.ts') && !norm.includes('modelDownloads.ts') && !norm.includes('main/window.ts') && !norm.includes('ExplorePage.tsx') && txt.includes('huggingface.co')) {
+          // never telemetry. Also allowed in hardwareCheck (fallback dummy URL) and hardwareProfile (no telemetry).
+          if (!norm.includes('hfCatalog.ts') && !norm.includes('modelDownloads.ts') && !norm.includes('main/window.ts') && !norm.includes('ExplorePage.tsx') && !norm.includes('hardwareCheck.ts') && !norm.includes('hardwareProfile.ts') && txt.includes('huggingface.co')) {
             hits.push(`${p}: huggingface.co`)
           }
           // Telemetry *machinery* (sending/tracking), not the UI label.

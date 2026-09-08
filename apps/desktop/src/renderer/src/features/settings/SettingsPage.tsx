@@ -2,9 +2,10 @@ import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
   Settings, User, Cpu, CreditCard, Palette, MessageSquare,
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
-  RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
+  RotateCcw, ChevronRight, Check, Cloud, ArrowLeft,
+  Upload, Download, File, FolderOpen, Folder, ExternalLink, Sparkles, AlertTriangle
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -298,6 +299,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   })
 
   // Skills settings — Bionic are real persisted SKILL.md in userData/skills, not a mock
+  // Professional: pre-detect present/not-present, direct upload, detailed per-app listing
   const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
   const [skillsLoaded, setSkillsLoaded] = useState(false)
   const [bionicSkills, setBionicSkills] = useState<BionicSkillView[]>([])
@@ -305,6 +307,10 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [skillDialogOpen, setSkillDialogOpen] = useState(false)
   const [skillForm, setSkillForm] = useState({ name: '', description: '', content: '' })
   const [skillError, setSkillError] = useState<string | null>(null)
+  const [skillDragOver, setSkillDragOver] = useState(false)
+  const [skillImportUrl, setSkillImportUrl] = useState('')
+  const [skillImporting, setSkillImporting] = useState(false)
+  const [detailedSkills, setDetailedSkills] = useState<Array<{ name: string; path: string; skills: BionicSkillView[] }>>([])
 
   // Agent settings — discovered models + registered tools for the Agent page.
   const [agentModels, setAgentModels] = useState<DiscoveredModel[]>([])
@@ -406,7 +412,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     loadArchived()
   }, [activeSection])
 
-  // Load skills sources + Bionic when skills tab is active — real fetch, not mock
+  // Load skills sources + Bionic + detailed per-source when skills tab is active — real fetch, not mock
   const reloadBionic = useCallback(async (): Promise<void> => {
     try {
       const skills = await listBionicSkills()
@@ -415,6 +421,15 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       // bionic unavailable
     } finally {
       setBionicLoaded(true)
+    }
+  }, [])
+
+  const reloadDetailed = useCallback(async (): Promise<void> => {
+    try {
+      const detailed = await listDetailedSkills()
+      setDetailedSkills(detailed)
+    } catch {
+      // detailed unavailable
     }
   }, [])
 
@@ -430,9 +445,10 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
         setSkillsLoaded(true)
       }
       void reloadBionic()
+      void reloadDetailed()
     }
     loadSkills()
-  }, [activeSection, reloadBionic])
+  }, [activeSection, reloadBionic, reloadDetailed])
 
   const submitSkill = useCallback(async (): Promise<void> => {
     setSkillError(null)
@@ -451,10 +467,46 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       setSkillDialogOpen(false)
       setSkillForm({ name: '', description: '', content: '' })
       await reloadBionic()
+      await reloadDetailed()
     } catch (e) {
       setSkillError(e instanceof Error ? e.message : String(e))
     }
-  }, [skillForm, reloadBionic])
+  }, [skillForm, reloadBionic, reloadDetailed])
+
+  const handleSkillFileUpload = useCallback(async (file: File): Promise<void> => {
+    setSkillError(null)
+    try {
+      const text = await file.text()
+      if (!text.trim()) throw new Error('empty file')
+      // Use filename as fallback name if frontmatter missing
+      const fallback = file.name
+      // For direct upload, create via addBionicSkill using file content
+      // Parse name from content if present, else fallback
+      const inferred = text.match(/^\s*name\s*:\s*(.+)\s*$/m)?.[1]?.trim().replace(/^["']|["']$/g, '') || fallback.replace(/\.md$/i, '')
+      await addBionicSkill({ name: inferred.slice(0, 80), description: '', content: text })
+      await reloadBionic()
+      await reloadDetailed()
+    } catch (e) {
+      setSkillError(e instanceof Error ? e.message : String(e))
+    }
+  }, [reloadBionic, reloadDetailed])
+
+  const handleSkillUrlImport = useCallback(async (): Promise<void> => {
+    const url = skillImportUrl.trim()
+    if (!url) { setSkillError('URL is required'); return }
+    setSkillImporting(true)
+    setSkillError(null)
+    try {
+      await importSkillFromUrl(url)
+      setSkillImportUrl('')
+      await reloadBionic()
+      await reloadDetailed()
+    } catch (e) {
+      setSkillError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSkillImporting(false)
+    }
+  }, [skillImportUrl, reloadBionic, reloadDetailed])
 
   // Load general settings once (version, toggles, feed, last check).
   useEffect(() => {
@@ -1320,49 +1372,98 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
           </div>
         )
 
-      case 'skills':
+      case 'skills': {
+        const hasBionic = bionicLoaded && bionicSkills.length > 0
         return (
           <div className="settings-content">
             <h2 className="settings-section-title">Skills</h2>
+            <p className="settings-row-desc" style={{ marginBottom: 12 }}>
+              SOVARA pre-detects skills present on this device and loads them automatically. Bionic skills live in <code>{`{userData}/skills`}</code> and are always available. External skills are detected in compatible app directories.
+            </p>
 
             <div className="settings-group">
               <div className="settings-group-header">
                 <div className="skills-header-row">
-                  <span>Bionic Skills {bionicLoaded ? <span className="settings-badge">{bionicSkills.length}</span> : null}</span>
-                  <div className="skills-dropdown-wrap">
-                    <button
-                      type="button"
-                      className="settings-action-btn settings-action-btn--primary"
-                      onClick={() => {
-                        setSkillError(null)
-                        setSkillDialogOpen(true)
-                      }}
-                    >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    Bionic Skills {bionicLoaded ? <span className="settings-badge" style={{ background: hasBionic ? 'var(--accent)' : 'var(--border)', color: hasBionic ? '#fff' : 'var(--muted)' }}>{bionicSkills.length}</span> : null}
+                    {bionicLoaded ? <span className="small muted" style={{ fontWeight: 400 }}>{hasBionic ? 'present — loaded' : 'not present'}</span> : null}
+                  </span>
+                  <div className="skills-dropdown-wrap" style={{ gap: 8 }}>
+                    <input id="skill-file-input" type="file" accept=".md,text/markdown" style={{ display: 'none' }} onChange={async (e) => {
+                      const f = e.target.files?.[0]
+                      if (f) await handleSkillFileUpload(f)
+                      e.currentTarget.value = ''
+                    }} />
+                    <button type="button" className="settings-action-btn" onClick={() => document.getElementById('skill-file-input')?.click()}>
+                      <Upload size={12} style={{ marginRight: 4 }} /> Upload SKILL.md
+                    </button>
+                    <button type="button" className="settings-action-btn settings-action-btn--primary" onClick={() => setSkillDialogOpen(true)}>
                       + Add Skill
                     </button>
                   </div>
                 </div>
               </div>
-              {skillError ? <div className="settings-row-desc settings-error-text" role="alert">{skillError}</div> : null}
-              <div className="settings-card">
+
+              {/* Direct upload — replaces dropdown form as primary */}
+              <div
+                className="settings-card"
+                onDragOver={(e) => { e.preventDefault(); setSkillDragOver(true) }}
+                onDragLeave={() => setSkillDragOver(false)}
+                onDrop={async (e) => {
+                  e.preventDefault(); setSkillDragOver(false)
+                  const f = e.dataTransfer.files?.[0]
+                  if (f) await handleSkillFileUpload(f)
+                }}
+                style={{ borderStyle: 'dashed', borderColor: skillDragOver ? 'var(--accent)' : undefined, background: skillDragOver ? 'rgba(74,144,217,.06)' : undefined }}
+              >
+                <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', padding: '6px 0' }}>
+                    <File size={16} style={{ color: 'var(--muted-2)' }} />
+                    <span className="small muted">Drag & drop a <code>SKILL.md</code> here, or click <strong>Upload SKILL.md</strong> — way better than filling a form</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      className="settings-input"
+                      placeholder="Or paste SKILL.md URL to download and install (e.g. https://raw.githubusercontent.com/owner/repo/main/SKILL.md)"
+                      value={skillImportUrl}
+                      onChange={(e) => setSkillImportUrl(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void handleSkillUrlImport() }}
+                      style={{ flex: 1, minWidth: 260 }}
+                      aria-label="Skill URL"
+                    />
+                    <button type="button" className="settings-action-btn settings-action-btn--primary" onClick={() => void handleSkillUrlImport()} disabled={skillImporting || !skillImportUrl.trim()}>
+                      {skillImporting ? 'Importing…' : <><Download size={12} style={{ marginRight: 4 }} /> Import from URL</>}
+                    </button>
+                  </div>
+                  <div className="small muted" style={{ textAlign: 'center' }}>
+                    {hasBionic ? `${bionicSkills.length} skill${bionicSkills.length===1?'':'s'} present in this device — loaded automatically` : 'No Bionic skills present on this device — upload one or import from online'}
+                  </div>
+                </div>
+              </div>
+
+              {skillError ? <div className="settings-row-desc settings-error-text" role="alert" style={{ marginTop: 8 }}>{skillError}</div> : null}
+
+              <div className="settings-card" style={{ marginTop: 10 }}>
                 {!bionicLoaded ? (
-                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                  <div className="settings-row"><span className="muted">Loading Bionic skills…</span></div>
                 ) : bionicSkills.length === 0 ? (
                   <div className="settings-card--empty">
                     <div className="settings-empty-state">
                       <div className="settings-empty-icon">📦</div>
                       <div className="settings-empty-text">
-                        <div className="settings-empty-title">No skills installed yet</div>
-                        <div className="settings-empty-desc">Create a custom skill — it will be injected into the AI system context for every chat (when enabled).</div>
+                        <div className="settings-empty-title">No Bionic skills present</div>
+                        <div className="settings-empty-desc">Upload a <code>SKILL.md</code> file or import from a URL — it will be saved to <code>{`{userData}/skills/<name>/SKILL.md`}</code> and injected into AI context.</div>
                       </div>
                     </div>
                   </div>
                 ) : (
                   bionicSkills.map((sk) => (
-                    <div key={sk.id} className="settings-row">
-                      <div className="settings-row-text">
-                        <div className="settings-row-label">{sk.name}</div>
+                    <div key={sk.id} className="settings-row" style={{ alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, background: 'var(--panel-2)', border: '1px solid var(--border)', flexShrink: 0 }}><FileText size={16} style={{ color: 'var(--accent)' }} /></div>
+                      <div className="settings-row-text" style={{ minWidth: 0 }}>
+                        <div className="settings-row-label" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>{sk.name} <span className="badge badge--success" style={{ fontSize: 10 }}>present</span></div>
                         <div className="settings-row-desc" style={{ wordBreak: 'break-all' }}>{sk.description || sk.path}</div>
+                        <div className="small muted" style={{ wordBreak: 'break-all', display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}><FolderOpen size={11} />{sk.path}</div>
                       </div>
                       <div className="settings-row-right">
                         <span className="settings-badge" title={sk.path}>{sk.id}</span>
@@ -1373,6 +1474,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                             try {
                               await removeBionicSkill(sk.id)
                               setBionicSkills((prev) => prev.filter((p) => p.id !== sk.id))
+                              await reloadDetailed()
                             } catch (e) {
                               setSkillError(e instanceof Error ? e.message : String(e))
                             }
@@ -1390,55 +1492,79 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
             <div className="settings-group">
               <div className="settings-group-header">Use skills found in other apps</div>
               <p className="settings-row-desc settings-row-desc--spaced">
-                SOVARA can detect and use skills installed in compatible directories on this device.
+                SOVARA pre-detects skills in compatible directories on this device. When you enable a source, every skill file and folder inside is listed below and automatically loaded.
               </p>
               {!skillsLoaded ? (
                 <div className="settings-card">
-                  <span className="muted">Scanning…</span>
+                  <span className="muted">Scanning for skills on this device…</span>
                 </div>
               ) : (
-                skillsSources.map((src) => (
-                  <div key={src.name} className="settings-card">
-                    <div className="settings-row">
-                      <div className="settings-row-text">
-                        <div className="settings-row-label">{src.name}</div>
-                        <div className="settings-row-desc">
-                          {src.skillCount > 0
-                            ? `${src.skillCount.toLocaleString()} skills found in ${src.path}`
-                            : `No skills found in ${src.path}`}
+                skillsSources.map((src) => {
+                  const detailed = detailedSkills.find((d) => d.name === src.name)
+                  const list = detailed?.skills ?? []
+                  const isEnabled = src.enabled
+                  return (
+                    <div key={src.name} className="settings-card">
+                      <div className="settings-row">
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, background: isEnabled ? 'rgba(74,144,217,.10)' : 'var(--panel-2)', border: '1px solid var(--border)', flexShrink: 0 }}><Puzzle size={16} style={{ color: isEnabled ? 'var(--accent)' : 'var(--muted-2)' }} /></div>
+                        <div className="settings-row-text">
+                          <div className="settings-row-label" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>{src.name} {isEnabled ? <span className="badge badge--success" style={{ fontSize: 10 }}>enabled</span> : <span className="badge" style={{ fontSize: 10 }}>disabled</span>}</div>
+                          <div className="settings-row-desc">
+                            {src.skillCount > 0
+                              ? `${src.skillCount.toLocaleString()} skill${src.skillCount===1?'':'s'} ${isEnabled ? 'present — pre-detected and loaded' : 'found (pre-detected) — enable to load'} in ${src.path}`
+                              : `No skills present in ${src.path} — pre-detected (empty)`}
+                          </div>
+                          <div className="small muted" style={{ wordBreak: 'break-all', display: 'flex', gap: 4, alignItems: 'center' }}><Folder size={11} />{src.path}</div>
+                        </div>
+                        <div className="settings-row-right">
+                          <span className="settings-badge">{src.skillCount.toLocaleString()}</span>
+                          <button
+                            type="button"
+                            className={`settings-toggle ${src.enabled ? 'settings-toggle--on' : ''}`}
+                            onClick={async () => {
+                              const newEnabled = !src.enabled
+                              setSkillsSources((prev) => prev.map((s) => (s.name === src.name ? { ...s, enabled: newEnabled } : s)))
+                              try {
+                                await toggleSkillsSource(src.name, newEnabled)
+                                await reloadDetailed()
+                              } catch {
+                                setSkillsSources((prev) => prev.map((s) => (s.name === src.name ? { ...s, enabled: !newEnabled } : s)))
+                              }
+                            }}
+                            role="switch"
+                            aria-checked={src.enabled}
+                            aria-label={`Enable ${src.name} skills`}
+                          >
+                            <span className="settings-toggle-thumb" />
+                          </button>
                         </div>
                       </div>
-                      <div className="settings-row-right">
-                        <span className="settings-badge">{src.skillCount.toLocaleString()}</span>
-                        <button
-                          type="button"
-                          className={`settings-toggle ${src.enabled ? 'settings-toggle--on' : ''}`}
-                          onClick={async () => {
-                            const newEnabled = !src.enabled
-                            setSkillsSources((prev) =>
-                              prev.map((s) => (s.name === src.name ? { ...s, enabled: newEnabled } : s))
-                            )
-                            try {
-                              await toggleSkillsSource(src.name, newEnabled)
-                            } catch {
-                              // revert on error
-                              setSkillsSources((prev) =>
-                                prev.map((s) => (s.name === src.name ? { ...s, enabled: !newEnabled } : s))
-                              )
-                            }
-                          }}
-                          role="switch"
-                          aria-checked={src.enabled}
-                          aria-label={`Enable ${src.name} skills`}
-                        >
-                          <span className="settings-toggle-thumb" />
-                        </button>
-                      </div>
+                      {isEnabled ? (
+                        <div style={{ borderTop: '1px solid var(--border-soft)', padding: '8px 12px', background: 'var(--bg-soft)', maxHeight: 260, overflowY: 'auto' }}>
+                          {!detailed ? (
+                            <span className="small muted">Loading folder listing…</span>
+                          ) : list.length === 0 ? (
+                            <span className="small muted">No SKILL.md folders found — enable shows nothing to load.</span>
+                          ) : (
+                            list.map((sk) => (
+                              <div key={sk.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border-soft)' }}>
+                                <File size={14} style={{ color: 'var(--muted-2)', flexShrink: 0 }} />
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sk.name}</div>
+                                  <div className="small muted" style={{ wordBreak: 'break-all', fontSize: 11 }}>{sk.path}</div>
+                                </div>
+                                <span className="settings-badge" style={{ flexShrink: 0 }}>{sk.id}</span>
+                              </div>
+                            ))
+                          )}
+                          <div className="small muted" style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center' }}><Sparkles size={11} />{list.length} file{list.length===1?'':'s'} / folder{list.length===1?'':'s'} detected — injected into AI context when enabled</div>
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
-                ))
-               )}
-             </div>
+                  )
+                })
+              )}
+            </div>
             {skillDialogOpen ? (
               <div className="modal-overlay" onClick={() => setSkillDialogOpen(false)} role="dialog" aria-modal="true" aria-label="Add skill">
                 <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
@@ -1470,10 +1596,11 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 </div>
               </div>
             ) : null}
-          </div>
-        )
+           </div>
+         )
+      }
 
-      case 'explore':
+       case 'explore':
         return (
           <ExplorePage onBack={() => setActiveSection('general')} />
         )
