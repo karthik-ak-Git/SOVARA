@@ -15,7 +15,7 @@ function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: num
       const free = parseInt(parts[1], 10)
       const name = parts.slice(2).join(',').trim() || undefined
       if (Number.isFinite(total) && total > 0) {
-        return { totalVramMB: total, freeVramMB: Number.isFinite(free) ? free : Math.round(total * 0.8), name }
+        return { totalVramMB: total, freeVramMB: Number.isFinite(free) ? free : undefined, name }
       }
     }
     return null
@@ -73,15 +73,11 @@ export function getHardwareProfile(): HardwareInfo {
     if (p) gpu = { ...gpu, ...p }
   }
 
-  // Heuristic: if we got VRAM but no free, estimate free as 80% of total minus used
   let totalVramMB = gpu?.totalVramMB
   let freeVramMB = gpu?.freeVramMB
-  if (totalVramMB && !freeVramMB) {
-    // If wmic reports AdapterRAM as 32-bit signed, large VRAM wraps negative; clamp
-    if (totalVramMB < 0) totalVramMB = Math.abs(totalVramMB)
-    // If still huge (e.g., 4095 due to 4GB cap), keep as is
-    freeVramMB = Math.round(totalVramMB * 0.85)
-  }
+  // WMIC can report AdapterRAM as signed 32-bit; large VRAM wraps negative — clamp without fabricating free
+  if (totalVramMB !== undefined && totalVramMB < 0) totalVramMB = Math.abs(totalVramMB)
+  // Do NOT synthesize freeVramMB when nvidia-smi unavailable: keep undefined so callers show estimation-only warning
   // Filter integrated GPUs with tiny VRAM (< 1GB) — treat as CPU-only
   const isDedicated = totalVramMB !== undefined && totalVramMB >= 1024
   const gpuAvailable = Boolean(isDedicated && gpu?.name)

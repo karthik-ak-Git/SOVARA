@@ -97,9 +97,10 @@ describe('Explorer E2E — production flow', () => {
   it('system recommendation shows VRAM-aware badge', async () => {
     render(<ExplorePage onBack={() => {}} />)
     await screen.findAllByText('Qwen3-8B-GGUF', {}, { timeout: 3000 })
-    await waitFor(() => expect(screen.getByText(/System recommendation/)).toBeInTheDocument(), { timeout: 4000 })
+    // Phase A: badge renders as "Fits in VRAM" / "Partial GPU Offload" / Requires — multiple badges share VRAM text, use getAllByText
+    await waitFor(() => expect(screen.getAllByText(/Fits in VRAM|Partial GPU Offload|Requires|Tight fit/).length).toBeGreaterThan(0), { timeout: 4000 })
     // Should show VRAM mode and required VRAM
-    await screen.findByText(/VRAM|RAM/, {}, { timeout: 4000 })
+    await screen.findAllByText(/VRAM|RAM/, {}, { timeout: 4000 })
     await waitFor(() => expect(screen.getAllByText(/Requires/).length).toBeGreaterThan(0), { timeout: 3000 })
   })
 

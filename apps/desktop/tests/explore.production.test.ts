@@ -42,7 +42,10 @@ describe('Explorer: hardware-aware recommendations', () => {
     const large = mkModel({ files: [{ format: 'GGUF', sizeGB: 30, downloadUrl: 'https://huggingface.co/org/m/resolve/main/b.gguf', rfilename: 'b.gguf', sizeBytes: 30 * 1024 ** 3 }] })
     expect(estimateCompatHW(small, hw16gb).severity).toBe('good')
     expect(estimateCompatHW(large, hw16gb).severity).toBe('too-large')
-    expect(estimateCompatHW(small, hw8gb).severity).toBe('good')
+    // Phase A: KV-cache aware (4096 ctx ~1.68 GB for 7B) makes 4GB model ~6.2GB actual, tight on 8GB CPU with 6GB free (6*0.9=5.4)
+    expect(estimateCompatHW(small, hw8gb).severity).toBe('tight')
+    // Explicit 2048 ctx still fits
+    expect(estimateCompatHW(small, hw8gb, 2048).severity).toBe('good')
   })
 
   it('recommendFiles picks largest good (best quality) for roomy system', () => {
