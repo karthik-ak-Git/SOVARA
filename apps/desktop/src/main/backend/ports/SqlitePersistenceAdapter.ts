@@ -111,6 +111,12 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     this.db.deleteProject(id)
   }
 
+  getProjectSync(id: string): ProjectHeader | null {
+    const r = this.db.getProject(id)
+    if (!r) return null
+    return { id: r.id, name: r.name, rootPath: r.rootPath, createdAt: r.createdAt, updatedAt: r.updatedAt }
+  }
+
   async listArchived(): Promise<SessionHeader[]> {
     return this.db.listArchivedSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }))
   }

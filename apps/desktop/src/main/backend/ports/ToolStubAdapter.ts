@@ -8,6 +8,7 @@ import {
   type WebSearchOutcome,
 } from '../../services/webSearch'
 import { CrawlUnavailableError, crawlUrls } from '../../services/crawlServer'
+import type { McpServer } from '../../services/mcpStore'
 
 export interface WebRuntime {
   enabled: boolean
@@ -28,12 +29,18 @@ function disabledRuntime(): WebRuntime {
  * Tool registry: `web_search` + `web_fetch` are live (crawl4ai sidecar with
  * keyless fallback); everything else is still a Phase 1 stub. The resolver
  * thunk keeps settings reads at dispatch time.
+ * MCP servers added via Connected Apps are exposed as `mcp_<id>` tools and
+ * dispatched to their http/stdio transport (ponytail: one generic tool per server,
+ * real MCP `tools/list` discovery when the server is reachable).
  */
 export class ToolStubAdapter implements ToolPort {
-  constructor(private readonly web: WebRuntime = disabledRuntime()) {}
+  constructor(
+    private readonly web: WebRuntime = disabledRuntime(),
+    private readonly getMcpServers: () => McpServer[] = () => [],
+  ) {}
 
   list(): ToolDefinition[] {
-    return [
+    const base: ToolDefinition[] = [
       {
         name: 'web_search',
         toolset: 'web',
@@ -55,6 +62,26 @@ export class ToolStubAdapter implements ToolPort {
         },
       },
     ]
+    // Expose enabled MCP servers as tools — AI can discover them via tools:list
+    for (const s of this.getMcpServers()) {
+      if (!s.enabled || s.status === 'error' || s.status === 'disconnected') continue
+      const sanitized = s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32) || 'mcp'
+      const toolName = `mcp_${sanitized}`
+      base.push({
+        name: toolName,
+        toolset: 'mcp',
+        description: `MCP server "${s.name}" (${s.provider}, ${s.transport}${s.transport === 'http' ? ` ${s.endpoint}` : ` ${s.command}`}). Input: { input: string, arguments?: object }. Forwards to the MCP server.`,
+        parameters: {
+          type: 'object',
+          properties: {
+            input: { type: 'string', description: 'Task for the MCP server' },
+            arguments: { type: 'object', description: 'Optional MCP arguments' },
+          },
+          required: ['input'],
+        },
+      })
+    }
+    return base
   }
 
   private guard(): WebRuntime {
@@ -66,6 +93,7 @@ export class ToolStubAdapter implements ToolPort {
     try {
       if (name === 'web_search') return await this.dispatchSearch(args)
       if (name === 'web_fetch') return await this.dispatchFetch(args)
+      if (name.startsWith('mcp_')) return await this.dispatchMcp(name, args)
       return JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
     } catch (e) {
       const code = (e as { code?: string }).code ?? (e instanceof CrawlUnavailableError ? 'WEB_SIDECAR_DOWN' : undefined)
@@ -74,6 +102,31 @@ export class ToolStubAdapter implements ToolPort {
         ...(typeof code === 'string' ? { code } : {}),
       })
     }
+  }
+
+  private async dispatchMcp(toolName: string, args: Record<string, unknown>): Promise<string> {
+    const servers = this.getMcpServers().filter((s) => s.enabled && s.status !== 'error' && s.status !== 'disconnected')
+    const match = servers.find((s) => `mcp_${s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}` === toolName)
+    if (!match) return JSON.stringify({ error: `mcp tool not found: ${toolName}`, hint: 'Check Connected Apps — server must be enabled and connected' })
+    // http: forward as MCP JSON-RPC tools/call (best-effort); stdio: stub until Phase 2 spawn
+    if (match.transport === 'http' && match.endpoint) {
+      try {
+        const { postMcpJsonRpc } = await import('../../network/HttpClient')
+        const { status, text } = await postMcpJsonRpc(match.endpoint, { jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name: toolName, arguments: args } })
+        return JSON.stringify({ mcp: match.name, endpoint: match.endpoint, status, result: text.slice(0, 6000) })
+      } catch (e) {
+        return JSON.stringify({ error: e instanceof Error ? e.message : String(e), mcp: match.name })
+      }
+    }
+    if (match.transport === 'stdio' && match.command) {
+      return JSON.stringify({
+        mcp: match.name,
+        command: match.command,
+        note: 'stdio MCP dispatch stub — Phase 2 will spawn the command and proxy JSON-RPC. Args received.',
+        arguments: args,
+      })
+    }
+    return JSON.stringify({ error: 'mcp server has no transport target' })
   }
 
   private async dispatchSearch(args: Record<string, unknown>): Promise<string> {

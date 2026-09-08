@@ -210,6 +210,7 @@ export interface AppSettingsState {
   sidebarBackground: string
   inlineDiffLayout: string
   renameAfterFork: boolean
+  globalWorkspaceRoot: string
   allowModelDownload: boolean
   autoUpdates: boolean
   sessionNotifications: boolean
@@ -231,6 +232,7 @@ export interface AppSettingsPatch {
   sidebarBackground?: string
   inlineDiffLayout?: string
   renameAfterFork?: boolean
+  globalWorkspaceRoot?: string
   allowModelDownload?: boolean
   autoUpdates?: boolean
   sessionNotifications?: boolean

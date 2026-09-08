@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -661,6 +661,31 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                   label="Session completion notifications"
                   description="Show a system notification when a session finishes while its project isn't focused."
                 />
+              </div>
+            </div>
+            <div className="settings-group">
+              <div className="settings-group-header">Workspace</div>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Global workspace</div>
+                    <div className="settings-row-desc" style={{ wordBreak: 'break-all' }}>{appSettings?.globalWorkspaceRoot ?? (generalLoaded ? '—' : '…')}</div>
+                    <div className="settings-row-desc">Default folder for global sessions and MCP tools. Auto-created, also injected as system context for the AI.</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-btn"
+                    onClick={async () => {
+                      const picked = await pickFolder()
+                      if (!picked.canceled && picked.filePath) void applyPatch({ globalWorkspaceRoot: picked.filePath })
+                    }}
+                  >
+                    Change
+                  </button>
+                </div>
+                {generalError ? (
+                  <div className="settings-row"><div className="settings-row-desc settings-error-text" role="alert">{generalError}</div></div>
+                ) : null}
               </div>
             </div>
           </div>

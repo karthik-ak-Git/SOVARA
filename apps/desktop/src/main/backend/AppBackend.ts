@@ -1,4 +1,6 @@
 import os from 'node:os'
+import fs from 'node:fs'
+import path from 'node:path'
 import { app } from 'electron'
 import type { PersistencePort, LlmPort, ToolPort, ModelRuntimePort, SystemResourceManagerPort, DshPort, HermesPort } from '@shared/types/ports'
 import { SqlitePersistenceAdapter } from './ports/SqlitePersistenceAdapter'
@@ -46,6 +48,8 @@ export class AppBackend {
     this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
     const llm = new LocalOpenAIChatAdapter()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
+    // Ensure global workspace exists (ponytail: one folder, no config UI needed)
+    this.ensureGlobalWorkspace()
     this.chat = new ChatService({
       persistence: this.persistenceAdapter,
       llm,
@@ -54,11 +58,34 @@ export class AppBackend {
       baseDir,
       emit: emit ?? ((): void => {}),
       webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
+      getGlobalWorkspace: () => this.getGlobalWorkspace(),
+      getProjectWorkspace: (projectId: string | null) => {
+        if (!projectId) return null
+        try {
+          const p = (this.persistenceAdapter as unknown as { getProjectSync: (id: string) => { rootPath: string } | null }).getProjectSync(projectId)
+          return p?.rootPath ?? null
+        } catch {
+          return null
+        }
+      },
+      getMcpContext: () => {
+        try {
+          const servers = listMcpServers(this.runtimeConfig).filter((s) => s.enabled && s.status === 'connected')
+          if (servers.length === 0) return null
+          const tools = servers.map((s) => {
+            const tool = `mcp_${s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}`
+            return `${tool} → ${s.name} (${s.provider}, ${s.transport})`
+          }).join(', ')
+          return `MCP tools available (call via tools/call): ${tools}. Global workspace: ${this.getGlobalWorkspace()}.`
+        } catch {
+          return null
+        }
+      },
     })
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,
-      tools: new ToolStubAdapter(webRuntime),
+      tools: new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig)),
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
       models: new ModelRuntimeStub(),
@@ -109,6 +136,7 @@ export class AppBackend {
     sidebarBackground: string
     inlineDiffLayout: string
     renameAfterFork: boolean
+    globalWorkspaceRoot: string
     allowModelDownload: boolean
     autoUpdates: boolean
     sessionNotifications: boolean
@@ -130,6 +158,7 @@ export class AppBackend {
       sidebarBackground: get('sidebar_background') ?? 'solid',
       inlineDiffLayout: get('inline_diff_layout') ?? 'unified',
       renameAfterFork: (get('rename_after_fork') ?? '1') === '1',
+      globalWorkspaceRoot: get('global_workspace_root') ?? this.ensureGlobalWorkspace(),
       allowModelDownload: get('allow_model_download') === '1',
       autoUpdates: (get('auto_updates') ?? '1') === '1',
       sessionNotifications: (get('session_notifications') ?? '1') === '1',
@@ -151,6 +180,7 @@ export class AppBackend {
     sidebarBackground?: string
     inlineDiffLayout?: string
     renameAfterFork?: boolean
+    globalWorkspaceRoot?: string
     allowModelDownload?: boolean
     autoUpdates?: boolean
     sessionNotifications?: boolean
@@ -177,6 +207,14 @@ export class AppBackend {
       set('inline_diff_layout', patch.inlineDiffLayout)
     }
     if (patch.renameAfterFork !== undefined) set('rename_after_fork', patch.renameAfterFork ? '1' : '0')
+    if (patch.globalWorkspaceRoot !== undefined) {
+      const clean = patch.globalWorkspaceRoot.trim().slice(0, 1024)
+      if (clean !== '') {
+        if (!path.isAbsolute(clean)) throw new Error('global workspace must be absolute path')
+        fs.mkdirSync(clean, { recursive: true })
+      }
+      set('global_workspace_root', clean)
+    }
     if (patch.allowModelDownload !== undefined) set('allow_model_download', patch.allowModelDownload ? '1' : '0')
     if (patch.autoUpdates !== undefined) set('auto_updates', patch.autoUpdates ? '1' : '0')
     if (patch.sessionNotifications !== undefined) set('session_notifications', patch.sessionNotifications ? '1' : '0')
@@ -209,6 +247,33 @@ export class AppBackend {
   /** Live web_search flag for the tool adapter (keyless — toggle only). */
   getWebSearchConfig(): { enabled: boolean } {
     return { enabled: this.runtimeConfig.getAppSetting('web_search') === '1' }
+  }
+
+  getGlobalWorkspace(): string {
+    const stored = this.runtimeConfig.getAppSetting('global_workspace_root')
+    if (stored) return stored
+    return path.join(app.getPath('userData'), 'SovaraWorkspace')
+  }
+
+  ensureGlobalWorkspace(): string {
+    const root = this.getGlobalWorkspace()
+    try {
+      fs.mkdirSync(root, { recursive: true })
+    } catch {
+      // ignore
+    }
+    if (!this.runtimeConfig.getAppSetting('global_workspace_root')) {
+      this.runtimeConfig.setAppSetting('global_workspace_root', root)
+    }
+    return root
+  }
+
+  setGlobalWorkspace(rootPath: string): string {
+    const clean = rootPath.trim().slice(0, 1024)
+    if (!path.isAbsolute(clean)) throw new Error('global workspace must be absolute path')
+    fs.mkdirSync(clean, { recursive: true })
+    this.runtimeConfig.setAppSetting('global_workspace_root', clean)
+    return clean
   }
 
   /**

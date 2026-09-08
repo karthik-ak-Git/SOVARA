@@ -102,6 +102,7 @@ export const zSettingsSet = z
     sidebarBackground: z.enum(['solid', 'translucent']).optional(),
     inlineDiffLayout: z.enum(['unified', 'split']).optional(),
     renameAfterFork: z.boolean().optional(),
+    globalWorkspaceRoot: z.string().max(1024).optional(),
     allowModelDownload: z.boolean().optional(),
     autoUpdates: z.boolean().optional(),
     sessionNotifications: z.boolean().optional(),

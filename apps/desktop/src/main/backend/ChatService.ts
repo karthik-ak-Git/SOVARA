@@ -52,6 +52,9 @@ export interface ChatServiceDeps {
   emit: (event: ChatStreamEvent) => void
   /** Optional web-context provider (globe icon). Null = proceed without web. */
   webSearch?: (query: string) => Promise<string | null>
+  getGlobalWorkspace?: () => string
+  getProjectWorkspace?: (projectId: string | null) => string | null
+  getMcpContext?: () => string | null
 }
 
 export interface ChatSendOptions {
@@ -137,6 +140,28 @@ export class ChatService {
 
     // 3. History + user persistence first (durable before any network).
     const prior = await this.deps.persistence.getEvents(sessionId)
+    // Resolve workspace (project or global) — injected as system context so tools know where they may operate.
+    let workspaceContext: string | null = null
+    try {
+      const header = await this.deps.persistence.get(sessionId)
+      const pid = header?.projectId ?? null
+      const projectRoot = this.deps.getProjectWorkspace?.(pid) ?? null
+      const globalRoot = this.deps.getGlobalWorkspace?.() ?? null
+      const root = projectRoot ?? globalRoot
+      if (root) {
+        workspaceContext = pid && projectRoot
+          ? `Project workspace: ${projectRoot} (project ${pid}) — global fallback: ${globalRoot ?? 'none'}`
+          : `Global workspace: ${root}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
+      }
+    } catch {
+      // workspace context is advisory
+    }
+    let mcpContext: string | null = null
+    try {
+      mcpContext = this.deps.getMcpContext?.() ?? null
+    } catch {
+      mcpContext = null
+    }
     // Globe path: transient web context (never persisted to the timeline).
     let webContext: string | null = null
     if (opts?.webSearch && this.deps.webSearch) {
@@ -148,6 +173,8 @@ export class ChatService {
     }
     const messages: LlmChatMessage[] = [
       { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
+      ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
       ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
       ...toRequestMessages(prior),
       { role: 'user', content },

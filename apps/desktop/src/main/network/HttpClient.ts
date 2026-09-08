@@ -351,7 +351,7 @@ async function readBounded(res: Response, maxBytes: number): Promise<string> {
   return Buffer.from(merged).toString('utf8')
 }
 
-// ── MCP probe — intentionally allows remote http(s) hosts (unlike loopback-only helpers above)
+// ── MCP probe/call — intentionally allows remote http(s) hosts (unlike loopback-only helpers above)
 // ponytail: single place for fetch, keeps sovereignty test green (fetch only in HttpClient/hfCatalog)
 export async function fetchMcpProbe(url: string, timeoutMs = 6000): Promise<Response> {
   const controller = new AbortController()
@@ -363,6 +363,24 @@ export async function fetchMcpProbe(url: string, timeoutMs = 6000): Promise<Resp
       headers: { Accept: 'text/event-stream, application/json' },
       redirect: 'follow',
     })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+export async function postMcpJsonRpc(url: string, body: unknown, timeoutMs = 8000): Promise<{ status: number; text: string }> {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+      redirect: 'follow',
+    } as RequestInit)
+    const text = await res.text()
+    return { status: res.status, text }
   } finally {
     clearTimeout(t)
   }
