@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -297,9 +297,14 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     endpoint: '',
   })
 
-  // Skills settings
+  // Skills settings — Bionic are real persisted SKILL.md in userData/skills, not a mock
   const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
   const [skillsLoaded, setSkillsLoaded] = useState(false)
+  const [bionicSkills, setBionicSkills] = useState<BionicSkillView[]>([])
+  const [bionicLoaded, setBionicLoaded] = useState(false)
+  const [skillDialogOpen, setSkillDialogOpen] = useState(false)
+  const [skillForm, setSkillForm] = useState({ name: '', description: '', content: '' })
+  const [skillError, setSkillError] = useState<string | null>(null)
 
   // Agent settings — discovered models + registered tools for the Agent page.
   const [agentModels, setAgentModels] = useState<DiscoveredModel[]>([])
@@ -401,7 +406,18 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     loadArchived()
   }, [activeSection])
 
-  // Load skills sources when skills tab is active
+  // Load skills sources + Bionic when skills tab is active — real fetch, not mock
+  const reloadBionic = useCallback(async (): Promise<void> => {
+    try {
+      const skills = await listBionicSkills()
+      setBionicSkills(skills)
+    } catch {
+      // bionic unavailable
+    } finally {
+      setBionicLoaded(true)
+    }
+  }, [])
+
   useEffect(() => {
     if (activeSection !== 'skills') return
     const loadSkills = async (): Promise<void> => {
@@ -413,9 +429,32 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       } finally {
         setSkillsLoaded(true)
       }
+      void reloadBionic()
     }
     loadSkills()
-  }, [activeSection])
+  }, [activeSection, reloadBionic])
+
+  const submitSkill = useCallback(async (): Promise<void> => {
+    setSkillError(null)
+    const name = skillForm.name.trim()
+    const content = skillForm.content.trim()
+    if (!name) {
+      setSkillError('Name is required')
+      return
+    }
+    if (!content) {
+      setSkillError('Instructions are required')
+      return
+    }
+    try {
+      await addBionicSkill({ name, description: skillForm.description.trim(), content })
+      setSkillDialogOpen(false)
+      setSkillForm({ name: '', description: '', content: '' })
+      await reloadBionic()
+    } catch (e) {
+      setSkillError(e instanceof Error ? e.message : String(e))
+    }
+  }, [skillForm, reloadBionic])
 
   // Load general settings once (version, toggles, feed, last check).
   useEffect(() => {
@@ -1289,22 +1328,62 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
             <div className="settings-group">
               <div className="settings-group-header">
                 <div className="skills-header-row">
-                  <span>Bionic Skills</span>
+                  <span>Bionic Skills {bionicLoaded ? <span className="settings-badge">{bionicSkills.length}</span> : null}</span>
                   <div className="skills-dropdown-wrap">
-                    <button type="button" className="settings-action-btn settings-action-btn--primary">
+                    <button
+                      type="button"
+                      className="settings-action-btn settings-action-btn--primary"
+                      onClick={() => {
+                        setSkillError(null)
+                        setSkillDialogOpen(true)
+                      }}
+                    >
                       + Add Skill
                     </button>
                   </div>
                 </div>
               </div>
-              <div className="settings-card settings-card--empty">
-                <div className="settings-empty-state">
-                  <div className="settings-empty-icon">📦</div>
-                  <div className="settings-empty-text">
-                    <div className="settings-empty-title">No skills installed yet</div>
-                    <div className="settings-empty-desc">Create a custom skill or install a pre-built one.</div>
+              {skillError ? <div className="settings-row-desc settings-error-text" role="alert">{skillError}</div> : null}
+              <div className="settings-card">
+                {!bionicLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : bionicSkills.length === 0 ? (
+                  <div className="settings-card--empty">
+                    <div className="settings-empty-state">
+                      <div className="settings-empty-icon">📦</div>
+                      <div className="settings-empty-text">
+                        <div className="settings-empty-title">No skills installed yet</div>
+                        <div className="settings-empty-desc">Create a custom skill — it will be injected into the AI system context for every chat (when enabled).</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  bionicSkills.map((sk) => (
+                    <div key={sk.id} className="settings-row">
+                      <div className="settings-row-text">
+                        <div className="settings-row-label">{sk.name}</div>
+                        <div className="settings-row-desc" style={{ wordBreak: 'break-all' }}>{sk.description || sk.path}</div>
+                      </div>
+                      <div className="settings-row-right">
+                        <span className="settings-badge" title={sk.path}>{sk.id}</span>
+                        <button
+                          type="button"
+                          className="settings-action-btn"
+                          onClick={async () => {
+                            try {
+                              await removeBionicSkill(sk.id)
+                              setBionicSkills((prev) => prev.filter((p) => p.id !== sk.id))
+                            } catch (e) {
+                              setSkillError(e instanceof Error ? e.message : String(e))
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
@@ -1358,8 +1437,39 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                     </div>
                   </div>
                 ))
-              )}
-            </div>
+               )}
+             </div>
+            {skillDialogOpen ? (
+              <div className="modal-overlay" onClick={() => setSkillDialogOpen(false)} role="dialog" aria-modal="true" aria-label="Add skill">
+                <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <h2 className="modal-title">Add Bionic Skill</h2>
+                    <button type="button" className="modal-close" onClick={() => setSkillDialogOpen(false)} aria-label="Close">×</button>
+                  </div>
+                  <div className="modal-body">
+                    <label className="modal-label" htmlFor="skill-name">Skill name</label>
+                    <input id="skill-name" className="modal-input" value={skillForm.name} onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))} placeholder="My Skill" maxLength={80} />
+                    <label className="modal-label" htmlFor="skill-desc">Description</label>
+                    <input id="skill-desc" className="modal-input" value={skillForm.description} onChange={(e) => setSkillForm((f) => ({ ...f, description: e.target.value }))} placeholder="What this skill does" maxLength={200} />
+                    <label className="modal-label" htmlFor="skill-content">Instructions (SKILL.md body)</label>
+                    <textarea id="skill-content" className="settings-textarea" rows={6} value={skillForm.content} onChange={(e) => setSkillForm((f) => ({ ...f, content: e.target.value }))} placeholder="You are a helpful assistant for... Follow these steps:" maxLength={8000} />
+                    {skillError ? <div className="settings-error-text" role="alert">{skillError}</div> : null}
+                    <span className="field-hint">Saved to {`{userData}/skills/<name>/SKILL.md`} and injected into AI system context when enabled.</span>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-sm" onClick={() => setSkillDialogOpen(false)}>Cancel</button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => void submitSkill()}
+                      disabled={!skillForm.name.trim() || !skillForm.content.trim()}
+                    >
+                      Create skill
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         )
 

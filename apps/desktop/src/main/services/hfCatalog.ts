@@ -1,6 +1,16 @@
 import type { ExploreModel, ExploreModelFile } from '@shared/types/explore'
 
 const HF_API_BASE = 'https://huggingface.co/api/models'
+const HF_TIMEOUT_MS = 20000
+
+interface HfCardData {
+  license?: string
+  language?: string[]
+  datasets?: string[]
+  base_model?: string
+  pipeline_tag?: string
+  library_name?: string
+}
 
 interface HfModelResponse {
   id: string
@@ -10,7 +20,25 @@ interface HfModelResponse {
   downloads: number
   tags: string[]
   pipeline_tag?: string
+  gated?: boolean
+  usedStorage?: number
+  cardData?: HfCardData
+  safetensors?: { total?: number }
   siblings?: Array<{ rfilename: string }>
+}
+
+async function hfFetch(url: string, init?: { method?: string }): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), HF_TIMEOUT_MS)
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: ctrl.signal,
+      headers: { 'User-Agent': 'SOVARA/1.0' },
+    })
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function detectIconType(author: string): ExploreModel['iconType'] {
@@ -74,18 +102,29 @@ function extractArchitecture(tags: string[], modelId: string): string {
   return archTag || 'transformers'
 }
 
-function detectGgufFiles(siblings: Array<{ rfilename: string }>): ExploreModelFile[] {
+function formatParams(total?: number, tags: string[] = [], modelId = ''): string {
+  if (typeof total === 'number' && total > 0) {
+    if (total >= 1_000_000_000) return `${(total / 1_000_000_000).toFixed(total >= 10_000_000_000 ? 0 : 1)}B`
+    if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(0)}M`
+    return `${total}`
+  }
+  return extractParameters(tags, modelId)
+}
+
+function detectGgufFiles(modelId: string, siblings: Array<{ rfilename: string }>): ExploreModelFile[] {
   const files: ExploreModelFile[] = []
   const ggufFiles = siblings.filter((s) => s.rfilename.endsWith('.gguf'))
 
   for (const file of ggufFiles) {
     const name = file.rfilename.split('/').pop() || file.rfilename
-    const quantMatch = name.match(/Q[0-9]+_[A-Z]+_[A-Z]+/)
+    const quantMatch = name.match(/Q\d+_[A-Z0-9_]+/)
     files.push({
       format: 'GGUF',
       quantization: quantMatch ? quantMatch[0] : undefined,
       sizeGB: 0,
-      downloadUrl: `https://huggingface.co/${file.rfilename}`,
+      downloadUrl: `https://huggingface.co/${modelId}/resolve/main/${file.rfilename}`,
+      rfilename: file.rfilename,
+      sizeBytes: 0,
     })
   }
 
@@ -103,10 +142,13 @@ function detectGgufFiles(siblings: Array<{ rfilename: string }>): ExploreModelFi
   if (files.length === 0) {
     const safetensors = siblings.filter((s) => s.rfilename.endsWith('.safetensors'))
     if (safetensors.length > 0) {
+      const first = safetensors[0]
       files.push({
         format: 'safetensors',
         sizeGB: 0,
-        downloadUrl: `https://huggingface.co/${safetensors[0].rfilename}`,
+        downloadUrl: `https://huggingface.co/${modelId}/resolve/main/${first.rfilename}`,
+        rfilename: first.rfilename,
+        sizeBytes: 0,
       })
     }
   }
@@ -114,9 +156,28 @@ function detectGgufFiles(siblings: Array<{ rfilename: string }>): ExploreModelFi
   return files
 }
 
+/** HEAD lookup for exact file bytes (bounded, parallel). Mutates sizes in place. */
+async function fillFileSizes(files: ExploreModelFile[], maxFiles = 12): Promise<void> {
+  const sized = files.filter((f) => f.downloadUrl).slice(0, maxFiles)
+  await Promise.all(sized.map(async (f) => {
+    try {
+      const res = await hfFetch(f.downloadUrl, { method: 'HEAD' })
+      const len = res.headers.get('content-length')
+      const bytes = len ? parseInt(len, 10) : NaN
+      if (Number.isFinite(bytes) && bytes > 0) {
+        f.sizeBytes = bytes
+        f.sizeGB = bytes / (1024 ** 3)
+      }
+    } catch {
+      // size stays unknown — download still works
+    }
+  }))
+}
+
 function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
   const name = hf.id.split('/').pop() || hf.id
   const author = hf.author || hf.id.split('/')[0]
+  const card = hf.cardData ?? {}
 
   return {
     id: hf.id,
@@ -129,13 +190,30 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
     likes: hf.likes,
     staffPick: false,
     updatedAt: hf.lastModified,
-    parameters: extractParameters(hf.tags, hf.id),
+    parameters: formatParams(hf.safetensors?.total, hf.tags, hf.id),
     architecture: extractArchitecture(hf.tags, hf.id),
     capabilities: detectCapabilities(hf.tags, hf.pipeline_tag, hf.id),
-    files: detectGgufFiles(hf.siblings || []),
+    files: detectGgufFiles(hf.id, hf.siblings || []),
     tags: hf.tags,
     iconType: detectIconType(author),
+    ...(typeof card.license === 'string' ? { license: card.license } : {}),
+    ...(Array.isArray(card.language) ? { languages: card.language } : {}),
+    ...(typeof card.base_model === 'string' ? { baseModel: card.base_model } : {}),
+    ...(typeof hf.pipeline_tag === 'string' ? { pipelineTag: hf.pipeline_tag } : {}),
+    ...(typeof hf.gated === 'boolean' ? { gated: hf.gated } : {}),
+    ...(typeof hf.usedStorage === 'number' ? { repoSizeBytes: hf.usedStorage } : {}),
   }
+}
+
+/** Strip YAML frontmatter + cap length for safe plain-text display. */
+export function cleanReadme(raw: string, maxChars = 6000): string {
+  let text = raw.replace(/\r\n/g, '\n')
+  if (text.startsWith('---\n')) {
+    const end = text.indexOf('\n---', 3)
+    if (end >= 0) text = text.slice(end + 4)
+  }
+  text = text.trim()
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n\n…(truncated — view the full README on Hugging Face)` : text
 }
 
 export async function fetchModelsFromHf(
@@ -158,11 +236,12 @@ export async function fetchModelsFromHf(
 
   const url = `${HF_API_BASE}?${params.toString()}`
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'SOVARA/1.0',
-    },
-  })
+  let response: Response
+  try {
+    response = await hfFetch(url)
+  } catch (e) {
+    throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face request timed out.' : 'Could not reach Hugging Face. Check your connection.')
+  }
 
   if (!response.ok) {
     throw new Error(`Hugging Face API error: ${response.status}`)
@@ -175,18 +254,28 @@ export async function fetchModelsFromHf(
 export async function fetchModelFromHf(modelId: string): Promise<ExploreModel> {
   const url = `${HF_API_BASE}/${modelId}`
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'SOVARA/1.0',
-    },
-  })
+  let response: Response
+  try {
+    response = await hfFetch(url)
+  } catch (e) {
+    throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face request timed out.' : 'Could not reach Hugging Face. Check your connection.')
+  }
 
   if (!response.ok) {
     throw new Error(`Hugging Face API error: ${response.status}`)
   }
 
   const data: HfModelResponse = await response.json()
-  return mapHfModelToExplore(data)
+  const model = mapHfModelToExplore(data)
+  await fillFileSizes(model.files)
+  // Best-effort README (raw markdown, frontmatter stripped, plain-text UI).
+  try {
+    const raw = await hfFetch(`https://huggingface.co/${modelId}/raw/main/README.md`)
+    if (raw.ok) model.readme = cleanReadme(await raw.text())
+  } catch {
+    // readme stays absent — detail renders without it
+  }
+  return model
 }
 
 export function sortModels(models: ExploreModel[], sortBy: string): ExploreModel[] {

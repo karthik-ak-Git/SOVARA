@@ -79,6 +79,16 @@ export const zSkillsToggle = z
   .object({ sourceName: z.string().min(1).max(128), enabled: z.boolean() })
   .strict()
 
+export const zBionicSkillAdd = z
+  .object({
+    name: z.string().min(1).max(80),
+    description: z.string().max(200).optional(),
+    content: z.string().min(1).max(8000),
+  })
+  .strict()
+
+export const zBionicSkillId = z.object({ id: z.string().min(1).max(64) }).strict()
+
 export const zExploreListModels = z
   .object({ sortBy: z.string().optional(), query: z.string().optional() })
   .strict()

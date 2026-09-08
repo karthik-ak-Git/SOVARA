@@ -3,6 +3,10 @@ export interface ExploreModelFile {
   quantization?: string   // Q4_K_M, Q5_K_S, etc.
   sizeGB: number
   downloadUrl: string
+  /** Repo-relative path (for the downloader). */
+  rfilename?: string
+  /** Exact bytes (HEAD lookup; 0 when unknown). */
+  sizeBytes?: number
 }
 
 export interface ExploreModel {
@@ -22,6 +26,14 @@ export interface ExploreModel {
   files: ExploreModelFile[]
   tags: string[]
   iconType: 'hf' | 'google' | 'meta' | 'mistral' | 'qwen' | 'microsoft' | 'deepseek'
+  /** Detail-only fields (explore:getModel). Absent on list rows. */
+  license?: string
+  languages?: string[]
+  baseModel?: string
+  pipelineTag?: string
+  gated?: boolean
+  repoSizeBytes?: number
+  readme?: string
 }
 
 export interface HardwareInfo {

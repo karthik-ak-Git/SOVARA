@@ -15,6 +15,7 @@ import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
 import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type McpServer } from '../services/mcpStore'
+import { loadEnabledSkillsContent } from '../services/skillsScanner'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -77,6 +78,13 @@ export class AppBackend {
             return `${tool} → ${s.name} (${s.provider}, ${s.transport})`
           }).join(', ')
           return `MCP tools available (call via tools/call): ${tools}. Global workspace: ${this.getGlobalWorkspace()}.`
+        } catch {
+          return null
+        }
+      },
+      getSkillsContext: async () => {
+        try {
+          return await loadEnabledSkillsContent(this.runtimeConfig)
         } catch {
           return null
         }

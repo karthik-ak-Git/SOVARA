@@ -50,6 +50,9 @@ export const IPC_CHANNELS = {
   // Skills scanning
   'skills:scan': { type: 'invoke' as const },
   'skills:toggle': { type: 'invoke' as const },
+  'skills:listBionic': { type: 'invoke' as const },
+  'skills:addBionic': { type: 'invoke' as const },
+  'skills:removeBionic': { type: 'invoke' as const },
   // Explore (HuggingFace catalog)
   'explore:listModels': { type: 'invoke' as const },
   'explore:getModel': { type: 'invoke' as const },

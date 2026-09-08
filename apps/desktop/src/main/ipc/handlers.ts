@@ -8,9 +8,9 @@ import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLo
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
-import { scanSkillsSources } from '../services/skillsScanner'
+import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility } from '../services/hardwareCheck'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -310,13 +310,33 @@ export function registerIpcHandlers(): void {
 
   // ── Skills scanning ──
   ipcMain.handle('skills:scan', async () => {
-    return scanSkillsSources()
+    return scanSkillsSources((getBackend() as unknown as { runtimeConfig: { getAppSetting: (k: string) => string | null } }).runtimeConfig)
   })
 
   ipcMain.handle('skills:toggle', async (_e, raw: unknown) => {
     const parsed = zSkillsToggle.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid skills:toggle payload: ${parsed.error.message}`)
+    const store = (getBackend() as unknown as { runtimeConfig: { getAppSetting: (k: string) => string | null; setAppSetting: (k: string, v: string) => void } }).runtimeConfig
+    setSkillsSourceEnabled(store, parsed.data.sourceName, parsed.data.enabled)
     return { ok: true, sourceName: parsed.data.sourceName, enabled: parsed.data.enabled }
+  })
+
+  ipcMain.handle('skills:listBionic', async () => {
+    return listBionicSkills()
+  })
+
+  ipcMain.handle('skills:addBionic', async (_e, raw: unknown) => {
+    const parsed = zBionicSkillAdd.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid skills:addBionic payload: ${parsed.error.message}`)
+    return createBionicSkill(parsed.data)
+  })
+
+  ipcMain.handle('skills:removeBionic', async (_e, raw: unknown) => {
+    const parsed = zBionicSkillId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid skills:removeBionic payload: ${parsed.error.message}`)
+    const ok = await deleteBionicSkill(parsed.data.id)
+    if (!ok) throw new Error('skill not found')
+    return { ok: true }
   })
 
   // ── Explore (HuggingFace catalog) ──

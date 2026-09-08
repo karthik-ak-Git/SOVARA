@@ -55,6 +55,7 @@ export interface ChatServiceDeps {
   getGlobalWorkspace?: () => string
   getProjectWorkspace?: (projectId: string | null) => string | null
   getMcpContext?: () => string | null
+  getSkillsContext?: () => Promise<string | null>
 }
 
 export interface ChatSendOptions {
@@ -162,6 +163,12 @@ export class ChatService {
     } catch {
       mcpContext = null
     }
+    let skillsContext: string | null = null
+    try {
+      skillsContext = (await this.deps.getSkillsContext?.()) ?? null
+    } catch {
+      skillsContext = null
+    }
     // Globe path: transient web context (never persisted to the timeline).
     let webContext: string | null = null
     if (opts?.webSearch && this.deps.webSearch) {
@@ -175,6 +182,7 @@ export class ChatService {
       { role: 'system', content: CHAT_SYSTEM_PROMPT },
       ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
       ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
+      ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
       ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
       ...toRequestMessages(prior),
       { role: 'user', content },

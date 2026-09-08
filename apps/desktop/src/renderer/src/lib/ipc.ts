@@ -327,6 +327,13 @@ export interface SkillsSource {
   enabled: boolean
 }
 
+export interface BionicSkillView {
+  id: string
+  name: string
+  description: string
+  path: string
+}
+
 export async function scanSkills(): Promise<SkillsSource[]> {
   return (await sovara().invoke('skills:scan')) as SkillsSource[]
 }
@@ -336,6 +343,18 @@ export async function toggleSkillsSource(
   enabled: boolean
 ): Promise<{ ok: boolean }> {
   return (await sovara().invoke('skills:toggle', { sourceName, enabled })) as { ok: boolean }
+}
+
+export async function listBionicSkills(): Promise<BionicSkillView[]> {
+  return (await sovara().invoke('skills:listBionic')) as BionicSkillView[]
+}
+
+export async function addBionicSkill(input: { name: string; description?: string; content: string }): Promise<BionicSkillView> {
+  return (await sovara().invoke('skills:addBionic', input)) as BionicSkillView
+}
+
+export async function removeBionicSkill(id: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('skills:removeBionic', { id })) as { ok: boolean }
 }
 
 // ── Explore (HuggingFace catalog) ──
