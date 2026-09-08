@@ -407,6 +407,40 @@ export async function setLibraryDirectory(path: string): Promise<{ ok: boolean }
   return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean }
 }
 
+// ── MCP servers (Connected Apps) ──
+export interface McpServerView {
+  id: string
+  name: string
+  provider: string
+  transport: 'stdio' | 'http'
+  command?: string
+  endpoint?: string
+  enabled: boolean
+  createdAt: number
+}
+
+export async function listMcpServers(): Promise<McpServerView[]> {
+  return (await sovara().invoke('mcp:list')) as McpServerView[]
+}
+
+export async function addMcpServer(input: {
+  name: string
+  provider?: string
+  transport: 'stdio' | 'http'
+  command?: string
+  endpoint?: string
+}): Promise<McpServerView> {
+  return (await sovara().invoke('mcp:add', input)) as McpServerView
+}
+
+export async function removeMcpServer(id: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('mcp:remove', { id })) as { ok: boolean }
+}
+
+export async function toggleMcpServer(id: string, enabled: boolean): Promise<McpServerView> {
+  return (await sovara().invoke('mcp:toggle', { id, enabled })) as McpServerView
+}
+
 // ── Voice transcription (local faster-whisper) ──
 export interface VoiceTranscribeResult {
   ok: boolean

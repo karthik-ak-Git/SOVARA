@@ -4,7 +4,7 @@ import {
   Link2, Puzzle, Globe, BookOpen, Monitor, Server, FileText,
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { ExplorePage } from '../explore/ExplorePage'
 import { LibraryPage } from '../library/LibraryPage'
@@ -200,14 +200,19 @@ const MCP_PRESETS: McpPreset[] = [
   },
 ]
 
+const MCP_PRESET_CMDS: Record<string, string> = {
+  github: 'npx -y @modelcontextprotocol/server-github',
+  linear: 'npx -y @modelcontextprotocol/server-linear',
+  notion: 'npx -y @notionhq/mcp-server',
+  sentry: 'npx -y @sentry/mcp-server',
+  atlassian: 'npx -y @atlassian/mcp-server',
+}
+
 export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
 
-  // Appearance — theme is persisted (appSettings); the other two are
-  // visual-only with no backend field, so they stay local.
-  const [sidebarBackground, setSidebarBackground] = useState('solid')
-  const [inlineDiffLayout, setInlineDiffLayout] = useState('unified')
-
+  // Appearance — derived from persisted appSettings, not local state
+  // ponytail: no local useState mirror, single source is appSettings + applyPatch
   // Token utilization
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
@@ -217,6 +222,20 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   // ponytail: no local mirror, single source is appSettings + applyPatch (consumer reads via getAppSettings when fork lands)
   const [archivedSessions, setArchivedSessions] = useState<SessionHeaderView[]>([])
   const [archivedLoaded, setArchivedLoaded] = useState(false)
+
+  // MCP — real persisted via app_meta JSON (mcpStore), not a mock grid
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([])
+  const [mcpLoaded, setMcpLoaded] = useState(false)
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false)
+  const [mcpDialogPreset, setMcpDialogPreset] = useState<McpPreset | null>(null)
+  const [mcpError, setMcpError] = useState<string | null>(null)
+  const [mcpForm, setMcpForm] = useState<{ name: string; provider: string; transport: 'stdio' | 'http'; command: string; endpoint: string }>({
+    name: '',
+    provider: '',
+    transport: 'stdio',
+    command: '',
+    endpoint: '',
+  })
 
   // Skills settings
   const [skillsSources, setSkillsSources] = useState<SkillsSource[]>([])
@@ -392,6 +411,61 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
   }, [appSettings?.theme])
+
+  // MCP — load when Connected Apps is active
+  const reloadMcp = useCallback(async (): Promise<void> => {
+    try {
+      const servers = await listMcpServers()
+      setMcpServers(servers)
+    } catch {
+      // unavailable
+    } finally {
+      setMcpLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeSection !== 'connected-apps') return
+    void reloadMcp()
+  }, [activeSection, reloadMcp])
+
+  const openMcpDialog = useCallback((preset: McpPreset | null): void => {
+    setMcpError(null)
+    setMcpDialogPreset(preset)
+    if (preset) {
+      setMcpForm({
+        name: preset.name,
+        provider: preset.provider,
+        transport: 'stdio',
+        command: MCP_PRESET_CMDS[preset.id] ?? '',
+        endpoint: '',
+      })
+    } else {
+      setMcpForm({ name: '', provider: '', transport: 'stdio', command: '', endpoint: '' })
+    }
+    setMcpDialogOpen(true)
+  }, [])
+
+  const submitMcp = useCallback(async (): Promise<void> => {
+    setMcpError(null)
+    const name = mcpForm.name.trim()
+    if (!name) {
+      setMcpError('Name is required')
+      return
+    }
+    try {
+      await addMcpServer({
+        name,
+        provider: mcpForm.provider.trim() || 'Custom',
+        transport: mcpForm.transport,
+        ...(mcpForm.transport === 'stdio' ? { command: mcpForm.command.trim() } : { endpoint: mcpForm.endpoint.trim() }),
+      })
+      setMcpDialogOpen(false)
+      await reloadMcp()
+    } catch (e) {
+      setMcpError(e instanceof Error ? e.message : String(e))
+    }
+  }, [mcpForm, reloadMcp])
 
   const runSearchTest = useCallback(async (): Promise<void> => {
     setTestingSearch(true)
@@ -917,40 +991,98 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
 
             <div className="settings-group">
               <div className="settings-group-header">
-                Connected MCP Servers <span className="settings-badge">0</span>
+                Connected MCP Servers <span className="settings-badge">{mcpLoaded ? String(mcpServers.length) : '…'}</span>
               </div>
-              <div className="settings-card settings-card--empty">
-                <div className="settings-empty-state">
-                  <div className="settings-empty-icon">🔒</div>
-                  <div className="settings-empty-text">
-                    <div className="settings-empty-title">No MCPs connected yet</div>
-                    <div className="settings-empty-desc">Choose a popular MCP below to get started.</div>
+              {mcpError ? <div className="settings-row-desc settings-error-text" role="alert">{mcpError}</div> : null}
+              <div className="settings-card">
+                {!mcpLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : mcpServers.length === 0 ? (
+                  <div className="settings-card--empty">
+                    <div className="settings-empty-state">
+                      <div className="settings-empty-icon">🔒</div>
+                      <div className="settings-empty-text">
+                        <div className="settings-empty-title">No MCPs connected yet</div>
+                        <div className="settings-empty-desc">Choose a popular MCP below or add a custom one. Servers are persisted locally and survive restarts.</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  mcpServers.map((s) => (
+                    <div key={s.id} className="settings-row">
+                      <div className="settings-row-text">
+                        <div className="settings-row-label">
+                          {s.name} <span className="badge" style={{ marginLeft: 6, fontSize: 10 }}>{s.transport}</span>
+                          {!s.enabled ? <span className="muted small"> · disabled</span> : null}
+                        </div>
+                        <div className="settings-row-desc">
+                          {s.transport === 'stdio' ? (s.command ?? '') : (s.endpoint ?? '')} · By {s.provider}
+                        </div>
+                      </div>
+                      <div className="settings-row-right">
+                        <button
+                          type="button"
+                          className={`settings-toggle ${s.enabled ? 'settings-toggle--on' : ''}`}
+                          onClick={async () => {
+                            const next = !s.enabled
+                            setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: next } : p)))
+                            try {
+                              await toggleMcpServer(s.id, next)
+                            } catch {
+                              setMcpServers((prev) => prev.map((p) => (p.id === s.id ? { ...p, enabled: !next } : p)))
+                            }
+                          }}
+                          role="switch"
+                          aria-checked={s.enabled}
+                          aria-label={`Enable ${s.name}`}
+                        >
+                          <span className="settings-toggle-thumb" />
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-action-btn"
+                          onClick={async () => {
+                            try {
+                              await removeMcpServer(s.id)
+                              setMcpServers((prev) => prev.filter((p) => p.id !== s.id))
+                            } catch (e) {
+                              setMcpError(e instanceof Error ? e.message : String(e))
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
             <div className="settings-group">
               <div className="settings-group-header">Popular MCPs</div>
               <p className="settings-row-desc settings-row-desc--spaced">
-                Hand-picked MCP servers with a simple setup.
+                Hand-picked MCP servers with a simple setup. Click Set Up to prefill the add dialog — no extra install step until you confirm.
               </p>
               <div className="mcp-grid">
-                {MCP_PRESETS.map((mcp) => (
-                  <div key={mcp.id} className="mcp-card">
-                    <div className="mcp-card-icon">{mcp.icon}</div>
-                    <div className="mcp-card-body">
-                      <div className="mcp-card-name">{mcp.name}</div>
-                      <div className="mcp-card-desc">{mcp.description}</div>
-                      <div className="mcp-card-footer">
-                        <span className="mcp-card-by">By {mcp.provider}</span>
-                        <button type="button" className="settings-action-btn settings-action-btn--primary">
-                          Set Up
-                        </button>
+                {MCP_PRESETS.map((mcp) => {
+                  const connected = mcpServers.some((s) => s.name === mcp.name && s.provider === mcp.provider)
+                  return (
+                    <div key={mcp.id} className="mcp-card">
+                      <div className="mcp-card-icon">{mcp.icon}</div>
+                      <div className="mcp-card-body">
+                        <div className="mcp-card-name">{mcp.name} {connected ? <span className="badge badge--success" style={{ marginLeft: 6 }}>connected</span> : null}</div>
+                        <div className="mcp-card-desc">{mcp.description}</div>
+                        <div className="mcp-card-footer">
+                          <span className="mcp-card-by">By {mcp.provider}</span>
+                          <button type="button" className="settings-action-btn settings-action-btn--primary" onClick={() => openMcpDialog(mcp)}>
+                            Set Up
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
@@ -959,14 +1091,60 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 <div className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-label">Manual MCP server setup</div>
-                    <div className="settings-row-desc">Add a local command or remote MCP server.</div>
+                    <div className="settings-row-desc">Add a local command (stdio) or remote MCP server (http).</div>
                   </div>
-                  <button type="button" className="settings-action-btn">
+                  <button type="button" className="settings-action-btn" onClick={() => openMcpDialog(null)}>
                     + Add custom MCP
                   </button>
                 </div>
               </div>
             </div>
+
+            {mcpDialogOpen ? (
+              <div className="modal-overlay" onClick={() => setMcpDialogOpen(false)} role="dialog" aria-modal="true" aria-label={mcpDialogPreset ? `Set up ${mcpDialogPreset.name}` : 'Add MCP server'}>
+                <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <h2 className="modal-title">{mcpDialogPreset ? `Set up ${mcpDialogPreset.name}` : 'Add MCP server'}</h2>
+                    <button type="button" className="modal-close" onClick={() => setMcpDialogOpen(false)} aria-label="Close">×</button>
+                  </div>
+                  <div className="modal-body">
+                    <label className="modal-label" htmlFor="mcp-name">Name</label>
+                    <input id="mcp-name" className="modal-input" value={mcpForm.name} onChange={(e) => setMcpForm((f) => ({ ...f, name: e.target.value }))} placeholder="GitHub" maxLength={80} />
+                    <label className="modal-label" htmlFor="mcp-provider">Provider</label>
+                    <input id="mcp-provider" className="modal-input" value={mcpForm.provider} onChange={(e) => setMcpForm((f) => ({ ...f, provider: e.target.value }))} placeholder="GitHub" maxLength={80} />
+                    <label className="modal-label" htmlFor="mcp-transport">Transport</label>
+                    <select id="mcp-transport" className="settings-select" value={mcpForm.transport} onChange={(e) => setMcpForm((f) => ({ ...f, transport: e.target.value as 'stdio' | 'http' }))}>
+                      <option value="stdio">stdio (local command)</option>
+                      <option value="http">http (remote URL)</option>
+                    </select>
+                    {mcpForm.transport === 'stdio' ? (
+                      <>
+                        <label className="modal-label" htmlFor="mcp-command">Command</label>
+                        <input id="mcp-command" className="modal-input" value={mcpForm.command} onChange={(e) => setMcpForm((f) => ({ ...f, command: e.target.value }))} placeholder="npx -y @modelcontextprotocol/server-github" maxLength={512} />
+                        <span className="field-hint">Local command executed by the app (Phase 2 will spawn it). No network probe on add.</span>
+                      </>
+                    ) : (
+                      <>
+                        <label className="modal-label" htmlFor="mcp-endpoint">Endpoint URL</label>
+                        <input id="mcp-endpoint" className="modal-input" value={mcpForm.endpoint} onChange={(e) => setMcpForm((f) => ({ ...f, endpoint: e.target.value }))} placeholder="https://example.com/mcp/sse" inputMode="url" maxLength={512} />
+                      </>
+                    )}
+                    {mcpError ? <div className="settings-error-text" role="alert">{mcpError}</div> : null}
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-sm" onClick={() => setMcpDialogOpen(false)}>Cancel</button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => void submitMcp()}
+                      disabled={!mcpForm.name.trim() || (mcpForm.transport === 'stdio' ? !mcpForm.command.trim() : !mcpForm.endpoint.trim())}
+                    >
+                      {mcpDialogPreset ? 'Add' : 'Add server'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         )
 

@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpId, zMcpToggle } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -368,6 +368,30 @@ export function registerIpcHandlers(): void {
     const parsed = zLibrarySetDirectory.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
     return { ok: true, path: parsed.data.path }
+  })
+
+  // ── MCP servers (Connected Apps) ──
+  ipcMain.handle('mcp:list', async () => {
+    return getBackend().listMcpServers()
+  })
+  ipcMain.handle('mcp:add', async (_e, raw: unknown) => {
+    const parsed = zMcpAdd.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid mcp:add payload: ${parsed.error.message}`)
+    return getBackend().addMcpServer(parsed.data)
+  })
+  ipcMain.handle('mcp:remove', async (_e, raw: unknown) => {
+    const parsed = zMcpId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid mcp:remove payload: ${parsed.error.message}`)
+    const ok = getBackend().removeMcpServer(parsed.data.id)
+    if (!ok) throw new Error('unknown mcp server')
+    return { ok: true }
+  })
+  ipcMain.handle('mcp:toggle', async (_e, raw: unknown) => {
+    const parsed = zMcpToggle.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid mcp:toggle payload: ${parsed.error.message}`)
+    const server = getBackend().toggleMcpServer(parsed.data.id, parsed.data.enabled)
+    if (!server) throw new Error('unknown mcp server')
+    return server
   })
 
   // ── Voice transcription (local faster-whisper) ──

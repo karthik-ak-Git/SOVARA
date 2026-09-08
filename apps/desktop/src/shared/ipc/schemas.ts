@@ -128,3 +128,17 @@ export const zVoiceTranscribe = z
     filename: z.string().min(1).max(256),
   })
   .strict()
+
+export const zMcpAdd = z
+  .object({
+    name: z.string().min(1).max(80),
+    provider: z.string().max(80).optional(),
+    transport: z.enum(['stdio', 'http']),
+    command: z.string().max(512).optional(),
+    endpoint: z.string().max(512).optional(),
+  })
+  .strict()
+
+export const zMcpId = z.object({ id: z.string().min(1).max(64) }).strict()
+
+export const zMcpToggle = z.object({ id: z.string().min(1).max(64), enabled: z.boolean() }).strict()

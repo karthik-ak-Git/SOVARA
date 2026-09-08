@@ -12,6 +12,7 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
+import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, type McpServer } from '../services/mcpStore'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -243,6 +244,20 @@ export class AppBackend {
     } catch {
       return null
     }
+  }
+
+  // ── MCP servers (Connected Apps) — ponytail: app_meta JSON list, no new table/migration ──
+  listMcpServers(): McpServer[] {
+    return listMcpServers(this.runtimeConfig)
+  }
+  addMcpServer(input: { name: string; provider?: string; transport: 'stdio' | 'http'; command?: string; endpoint?: string }): McpServer {
+    return addMcpServer(this.runtimeConfig, input)
+  }
+  removeMcpServer(id: string): boolean {
+    return removeMcpServer(this.runtimeConfig, id)
+  }
+  toggleMcpServer(id: string, enabled: boolean): McpServer | null {
+    return toggleMcpServer(this.runtimeConfig, id, enabled)
   }
 
   recordUpdateCheck(status: string): void {

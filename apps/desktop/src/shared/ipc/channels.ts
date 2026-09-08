@@ -67,6 +67,11 @@ export const IPC_CHANNELS = {
   // Tools (gated by exec permission level)
   'tools:list': { type: 'invoke' as const },
   'tools:dispatch': { type: 'invoke' as const },
+  // MCP servers (Connected Apps)
+  'mcp:list': { type: 'invoke' as const },
+  'mcp:add': { type: 'invoke' as const },
+  'mcp:remove': { type: 'invoke' as const },
+  'mcp:toggle': { type: 'invoke' as const },
   // Voice transcription (local faster-whisper)
   'voice:transcribe': { type: 'invoke' as const },
   'voice:status': { type: 'invoke' as const },
