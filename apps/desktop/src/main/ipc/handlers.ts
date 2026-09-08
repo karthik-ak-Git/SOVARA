@@ -7,6 +7,7 @@ import type { ChatStreamEvent } from '@shared/types/chat'
 import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
+import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
@@ -228,6 +229,15 @@ export function registerIpcHandlers(): void {
     const result = await checkForUpdates(settings.updateFeedUrl, backend.getAppVersion())
     backend.recordUpdateCheck(result.status)
     return result
+  })
+
+  // ── First-run setup — Python env for the sidecars (what the .exe provisions) ──
+  ipcMain.handle('setup:getPythonStatus', async () => {
+    return getPythonStatus()
+  })
+
+  ipcMain.handle('setup:ensurePython', async () => {
+    return ensurePythonEnv()
   })
 
   // ── Exec permissions — the AI command levels, enforced on every dispatch ──

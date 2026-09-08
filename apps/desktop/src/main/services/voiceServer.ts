@@ -9,6 +9,7 @@ import { join, resolve } from 'path'
 import { existsSync } from 'fs'
 import { app } from 'electron'
 import { postLoopback, getLoopbackJson } from '../network/HttpClient'
+import { resolvePythonExe } from './pythonEnv'
 
 let server: ChildProcess | null = null
 let ready = false
@@ -25,10 +26,6 @@ function getPythonDir(): string {
   const devPath = join(appRoot, 'python')
   const prodPath = join(process.resourcesPath ?? '', 'python')
   return existsSync(devPath) ? devPath : prodPath
-}
-
-function getPythonCommand(): string {
-  return process.platform === 'win32' ? 'python' : 'python3'
 }
 
 async function waitForServer(timeoutMs = 30_000): Promise<void> {
@@ -65,7 +62,10 @@ export async function startVoiceServer(): Promise<void> {
       }
 
       console.log(`[voice] Starting server: ${serverPath}`)
-      server = spawn(getPythonCommand(), [serverPath, 'base'], {
+      // Provisioned interpreter (venv on installed machines, system in dev).
+      const pythonExe = await resolvePythonExe()
+      const [cmd, ...prefix] = pythonExe.split(' ')
+      server = spawn(cmd as string, [...prefix, serverPath, 'base'], {
         cwd: pythonDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },

@@ -11,6 +11,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { app } from 'electron'
 import { postLoopback, getLoopbackJson } from '../network/HttpClient'
+import { resolvePythonExe } from './pythonEnv'
 
 let server: ChildProcess | null = null
 let ready = false
@@ -50,10 +51,6 @@ function getPythonDir(): string {
   return existsSync(devPath) ? devPath : prodPath
 }
 
-function getPythonCommand(): string {
-  return process.platform === 'win32' ? 'python' : 'python3'
-}
-
 async function waitForServer(timeoutMs = 45_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -80,7 +77,10 @@ export async function startCrawlServer(): Promise<void> {
     try {
       const serverPath = join(getPythonDir(), 'crawl_server.py')
       if (!existsSync(serverPath)) return // sidecar not shipped — callers fall back
-      server = spawn(getPythonCommand(), [serverPath, String(CRAWL_PORT)], {
+      // Provisioned interpreter (venv on installed machines, system in dev).
+      const pythonExe = await resolvePythonExe()
+      const [cmd, ...prefix] = pythonExe.split(' ')
+      server = spawn(cmd as string, [...prefix, serverPath, String(CRAWL_PORT)], {
         cwd: getPythonDir(),
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },

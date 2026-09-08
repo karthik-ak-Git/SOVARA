@@ -257,6 +257,24 @@ export async function checkForUpdatesNow(): Promise<UpdateCheckView> {
   return (await sovara().invoke('updates:checkNow')) as UpdateCheckView
 }
 
+// ── First-run setup (Python env for sidecars) ──
+export type PythonPhase = 'idle' | 'checking' | 'installing-deps' | 'installing-browsers' | 'ready' | 'no-python' | 'error'
+
+export interface PythonStatusView {
+  phase: PythonPhase
+  message: string
+  pythonExe: string | null
+  source: 'system' | 'venv' | null
+}
+
+export async function getPythonSetupStatus(): Promise<PythonStatusView> {
+  return (await sovara().invoke('setup:getPythonStatus')) as PythonStatusView
+}
+
+export async function ensurePythonSetup(): Promise<PythonStatusView> {
+  return (await sovara().invoke('setup:ensurePython')) as PythonStatusView
+}
+
 // ── Window controls (frameless window) ──
 export async function minimizeWindow(): Promise<void> {
   await sovara().invoke('window:minimize')

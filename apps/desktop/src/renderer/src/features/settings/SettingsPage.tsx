@@ -35,7 +35,7 @@ const NAV_GROUPS: SettingsNavGroup[] = [
     items: [
       { id: 'general', label: 'General', icon: <Settings size={16} /> },
       { id: 'agent', label: 'Agent', icon: <Cpu size={16} /> },
-      { id: 'billing', label: 'Billing and Usage', icon: <CreditCard size={16} /> },
+      { id: 'billing', label: 'Usage', icon: <CreditCard size={16} /> },
       { id: 'appearance', label: 'Appearance', icon: <Palette size={16} /> },
       { id: 'sessions', label: 'Sessions', icon: <MessageSquare size={16} /> },
     ],
@@ -208,8 +208,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [uiColorTheme, setUiColorTheme] = useState('system')
   const [inlineDiffLayout, setInlineDiffLayout] = useState('unified')
 
-  // Billing/usage settings
-  const [billingAccount, setBillingAccount] = useState('personal')
+  // Token utilization
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
   const [usageLoaded, setUsageLoaded] = useState(false)
@@ -616,69 +615,105 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
         )
       }
 
-      case 'billing':
+      case 'billing': {
+        const hasUsage = totalUsage.totalTokens > 0
+        const totalRequests = modelUsage.reduce((n, m) => n + m.requestCount, 0)
+        const promptPct = hasUsage ? Math.round((totalUsage.promptTokens / totalUsage.totalTokens) * 100) : 0
+        const completionPct = hasUsage ? 100 - promptPct : 0
+        const avgPerRequest = totalRequests > 0 ? Math.round(totalUsage.totalTokens / totalRequests) : 0
+        const maxTokens = Math.max(...modelUsage.map((m) => m.totalTokens), 1)
         return (
           <div className="settings-content">
-            <h2 className="settings-section-title">Billing</h2>
-            <div className="settings-group">
-              <div className="settings-group-header">Billing account</div>
-              <div className="settings-card">
-                <div className="settings-row">
-                  <div className="settings-row-content">
-                    <span className="settings-row-label">Billing account</span>
-                  </div>
-                  <select
-                    className="settings-select"
-                    value={billingAccount}
-                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setBillingAccount(e.target.value)}
-                    aria-label="Billing account"
-                  >
-                    <option value="personal">Personal</option>
-                    <option value="team">Team</option>
-                  </select>
-                </div>
-              </div>
+            <div className="usage-head">
+              <h2 className="settings-section-title">Token Utilization</h2>
+              <p className="usage-subtitle">Tracked locally per inference request. No external billing — tokens are from the runtime usage field, estimated by characters when omitted.</p>
             </div>
 
             <div className="settings-group">
-              <div className="settings-group-header">Usage</div>
-              <div className="settings-card">
-                <p className="settings-usage-desc">
-                  Usage is based on API calls made through local inference runtimes. No external billing is required.
-                </p>
-                {usageLoaded && totalUsage.totalTokens > 0 && (
-                  <div className="settings-usage-stats">
-                    <div className="settings-usage-row">
-                      <span className="settings-usage-label">Total tokens used:</span>
-                      <span className="settings-usage-value settings-usage-value--bold">{totalUsage.totalTokens.toLocaleString()}</span>
-                    </div>
-                    <div className="settings-usage-row">
-                      <span className="settings-usage-label">Prompt tokens:</span>
-                      <span className="settings-usage-value">{totalUsage.promptTokens.toLocaleString()}</span>
-                    </div>
-                    <div className="settings-usage-row">
-                      <span className="settings-usage-label">Completion tokens:</span>
-                      <span className="settings-usage-value">{totalUsage.completionTokens.toLocaleString()}</span>
+              <div className="settings-group-header">Overview</div>
+              {!usageLoaded ? (
+                <div className="settings-card"><div className="settings-row"><span className="muted">Loading usage…</span></div></div>
+              ) : !hasUsage ? (
+                <div className="settings-card settings-card--empty">
+                  <div className="settings-empty-state">
+                    <div className="settings-empty-icon">◐</div>
+                    <div className="settings-empty-text">
+                      <div className="settings-empty-title">No tokens tracked yet</div>
+                      <div className="settings-empty-desc">Send a message with a local model — usage appears here per request and per model.</div>
                     </div>
                   </div>
-                )}
-                {usageLoaded && modelUsage.length > 0 && (
-                  <div className="settings-model-usage">
-                    <div className="settings-model-usage-title">By Model</div>
-                    <div className="settings-model-usage-list">
-                      {modelUsage.map((m) => (
-                        <div key={m.model} className="settings-model-usage-row">
-                          <span className="settings-model-usage-name">{m.model}</span>
-                          <span className="settings-model-usage-detail">{m.totalTokens.toLocaleString()} tokens ({m.requestCount} requests)</span>
-                        </div>
-                      ))}
+                </div>
+              ) : (
+                <>
+                  <div className="usage-stats-grid">
+                    <div className="usage-stat">
+                      <div className="usage-stat-label">Total tokens</div>
+                      <div className="usage-stat-value">{totalUsage.totalTokens.toLocaleString()}</div>
+                      <div className="usage-stat-sub">{totalRequests.toLocaleString()} requests · avg {avgPerRequest.toLocaleString()} / req</div>
                     </div>
+                    <div className="usage-stat">
+                      <div className="usage-stat-label">Prompt</div>
+                      <div className="usage-stat-value">{totalUsage.promptTokens.toLocaleString()}</div>
+                      <div className="usage-stat-sub">{promptPct}% of total</div>
+                    </div>
+                    <div className="usage-stat">
+                      <div className="usage-stat-label">Completion</div>
+                      <div className="usage-stat-value">{totalUsage.completionTokens.toLocaleString()}</div>
+                      <div className="usage-stat-sub">{completionPct}% of total</div>
+                    </div>
+                  </div>
+                  <div className="settings-card">
+                    <div className="usage-distro">
+                      <div className="usage-distro-labels">
+                        <span>Prompt {promptPct}%</span>
+                        <span>Completion {completionPct}%</span>
+                      </div>
+                      <div className="usage-distro-bar" role="progressbar" aria-valuenow={promptPct} aria-valuemin={0} aria-valuemax={100} aria-label="Prompt vs completion split">
+                        <span className="usage-distro-fill usage-distro-fill--prompt" style={{ width: `${promptPct}%` }} />
+                        <span className="usage-distro-fill usage-distro-fill--completion" style={{ width: `${completionPct}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Usage by model</div>
+              <div className="settings-card">
+                {!usageLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : modelUsage.length === 0 ? (
+                  <div className="settings-row"><span className="muted">No per-model data yet.</span></div>
+                ) : (
+                  <div className="usage-models">
+                    {modelUsage.map((m) => {
+                      const pct = Math.round((m.totalTokens / totalUsage.totalTokens) * 100) || 0
+                      const barW = Math.max(4, Math.round((m.totalTokens / maxTokens) * 100))
+                      return (
+                        <div key={m.model} className="usage-model-row">
+                          <div className="usage-model-top">
+                            <span className="usage-model-name" title={m.model}>{m.model}</span>
+                            <span className="usage-model-meta">{m.totalTokens.toLocaleString()} · {m.requestCount} req · {pct}%</span>
+                          </div>
+                          <div className="usage-model-bar-track" aria-hidden>
+                            <span className="usage-model-bar-fill" style={{ width: `${barW}%` }} />
+                          </div>
+                          <div className="usage-model-detail">
+                            <span>{m.promptTokens.toLocaleString()} prompt</span>
+                            <span aria-hidden>·</span>
+                            <span>{m.completionTokens.toLocaleString()} completion</span>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>
             </div>
           </div>
         )
+      }
 
       case 'sessions':
         return (

@@ -58,6 +58,9 @@ export const IPC_CHANNELS = {
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },
   'library:setDirectory': { type: 'invoke' as const },
+  // First-run setup (Python env for sidecars)
+  'setup:getPythonStatus': { type: 'invoke' as const },
+  'setup:ensurePython': { type: 'invoke' as const },
   // Exec permissions (AI command levels)
   'exec:getMode': { type: 'invoke' as const },
   'exec:setMode': { type: 'invoke' as const },
