@@ -1,12 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { app } from 'electron'
+import os from 'node:os'
 import type { HardwareProfileFull, ModelProfile, ValidationResult, ValidationStoreEntry } from '@shared/types/validation'
 import { hardwareFingerprint } from './hardwareProfile'
 import { modelFingerprint } from './modelValidationRunner'
 
+function getUserDataFallback(): string { try{ const {app} = require('electron'); return app.getPath('userData'); }catch{ return path.join(os.tmpdir(), 'sovara_validation'); } }
+
 function storePath(baseDir?: string): string {
-  const dir = baseDir ?? app.getPath('userData')
+  const dir = baseDir ?? getUserDataFallback()
   return path.join(dir, 'validation-cache.json')
 }
 

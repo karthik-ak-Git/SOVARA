@@ -112,7 +112,7 @@ export class ValidationRunner {
     this.update(jobId, { phase, progress, status: progress >= 100 ? this.jobs.get(jobId)!.status : 'TESTING' as ValidationStatus })
   }
 
-  async start(modelId: string, libraryPath: string | undefined, exploreModel: ExploreModel | undefined, opts: ValidationRunnerOpts = {}): Promise<ValidationJob> {
+  async start(modelId: string, libraryPath?: string, exploreModel?: ExploreModel, opts: ValidationRunnerOpts = {}): Promise<ValidationJob> {
     const jobId = this.makeJobId()
     const now = Date.now()
     const job: ValidationJob = {

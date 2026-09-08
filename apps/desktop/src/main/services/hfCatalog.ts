@@ -140,10 +140,10 @@ function detectGgufFiles(modelId: string, siblings: Array<{ rfilename: string }>
 
   for (const file of ggufFiles) {
     const name = file.rfilename.split('/').pop() || file.rfilename
-    const quantMatch = name.match(/Q\d+_[A-Z0-9_]+/)
+    const quantMatch = name.match(/Q\d+_[A-Z0-9_]+/i)
     files.push({
       format: 'GGUF',
-      quantization: quantMatch ? quantMatch[0] : undefined,
+      quantization: quantMatch ? quantMatch[0].toUpperCase() : undefined,
       sizeGB: 0,
       downloadUrl: `https://huggingface.co/${modelId}/resolve/main/${file.rfilename}`,
       rfilename: file.rfilename,

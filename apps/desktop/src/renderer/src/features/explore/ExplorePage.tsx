@@ -9,7 +9,9 @@ import {
   listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations, getHardwareProfile,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, isDownloaded, getActiveDownloads, openExternal,
+  startValidation, getValidation, listValidations, getFullHardwareProfile,
   type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
+  type ValidationJob, type HardwareProfileFull,
 } from '../../lib/ipc'
 import type { HardwareInfo } from '@shared/types/explore'
 
@@ -120,6 +122,21 @@ function CompatibilityBadge({ result }: { result: CompatibilityResult | null }):
 }
 function hasGguf(model: ExploreModel): boolean { return model.files.some((f) => f.format === 'GGUF') || model.tags.some((t) => t.toLowerCase().includes('gguf')) }
 
+function ValidationStatusBadge({ status }: { status: ValidationJob['status'] }): ReactElement {
+  const map: Record<string, { cls: string; label: string; icon: ReactElement }> = {
+    NOT_TESTED: { cls: 'val--not', label: 'Not tested', icon: <Info size={11} /> },
+    ESTIMATED_COMPATIBLE: { cls: 'val--est', label: 'Estimated compatible', icon: <Eye size={11} /> },
+    ESTIMATED_INCOMPATIBLE: { cls: 'val--bad', label: 'Estimated incompatible', icon: <Ban size={11} /> },
+    TESTING: { cls: 'val--testing', label: 'Testing…', icon: <Loader2 size={11} className="spin" /> },
+    LOAD_FAILED: { cls: 'val--bad', label: 'Load failed', icon: <Ban size={11} /> },
+    INFERENCE_FAILED: { cls: 'val--bad', label: 'Inference failed', icon: <AlertTriangle size={11} /> },
+    VERIFIED: { cls: 'val--ok', label: 'Verified', icon: <Check size={11} /> },
+    VERIFIED_WITH_LIMITATIONS: { cls: 'val--warn', label: 'Verified with limitations', icon: <AlertTriangle size={11} /> },
+  }
+  const m = map[status] ?? map.NOT_TESTED
+  return <span className={`explore-val-badge ${m.cls}`}>{m.icon} {m.label}</span>
+}
+
 // ── Options ──────────────────────────────────────────────────────────
 const PIPELINE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'All tasks' },
@@ -215,6 +232,10 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
   const [libraryStatus, setLibraryStatus] = useState<Record<string, boolean>>({})
   const [showDownloads, setShowDownloads] = useState(true)
   const [downloadTo, setDownloadTo] = useState('This device')
+  const [validationJob, setValidationJob] = useState<ValidationJob | null>(null)
+  const [validationBusy, setValidationBusy] = useState(false)
+  const [fullHardware, setFullHardware] = useState<HardwareProfileFull | null>(null)
+  const validationPoll = useRef<number | null>(null)
   const searchTimer = useRef<number | null>(null)
 
   const selectModel = useCallback((model: ExploreModel): void => {
@@ -231,7 +252,7 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
     return () => { if (searchTimer.current) window.clearTimeout(searchTimer.current) }
   }, [searchQuery])
 
-  useEffect(() => { void getHardwareProfile().then(setHardware).catch(() => {}) }, [])
+  useEffect(() => { void getHardwareProfile().then(setHardware).catch(() => {}); void getFullHardwareProfile().then(setFullHardware).catch(() => {}) }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -289,6 +310,35 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
     return () => { cancelled = true }
   }, [detail, selectedModel])
 
+  // ── Validation: load cached + live job for selected model ──
+  useEffect(() => {
+    if (!selectedModel) { setValidationJob(null); return }
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      try {
+        const jobs = await listValidations()
+        if (cancelled) return
+        const hit = jobs.filter((j) => j.modelId === selectedModel.id).sort((a, b) => b.createdAt - a.createdAt)[0]
+        setValidationJob(hit ?? null)
+      } catch { if (!cancelled) setValidationJob(null) }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [selectedModel?.id])
+
+  useEffect(() => {
+    if (!validationJob || validationJob.status !== 'TESTING') return
+    if (validationPoll.current) window.clearInterval(validationPoll.current)
+    validationPoll.current = window.setInterval(async () => {
+      try {
+        const j = await getValidation(validationJob.jobId)
+        setValidationJob(j)
+        if (j.status !== 'TESTING' && validationPoll.current) { window.clearInterval(validationPoll.current); validationPoll.current = null }
+      } catch { /* keep polling */ }
+    }, 800)
+    return () => { if (validationPoll.current) { window.clearInterval(validationPoll.current); validationPoll.current = null } }
+  }, [validationJob?.jobId, validationJob?.status])
+
   useEffect(() => {
     const dispose = onDownloadEvents((ev) => {
       setDownloads((prev) => {
@@ -321,6 +371,17 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
     try { const result = await listExploreModels({ sortBy, query: debouncedQuery, pipelineTag: pipelineFilter, tag: tagFilter }); setModels(result) } catch { /* ignore */ } finally { setLoading(false) }
   }, [sortBy, debouncedQuery, pipelineFilter, tagFilter])
   const handleOpenExternal = useCallback(async (url: string): Promise<void> => { try { await openExternal(url) } catch { window.open(url, '_blank', 'noopener') } }, [])
+
+  const handleValidateWithFile = useCallback(async (model: ExploreModel, fileIndex: number): Promise<void> => {
+    setValidationBusy(true)
+    try {
+      // Prefer library path if already downloaded; backend will resolve via scanLibrary
+      const job = await startValidation(model.id)
+      void fileIndex
+      setValidationJob(job)
+    } catch { /* ignore */ }
+    finally { setValidationBusy(false) }
+  }, [])
 
   const sortOptions = useMemo(() => [
     { value: 'Recommended', label: 'Recommended', icon: Sparkles },
@@ -441,6 +502,10 @@ export function ExplorePage({ onBack }: ExplorePageProps): ReactElement {
             onPause={pauseFileDownload}
             onResume={resumeFileDownload}
             onOpenExternal={handleOpenExternal}
+            validationJob={validationJob}
+            fullHardware={fullHardware}
+            validationBusy={validationBusy}
+            onValidate={handleValidateWithFile}
           />
         ) : (
           <div className="explore-detail-empty">
@@ -508,6 +573,10 @@ function ExploreDetail(props: {
   onPause: (modelId: string, rfilename: string) => void
   onResume: (model: ExploreModel, fileIndex: number) => void
   onOpenExternal: (url: string) => void
+  validationJob: ValidationJob | null
+  fullHardware: HardwareProfileFull | null
+  validationBusy: boolean
+  onValidate: (model: ExploreModel, fileIndex: number) => void
 }): ReactElement {
   const { summary, detail, detailLoading, detailError } = props
   const selectedModel = detail ?? summary
@@ -628,6 +697,57 @@ function ExploreDetail(props: {
         </div>
       </div>
 
+      <div className="explore-validation-card" role="region" aria-label="Hardware validation">
+        <div className="explore-validation-head">
+          <h3 className="explore-card-title"><Cpu size={14} /> Hardware Validation</h3>
+          <ValidationStatusBadge status={props.validationJob?.status ?? 'NOT_TESTED'} />
+        </div>
+        {props.fullHardware ? (
+          <div className="explore-validation-hw">
+            <span className="explore-validation-hw-item"><Cpu size={11} /> {props.fullHardware.cpu.name} · {props.fullHardware.cpu.cores}c/{props.fullHardware.cpu.threads}t</span>
+            <span className="explore-validation-hw-item"><HardDrive size={11} /> RAM {Math.round(props.fullHardware.memory.ram_total_mb/1024)}GB avail {Math.round(props.fullHardware.memory.ram_available_mb/1024)}GB</span>
+            <span className="explore-validation-hw-item"><Zap size={11} /> {props.fullHardware.gpu.name ?? 'No GPU'} {props.fullHardware.gpu.vram_total_mb ? `· ${Math.round(props.fullHardware.gpu.vram_total_mb/1024)}GB VRAM avail ${Math.round((props.fullHardware.gpu.vram_available_mb||0)/1024)}GB` : ''} · {props.fullHardware.backend.name}</span>
+          </div>
+        ) : null}
+        {props.validationJob ? (
+          <div className="explore-validation-body">
+            <div className="explore-validation-phase">
+              <span className="explore-validation-phase-label">{props.validationJob.phase}</span>
+              <span className="explore-validation-progress-text">{props.validationJob.progress}%</span>
+            </div>
+            <div className="explore-validation-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.validationJob.progress}>
+              <div className="explore-validation-bar" style={{ width: `${props.validationJob.progress}%` }} />
+            </div>
+            {props.validationJob.status === 'TESTING' ? <div className="explore-validation-hint"><Loader2 size={11} className="spin" /> {props.validationJob.phase} — isolated pools, no VRAM+RAM summing</div> : null}
+            {props.validationJob.result ? (
+              <div className="explore-validation-result">
+                <div className="explore-validation-metrics">
+                  <span>Backend: <strong>{props.validationJob.result.backend}</strong> {props.validationJob.result.gpu_offload ? '· GPU offload YES' : '· CPU'}</span>
+                  {props.validationJob.result.peak_ram_mb ? <span>Peak RAM {props.validationJob.result.peak_ram_mb}MB</span> : null}
+                  {props.validationJob.result.peak_vram_mb ? <span>Peak VRAM {props.validationJob.result.peak_vram_mb}MB</span> : null}
+                  {props.validationJob.result.latency_ms ? <span>Latency {props.validationJob.result.latency_ms}ms</span> : null}
+                </div>
+                {props.validationJob.result.limitations?.length ? <div className="explore-validation-limit">Limitations: {props.validationJob.result.limitations.join('; ')}</div> : null}
+                {props.validationJob.result.reason ? <div className="explore-validation-reason">Reason: {props.validationJob.result.reason}</div> : null}
+              </div>
+            ) : props.validationJob.error ? <div className="explore-validation-error">{props.validationJob.error}</div> : null}
+            {props.validationJob.status !== 'TESTING' ? <div className="explore-validation-distinction"><Info size={11} /> <span><strong>ESTIMATED</strong> predicts · <strong>LOADED</strong> proves runtime init · <strong>VERIFIED</strong> proves inference on this machine</span></div> : null}
+          </div>
+        ) : (
+          <div className="explore-validation-empty">Not tested on this device. Verification requires real load + inference — see estimate above.</div>
+        )}
+        <div className="explore-validation-actions">
+          {isInstalled ? (
+            <button type="button" className="explore-validate-btn" disabled={props.validationBusy || props.validationJob?.status === 'TESTING'} onClick={() => props.onValidate(selectedModel, props.selectedFile)}>
+              {props.validationBusy || props.validationJob?.status === 'TESTING' ? <><Loader2 size={12} className="spin" /> Validating…</> : props.validationJob?.status === 'VERIFIED' || props.validationJob?.status === 'VERIFIED_WITH_LIMITATIONS' ? <><Check size={12} /> Re-validate</> : <><Zap size={12} /> Validate on this device</>}
+            </button>
+          ) : (
+            <span className="explore-validation-hint">Download the selected file first, then Validate will load the real GGUF and run inference on this hardware</span>
+          )}
+          {props.validationJob?.result?.gpu_offload === false && props.fullHardware?.gpu.vram_total_mb ? <span className="explore-validation-warn"><AlertTriangle size={11} /> GPU exists ≠ GPU used — verified CPU fallback</span> : null}
+        </div>
+      </div>
+
       <div className="explore-details-card">
         <h3 className="explore-card-title">Details</h3>
         <p className="explore-details-desc">{selectedModel.longDescription} Apache 2.0 licensed.</p>
@@ -648,12 +768,17 @@ function ExploreDetail(props: {
             </span>
           </div>
         </div>
-        {props.hardware ? (
+        {props.hardware ? (() => {
+          const rec = props.recommendations?.[0];
+          const sev = rec?.severity;
+          const badgeCls = sev === 'too-large' ? 'explore-hw-badge--bad' : sev === 'tight' ? 'explore-hw-badge--tight' : props.hardware.gpuAvailable ? 'explore-hw-badge--gpu' : 'explore-hw-badge--cpu';
+          return (
           <div className="explore-hw-footer">
             <HardDrive size={11} /> {props.hardware.gpuAvailable && props.hardware.totalVramMB ? `${props.hardware.gpuName} · ${(props.hardware.totalVramMB / 1024).toFixed(1)} GB VRAM` : 'CPU only'} · RAM {(props.hardware.totalRamMB / 1024).toFixed(1)} GB
-            <span className={`explore-hw-badge ${props.hardware.gpuAvailable ? 'explore-hw-badge--gpu' : 'explore-hw-badge--cpu'}`}>{props.hardware.gpuAvailable ? 'VRAM' : 'RAM'}: Requires ~{(props.recommendations?.[0]?.estimatedRamGB ?? 0).toFixed(1)} GB</span>
+            <span className={`explore-hw-badge ${badgeCls}`}>{props.hardware.gpuAvailable ? 'VRAM' : 'RAM'}: Requires ~{(rec?.estimatedRamGB ?? 0).toFixed(1)} GB</span>
           </div>
-        ) : null}
+          );
+        })() : null}
       </div>
 
       <div className="explore-readme-card">
