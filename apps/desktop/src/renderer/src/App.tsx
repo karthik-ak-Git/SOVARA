@@ -8,9 +8,10 @@ import type { FileAttachment } from './features/chat/Composer'
 import { CreateProjectModal } from './components/modals/CreateProjectModal'
 import { ModelsPage } from './features/models/ModelsPage'
 import { SettingsPage } from './features/settings/SettingsPage'
-import { Settings, Cpu, Sparkles, Library, Bot } from 'lucide-react'
+import { Settings, Cpu, Sparkles, Library } from 'lucide-react'
 import { Card } from './components/ui/Card'
 import { EmptyState } from './components/ui/EmptyState'
+import { AgentsPage } from './features/agents/AgentsPage'
 import { createProject, listProjects, pickFolder, getExecMode, setExecMode, getAppSettings, type ProjectView, type ExecMode } from './lib/ipc'
 
 interface Info {
@@ -220,18 +221,7 @@ export function App(): React.JSX.Element {
 
         {activeNav === 'settings' ? <SettingsPage onBack={() => setActiveNav('chat')} /> : null}
 
-        {activeNav === 'agents' ? (
-          <Card>
-            <div className="panel-head">
-              <div className="panel-title">
-                <Bot size={16} aria-hidden />
-                <span>Agents</span>
-              </div>
-              <div className="panel-hint muted small">Coming soon</div>
-            </div>
-            <EmptyState title="Agents" description="Agent presets and composition — stubs in Phase 1, adapters in Phase 2." icon={<Bot size={20} aria-hidden />} />
-          </Card>
-        ) : null}
+        {activeNav === 'agents' ? <AgentsPage /> : null}
 
         {activeNav === 'skills' ? (
           <Card>

@@ -38,12 +38,14 @@ export function createMainWindow(): BrowserWindow {
     console.error(`[renderer preload-error] at ${preloadPath}:`, error)
   })
 
-  // ── CSP (sovereign default: no external connects except loopback allowlisted in CSP) ──
+  // ── CSP (sovereign default: no external connects except loopback + Hugging Face Hub for Explore/downloads) ──
+  const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com"
+  const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co data:"
   const isDev = Boolean(process.env['ELECTRON_RENDERER_URL'])
   const devCsp =
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*"
+    `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`
   const prodCsp =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*"
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ${HF_CONNECT}`
   const activeCsp = isDev ? devCsp : prodCsp
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
@@ -93,11 +95,23 @@ export function createMainWindow(): BrowserWindow {
 
   // ── New window block ──
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // Allowlist only — everything else denied, never blindly shell.openExternal
+    // Allowlist: Hugging Face + GitHub only — everything else denied
     try {
       const u = new URL(url)
-      const allowedHosts = new Set<string>([])
-      if (u.protocol === 'https:' && allowedHosts.has(u.hostname)) {
+      const allowedHosts = new Set<string>([
+        'huggingface.co',
+        'www.huggingface.co',
+        'cdn-lfs.huggingface.co',
+        'huggingface.s3.amazonaws.com',
+        'github.com',
+        'www.github.com',
+        'raw.githubusercontent.com',
+      ])
+      const isAllowedHost =
+        allowedHosts.has(u.hostname) ||
+        u.hostname.endsWith('.huggingface.co') ||
+        u.hostname.endsWith('.hf.co')
+      if (u.protocol === 'https:' && isAllowedHost) {
         void shell.openExternal(u.toString())
       } else if (url !== 'about:blank') {
         console.warn(`[security] blocked window.open to ${url}`)

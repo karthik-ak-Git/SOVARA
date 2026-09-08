@@ -90,7 +90,12 @@ export const zBionicSkillAdd = z
 export const zBionicSkillId = z.object({ id: z.string().min(1).max(64) }).strict()
 
 export const zExploreListModels = z
-  .object({ sortBy: z.string().optional(), query: z.string().optional() })
+  .object({
+    sortBy: z.string().optional(),
+    query: z.string().optional(),
+    pipelineTag: z.string().max(64).optional(),
+    tag: z.string().max(64).optional(),
+  })
   .strict()
   .default({})
 
@@ -103,7 +108,34 @@ export const zExploreGetCompatibility = z
   .strict()
 
 export const zLibrarySetDirectory = z
-  .object({ path: z.string().min(1).max(512) })
+  .object({ path: z.string().max(512).default('') })
+  .strict()
+
+export const zLibraryDownload = z
+  .object({
+    modelId: z.string().min(1).max(128),
+    rfilename: z.string().min(1).max(512),
+    downloadUrl: z.string().min(1).max(2048),
+  })
+  .strict()
+
+export const zLibraryCancel = z
+  .object({
+    modelId: z.string().min(1).max(128),
+    rfilename: z.string().min(1).max(512),
+  })
+  .strict()
+
+export const zLibraryDelete = z
+  .object({ path: z.string().min(1).max(1024) })
+  .strict()
+
+export const zLibraryIsDownloaded = z
+  .object({ modelId: z.string().min(1).max(128), rfilename: z.string().min(1).max(512) })
+  .strict()
+
+export const zShellOpenExternal = z
+  .object({ url: z.string().min(1).max(2048) })
   .strict()
 
 export const zSettingsSet = z

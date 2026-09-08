@@ -358,41 +358,23 @@ export async function removeBionicSkill(id: string): Promise<{ ok: boolean }> {
 }
 
 // ── Explore (HuggingFace catalog) ──
-export interface ExploreModelFile {
-  format: string
-  quantization?: string
-  sizeGB: number
-  downloadUrl: string
+import type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
+export type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
+
+export interface ExploreListOpts {
+  sortBy?: string
+  query?: string
+  pipelineTag?: string
+  tag?: string
 }
 
-export interface ExploreModel {
-  id: string
-  name: string
-  slug: string
-  author: string
-  description: string
-  longDescription: string
-  downloads: number
-  likes: number
-  staffPick: boolean
-  updatedAt: string
-  parameters: string
-  architecture: string
-  capabilities: string[]
-  files: ExploreModelFile[]
-  tags: string[]
-  iconType: 'hf' | 'google' | 'meta' | 'mistral' | 'qwen' | 'microsoft' | 'deepseek'
-}
-
-export interface CompatibilityResult {
-  fitsInMemory: boolean
-  estimatedRamUsageGB: number
-  estimatedVramUsageGB?: number
-  message: string
-  severity: 'good' | 'tight' | 'too-large'
-}
-
-export async function listExploreModels(sortBy?: string, query?: string): Promise<ExploreModel[]> {
+export async function listExploreModels(
+  sortBy?: string | ExploreListOpts,
+  query?: string
+): Promise<ExploreModel[]> {
+  if (typeof sortBy === 'object' && sortBy !== null) {
+    return (await sovara().invoke('explore:listModels', sortBy)) as ExploreModel[]
+  }
   return (await sovara().invoke('explore:listModels', { sortBy, query })) as ExploreModel[]
 }
 
@@ -406,14 +388,11 @@ export async function getModelCompatibility(modelId: string): Promise<Compatibil
 
 // ── Library (downloaded models) ──
 export interface LibraryModel {
-  id: string
   name: string
-  slug: string
-  sizeGB: number
-  format: string
-  quantization?: string
-  capabilities: string[]
-  lastUsed?: string
+  file: string
+  sizeBytes: number
+  path: string
+  modifiedAt: number
 }
 
 export async function listLibraryModels(): Promise<LibraryModel[]> {
@@ -424,8 +403,45 @@ export async function getLibraryDirectory(): Promise<{ path: string }> {
   return (await sovara().invoke('library:getDirectory')) as { path: string }
 }
 
-export async function setLibraryDirectory(path: string): Promise<{ ok: boolean }> {
-  return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean }
+export async function setLibraryDirectory(path = ''): Promise<{ ok: boolean; path: string }> {
+  return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean; path: string }
+}
+
+export async function deleteLibraryModel(path: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('library:delete', { path })) as { ok: boolean }
+}
+
+// ── Model downloads (progress on events:download) ──
+export type DownloadState = 'started' | 'progress' | 'done' | 'error' | 'cancelled'
+
+export interface DownloadEventView {
+  modelId: string
+  rfilename: string
+  state: DownloadState
+  receivedBytes: number
+  totalBytes: number | null
+  error?: string
+}
+
+export async function downloadModelFile(
+  modelId: string,
+  rfilename: string,
+  downloadUrl: string
+): Promise<{ ok: boolean; resumed: boolean }> {
+  return (await sovara().invoke('library:download', { modelId, rfilename, downloadUrl })) as {
+    ok: boolean
+    resumed: boolean
+  }
+}
+
+export async function cancelModelDownload(modelId: string, rfilename: string): Promise<{ cancelled: boolean }> {
+  return (await sovara().invoke('library:cancelDownload', { modelId, rfilename })) as { cancelled: boolean }
+}
+
+export function onDownloadEvents(callback: (event: DownloadEventView) => void): () => void {
+  return sovara().on('events:download', (...args: unknown[]) => {
+    callback(args[0] as DownloadEventView)
+  })
 }
 
 // ── MCP servers (Connected Apps) ──

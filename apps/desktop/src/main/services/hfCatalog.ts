@@ -20,11 +20,23 @@ interface HfModelResponse {
   downloads: number
   tags: string[]
   pipeline_tag?: string
-  gated?: boolean
+  gated?: boolean | string
+  trendingScore?: number
   usedStorage?: number
   cardData?: HfCardData
   safetensors?: { total?: number }
   siblings?: Array<{ rfilename: string }>
+}
+
+function getHfAuthHeader(): Record<string, string> {
+  const token =
+    process.env.HF_TOKEN ??
+    process.env.HF_API_TOKEN ??
+    process.env.HUGGINGFACE_TOKEN ??
+    process.env.HF_ACCESS_TOKEN ??
+    ''
+  if (token.trim().length > 0) return { Authorization: `Bearer ${token.trim()}` }
+  return {}
 }
 
 async function hfFetch(url: string, init?: { method?: string }): Promise<Response> {
@@ -34,7 +46,7 @@ async function hfFetch(url: string, init?: { method?: string }): Promise<Respons
     return await fetch(url, {
       ...init,
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'SOVARA/1.0' },
+      headers: { 'User-Agent': 'SOVARA/1.0', ...getHfAuthHeader() },
     })
   } finally {
     clearTimeout(timer)
@@ -66,7 +78,7 @@ function detectCapabilities(tags: string[], pipelineTag?: string, modelId?: stri
   const caps: string[] = []
   const allTags = tags.join(' ').toLowerCase()
 
-  if (allTags.includes('vision') || allTags.includes('image') || allTags.includes('vqa')) {
+  if (allTags.includes('vision') || allTags.includes('image') || allTags.includes('vqa') || allTags.includes('multimodal')) {
     caps.push('Vision')
   }
   if (allTags.includes('tool') || allTags.includes('function-calling') || allTags.includes('agent')) {
@@ -79,9 +91,19 @@ function detectCapabilities(tags: string[], pipelineTag?: string, modelId?: stri
       (modelId && modelId.toLowerCase().includes('coder'))) {
     caps.push('Code')
   }
+  if (allTags.includes('instruct') || allTags.includes('chat')) {
+    caps.push('Chat')
+  }
+  if (allTags.includes('embedding') || allTags.includes('sentence')) {
+    caps.push('Embeddings')
+  }
 
   if (caps.length === 0 && pipelineTag === 'text-generation') {
     caps.push('Reasoning')
+  }
+  if (caps.length === 0 && pipelineTag) {
+    const pretty = pipelineTag.replace(/-/g, ' ')
+    caps.push(pretty.charAt(0).toUpperCase() + pretty.slice(1))
   }
 
   return caps
@@ -153,6 +175,13 @@ function detectGgufFiles(modelId: string, siblings: Array<{ rfilename: string }>
     }
   }
 
+  if (files.length === 0 && ggufFiles.length === 0 && !hasMlx) {
+    const ggufTag = siblings.some((s) => s.rfilename.toLowerCase().includes('gguf'))
+    if (ggufTag) {
+      // sibling listing may be truncated - still signal GGUF available via tag fallback
+    }
+  }
+
   return files
 }
 
@@ -200,13 +229,13 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
     ...(Array.isArray(card.language) ? { languages: card.language } : {}),
     ...(typeof card.base_model === 'string' ? { baseModel: card.base_model } : {}),
     ...(typeof hf.pipeline_tag === 'string' ? { pipelineTag: hf.pipeline_tag } : {}),
-    ...(typeof hf.gated === 'boolean' ? { gated: hf.gated } : {}),
+    ...(typeof hf.gated === 'boolean' ? { gated: hf.gated } : typeof hf.gated === 'string' ? { gated: hf.gated === 'true' } : {}),
     ...(typeof hf.usedStorage === 'number' ? { repoSizeBytes: hf.usedStorage } : {}),
   }
 }
 
-/** Strip YAML frontmatter + cap length for safe plain-text display. */
-export function cleanReadme(raw: string, maxChars = 6000): string {
+/** Strip YAML frontmatter + cap length for safe display. */
+export function cleanReadme(raw: string, maxChars = 12000): string {
   let text = raw.replace(/\r\n/g, '\n')
   if (text.startsWith('---\n')) {
     const end = text.indexOf('\n---', 3)
@@ -216,22 +245,63 @@ export function cleanReadme(raw: string, maxChars = 6000): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n\n…(truncated — view the full README on Hugging Face)` : text
 }
 
-export async function fetchModelsFromHf(
-  sortBy: string = 'downloads',
-  query: string = '',
-  limit: number = 30
-): Promise<ExploreModel[]> {
-  const params = new URLSearchParams()
-  params.set('sort', sortBy === 'recommended' || sortBy === 'likes' ? 'likes' : sortBy)
-  params.set('direction', '-1')
-  params.set('limit', String(limit))
+function mapSortToHf(sortBy: string): string {
+  switch (sortBy) {
+    case 'trending':
+      return 'trendingScore'
+    case 'likes':
+      return 'likes'
+    case 'downloads':
+      return 'downloads'
+    case 'lastModified':
+      return 'lastModified'
+    case 'recommended':
+    default:
+      return 'likes'
+  }
+}
 
-  if (query) {
-    params.set('search', query)
+export interface FetchModelsOptions {
+  sortBy?: string
+  query?: string
+  pipelineTag?: string
+  tag?: string
+  limit?: number
+}
+
+export async function fetchModelsFromHf(
+  sortBy: string | FetchModelsOptions = 'downloads',
+  query = '',
+  limit = 30
+): Promise<ExploreModel[]> {
+  // Normalize overloaded args
+  let opts: FetchModelsOptions
+  if (typeof sortBy === 'object' && sortBy !== null) {
+    opts = sortBy
+  } else {
+    opts = { sortBy: sortBy as string, query, limit }
+  }
+  const finalSort = opts.sortBy ?? 'recommended'
+  const finalQuery = (opts.query ?? '').trim()
+  const pipelineTag = (opts.pipelineTag ?? '').trim()
+  const tag = (opts.tag ?? '').trim()
+  const finalLimit = opts.limit ?? 30
+
+  const params = new URLSearchParams()
+  params.set('sort', mapSortToHf(finalSort))
+  params.set('direction', '-1')
+  params.set('limit', String(Math.min(Math.max(finalLimit, 1), 60)))
+
+  if (finalQuery) {
+    params.set('search', finalQuery)
   }
 
-  if (sortBy === 'recommended') {
-    params.set('sort', 'likes')
+  // HF filtering: `filter` supports pipeline_tag and arbitrary tag; combine with comma
+  const filters: string[] = []
+  if (pipelineTag) filters.push(pipelineTag)
+  if (tag) filters.push(tag)
+  if (filters.length > 0) {
+    params.set('filter', filters.join(','))
   }
 
   const url = `${HF_API_BASE}?${params.toString()}`
@@ -268,7 +338,7 @@ export async function fetchModelFromHf(modelId: string): Promise<ExploreModel> {
   const data: HfModelResponse = await response.json()
   const model = mapHfModelToExplore(data)
   await fillFileSizes(model.files)
-  // Best-effort README (raw markdown, frontmatter stripped, plain-text UI).
+  // Best-effort README (raw markdown, frontmatter stripped).
   try {
     const raw = await hfFetch(`https://huggingface.co/${modelId}/raw/main/README.md`)
     if (raw.ok) model.readme = cleanReadme(await raw.text())
@@ -281,6 +351,7 @@ export async function fetchModelFromHf(modelId: string): Promise<ExploreModel> {
 export function sortModels(models: ExploreModel[], sortBy: string): ExploreModel[] {
   const sorted = [...models]
   switch (sortBy) {
+    case 'trending':
     case 'likes':
       return sorted.sort((a, b) => b.likes - a.likes)
     case 'downloads':
@@ -304,6 +375,8 @@ export function filterModels(models: ExploreModel[], query: string): ExploreMode
       m.name.toLowerCase().includes(q) ||
       m.author.toLowerCase().includes(q) ||
       m.description.toLowerCase().includes(q) ||
-      m.tags.some((t) => t.includes(q))
+      m.tags.some((t) => t.toLowerCase().includes(q)) ||
+      (m.pipelineTag && m.pipelineTag.toLowerCase().includes(q)) ||
+      m.capabilities.some((c) => c.toLowerCase().includes(q))
   )
 }

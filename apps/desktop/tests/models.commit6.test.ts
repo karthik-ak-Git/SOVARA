@@ -310,9 +310,9 @@ describe('Commit 6 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference) and hfCatalog (HuggingFace Hub API)
+        // Exceptions: HttpClient (loopback inference), hfCatalog (Hub API) and modelDownloads (Hub file downloads)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/modelDownloads\.ts)$/)
       }
     }
   })
@@ -350,10 +350,13 @@ describe('Commit 6 — sovereignty proofs', () => {
           for (const needle of ['api.openai.com']) {
             if (txt.includes(needle)) hits.push(`${p}: ${needle}`)
           }
-          // huggingface.co is allowed in hfCatalog.ts (Explore API client)
-          // and in main/window.ts CSP connect/img-src (Explore model images) —
-          // both are user-invoked Explore surfaces, never telemetry.
-          if (!norm.includes('hfCatalog.ts') && !norm.includes('main/window.ts') && txt.includes('huggingface.co')) {
+          // huggingface.co is allowed in hfCatalog.ts (Explore API client),
+          // modelDownloads.ts (Hub file downloads, host-allowlisted), and
+          // ExplorePage.tsx (user-initiated "Open on Web" link to the repo
+          // — no data collection), and in main/window.ts CSP connect/img-src
+          // (Explore model images) — all are user-invoked Explore surfaces,
+          // never telemetry.
+          if (!norm.includes('hfCatalog.ts') && !norm.includes('modelDownloads.ts') && !norm.includes('main/window.ts') && !norm.includes('ExplorePage.tsx') && txt.includes('huggingface.co')) {
             hits.push(`${p}: huggingface.co`)
           }
           // Telemetry *machinery* (sending/tracking), not the UI label.

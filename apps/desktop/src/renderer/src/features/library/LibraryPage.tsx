@@ -1,25 +1,22 @@
 import { useState, useEffect, useCallback, type ReactElement } from 'react'
 import {
   ArrowLeft, Search, Folder, MoreHorizontal,
-  Eye, Wrench, Clock, HardDrive
+  HardDrive, Trash2
 } from 'lucide-react'
-import { listLibraryModels, getLibraryDirectory, type LibraryModel } from '../../lib/ipc'
+import {
+  listLibraryModels, getLibraryDirectory, setLibraryDirectory,
+  deleteLibraryModel, onDownloadEvents, type LibraryModel,
+} from '../../lib/ipc'
 
 interface LibraryPageProps {
   onBack: () => void
 }
 
-function formatTimeAgo(iso?: string): string {
-  if (!iso) return 'Never'
-  const d = new Date(iso)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-  if (diffHours < 1) return 'Just now'
-  if (diffHours < 24) return `${diffHours} hours ago`
-  const diffDays = Math.floor(diffHours / 24)
-  if (diffDays === 1) return '1 day ago'
-  return `${diffDays} days ago`
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${bytes} B`
 }
 
 function LibraryModelIcon(): ReactElement {
@@ -37,32 +34,61 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
   const [sortBy, setSortBy] = useState('latest')
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    const load = async (): Promise<void> => {
-      try {
-        const [modelsResult, dirResult] = await Promise.all([
-          listLibraryModels(),
-          getLibraryDirectory(),
-        ])
-        setModels(modelsResult)
-        setDirectory(dirResult.path)
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false)
-      }
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      const [modelsResult, dirResult] = await Promise.all([
+        listLibraryModels(),
+        getLibraryDirectory(),
+      ])
+      setModels(modelsResult)
+      setDirectory(dirResult.path)
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
     }
-    load()
   }, [])
 
-  const filteredModels = models.filter((m) => {
-    if (!filterQuery.trim()) return true
-    const q = filterQuery.toLowerCase()
-    return m.name.toLowerCase().includes(q) || m.slug.toLowerCase().includes(q)
-  })
+  useEffect(() => {
+    void refresh()
+    // A finished download lands a new file — rescan the directory.
+    const dispose = onDownloadEvents((ev) => {
+      if (ev.state === 'done') void refresh()
+    })
+    return dispose
+  }, [refresh])
+
+  const filteredModels = models
+    .filter((m) => {
+      if (!filterQuery.trim()) return true
+      const q = filterQuery.toLowerCase()
+      return m.name.toLowerCase().includes(q) || m.file.toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      if (sortBy === 'name') return a.file.localeCompare(b.file)
+      if (sortBy === 'size') return b.sizeBytes - a.sizeBytes
+      return b.modifiedAt - a.modifiedAt
+    })
 
   const handleChangeDirectory = useCallback(async (): Promise<void> => {
-    // TODO: open folder picker dialog
+    try {
+      const res = await setLibraryDirectory('')
+      if (res.ok) {
+        setDirectory(res.path)
+        void refresh()
+      }
+    } catch {
+      // dialog cancelled or failed — keep current directory
+    }
+  }, [refresh])
+
+  const handleDelete = useCallback(async (entryPath: string): Promise<void> => {
+    try {
+      await deleteLibraryModel(entryPath)
+      setModels((prev) => prev.filter((m) => m.path !== entryPath))
+    } catch {
+      // ignore — row stays
+    }
   }, [])
 
   return (
@@ -147,25 +173,27 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
         ) : (
           <div className="library-model-list">
             {filteredModels.map((model) => (
-              <div key={model.id} className="library-model-row">
+              <div key={model.path} className="library-model-row">
                 <LibraryModelIcon />
                 <div className="library-model-body">
-                  <div className="library-model-name">{model.name}</div>
+                  <div className="library-model-name">{model.file}</div>
                   <div className="library-model-meta">
-                    <span className="library-model-chip">{model.sizeGB.toFixed(2)} GB</span>
-                    <span className="library-model-chip">{model.format}</span>
-                    {model.quantization && (
-                      <span className="library-model-chip">{model.quantization}</span>
-                    )}
-                    <span className="library-model-icons">
-                      {model.capabilities.includes('Vision') && <Eye size={12} aria-label="Vision" />}
-                      {model.capabilities.includes('Tools') && <Wrench size={12} aria-label="Tools" />}
-                    </span>
+                    <span className="library-model-chip">{formatBytes(model.sizeBytes)}</span>
+                    <span className="library-model-chip">{model.name}</span>
                   </div>
                   <div className="library-model-sub">
-                    {model.slug} · Last used {formatTimeAgo(model.lastUsed)}
+                    {new Date(model.modifiedAt).toLocaleDateString()}
                   </div>
                 </div>
+                <button
+                  type="button"
+                  className="settings-action-btn"
+                  title="Delete model file"
+                  aria-label={`Delete ${model.file}`}
+                  onClick={() => void handleDelete(model.path)}
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             ))}
           </div>

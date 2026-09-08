@@ -575,9 +575,9 @@ describe('Commit 7 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference) and hfCatalog (HuggingFace Hub API)
+        // Exceptions: HttpClient (loopback inference), hfCatalog (Hub API) and modelDownloads (Hub file downloads)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts)$/)
+        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/modelDownloads\.ts)$/)
       }
     }
   })

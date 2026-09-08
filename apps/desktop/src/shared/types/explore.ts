@@ -53,4 +53,11 @@ export interface CompatibilityResult {
   severity: 'good' | 'tight' | 'too-large'
 }
 
-export type ExploreSortBy = 'recommended' | 'likes' | 'downloads' | 'lastModified'
+export type ExploreSortBy = 'recommended' | 'trending' | 'likes' | 'downloads' | 'lastModified'
+
+export interface ExploreListParams {
+  sortBy?: ExploreSortBy
+  query?: string
+  pipelineTag?: string
+  tag?: string
+}

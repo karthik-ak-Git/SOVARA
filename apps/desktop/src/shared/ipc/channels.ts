@@ -61,6 +61,14 @@ export const IPC_CHANNELS = {
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },
   'library:setDirectory': { type: 'invoke' as const },
+  'library:download': { type: 'invoke' as const },
+  'library:cancelDownload': { type: 'invoke' as const },
+  'library:pauseDownload': { type: 'invoke' as const },
+  'library:resumeDownload': { type: 'invoke' as const },
+  'library:getActiveDownloads': { type: 'invoke' as const },
+  'library:isDownloaded': { type: 'invoke' as const },
+  'library:delete': { type: 'invoke' as const },
+  'shell:openExternal': { type: 'invoke' as const },
   // First-run setup (Python env for sidecars)
   'setup:getPythonStatus': { type: 'invoke' as const },
   'setup:ensurePython': { type: 'invoke' as const },
@@ -81,6 +89,7 @@ export const IPC_CHANNELS = {
   'voice:status': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
+  'events:download': { type: 'on' as const },
 } as const
 
 export type IpcChannel = keyof typeof IPC_CHANNELS

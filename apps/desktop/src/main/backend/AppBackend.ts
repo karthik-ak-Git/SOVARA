@@ -16,6 +16,11 @@ import { ChatService } from './ChatService'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
 import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, type McpServer } from '../services/mcpStore'
 import { loadEnabledSkillsContent } from '../services/skillsScanner'
+import {
+  resolveLibraryDir, setLibraryDir, scanLibrary, startDownload,
+  cancelDownload, pauseDownload, resumeDownload, getActiveDownloads, isDownloaded, deleteLibraryEntry,
+  type DownloadEvent, type LibraryEntry,
+} from '../services/modelDownloads'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -119,6 +124,57 @@ export class AppBackend {
       homedir: os.homedir(),
       userData: app.getPath('userData')
     }
+  }
+
+  // ── Model library (global download directory + HF downloads) ──
+  getLibraryDir(): string {
+    return resolveLibraryDir(this.runtimeConfig, app.getPath('userData'))
+  }
+
+  setLibraryDir(dir: string): string {
+    return setLibraryDir(this.runtimeConfig, dir)
+  }
+
+  scanLibrary(): LibraryEntry[] {
+    return scanLibrary(this.getLibraryDir())
+  }
+
+  startModelDownload(
+    modelId: string,
+    rfilename: string,
+    downloadUrl: string,
+    emit: (event: DownloadEvent) => void
+  ): Promise<{ ok: true; resumed: boolean }> {
+    return startDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+  }
+
+  cancelModelDownload(modelId: string, rfilename: string): boolean {
+    return cancelDownload(modelId, rfilename)
+  }
+
+  pauseModelDownload(modelId: string, rfilename: string): boolean {
+    return pauseDownload(modelId, rfilename)
+  }
+
+  resumeModelDownload(
+    modelId: string,
+    rfilename: string,
+    downloadUrl: string,
+    emit: (event: DownloadEvent) => void
+  ): boolean {
+    return resumeDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+  }
+
+  getActiveDownloads(): Array<{ modelId: string; rfilename: string; state: string }> {
+    return getActiveDownloads()
+  }
+
+  isDownloaded(modelId: string, rfilename: string): boolean {
+    return isDownloaded(this.getLibraryDir(), modelId, rfilename)
+  }
+
+  deleteLibraryEntry(entryPath: string): void {
+    return deleteLibraryEntry(this.getLibraryDir(), entryPath)
   }
 
   /** AI command permission level (persisted, default 'ask'). */

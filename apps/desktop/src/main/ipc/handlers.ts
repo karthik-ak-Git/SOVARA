@@ -10,7 +10,7 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
 import { estimateCompatibility } from '../services/hardwareCheck'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -21,6 +21,19 @@ function broadcastChat(event: ChatStreamEvent): void {
     if (!win.isDestroyed()) {
       try {
         win.webContents.send('events:session', event)
+      } catch {
+        // ignore dead renderers
+      }
+    }
+  }
+}
+
+/** Push channel for model download progress (throttled at the source). */
+function broadcastDownload(event: import('../services/modelDownloads').DownloadEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      try {
+        win.webContents.send('events:download', event)
       } catch {
         // ignore dead renderers
       }
@@ -343,10 +356,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('explore:listModels', async (_e, raw: unknown) => {
     const parsed = zExploreListModels.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid explore:listModels payload: ${parsed.error.message}`)
-    const models = await fetchModelsFromHf(
-      parsed.data.sortBy ?? 'recommended',
-      parsed.data.query ?? ''
-    )
+    const models = await fetchModelsFromHf({
+      sortBy: parsed.data.sortBy ?? 'recommended',
+      query: parsed.data.query ?? '',
+      pipelineTag: parsed.data.pipelineTag ?? '',
+      tag: parsed.data.tag ?? '',
+    })
     return models
   })
 
@@ -375,19 +390,58 @@ export function registerIpcHandlers(): void {
 
   // ── Library (downloaded models) ──
   ipcMain.handle('library:listModels', async () => {
-    // TODO: scan actual models directory for GGUF/MLX files
-    return []
+    return getBackend().scanLibrary()
   })
 
   ipcMain.handle('library:getDirectory', async () => {
-    const home = process.env.USERPROFILE || process.env.HOME || ''
-    return { path: `${home}\\.lmstudio\\models` }
+    return { path: getBackend().getLibraryDir() }
   })
 
   ipcMain.handle('library:setDirectory', async (_e, raw: unknown) => {
-    const parsed = zLibrarySetDirectory.safeParse(raw)
+    const parsed = zLibrarySetDirectory.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
-    return { ok: true, path: parsed.data.path }
+    try {
+      // Explicit path wins (tests/automation); otherwise ask with a dialog.
+      const explicit = parsed.data.path.trim()
+      if (explicit) return { ok: true, path: getBackend().setLibraryDir(explicit) }
+      const picked = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+      if (picked.canceled || picked.filePaths.length === 0) return { ok: false, path: getBackend().getLibraryDir() }
+      return { ok: true, path: getBackend().setLibraryDir(picked.filePaths[0] as string) }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not change directory')
+    }
+  })
+
+  ipcMain.handle('library:download', async (_e, raw: unknown) => {
+    const parsed = zLibraryDownload.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:download payload: ${parsed.error.message}`)
+    try {
+      return await getBackend().startModelDownload(
+        parsed.data.modelId,
+        parsed.data.rfilename,
+        parsed.data.downloadUrl,
+        broadcastDownload
+      )
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not start download')
+    }
+  })
+
+  ipcMain.handle('library:cancelDownload', async (_e, raw: unknown) => {
+    const parsed = zLibraryCancel.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:cancelDownload payload: ${parsed.error.message}`)
+    return { cancelled: getBackend().cancelModelDownload(parsed.data.modelId, parsed.data.rfilename) }
+  })
+
+  ipcMain.handle('library:delete', async (_e, raw: unknown) => {
+    const parsed = zLibraryDelete.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:delete payload: ${parsed.error.message}`)
+    try {
+      getBackend().deleteLibraryEntry(parsed.data.path)
+      return { ok: true }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not delete model file')
+    }
   })
 
   // ── MCP servers (Connected Apps) ──
