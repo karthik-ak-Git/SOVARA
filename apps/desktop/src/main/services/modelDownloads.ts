@@ -137,6 +137,13 @@ export function getActiveDownloads(): Array<{ modelId: string; rfilename: string
   return out
 }
 
+/** Test helper: clear all in-memory download state. */
+export function __resetDownloadsForTests(): void {
+  active.clear()
+  queue.length = 0
+  paused.clear()
+}
+
 function assertHuggingFaceUrl(downloadUrl: string): URL {
   let url: URL
   try {

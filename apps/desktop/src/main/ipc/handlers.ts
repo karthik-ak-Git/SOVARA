@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog } from 'electron'
+import { ipcMain, BrowserWindow, dialog, shell } from 'electron'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
@@ -10,9 +10,9 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal } from '@shared/ipc/schemas'
 import { fetchModelsFromHf, fetchModelFromHf, sortModels, filterModels } from '../services/hfCatalog'
-import { estimateCompatibility } from '../services/hardwareCheck'
+import { estimateCompatibility, recommendFiles } from '../services/hardwareCheck'
 import type { HardwareInfo } from '@shared/types/explore'
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
@@ -388,6 +388,22 @@ export function registerIpcHandlers(): void {
     return estimateCompatibility(model, hw)
   })
 
+  ipcMain.handle('explore:getRecommendations', async (_e, raw: unknown) => {
+    const parsed = zExploreGetRecommendations.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid explore:getRecommendations payload: ${parsed.error.message}`)
+    const model = await fetchModelFromHf(parsed.data.modelId)
+    const resources = await getBackend().ports.resources.getSnapshot()
+    const hw: HardwareInfo = {
+      totalRamMB: resources.ram.totalMB,
+      freeRamMB: resources.ram.freeMB,
+      totalVramMB: resources.vram.totalMB,
+      freeVramMB: resources.vram.freeMB,
+      gpuName: resources.gpu.name,
+      gpuAvailable: resources.gpu.available,
+    }
+    return recommendFiles(model, hw)
+  })
+
   // ── Library (downloaded models) ──
   ipcMain.handle('library:listModels', async () => {
     return getBackend().scanLibrary()
@@ -431,6 +447,42 @@ export function registerIpcHandlers(): void {
     const parsed = zLibraryCancel.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:cancelDownload payload: ${parsed.error.message}`)
     return { cancelled: getBackend().cancelModelDownload(parsed.data.modelId, parsed.data.rfilename) }
+  })
+
+  ipcMain.handle('library:pauseDownload', async (_e, raw: unknown) => {
+    const parsed = zLibraryCancel.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:pauseDownload payload: ${parsed.error.message}`)
+    return { paused: getBackend().pauseModelDownload(parsed.data.modelId, parsed.data.rfilename) }
+  })
+
+  ipcMain.handle('library:resumeDownload', async (_e, raw: unknown) => {
+    const parsed = zLibraryDownload.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:resumeDownload payload: ${parsed.error.message}`)
+    return { resumed: getBackend().resumeModelDownload(parsed.data.modelId, parsed.data.rfilename, parsed.data.downloadUrl, broadcastDownload) }
+  })
+
+  ipcMain.handle('library:getActiveDownloads', async () => {
+    return getBackend().getActiveDownloads()
+  })
+
+  ipcMain.handle('library:isDownloaded', async (_e, raw: unknown) => {
+    const parsed = zLibraryIsDownloaded.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:isDownloaded payload: ${parsed.error.message}`)
+    return { downloaded: getBackend().isDownloaded(parsed.data.modelId, parsed.data.rfilename) }
+  })
+
+  ipcMain.handle('shell:openExternal', async (_e, raw: unknown) => {
+    const parsed = zShellOpenExternal.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid shell:openExternal payload: ${parsed.error.message}`)
+    try {
+      const u = new URL(parsed.data.url)
+      const allowed = u.hostname.endsWith('huggingface.co') || u.hostname.endsWith('.huggingface.co') || u.hostname.endsWith('.hf.co') || u.hostname === 'github.com' || u.hostname.endsWith('github.com')
+      if (u.protocol !== 'https:' || !allowed) throw new Error('URL not allowed')
+      await shell.openExternal(u.toString())
+      return { ok: true }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not open URL')
+    }
   })
 
   ipcMain.handle('library:delete', async (_e, raw: unknown) => {

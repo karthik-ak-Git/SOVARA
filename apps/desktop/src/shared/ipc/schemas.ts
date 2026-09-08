@@ -107,6 +107,10 @@ export const zExploreGetCompatibility = z
   .object({ modelId: z.string().min(1).max(128) })
   .strict()
 
+export const zExploreGetRecommendations = z
+  .object({ modelId: z.string().min(1).max(128) })
+  .strict()
+
 export const zLibrarySetDirectory = z
   .object({ path: z.string().max(512).default('') })
   .strict()

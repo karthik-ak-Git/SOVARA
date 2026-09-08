@@ -57,6 +57,7 @@ export const IPC_CHANNELS = {
   'explore:listModels': { type: 'invoke' as const },
   'explore:getModel': { type: 'invoke' as const },
   'explore:getCompatibility': { type: 'invoke' as const },
+  'explore:getRecommendations': { type: 'invoke' as const },
   // Library (downloaded models)
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },

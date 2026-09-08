@@ -386,6 +386,19 @@ export async function getModelCompatibility(modelId: string): Promise<Compatibil
   return (await sovara().invoke('explore:getCompatibility', { modelId })) as CompatibilityResult
 }
 
+export interface FileRecommendationView {
+  file: ExploreModelFile
+  index: number
+  estimatedRamGB: number
+  severity: 'good' | 'tight' | 'too-large'
+  rank: number
+  reason: string
+}
+
+export async function getFileRecommendations(modelId: string): Promise<FileRecommendationView[]> {
+  return (await sovara().invoke('explore:getRecommendations', { modelId })) as FileRecommendationView[]
+}
+
 // ── Library (downloaded models) ──
 export interface LibraryModel {
   name: string
@@ -412,7 +425,7 @@ export async function deleteLibraryModel(path: string): Promise<{ ok: boolean }>
 }
 
 // ── Model downloads (progress on events:download) ──
-export type DownloadState = 'started' | 'progress' | 'done' | 'error' | 'cancelled'
+export type DownloadState = 'queued' | 'started' | 'progress' | 'paused' | 'done' | 'error' | 'cancelled'
 
 export interface DownloadEventView {
   modelId: string
@@ -436,6 +449,26 @@ export async function downloadModelFile(
 
 export async function cancelModelDownload(modelId: string, rfilename: string): Promise<{ cancelled: boolean }> {
   return (await sovara().invoke('library:cancelDownload', { modelId, rfilename })) as { cancelled: boolean }
+}
+
+export async function pauseModelDownload(modelId: string, rfilename: string): Promise<{ paused: boolean }> {
+  return (await sovara().invoke('library:pauseDownload', { modelId, rfilename })) as { paused: boolean }
+}
+
+export async function resumeModelDownload(modelId: string, rfilename: string, downloadUrl: string): Promise<{ resumed: boolean }> {
+  return (await sovara().invoke('library:resumeDownload', { modelId, rfilename, downloadUrl })) as { resumed: boolean }
+}
+
+export async function getActiveDownloads(): Promise<Array<{ modelId: string; rfilename: string; state: string }>> {
+  return (await sovara().invoke('library:getActiveDownloads')) as Array<{ modelId: string; rfilename: string; state: string }>
+}
+
+export async function isDownloaded(modelId: string, rfilename: string): Promise<{ downloaded: boolean }> {
+  return (await sovara().invoke('library:isDownloaded', { modelId, rfilename })) as { downloaded: boolean }
+}
+
+export async function openExternal(url: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('shell:openExternal', { url })) as { ok: boolean }
 }
 
 export function onDownloadEvents(callback: (event: DownloadEventView) => void): () => void {
