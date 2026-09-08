@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { spawn } from 'node:child_process'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
+import { fetchMcpProbe } from '../network/HttpClient'
 
 const zMcpServer = z.object({
   id: z.string().min(1).max(64),
@@ -120,24 +121,17 @@ async function probeHttp(endpoint: string): Promise<{ ok: boolean; error?: strin
   try {
     const u = new URL(endpoint)
     const host = u.hostname
-    // ponytail: local MCPs (localhost) are always reachable without network; skip fetch when offline
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return { ok: true }
   } catch {
     // url validation already done before persist
   }
-  const controller = new AbortController()
-  const t = setTimeout(() => controller.abort(), 6000)
   try {
-    await fetch(endpoint, { method: 'GET', signal: controller.signal, headers: { Accept: 'text/event-stream, application/json' } } as RequestInit)
-    // Any HTTP response (even 404/405) means host is reachable — treat as ok.
+    await fetchMcpProbe(endpoint, 6000)
     return { ok: true }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.toLowerCase().includes('abort')) return { ok: false, error: 'timeout' }
-    // Include fetch failed vs DNS etc; keep message short
+    if (msg.toLowerCase().includes('abort') || msg.toLowerCase().includes('timeout')) return { ok: false, error: 'timeout' }
     return { ok: false, error: msg.slice(0, 120) || 'fetch failed' }
-  } finally {
-    clearTimeout(t)
   }
 }
 

@@ -120,30 +120,46 @@ class BrowserLoop:
         )
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            # Commit, not full load: JS-redirect/meta-refresh pages never
+            # settle — readiness is polled below instead.
+            await page.goto(url, wait_until="commit", timeout=timeout_ms)
             if wait_selector:
                 try:
                     await page.wait_for_selector(wait_selector, timeout=8000)
                 except Exception:
                     pass  # selector is a hint, not a gate
-            try:
-                await page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                pass  # JS-heavy pages may never calm; scroll anyway
+            # Poll for document calm (covers redirects + late JS).
+            for _ in range(30):
+                try:
+                    state = await page.evaluate("() => document.readyState")
+                except Exception:
+                    state = "loading"
+                if state == "complete":
+                    break
+                await page.wait_for_timeout(500)
             if scroll:
                 last_height = 0
                 for _ in range(8):
-                    height = await page.evaluate(
-                        "() => document.documentElement.scrollHeight"
-                    )
+                    try:
+                        height = await page.evaluate(
+                            "() => document.documentElement.scrollHeight"
+                        )
+                    except Exception:
+                        break
                     if height == last_height:
                         break
                     last_height = height
-                    await page.evaluate(
-                        "() => window.scrollBy(0, window.innerHeight)"
-                    )
-                    await page.wait_for_timeout(700)
-                await page.evaluate("() => window.scrollTo(0, 0)")
+                    try:
+                        await page.evaluate(
+                            "() => window.scrollBy(0, window.innerHeight)"
+                        )
+                        await page.wait_for_timeout(700)
+                    except Exception:
+                        break
+                try:
+                    await page.evaluate("() => window.scrollTo(0, 0)")
+                except Exception:
+                    pass
             try:
                 # Dismiss trivial cookie walls so content isn't occluded.
                 for label in ("Accept all", "Accept All", "Accept cookies", "Got it"):
@@ -156,7 +172,15 @@ class BrowserLoop:
                         continue
             except Exception:
                 pass
-            return await page.content()
+            # content() during a navigation raises — retry through it.
+            last_error = None
+            for _ in range(4):
+                try:
+                    return await page.content()
+                except Exception as exc:
+                    last_error = exc
+                    await page.wait_for_timeout(1000)
+            raise last_error if last_error else RuntimeError("page.content failed")
         finally:
             try:
                 await context.close()
@@ -436,6 +460,9 @@ def search():
                     got += 1
         except Exception as exc:
             print(f"[crawl] page extraction failed: {exc}", flush=True)
+    # Drop junk rows (no title, no snippet, no content) so model context
+    # only carries signal.
+    links = [l for l in links if l["title"] or l["snippet"] or l["content"]]
     return jsonify({"sources": links, "crawled": HAVE_CRAWL4AI})
 
 
