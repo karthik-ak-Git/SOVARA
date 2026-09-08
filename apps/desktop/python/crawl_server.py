@@ -20,6 +20,7 @@ desktop falls back gracefully.
 
 import asyncio
 import json
+import random
 import re
 import sys
 import threading
@@ -53,6 +54,12 @@ try:
 except ImportError:
     HAVE_PLAYWRIGHT = False
 
+try:
+    from playwright_stealth import Stealth
+    HAVE_STEALTH = True
+except ImportError:
+    HAVE_STEALTH = False
+
 app = Flask(__name__)
 CORS(app)
 
@@ -76,7 +83,18 @@ class BrowserLoop:
         self._thread = None
         self._lock = threading.Lock()
         self._browser = None
+        self._context = None
         self._pw = None
+
+    def profile_dir(self) -> str:
+        # Persistent profile: cookies/history accumulate trust over time
+        # and warm up repeat visits. Under userData so the .exe owns it.
+        import os
+
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "Sovara", "cdp-profile")
+        os.makedirs(d, exist_ok=True)
+        return d
 
     def _ensure_thread(self):
         with self._lock:
@@ -93,7 +111,7 @@ class BrowserLoop:
         return fut.result(timeout)
 
     async def _ensure_browser(self):
-        if self._browser and self._browser.is_connected():
+        if self._browser and self._browser.is_connected() and self._context:
             return self._browser
         if self._pw is None:
             self._pw = await async_playwright().start()
@@ -102,23 +120,51 @@ class BrowserLoop:
                 await self._browser.close()
         except Exception:
             pass
-        # Full chromium (not headless-shell): some sites gate on shell UA.
-        self._browser = await self._pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
+        self._context = None
+        launch_kwargs = {
+            "headless": True,
+            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        }
+        context_kwargs = {
+            "viewport": {"width": 1366, "height": 900},
+            "user_agent": BROWSER_UA,
+            "locale": "en-US",
+            "timezone_id": "Asia/Kolkata",
+            "device_scale_factor": 1,
+            "has_touch": False,
+            "is_mobile": False,
+        }
+        # Prefer real installed Chrome (genuine fingerprint) over the bundled
+        # build; fall back silently when Chrome isn't installed.
+        try:
+            self._browser = await self._pw.chromium.launch_persistent_context(
+                self.profile_dir(), channel="chrome", **launch_kwargs, **context_kwargs
+            )
+        except Exception:
+            self._browser = await self._pw.chromium.launch_persistent_context(
+                self.profile_dir(), **launch_kwargs, **context_kwargs
+            )
+        self._context = self._browser
         return self._browser
+
+    async def _stealth(self, page):
+        # Strip automation fingerprints (navigator.webdriver, chrome
+        # runtime, plugins, languages). Best-effort: extraction must not
+        # depend on it.
+        if not HAVE_STEALTH:
+            return
+        try:
+            await Stealth().apply_stealth_async(page)
+        except Exception:
+            pass
 
     async def fetch_rendered(self, url: str, wait_selector: str = "",
                              scroll: bool = True, timeout_ms: int = 45000):
         """Render url over CDP; returns post-JS HTML. Raises on failure."""
         browser = await self._ensure_browser()
-        context = await browser.new_context(
-            viewport={"width": 1366, "height": 900},
-            user_agent=BROWSER_UA,
-            locale="en-US",
-        )
+        context = self._context  # persistent profile context (trust accumulates)
         page = await context.new_page()
+        await self._stealth(page)
         try:
             # Commit, not full load: JS-redirect/meta-refresh pages never
             # settle — readiness is polled below instead.
@@ -137,6 +183,17 @@ class BrowserLoop:
                 if state == "complete":
                     break
                 await page.wait_for_timeout(500)
+            try:
+                # Human-like pointer drift: behavior-based walls score
+                # straight-line automation. A few eased moves cost ~2s.
+                await page.mouse.move(683, 450)
+                for _ in range(4):
+                    x = random.randint(200, 1100)
+                    y = random.randint(200, 700)
+                    await page.mouse.move(x, y, steps=random.randint(15, 30))
+                    await page.wait_for_timeout(random.randint(250, 700))
+            except Exception:
+                pass
             if scroll:
                 last_height = 0
                 for _ in range(8):
@@ -183,7 +240,7 @@ class BrowserLoop:
             raise last_error if last_error else RuntimeError("page.content failed")
         finally:
             try:
-                await context.close()
+                await page.close()  # context persists; only the page closes
             except Exception:
                 pass
 
