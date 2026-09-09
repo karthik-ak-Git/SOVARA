@@ -479,7 +479,8 @@ export function registerIpcHandlers(): void {
         parsed.data.modelId,
         parsed.data.rfilename,
         parsed.data.downloadUrl,
-        broadcastDownload
+        broadcastDownload,
+        { parts: parsed.data.parts, companion: parsed.data.companion }
       )
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'could not start download')

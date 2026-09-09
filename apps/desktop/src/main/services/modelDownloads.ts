@@ -8,7 +8,7 @@
  * invokes resolve fast (started/queued) while the transfer runs detached.
  */
 
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
@@ -119,6 +119,10 @@ export function scanLibrary(root: string): LibraryEntry[] {
 
 export function isDownloaded(root: string, modelId: string, rfilename: string): boolean {
   try {
+    // Shard set (restart-safe via sidecar): installed only when EVERY part is
+    // present — a lone first part must never read as "Already in library".
+    const set = readSetSidecar(root, modelId, rfilename)
+    if (set) return set.parts.every((p) => partComplete(root, modelId, p.rfilename))
     const dest = confinePath(root, repoFolder(modelId.trim().slice(0, 128)), rfilename.trim().replace(/^\/+/, '').slice(0, 512))
     return existsSync(dest) && !existsSync(`${dest}.part`)
   } catch {
@@ -126,11 +130,30 @@ export function isDownloaded(root: string, modelId: string, rfilename: string): 
   }
 }
 
+function setPartKeys(job: SetJob): Set<string> {
+  const s = new Set<string>()
+  for (const p of job.parts) s.add(key(job.modelId, p.rfilename))
+  return s
+}
+
 export function getActiveDownloads(): Array<{ modelId: string; rfilename: string; state: DownloadState }> {
   const out: Array<{ modelId: string; rfilename: string; state: DownloadState }> = []
-  for (const v of active.values()) out.push({ modelId: v.modelId, rfilename: v.rfilename, state: 'progress' })
-  for (const q of queue) out.push({ modelId: q.modelId, rfilename: q.rfilename, state: 'queued' })
+  const hidden = new Set<string>()
+  for (const job of sets.values()) {
+    for (const k of setPartKeys(job)) hidden.add(k)
+    out.push({ modelId: job.modelId, rfilename: job.groupFile, state: job.paused ? 'paused' : 'progress' })
+  }
+  // Individual set parts stay hidden: the group row carries the aggregate.
+  for (const v of active.values()) {
+    if (hidden.has(key(v.modelId, v.rfilename))) continue
+    out.push({ modelId: v.modelId, rfilename: v.rfilename, state: 'progress' })
+  }
+  for (const q of queue) {
+    if (hidden.has(key(q.modelId, q.rfilename))) continue
+    out.push({ modelId: q.modelId, rfilename: q.rfilename, state: 'queued' })
+  }
   for (const k of paused) {
+    if (hidden.has(k)) continue
     const [modelId, rfilename] = k.split('\n')
     out.push({ modelId, rfilename, state: 'paused' })
   }
@@ -142,6 +165,7 @@ export function __resetDownloadsForTests(): void {
   active.clear()
   queue.length = 0
   paused.clear()
+  sets.clear()
 }
 
 function assertHuggingFaceUrl(downloadUrl: string): URL {
@@ -157,8 +181,101 @@ function assertHuggingFaceUrl(downloadUrl: string): URL {
   return url
 }
 
+export interface SetPart {
+  rfilename: string
+  downloadUrl: string
+  sizeBytes?: number
+}
+
+interface SetJob {
+  modelId: string
+  /** First part's rfilename — the group's public key (progress, pause, installed). */
+  groupFile: string
+  parts: SetPart[]
+  companion?: SetPart
+  /** Index of the part currently (or next) transferring. */
+  idx: number
+  doneBytes: number
+  totalBytes: number | null
+  cancelled: boolean
+  paused: boolean
+  config: RuntimeConfigStore
+  userData: string
+  emit: Emit
+  root: string
+}
+
+const sets = new Map<string, SetJob>()
+
+function setSidecarPath(root: string, modelId: string, groupFile: string): string {
+  const dest = confinePath(root, repoFolder(modelId.trim().slice(0, 128)), groupFile.trim().replace(/^\/+/, '').slice(0, 512))
+  return `${dest}.set.json`
+}
+
+function writeSetSidecar(root: string, modelId: string, groupFile: string, parts: SetPart[], companion?: SetPart): void {
+  try {
+    const sidecar = setSidecarPath(root, modelId, groupFile)
+    mkdirSync(dirname(sidecar), { recursive: true })
+    writeFileSync(
+      sidecar,
+      JSON.stringify({ version: 1, modelId, parts, companion: companion ?? null, savedAt: new Date().toISOString() }),
+      'utf8',
+    )
+  } catch { /* best-effort */ }
+}
+
+function readSetSidecar(root: string, modelId: string, groupFile: string): { parts: SetPart[]; companion?: SetPart } | null {
+  try {
+    const raw = readFileSync(setSidecarPath(root, modelId, groupFile), 'utf8') as string
+    const j = JSON.parse(raw) as { parts?: SetPart[]; companion?: SetPart | null }
+    if (!j || !Array.isArray(j.parts) || j.parts.length < 2) return null
+    const parts = j.parts.filter((p) => p && typeof p.rfilename === 'string' && typeof p.downloadUrl === 'string')
+    if (parts.length < 2) return null
+    const out: { parts: SetPart[]; companion?: SetPart } = { parts }
+    if (j.companion && typeof j.companion.rfilename === 'string' && typeof j.companion.downloadUrl === 'string') {
+      out.companion = j.companion
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+function partDest(root: string, modelId: string, rfilename: string): string {
+  return confinePath(root, repoFolder(modelId.trim().slice(0, 128)), rfilename.trim().replace(/^\/+/, '').slice(0, 512))
+}
+
+function partComplete(root: string, modelId: string, rfilename: string): boolean {
+  try {
+    const dest = partDest(root, modelId, rfilename)
+    return existsSync(dest) && !existsSync(`${dest}.part`)
+  } catch {
+    return false
+  }
+}
+
 export function cancelDownload(modelId: string, rfilename: string): boolean {
   const k = key(modelId, rfilename)
+  const job = sets.get(k)
+  if (job) {
+    job.cancelled = true
+    job.paused = false
+    const cur = job.parts[Math.min(job.idx, job.parts.length - 1)]
+    const entry = cur ? active.get(key(modelId, cur.rfilename)) : undefined
+    if (entry) {
+      try { entry.ctrl.abort() } catch { /* already settled */ }
+      return true
+    }
+    const qIdx = cur ? queue.findIndex((q) => q.modelId === modelId && q.rfilename === cur.rfilename) : -1
+    if (qIdx >= 0) {
+      queue.splice(qIdx, 1)
+      finishSetCancelled(job)
+      return true
+    }
+    // Nothing transferring (between parts): finish cancelled immediately.
+    finishSetCancelled(job)
+    return true
+  }
   const entry = active.get(k)
   if (entry) {
     try { entry.ctrl.abort() } catch { /* already settled */ }
@@ -183,6 +300,19 @@ export function cancelDownload(modelId: string, rfilename: string): boolean {
 
 export function pauseDownload(modelId: string, rfilename: string): boolean {
   const k = key(modelId, rfilename)
+  const job = sets.get(k)
+  if (job) {
+    if (job.cancelled) return false
+    const cur = job.parts[Math.min(job.idx, job.parts.length - 1)]
+    const entry = cur ? active.get(key(modelId, cur.rfilename)) : undefined
+    if (!entry) return false
+    job.paused = true
+    // Mark the part paused so run() emits paused (keeps .part) instead of
+    // cancelled (which would delete it).
+    paused.add(key(modelId, cur.rfilename))
+    try { entry.ctrl.abort() } catch { /* already settled */ }
+    return true
+  }
   const entry = active.get(k)
   if (!entry) return false
   paused.add(k)
@@ -199,6 +329,38 @@ export function resumeDownload(
   emit: Emit
 ): boolean {
   const k = key(modelId, rfilename)
+  const job = sets.get(k)
+  if (job) {
+    // Resume a paused set from the first incomplete part.
+    if (!job.paused || job.cancelled) return false
+    job.paused = false
+    for (const p of job.parts) paused.delete(key(modelId, p.rfilename))
+    void runSet(job).catch(() => {})
+    return true
+  }
+  // Restart-safe resume: a set sidecar outlives restarts — rebuild the job
+  // from it (cancel/retry/download-after-restart all converge here).
+  // Completed sets simply re-verify and emit done (idempotent).
+  try {
+    const root = resolveLibraryDir(config, userData)
+    const set = readSetSidecar(root, modelId, rfilename)
+    if (set && !sets.has(k) && !active.has(k)) {
+      const parts = set.parts.map((p) => ({
+        rfilename: p.rfilename,
+        downloadUrl: assertHuggingFaceUrl(p.downloadUrl).toString(),
+        sizeBytes: typeof p.sizeBytes === 'number' ? p.sizeBytes : 0,
+      }))
+      const rebuilt: SetJob = {
+        modelId, groupFile: rfilename, parts,
+        companion: set.companion, idx: 0, doneBytes: 0, totalBytes: setTotalBytes(parts),
+        cancelled: false, paused: false, config, userData, emit, root,
+      }
+      sets.set(k, rebuilt)
+      safeEmitTo(emit, { modelId, rfilename, state: 'started', receivedBytes: 0, totalBytes: rebuilt.totalBytes })
+      void runSet(rebuilt).catch(() => {})
+      return true
+    }
+  } catch { /* fall through to single-file resume */ }
   if (!paused.has(k) && !queue.some((q) => q.modelId === modelId && q.rfilename === rfilename)) {
     // Not paused/queued — treat as fresh start if not active
     if (active.has(k)) return false
@@ -394,4 +556,164 @@ export async function startDownload(
   // into an unhandled main-process error under any future edit.
   void run().catch(() => {})
   return { ok: true, resumed: false }
+}
+
+// ── Multi-part shard-set downloads ───────────────────────────────────
+// A sharded model (`-00001-of-0000N`) loads only with EVERY part present, so
+// parts download sequentially as ONE job. All progress surfaces under the
+// FIRST part's key (the row's rfilename) — renderer plumbing is untouched —
+// and a `<first-part>.set.json` sidecar makes the set restart-safe for
+// resume and installed checks.
+
+function setTotalBytes(parts: SetPart[]): number | null {
+  let sum = 0
+  for (const p of parts) {
+    const n = typeof p.sizeBytes === 'number' ? p.sizeBytes : 0
+    if (!(n > 0)) return null
+    sum += n
+  }
+  return sum
+}
+
+function fileSizeOnDisk(root: string, modelId: string, rfilename: string): number {
+  try {
+    return statSync(partDest(root, modelId, rfilename)).size
+  } catch {
+    return 0
+  }
+}
+
+export async function startModelSetDownload(
+  config: RuntimeConfigStore,
+  userData: string,
+  modelId: string,
+  parts: SetPart[],
+  companion: SetPart | undefined,
+  emit: Emit,
+): Promise<{ ok: true }> {
+  const cleanId = modelId.trim().slice(0, 128)
+  if (!cleanId) throw new Error('invalid download target')
+  if (!Array.isArray(parts) || parts.length < 2 || parts.length > 8) throw new Error('invalid shard set')
+  const cleanParts = parts.map((p) => {
+    const rfilename = (p.rfilename ?? '').trim().replace(/^\/+/, '').slice(0, 512)
+    if (!rfilename || rfilename.includes('..')) throw new Error('invalid download target')
+    return { rfilename, downloadUrl: assertHuggingFaceUrl(p.downloadUrl).toString(), sizeBytes: typeof p.sizeBytes === 'number' && p.sizeBytes > 0 ? p.sizeBytes : 0 }
+  })
+  let cleanCompanion: SetPart | undefined
+  if (companion && companion.rfilename && companion.downloadUrl) {
+    const rfilename = companion.rfilename.trim().replace(/^\/+/, '').slice(0, 512)
+    if (!rfilename || rfilename.includes('..')) throw new Error('invalid download target')
+    cleanCompanion = { rfilename, downloadUrl: assertHuggingFaceUrl(companion.downloadUrl).toString(), sizeBytes: 0 }
+  }
+  const groupFile = cleanParts[0].rfilename
+  const gk = key(cleanId, groupFile)
+  if (sets.has(gk)) return { ok: true }
+  const root = resolveLibraryDir(config, userData)
+  const total = setTotalBytes(cleanParts)
+  writeSetSidecar(root, cleanId, groupFile, cleanParts, cleanCompanion)
+  const job: SetJob = { modelId: cleanId, groupFile, parts: cleanParts, companion: cleanCompanion, idx: 0, doneBytes: 0, totalBytes: total, cancelled: false, paused: false, config, userData, emit, root }
+  sets.set(gk, job)
+  safeEmitTo(emit, { modelId: cleanId, rfilename: groupFile, state: 'started', receivedBytes: 0, totalBytes: total })
+  void runSet(job).catch(() => {})
+  return { ok: true }
+}
+
+function finishSetCancelled(job: SetJob, emit: Emit): void {
+  sets.delete(key(job.modelId, job.groupFile))
+  // Sidecar + finished parts stay: a later download resumes the set instead
+  // of restarting gigabytes (same as single-file cancel keeping dest).
+  safeEmitTo(emit, { modelId: job.modelId, rfilename: job.groupFile, state: 'cancelled', receivedBytes: job.doneBytes, totalBytes: job.totalBytes })
+}
+
+type PartOutcome = { status: 'done' | 'error' | 'paused' | 'cancelled'; received: number; error?: string }
+
+/** Download one part, resolving on its terminal event. */
+function downloadPartOnce(
+  config: RuntimeConfigStore,
+  userData: string,
+  job: SetJob,
+  part: SetPart,
+  emit: Emit,
+  root: string,
+  aggregate: boolean,
+): Promise<PartOutcome> {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (o: PartOutcome): void => {
+      if (!settled) { settled = true; resolve(o) }
+    }
+    // Already complete on disk (resume / race): no transfer needed.
+    if (partComplete(root, job.modelId, part.rfilename)) {
+      done({ status: 'done', received: fileSizeOnDisk(root, job.modelId, part.rfilename) })
+      return
+    }
+    const wrapped: Emit = (ev) => {
+      if (ev.rfilename !== part.rfilename) return
+      if (aggregate && (ev.state === 'started' || ev.state === 'progress' || ev.state === 'queued')) {
+        safeEmitTo(emit, {
+          modelId: job.modelId,
+          rfilename: job.groupFile,
+          state: ev.state,
+          receivedBytes: job.doneBytes + ev.receivedBytes,
+          totalBytes: job.totalBytes,
+        })
+      } else if (!aggregate) {
+        safeEmitTo(emit, ev)
+      }
+      if (ev.state === 'done') done({ status: 'done', received: ev.receivedBytes })
+      else if (ev.state === 'error') done({ status: 'error', received: 0, error: ev.error })
+      else if (ev.state === 'paused') done({ status: 'paused', received: ev.receivedBytes })
+      else if (ev.state === 'cancelled') done({ status: 'cancelled', received: ev.receivedBytes })
+    }
+    try {
+      void startDownload(config, userData, job.modelId, part.rfilename, part.downloadUrl, wrapped).catch((e: unknown) => {
+        done({ status: 'error', received: 0, error: e instanceof Error ? e.message : String(e) })
+      })
+    } catch (e) {
+      done({ status: 'error', received: 0, error: e instanceof Error ? e.message : String(e) })
+    }
+  })
+}
+
+async function runSet(job: SetJob): Promise<void> {
+  const { config, userData, emit, root } = job
+  const gk = key(job.modelId, job.groupFile)
+  const emitGroup = (state: DownloadState, received: number, error?: string): void => {
+    safeEmitTo(emit, { modelId: job.modelId, rfilename: job.groupFile, state, receivedBytes: received, totalBytes: job.totalBytes, ...(error ? { error } : {}) })
+  }
+  // Resume: skip finished parts, crediting their bytes to the aggregate.
+  job.doneBytes = 0
+  let i = 0
+  while (i < job.parts.length && partComplete(root, job.modelId, job.parts[i].rfilename)) {
+    job.doneBytes += fileSizeOnDisk(root, job.modelId, job.parts[i].rfilename)
+    i++
+  }
+  for (; i < job.parts.length; i++) {
+    job.idx = i
+    if (job.cancelled) { finishSetCancelled(job, emit); return }
+    if (job.paused) { emitGroup('paused', job.doneBytes); return }
+    const part = job.parts[i]
+    const res = await downloadPartOnce(config, userData, job, part, emit, root, true)
+    if (res.status === 'done') {
+      job.doneBytes += res.received
+      continue
+    }
+    if (res.status === 'paused') { emitGroup('paused', job.doneBytes); return }
+    if (res.status === 'cancelled') { finishSetCancelled(job, emit); return }
+    // error: sidecar stays so a later download resumes the set.
+    sets.delete(gk)
+    emitGroup('error', job.doneBytes, res.error ?? `part ${i + 1}/${job.parts.length} failed`)
+    return
+  }
+  // Vision projector sidecar: own event row (retryable/cancellable alone); a
+  // projector failure never fails the weights, which are complete here.
+  if (job.companion && !partComplete(root, job.modelId, job.companion.rfilename)) {
+    await downloadPartOnce(config, userData, job, job.companion, emit, root, false)
+  }
+  sets.delete(gk)
+  emitGroup('done', job.doneBytes, undefined)
+  // Re-emit with a concrete total when every byte was observed.
+  if (job.totalBytes === null) {
+    safeEmitTo(emit, { modelId: job.modelId, rfilename: job.groupFile, state: 'done', receivedBytes: job.doneBytes, totalBytes: job.doneBytes })
+  }
 }

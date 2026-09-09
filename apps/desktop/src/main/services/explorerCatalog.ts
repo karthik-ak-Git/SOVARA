@@ -269,11 +269,13 @@ function toExplore(hf: HfRow): ExploreModel | null {
   if (caps.length === 0) return null
   const author = hf.author || hf.id.split('/')[0] || 'unknown'
   const name = hf.id.split('/').pop() || hf.id
-  // List rows carry runnable GGUF weights only (meta/helper files hidden).
+  // List rows carry runnable GGUF weights only (meta/helper files hidden;
+  // shard parts never stand alone — detail groups them into sets).
   const files: ExploreModelFile[] = []
   for (const s of hf.siblings ?? []) {
     if (classifySibling(s.rfilename) !== 'weight') continue
     const base = s.rfilename.split('/').pop() ?? s.rfilename
+    if (parseShard(base)) continue
     const q = base.match(QUANT_RE)
     files.push({
       format: 'GGUF',
@@ -339,10 +341,10 @@ function sortParam(sortBy?: string): string {
   }
 }
 
-/** Core HF search — keyword / sort, broad sweeps up to 100 rows. */
-async function searchHf(query: string, sortBy: string | undefined, limit: number): Promise<ExploreModel[]> {
+/** Raw HF rows for one server sort — keyword / sort, broad sweeps up to 100 rows. */
+async function fetchHfRows(query: string, serverSort: string, limit: number): Promise<HfRow[]> {
   const params = new URLSearchParams()
-  params.set('sort', sortParam(sortBy))
+  params.set('sort', serverSort)
   params.set('direction', '-1')
   params.set('limit', String(Math.min(Math.max(limit, 1), 100)))
   const q = query.trim()
@@ -358,9 +360,60 @@ async function searchHf(query: string, sortBy: string | undefined, limit: number
   })
   if (!res.ok) throw new Error(`Hugging Face error ${res.status}`)
   const rows = (await res.json()) as HfRow[]
+  return Array.isArray(rows) ? rows : []
+}
+
+function toExploreMany(rows: HfRow[], limit: number): ExploreModel[] {
   const out: ExploreModel[] = []
-  for (const r of rows) { const m = toExplore(r); if (m) out.push(m) }
+  for (const r of rows) {
+    if (out.length >= limit) break
+    const m = toExplore(r)
+    if (m) out.push(m)
+  }
   return out
+}
+
+/** Core HF search — keyword / sort, broad sweeps up to 100 rows. */
+async function searchHf(query: string, sortBy: string | undefined, limit: number): Promise<ExploreModel[]> {
+  return toExploreMany(await fetchHfRows(query, sortParam(sortBy), limit), limit)
+}
+
+/**
+ * Developer-usage score: what lots of developers actually use and endorse,
+ * with momentum as a tiebreak — log-scaled so a 1M-download workhorse beats
+ * a flash-in-the-pan newcomer, while likes keep quality in the mix.
+ */
+export function usageScore(downloads: number, likes: number, trendingScore: number): number {
+  const log = (n: number): number => Math.log10(Math.max(0, n) + 1)
+  return 0.5 * log(downloads) + 0.3 * log(likes) + 0.2 * log(trendingScore)
+}
+
+function rankByUsage(rows: HfRow[]): HfRow[] {
+  const seen = new Map<string, HfRow>()
+  for (const r of rows) {
+    if (!r || typeof r.id !== 'string' || seen.has(r.id)) continue
+    seen.set(r.id, r)
+  }
+  return [...seen.values()].sort((a, b) =>
+    usageScore(b.downloads ?? 0, b.likes ?? 0, b.trendingScore ?? 0) -
+    usageScore(a.downloads ?? 0, a.likes ?? 0, a.trendingScore ?? 0),
+  )
+}
+
+/**
+ * Trending = top models developers actually use: merge the momentum,
+ * downloads, and likes sweeps, then rank by developer-usage score.
+ */
+async function searchTrending(query: string, limit: number): Promise<ExploreModel[]> {
+  const q = query.trim()
+  const lists: HfRow[][] = q
+    ? [await fetchHfRows(q, 'trendingScore', limit)]
+    : await Promise.all([
+      fetchHfRows('', 'trendingScore', 100),
+      fetchHfRows('', 'downloads', 100),
+      fetchHfRows('', 'likes', 100),
+    ])
+  return toExploreMany(rankByUsage(lists.flat()), limit)
 }
 
 async function fetchOne(modelId: string): Promise<ExploreModel | null> {
@@ -431,6 +484,12 @@ export async function listExplorerModels(opts: ExplorerListOpts = {}, hwOverride
 
   if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
     return recommendForHardware(limit, hwOverride)
+  }
+
+  // Trending = what developers actually use (usage-blended rank), not the raw
+  // server trend score. Recommended stays hardware-aware (fits this machine).
+  if (sortBy.toLowerCase() === 'trending') {
+    return searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit)
   }
 
   return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit)
@@ -516,50 +575,213 @@ async function fetchQuantRepos(baseId: string): Promise<Array<{ repoId: string; 
   return out.sort((a, b) => prio(a.repoId) - prio(b.repoId) || b.downloads - a.downloads)
 }
 
+/** Shard suffix: `-00001-of-00004.gguf` (dash/underscore variants). */
+const SHARD_RE = /[-_]?(\d+)[-_]?of[-_]?(\d+)\.gguf$/i
+
+/** A runnable weight is never a metadata fragment: floor at 20 MB. */
+export const MIN_RUNNABLE_GGUF_BYTES = 20 * 1024 * 1024
+
+/** Split a basename into a shard group stem + part index/total (null when whole). */
+export function parseShard(basename: string): { stem: string; idx: number; total: number } | null {
+  const m = basename.match(SHARD_RE)
+  if (!m) return null
+  const total = parseInt(m[2], 10)
+  if (!(total >= 2)) return null
+  return { stem: basename.slice(0, m.index), idx: parseInt(m[1], 10), total }
+}
+
+export interface ExactPickOpts {
+  /** Known byte sizes keyed `${repoId}\n${rfilename}` (lowercased). */
+  sizes?: Map<string, number>
+  /** Attach the repo's vision projector when the model sees images. */
+  vision?: boolean
+}
+
+function sizeKey(repoId: string, rfilename: string): string {
+  return `${repoId.toLowerCase()}\n${rfilename.toLowerCase()}`
+}
+
+function ggufUrl(repoId: string, rfilename: string): string {
+  return `https://huggingface.co/${repoId}/resolve/main/${rfilename}`
+}
+
+function quantOf(basename: string): string | undefined {
+  const q = basename.match(QUANT_RE)
+  return q ? q[0].toUpperCase() : undefined
+}
+
 /**
- * Pick the quant menu: preferred K-quants first (Q4_K_M → Q8_0), runnable
- * GGUF weights only, skipping projector/draft/shard helpers AND informational
- * files (.gitattributes, README.md). Max 10 files, every model alike.
+ * Pick the EXACT runnable options from ONE repo (the primary — callers try
+ * repos in priority order and keep the first repo that yields anything, so
+ * quant labels never mix files from different publishers):
+ * - whole single-file weights ≥ 20 MB (fragments can never load),
+ * - complete shard sets (`-00001-of-0000N`, every part present) as ONE row
+ *   with the summed size — individual shards are never listed alone,
+ * - meta/helper files (.gitattributes, README.md, mmproj, imatrix) hidden.
+ * Shard-part files, fragments, and informational files are excluded by
+ * construction, not by label. Max 10 rows.
  */
-export function pickQuantOptions(repos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>): ExploreModelFile[] {
+export function pickQuantOptions(
+  repos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>,
+  opts: ExactPickOpts = {},
+): ExploreModelFile[] {
   const PREF = ['Q4_K_M', 'Q4_K_S', 'Q5_K_M', 'Q5_K_S', 'Q6_K', 'Q8_0', 'Q4_0', 'Q5_0', 'Q3_K_M', 'Q2_K']
+  const sizes = opts.sizes ?? new Map<string, number>()
+  for (const repo of repos) {
+    const rows = buildRepoOptions(repo.repoId, repo.siblings, sizes, opts.vision ?? false, PREF)
+    if (rows.length > 0) return rows
+  }
+  return []
+}
+
+function buildRepoOptions(
+  repoId: string,
+  siblings: Array<{ rfilename: string }>,
+  sizes: Map<string, number>,
+  vision: boolean,
+  pref: string[],
+): ExploreModelFile[] {
+  const bytesOf = (rfilename: string): number => sizes.get(sizeKey(repoId, rfilename)) ?? 0
+  // Group shard parts by stem; everything else is a single candidate.
+  const sets = new Map<string, Array<{ rfilename: string; idx: number; total: number }>>()
+  const singles: string[] = []
+  for (const s of siblings) {
+    if (classifySibling(s.rfilename) !== 'weight') continue
+    const base = s.rfilename.split('/').pop() ?? s.rfilename
+    const sh = parseShard(base)
+    if (sh) {
+      const g = sets.get(sh.stem) ?? []
+      g.push({ rfilename: s.rfilename, idx: sh.idx, total: sh.total })
+      sets.set(sh.stem, g)
+    } else {
+      singles.push(s.rfilename)
+    }
+  }
   const out: ExploreModelFile[] = []
-  const used = new Set<string>()
-  const push = (repoId: string, rfilename: string): void => {
-    if (out.length >= 10 || used.has(rfilename)) return
-    used.add(rfilename)
+  const pushSingle = (rfilename: string): void => {
+    if (out.length >= 10) return
+    const n = bytesOf(rfilename)
+    if (n > 0 && n < MIN_RUNNABLE_GGUF_BYTES) return // fragment, not a model
     const base = rfilename.split('/').pop() ?? rfilename
-    const q = base.match(QUANT_RE)
     out.push({
       format: 'GGUF',
-      quantization: q ? q[0].toUpperCase() : undefined,
-      sizeGB: 0,
-      downloadUrl: `https://huggingface.co/${repoId}/resolve/main/${rfilename}`,
+      quantization: quantOf(base),
+      sizeGB: n / 1024 ** 3,
+      downloadUrl: ggufUrl(repoId, rfilename),
       rfilename,
-      sizeBytes: 0,
+      sizeBytes: n,
       runnable: true,
     })
   }
-  for (const quant of PREF) {
-    for (const repo of repos) {
-      const hit = repo.siblings.find((s) => {
-        if (classifySibling(s.rfilename) !== 'weight') return false
-        const b = (s.rfilename.split('/').pop() ?? '').toUpperCase()
-        return b.includes(`-${quant}.GGUF`) || b.endsWith(`_${quant}.GGUF`)
-      })
-      if (hit) { push(repo.repoId, hit.rfilename); break }
-    }
+  const pushSet = (stem: string, parts: Array<{ rfilename: string; idx: number; total: number }>): void => {
+    if (out.length >= 10) return
+    const total = parts[0].total
+    const seen = new Set(parts.map((p) => p.idx))
+    if (parts.length !== total || seen.size !== total) return // incomplete set: unloadable
+    for (let i = 1; i <= total; i++) if (!seen.has(i)) return
+    const ordered = [...parts].sort((a, b) => a.idx - b.idx)
+    const partRows = ordered.map((p) => {
+      const n = bytesOf(p.rfilename)
+      return { rfilename: p.rfilename, downloadUrl: ggufUrl(repoId, p.rfilename), sizeBytes: n }
+    })
+    const sum = partRows.reduce((a, p) => a + p.sizeBytes, 0)
+    const first = ordered[0].rfilename
+    out.push({
+      format: 'GGUF',
+      quantization: quantOf(stem),
+      sizeGB: sum / 1024 ** 3,
+      downloadUrl: ggufUrl(repoId, first),
+      rfilename: first,
+      sizeBytes: sum,
+      runnable: true,
+      multipart: true,
+      parts: partRows,
+    })
   }
-  // Fill remaining slots with other runnable weights (helpers + meta hidden)
-  for (const repo of repos) {
-    for (const s of repo.siblings) {
-      if (out.length >= 10) break
-      if (classifySibling(s.rfilename) !== 'weight') continue
-      push(repo.repoId, s.rfilename)
-    }
-    if (out.length >= 10) break
+  // Preferred quants first — singles and complete sets compete by quant name.
+  const singleQuants = new Map<string, string[]>()
+  for (const r of singles) {
+    const b = (r.split('/').pop() ?? '').toUpperCase()
+    const hit = pref.find((q) => b.includes(`-${q}.GGUF`) || b.endsWith(`_${q}.GGUF`) || b.includes(`-${q}-`) || b.includes(`_${q}_`))
+    const k = hit ?? ''
+    const g = singleQuants.get(k) ?? []
+    g.push(r)
+    singleQuants.set(k, g)
   }
+  const setQuants = new Map<string, Array<{ stem: string; parts: Array<{ rfilename: string; idx: number; total: number }> }>>()
+  for (const [stem, parts] of sets) {
+    const up = stem.toUpperCase()
+    const hit = pref.find((q) => up.includes(`-${q}-`) || up.includes(`_${q}_`) || up.endsWith(`-${q}`) || up.endsWith(`_${q}`) || up.includes(`-${q}.`) || up === q)
+    const k = hit ?? quantOf(stem) ?? ''
+    const g = setQuants.get(k) ?? []
+    g.push({ stem, parts })
+    setQuants.set(k, g)
+  }
+  for (const q of pref) {
+    for (const r of singleQuants.get(q) ?? []) { pushSingle(r); if (out.length >= 10) return out }
+    for (const s of setQuants.get(q) ?? []) { pushSet(s.stem, s.parts); if (out.length >= 10) return out }
+  }
+  // Remaining singles (unknown/new quant names), then remaining sets.
+  for (const r of singleQuants.get('') ?? []) { pushSingle(r); if (out.length >= 10) return out }
+  for (const s of setQuants.get('') ?? []) { pushSet(s.stem, s.parts); if (out.length >= 10) return out }
+  if (vision) attachProjector(out, repoId, siblings, sizes)
   return out
+}
+
+/** Vision projector from the same repo (Q8_0 > BF16 > first found). */
+function findProjector(siblings: Array<{ rfilename: string }>): string | null {
+  const cands = siblings.map((s) => s.rfilename).filter((f) => f.toLowerCase().includes('mmproj') && f.toLowerCase().endsWith('.gguf'))
+  if (cands.length === 0) return null
+  return cands.find((f) => /q8_0/i.test(f)) ?? cands.find((f) => /bf16/i.test(f)) ?? cands[0]
+}
+
+function attachProjector(out: ExploreModelFile[], repoId: string, siblings: Array<{ rfilename: string }>, sizes: Map<string, number>): void {
+  const mm = findProjector(siblings)
+  if (!mm) return
+  const n = sizes.get(sizeKey(repoId, mm)) ?? 0
+  const companion = { rfilename: mm, downloadUrl: ggufUrl(repoId, mm), sizeBytes: n }
+  for (const f of out) {
+    if (f.runnable !== false && !f.companion) f.companion = companion
+  }
+}
+
+/**
+ * HEAD every GGUF sibling of one repo (bounded, cached) so shard totals and
+ * the 20 MB fragment floor use real bytes, then build that repo's exact rows.
+ */
+async function sizeAndPick(
+  repoId: string,
+  siblings: Array<{ rfilename: string }>,
+  sizes: Map<string, number>,
+  vision: boolean,
+): Promise<ExploreModelFile[]> {
+  const ggufs = siblings.filter((s) => s.rfilename.toLowerCase().endsWith('.gguf')).slice(0, 40)
+  await Promise.all(
+    ggufs.map(async (s) => {
+      const k = sizeKey(repoId, s.rfilename)
+      if (!sizes.has(k)) sizes.set(k, await headBytes(ggufUrl(repoId, s.rfilename)))
+    }),
+  )
+  return pickQuantOptions([{ repoId, siblings }], { sizes, vision })
+}
+
+async function pickExactForModel(
+  modelId: string,
+  baseSiblings: Array<{ rfilename: string }>,
+  quantRepos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>,
+  vision: boolean,
+): Promise<ExploreModelFile[]> {
+  const sizes = new Map<string, number>()
+  const cands: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }> = []
+  if (baseSiblings.some((s) => s.rfilename.toLowerCase().endsWith('.gguf'))) {
+    cands.push({ repoId: modelId, siblings: baseSiblings })
+  }
+  for (const q of quantRepos.slice(0, 4)) cands.push(q)
+  for (const c of cands.slice(0, 5)) {
+    const rows = await sizeAndPick(c.repoId, c.siblings, sizes, vision)
+    if (rows.length > 0) return rows
+  }
+  return []
 }
 
 // ── Built-model cache + in-flight dedup ──────────────────────────────
@@ -600,19 +822,16 @@ async function buildExplorerModel(id: string): Promise<ExploreModel> {
   const row = (await res.json()) as HfRow
   const mapped = toExplore(row)
   if (!mapped) throw new Error('Model is not a text/vision/tools/code/reasoning model.')
-  // Base repos (e.g. Qwen/Qwen3.8-27B) ship safetensors only — pull the GGUF
-  // quant options from linked community quant repos (lmstudio-community first:
-  // the clean Q4_K_M / Q6_K / Q8_0 sets).
-  if (!mapped.files.some((f) => f.format === 'GGUF')) {
-    const quantRepos = await fetchQuantRepos(mapped.id)
-    mapped.files.push(...pickQuantOptions(quantRepos))
-  }
-  // HEAD sizes for real 17.74 GB labels (resolve URLs only — never pages)
-  await Promise.all(
-    mapped.files.filter((f) => f.downloadUrl.includes('/resolve/')).slice(0, 12).map(async (f) => {
-      const n = await headBytes(f.downloadUrl)
-      if (n > 0) { f.sizeBytes = n; f.sizeGB = n / 1024 ** 3 }
-    }),
+  // EXACT runnable options only: the base repo first (covers GGUF-native
+  // repos pasted directly), then linked community quant repos in priority
+  // order. First repo with a complete single weight or shard set wins — quant
+  // labels never mix files from different publishers, shard parts are never
+  // listed alone, and sub-20 MB fragments are dropped.
+  mapped.files = await pickExactForModel(
+    mapped.id,
+    row.siblings ?? [],
+    await fetchQuantRepos(mapped.id),
+    mapped.capabilities.some((c) => c.toLowerCase().includes('vision')),
   )
   // README lives on main or master depending on the repo
   for (const branch of ['main', 'master']) {

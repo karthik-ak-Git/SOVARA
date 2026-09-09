@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { estimateExplorerFit, fitExplorerFiles } from '../src/main/services/explorerFit'
-import { classifySibling, pickQuantOptions } from '../src/main/services/explorerCatalog'
+import { classifySibling, pickQuantOptions, parseShard, MIN_RUNNABLE_GGUF_BYTES } from '../src/main/services/explorerCatalog'
 import type { ExploreModel, ExploreModelFile, HardwareInfo } from '../src/shared/types/explore'
 
 const GB = 1024 ** 3
@@ -36,49 +36,88 @@ describe('sibling classification (LM Studio file rows)', () => {
   })
 })
 
-describe('quant picker (every model detail goes through this one path)', () => {
-  const sib = (rfilename: string): { rfilename: string } => ({ rfilename })
-  const repos = [
-    {
-      repoId: 'lmstudio-community/Qwen3.8-27B-GGUF',
-      siblings: [
-        sib('Qwen3.8-27B-Q4_K_M.gguf'), sib('Qwen3.8-27B-Q6_K.gguf'), sib('Qwen3.8-27B-Q8_0.gguf'),
-        sib('.gitattributes'), sib('README.md'), sib('qwen3.8-mmproj.gguf'),
-      ],
-    },
-    {
-      repoId: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
-      siblings: [
-        sib('Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf'), sib('Meta-Llama-3.1-8B-Instruct-Q8_0.gguf'),
-        sib('.gitattributes'), sib('README.md'), sib('config.json'),
-      ],
-    },
-    {
-      repoId: 'unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF',
-      siblings: [sib('.gitattributes'), sib('README.md')],
-    },
-  ]
+describe('shard detection', () => {
+  it('parses part index/total and rejects whole files', () => {
+    expect(parseShard('M-Q2_K-00001-of-00002.gguf')).toEqual({ stem: 'M-Q2_K', idx: 1, total: 2 })
+    expect(parseShard('M-Q2_K-00002-of-00002.gguf')).toEqual({ stem: 'M-Q2_K', idx: 2, total: 2 })
+    expect(parseShard('M-Q4_K_M.gguf')).toBeNull()
+    expect(parseShard('README.md')).toBeNull()
+  })
+})
 
-  it('returns GGUF weights only — no meta or helper files, for every repo', () => {
-    for (const repo of repos) {
-      const rows = pickQuantOptions([repo])
-      for (const f of rows) {
-        expect(f.rfilename?.toLowerCase().endsWith('.gguf')).toBe(true)
-        expect(f.runnable).not.toBe(false)
-      }
-      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase() === '.gitattributes')).toBe(false)
-      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase() === 'readme.md')).toBe(false)
-      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase().includes('mmproj'))).toBe(false)
-    }
+describe('exact picker (one primary repo, runnable files only)', () => {
+  const GB = 1024 ** 3
+  const sib = (rfilename: string): { rfilename: string } => ({ rfilename })
+  const sizes = (repoId: string, entries: Array<[string, number]>): Map<string, number> =>
+    new Map(entries.map(([f, n]) => [`${repoId.toLowerCase()}\n${f.toLowerCase()}`, n]))
+
+  const primary = {
+    repoId: 'ggml-org/Big-Vision-GGUF',
+    siblings: [
+      sib('Big-Vision-Q4_K_M.gguf'),
+      sib('Big-Vision-Q2_K-00001-of-00002.gguf'),
+      sib('Big-Vision-Q2_K-00002-of-00002.gguf'),
+      sib('Big-Vision-Q3_K-00001-of-00003.gguf'), // incomplete set: part 2..3 missing
+      sib('tiny-frag.gguf'), // 5 MB fragment, not a model
+      sib('mmproj-Big-Vision-Q8_0.gguf'),
+      sib('.gitattributes'),
+      sib('README.md'),
+    ],
+  }
+  const primarySizes = sizes(primary.repoId, [
+    ['Big-Vision-Q4_K_M.gguf', 9 * GB],
+    ['Big-Vision-Q2_K-00001-of-00002.gguf', 60 * GB],
+    ['Big-Vision-Q2_K-00002-of-00002.gguf', 50 * GB],
+    ['Big-Vision-Q3_K-00001-of-00003.gguf', 40 * GB],
+    ['tiny-frag.gguf', 5 * 1024 * 1024],
+    ['mmproj-Big-Vision-Q8_0.gguf', Math.round(0.5 * GB)],
+  ])
+
+  it('groups complete shard sets into one row and drops fragments, parts, meta', () => {
+    const rows = pickQuantOptions([primary], { sizes: primarySizes, vision: true })
+    const names = rows.map((f) => f.rfilename)
+    // single Q4 + one Q2_K set; nothing else survives
+    expect(rows).toHaveLength(2)
+    expect(rows[0].quantization).toBe('Q4_K_M')
+    expect(rows[0].multipart).not.toBe(true)
+    const set = rows.find((f) => f.multipart)
+    expect(set?.quantization).toBe('Q2_K')
+    expect(set?.parts).toHaveLength(2)
+    expect(set?.sizeBytes).toBe(110 * GB)
+    expect(set?.rfilename).toBe('Big-Vision-Q2_K-00001-of-00002.gguf')
+    expect(names.some((n) => n?.includes('00003') || n?.includes('tiny-frag') || n?.toLowerCase() === 'readme.md')).toBe(false)
+    // vision projector attached, never listed as its own row
+    expect(rows.some((f) => (f.rfilename ?? '').includes('mmproj'))).toBe(false)
+    expect(rows[0].companion?.rfilename).toBe('mmproj-Big-Vision-Q8_0.gguf')
   })
 
-  it('still surfaces weights from each repo and prefers Q4_K_M first', () => {
-    const rows = pickQuantOptions(repos)
-    expect(rows.length).toBeGreaterThan(0)
-    expect(rows[0].quantization).toBe('Q4_K_M')
-    const owners = new Set(rows.map((f) => f.downloadUrl.split('/')[3]))
-    expect(owners.has('lmstudio-community')).toBe(true)
-    expect(owners.has('bartowski')).toBe(true)
+  it('keeps the first repo with exact options — no cross-repo mixing', () => {
+    const a = { repoId: 'org/a', siblings: [sib('A-Q4_K_M.gguf')] }
+    const b = { repoId: 'org/b', siblings: [sib('B-Q6_K.gguf')] }
+    const sz = new Map([
+      ...sizes('org/a', [['A-Q4_K_M.gguf', 5 * GB]]),
+      ...sizes('org/b', [['B-Q6_K.gguf', 6 * GB]]),
+    ])
+    const rows = pickQuantOptions([a, b], { sizes: sz })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].rfilename).toBe('A-Q4_K_M.gguf')
+  })
+
+  it('skips a repo with no exact options and uses the next one', () => {
+    const empty = { repoId: 'org/empty', siblings: [sib('.gitattributes'), sib('README.md')] }
+    const full = { repoId: 'org/full', siblings: [sib('F-Q4_K_M.gguf')] }
+    const sz = sizes('org/full', [['F-Q4_K_M.gguf', 5 * GB]])
+    const rows = pickQuantOptions([empty, full], { sizes: sz })
+    expect(rows.map((f) => f.rfilename)).toEqual(['F-Q4_K_M.gguf'])
+  })
+
+  it('no projector attached when the model is not vision', () => {
+    const rows = pickQuantOptions([primary], { sizes: primarySizes, vision: false })
+    expect(rows.every((f) => !f.companion)).toBe(true)
+  })
+
+  it('20 MB floor documented and enforced', () => {
+    expect(MIN_RUNNABLE_GGUF_BYTES).toBe(20 * 1024 * 1024)
   })
 })
 

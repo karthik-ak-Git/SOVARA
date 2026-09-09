@@ -640,7 +640,12 @@ export function ExplorePage({ onBack }: Props): ReactElement {
 
   const doDownload = useCallback(async (): Promise<void> => {
     if (!active || !activeFile?.downloadUrl || !activeFile.rfilename || activeFile.runnable === false) return
-    try { await downloadModelFile(active.id, activeFile.rfilename, activeFile.downloadUrl) } catch { /* toast-less */ }
+    // Shard sets download every part sequentially as one job (+ vision
+    // projector sidecar when present); progress aggregates on this row.
+    const extra = activeFile.multipart && activeFile.parts
+      ? { parts: activeFile.parts, companion: activeFile.companion }
+      : activeFile.companion ? { companion: activeFile.companion } : undefined
+    try { await downloadModelFile(active.id, activeFile.rfilename, activeFile.downloadUrl, extra) } catch { /* toast-less */ }
   }, [active, activeFile])
 
   const refresh = useCallback((): void => {
@@ -848,6 +853,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                       <span className="explorer-format-pill">{activeFile?.format ?? 'GGUF'}</span>
                       <span className="explorer-file-name">{shortName(activeFile?.rfilename?.split('/').pop() ?? active.name, 34)}</span>
                       {activeFile?.quantization ? <span className="explorer-quant-pill">{activeFile.quantization}</span> : null}
+                      {activeFile?.multipart && activeFile?.parts ? <span className="explorer-quant-pill" title="Sharded model — all parts download as one">{activeFile.parts.length} parts</span> : null}
                       <span className="explorer-file-size">{fmtSize(activeFile?.sizeBytes ?? 0)}</span>
                       {recs?.find((r) => r.index === fileIdx && r.rank === 0) ? <span className="explorer-rec-pill">Recommended</span> : null}
                       <ChevronDown size={14} className={`explorer-file-chev ${fileOpen ? 'open' : ''}`} />
@@ -869,6 +875,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                               <span className="explorer-format-pill">{f.format}</span>
                               <span className="explorer-file-name">{shortName((f.rfilename ?? '').split('/').pop() || f.format, 26)}</span>
                               {f.quantization ? <span className="explorer-quant-pill">{f.quantization}</span> : null}
+                              {f.multipart && f.parts ? <span className="explorer-quant-pill" title="Sharded model — all parts download as one">{f.parts.length} parts</span> : null}
+                              {f.companion ? <span className="explorer-quant-pill" title="Vision projector downloads automatically with this weight">+mmproj</span> : null}
                               {isRec ? <span className="explorer-rec-pill">Recommended</span> : null}
                               <MiniFit rec={rec} />
                               <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>

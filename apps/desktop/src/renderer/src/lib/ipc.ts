@@ -449,12 +449,18 @@ export interface DownloadEventView {
   error?: string
 }
 
+export interface DownloadExtra {
+  parts?: Array<{ rfilename: string; downloadUrl: string; sizeBytes?: number }>
+  companion?: { rfilename: string; downloadUrl: string; sizeBytes?: number }
+}
+
 export async function downloadModelFile(
   modelId: string,
   rfilename: string,
-  downloadUrl: string
+  downloadUrl: string,
+  extra?: DownloadExtra
 ): Promise<{ ok: boolean; resumed: boolean }> {
-  return (await sovara().invoke('library:download', { modelId, rfilename, downloadUrl })) as {
+  return (await sovara().invoke('library:download', { modelId, rfilename, downloadUrl, ...extra })) as {
     ok: boolean
     resumed: boolean
   }

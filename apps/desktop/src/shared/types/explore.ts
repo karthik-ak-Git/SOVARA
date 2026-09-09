@@ -1,3 +1,11 @@
+/** One file inside a multi-part download (shard set) or a sidecar payload. */
+export interface ExploreDownloadPart {
+  rfilename: string
+  downloadUrl: string
+  /** Exact bytes when known (HEAD); 0 when unknown. */
+  sizeBytes: number
+}
+
 export interface ExploreModelFile {
   format: string          // GGUF, MLX, safetensors
   quantization?: string   // Q4_K_M, Q5_K_S, etc.
@@ -13,6 +21,20 @@ export interface ExploreModelFile {
    * true = runnable weight.
    */
   runnable?: boolean
+  /**
+   * True when this row is a sharded model (`-00001-of-0000N` parts): loading
+   * needs EVERY part in `parts`. `rfilename`/`downloadUrl` point at part 1 so
+   * single-file plumbing (progress keys, installed checks) keeps working.
+   */
+  multipart?: boolean
+  /** All shard parts in order (present only when multipart). */
+  parts?: ExploreDownloadPart[]
+  /**
+   * Vision projector (`mmproj-*.gguf`) from the same repo. Vision models need
+   * it alongside the main weight to actually see images — the downloader
+   * fetches it automatically with the weight.
+   */
+  companion?: ExploreDownloadPart
 }
 
 export interface ExploreModel {

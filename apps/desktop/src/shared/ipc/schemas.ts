@@ -118,11 +118,22 @@ export const zLibrarySetDirectory = z
   .object({ path: z.string().max(512).default('') })
   .strict()
 
+const zDownloadPart = z
+  .object({
+    rfilename: z.string().min(1).max(512),
+    downloadUrl: z.string().min(1).max(2048),
+  })
+  .strict()
+
 export const zLibraryDownload = z
   .object({
     modelId: z.string().min(1).max(128),
     rfilename: z.string().min(1).max(512),
     downloadUrl: z.string().min(1).max(2048),
+    /** Shard-set parts (multi-part model): downloaded sequentially as one job. */
+    parts: z.array(zDownloadPart).min(2).max(8).optional(),
+    /** Vision projector sidecar, fetched automatically with the weight. */
+    companion: zDownloadPart.optional(),
   })
   .strict()
 

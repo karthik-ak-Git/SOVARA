@@ -20,7 +20,7 @@ import { isExecMode, type ExecMode } from '../services/execPermissions'
 import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, getMcpDirPath, ensureMcpDir, installMcpFromUrl, type McpServer } from '../services/mcpStore'
 import { loadEnabledSkillsContent } from '../services/skillsScanner'
 import {
-  resolveLibraryDir, setLibraryDir, scanLibrary, startDownload,
+  resolveLibraryDir, setLibraryDir, scanLibrary, startDownload, startModelSetDownload,
   cancelDownload, pauseDownload, resumeDownload, getActiveDownloads, isDownloaded, deleteLibraryEntry,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
@@ -152,9 +152,20 @@ export class AppBackend {
     modelId: string,
     rfilename: string,
     downloadUrl: string,
-    emit: (event: DownloadEvent) => void
+    emit: (event: DownloadEvent) => void,
+    extra?: { parts?: Array<{ rfilename: string; downloadUrl: string; sizeBytes?: number }>; companion?: { rfilename: string; downloadUrl: string; sizeBytes?: number } }
   ): Promise<{ ok: true; resumed: boolean }> {
-    return startDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+    // Shard sets download sequentially as one job with aggregate progress;
+    // everything else takes the classic single-file path.
+    if (extra?.parts && extra.parts.length >= 2) {
+      return startModelSetDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.parts, extra.companion, emit)
+    }
+    const first = startDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+    if (extra?.companion) {
+      // Vision projector sidecar: quiet companion job with its own event row.
+      void startDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.companion.rfilename, extra.companion.downloadUrl, emit).catch(() => {})
+    }
+    return first
   }
 
   cancelModelDownload(modelId: string, rfilename: string): boolean {
