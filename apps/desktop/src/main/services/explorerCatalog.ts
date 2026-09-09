@@ -789,7 +789,7 @@ function isAuxWeightFile(rfilename: string): boolean {
  * Pick the LM Studio-style quant menu: preferred K-quants first
  * (Q4_K_M → Q8_0), skipping projector/draft/shard helpers, max 10 files.
  */
-function pickQuantOptions(repos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>): ExploreModelFile[] {
+export function pickQuantOptions(repos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>): ExploreModelFile[] {
   const PREF = ['Q4_K_M', 'Q4_K_S', 'Q5_K_M', 'Q5_K_S', 'Q6_K', 'Q8_0', 'Q4_0', 'Q5_0', 'Q3_K_M', 'Q2_K']
   const out: ExploreModelFile[] = []
   const used = new Set<string>()

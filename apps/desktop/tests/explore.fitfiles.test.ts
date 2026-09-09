@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { estimateExplorerFit, fitExplorerFiles } from '../src/main/services/explorerFit'
-import { classifySibling } from '../src/main/services/explorerCatalog'
+import { classifySibling, pickQuantOptions } from '../src/main/services/explorerCatalog'
 import type { ExploreModel, ExploreModelFile, HardwareInfo } from '../src/shared/types/explore'
 
 const GB = 1024 ** 3
@@ -33,6 +33,52 @@ describe('sibling classification (LM Studio file rows)', () => {
     expect(classifySibling('README.md')).toBe('meta')
     expect(classifySibling('x-mmproj.gguf')).toBe('aux')
     expect(classifySibling('imatrix.dat')).toBe('aux')
+  })
+})
+
+describe('quant picker (every model detail goes through this one path)', () => {
+  const sib = (rfilename: string): { rfilename: string } => ({ rfilename })
+  const repos = [
+    {
+      repoId: 'lmstudio-community/Qwen3.8-27B-GGUF',
+      siblings: [
+        sib('Qwen3.8-27B-Q4_K_M.gguf'), sib('Qwen3.8-27B-Q6_K.gguf'), sib('Qwen3.8-27B-Q8_0.gguf'),
+        sib('.gitattributes'), sib('README.md'), sib('qwen3.8-mmproj.gguf'),
+      ],
+    },
+    {
+      repoId: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
+      siblings: [
+        sib('Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf'), sib('Meta-Llama-3.1-8B-Instruct-Q8_0.gguf'),
+        sib('.gitattributes'), sib('README.md'), sib('config.json'),
+      ],
+    },
+    {
+      repoId: 'unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF',
+      siblings: [sib('.gitattributes'), sib('README.md')],
+    },
+  ]
+
+  it('returns GGUF weights only — no meta or helper files, for every repo', () => {
+    for (const repo of repos) {
+      const rows = pickQuantOptions([repo])
+      for (const f of rows) {
+        expect(f.rfilename?.toLowerCase().endsWith('.gguf')).toBe(true)
+        expect(f.runnable).not.toBe(false)
+      }
+      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase() === '.gitattributes')).toBe(false)
+      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase() === 'readme.md')).toBe(false)
+      expect(rows.some((f) => (f.rfilename ?? '').toLowerCase().includes('mmproj'))).toBe(false)
+    }
+  })
+
+  it('still surfaces weights from each repo and prefers Q4_K_M first', () => {
+    const rows = pickQuantOptions(repos)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows[0].quantization).toBe('Q4_K_M')
+    const owners = new Set(rows.map((f) => f.downloadUrl.split('/')[3]))
+    expect(owners.has('lmstudio-community')).toBe(true)
+    expect(owners.has('bartowski')).toBe(true)
   })
 })
 
