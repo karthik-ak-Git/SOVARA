@@ -43,7 +43,9 @@ function waitFor(cond: () => boolean, timeoutMs = 15000): Promise<void> {
   })
 }
 
-/** Serve FULL; honor Range for resume; first hits stream 1KB then hold a gate. */
+/** Serve FULL; honor Range for resume; first hits stream 1KB then hold a gate.
+ *  The stream errors on abort — mirroring undici, where aborting the request
+ *  signal tears down the response body so pause/cancel propagate mid-body. */
 function stubGatedFetch(): { release: () => void } {
   let release: (() => void) | null = null
   global.fetch = vi.fn(async (_url: unknown, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => {
@@ -54,14 +56,21 @@ function stubGatedFetch(): { release: () => void } {
       const rest = FULL.subarray(start)
       return new Response(rest as unknown as BodyInit, { status: 206, headers: { 'content-length': String(rest.length) } })
     }
-    const stream = new ReadableStream({
+    let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
+    const stream = new ReadableStream<Uint8Array>({
       start(c) {
+        ctrl = c
         c.enqueue(FULL.subarray(0, 1024))
         void new Promise<void>((r) => { release = r }).then(() => {
           try { c.enqueue(FULL.subarray(1024)); c.close() } catch { /* aborted */ }
         })
       },
+      cancel() { try { release?.() } catch { /* ignore */ } },
     })
+    init?.signal?.addEventListener('abort', () => {
+      try { ctrl?.error(new DOMException('Aborted', 'AbortError')) } catch { /* ignore */ }
+      try { release?.() } catch { /* ignore */ }
+    }, { once: true })
     return new Response(stream, { status: 200, headers: { 'content-length': String(FULL.length) } })
   }) as unknown as typeof fetch
   return { release: () => { release?.() } }

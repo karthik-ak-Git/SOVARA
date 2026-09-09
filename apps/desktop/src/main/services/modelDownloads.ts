@@ -666,10 +666,19 @@ export async function startDownload(
       received = startAt
       if (!res.body) throw new Error('empty download response')
       // Report headers immediately so the UI shows the real total instead of 0%.
-      safeEmit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total })
+      track({ ...base, state: 'progress', receivedBytes: received, totalBytes: total })
       const out = createWriteStream(part, { flags: startAt > 0 ? 'a' : 'w' })
       let lastEmit = 0
       const source = Readable.fromWeb(res.body as import('stream/web').ReadableStream)
+      // Pause/cancel must propagate even if the response body ignores the
+      // request abort (stalled servers, non-standard runtimes): destroying
+      // the source rejects the pipeline below, which can only surface as a
+      // paused/cancelled event — never a hang, never a fake completion.
+      const onAbortDestroy = (): void => {
+        try { source.destroy(new Error('cancelled')) } catch { /* already settled */ }
+      }
+      if (ctrl.signal.aborted) onAbortDestroy()
+      else ctrl.signal.addEventListener('abort', onAbortDestroy, { once: true })
       // pipeline() owns error forwarding on every leg: an abort during the
       // body can only reject the awaited promise (handled below) — it can
       // never surface as an uncaught 'error' event the way manual
@@ -686,6 +695,7 @@ export async function startDownload(
         },
       })
       await pipeline(source, tap, out)
+      try { ctrl.signal.removeEventListener('abort', onAbortDestroy) } catch { /* ignore */ }
       safeEmit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total ?? received })
       renameSync(part, dest)
       // Write sidecar with minimal provenance (C drive global location)

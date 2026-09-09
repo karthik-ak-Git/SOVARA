@@ -89,6 +89,58 @@ export function downloadRowId(provider: string, repoId: string, revision: string
   return `${clean(provider)}|${clean(repoId)}|${clean(revision || 'main')}|${clean(rfilename).replace(/^\/+/, '')}`
 }
 
+/** Installation truth for a library model: file present, gone, or only
+ *  discovered on disk (no download sidecar). */
+export type RegistryInstallStatus = 'installed' | 'missing' | 'unregistered'
+
+/**
+ * One model in the Library inventory (model_registry).
+ *
+ * Shares the SAME stable id as its model_downloads row
+ * (`downloadRowId(provider | repo | revision | rfilename)`), so Explorer and
+ * Library operate on one shared identity per artifact. Unlike download rows
+ * (which are the truth for transfer lifecycle/progress), a registry row is
+ * the truth for the installed artifact: resolved disk path, weight format,
+ * source provider, architecture, and any runtime association.
+ *
+ * `source_provider` is the SOURCE (huggingface, ...) and must never be
+ * confused with the runtime family — runtime association lives only in
+ * `runtime_id`, which points at model_runtimes.id.
+ */
+export interface ModelRegistryRow {
+  id: string
+  /** Model SOURCE, never a runtime family. */
+  sourceProvider: string
+  /** org/repo on the source. */
+  repository: string
+  revision: string
+  /** Repo-relative path of the weight file. */
+  rfilename: string
+  /** Weight format: gguf | safetensors | other. */
+  format: string | null
+  quantization: string | null
+  /** Architecture family: llama, qwen3, gemma, mistral, ... */
+  architecture: string | null
+  /** Human shorthand: 7B, 27B, 70B, ... */
+  parameterCount: string | null
+  contextLength: number | null
+  license: string | null
+  /** Absolute path of the weight file on disk (resolved, never renderer text). */
+  localPath: string
+  fileSizeBytes: number | null
+  /** Verified SHA-256 when known; null until verified. */
+  checksum: string | null
+  downloadStatus: DownloadRowStatus
+  installStatus: RegistryInstallStatus
+  /** Associated runtime (model_runtimes.id) when a runtime exposes it. */
+  runtimeId: string | null
+  displayName: string
+  discoveredAt: number
+  updatedAt: number
+  /** Bounded JSON extras: capabilities[], tags[], sourceRepo, baseModel. */
+  extraJson: string | null
+}
+
 const MAX_SNAPSHOT_MODELS = 200
 
 export class RuntimeConfigStore {
@@ -135,6 +187,31 @@ export class RuntimeConfigStore {
       );
       CREATE INDEX IF NOT EXISTS idx_model_downloads_repo ON model_downloads(repo_id, revision);
       CREATE INDEX IF NOT EXISTS idx_model_downloads_status ON model_downloads(status);
+      CREATE TABLE IF NOT EXISTS model_registry (
+        id                  TEXT PRIMARY KEY,
+        source_provider     TEXT NOT NULL,
+        repository          TEXT NOT NULL,
+        revision            TEXT NOT NULL DEFAULT 'main',
+        rfilename           TEXT NOT NULL,
+        format              TEXT,
+        quantization        TEXT,
+        architecture        TEXT,
+        parameter_count     TEXT,
+        context_length      INTEGER,
+        license             TEXT,
+        local_path          TEXT NOT NULL,
+        file_size_bytes     INTEGER,
+        checksum            TEXT,
+        download_status     TEXT NOT NULL DEFAULT 'completed',
+        installation_status TEXT NOT NULL DEFAULT 'installed',
+        runtime_id          TEXT,
+        display_name        TEXT NOT NULL,
+        discovered_at       INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL,
+        extra_json          TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_registry_runtime ON model_registry(runtime_id);
+      CREATE INDEX IF NOT EXISTS idx_model_registry_path ON model_registry(local_path);
     `)
     // Restart recovery: an interrupted transfer is resumable, never auto-run.
     // downloading/verifying → paused (bytes kept in .part); queued stays queued.
@@ -323,6 +400,119 @@ export class RuntimeConfigStore {
    *  part is picked up by reconciliation (set → failed/partial, resumable). */
   removeDownloadRowsByDest(destAbs: string): void {
     this.db.raw.prepare('DELETE FROM model_downloads WHERE dest_path = ?').run(destAbs)
+  }
+
+  // ── Model registry (Library inventory, shared identity with downloads) ──
+
+  upsertRegistryRow(row: Partial<ModelRegistryRow> & Pick<ModelRegistryRow, 'id' | 'sourceProvider' | 'repository' | 'rfilename' | 'localPath' | 'displayName'>): void {
+    const now = Date.now()
+    const revision = row.revision ?? 'main'
+    this.db.raw
+      .prepare(
+        `INSERT INTO model_registry (id, source_provider, repository, revision, rfilename, format, quantization,
+           architecture, parameter_count, context_length, license, local_path, file_size_bytes, checksum,
+           download_status, installation_status, runtime_id, display_name, discovered_at, updated_at, extra_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           source_provider = excluded.source_provider, repository = excluded.repository, revision = excluded.revision,
+           rfilename = excluded.rfilename, format = COALESCE(excluded.format, model_registry.format),
+           quantization = COALESCE(excluded.quantization, model_registry.quantization),
+           architecture = COALESCE(excluded.architecture, model_registry.architecture),
+           parameter_count = COALESCE(excluded.parameter_count, model_registry.parameter_count),
+           context_length = COALESCE(excluded.context_length, model_registry.context_length),
+           license = COALESCE(excluded.license, model_registry.license),
+           local_path = excluded.local_path, file_size_bytes = COALESCE(excluded.file_size_bytes, model_registry.file_size_bytes),
+           checksum = COALESCE(excluded.checksum, model_registry.checksum),
+           download_status = excluded.download_status, installation_status = excluded.installation_status,
+           runtime_id = excluded.runtime_id, display_name = excluded.display_name, updated_at = excluded.updated_at,
+           extra_json = COALESCE(excluded.extra_json, model_registry.extra_json)`
+      )
+      .run(
+        row.id, row.sourceProvider, row.repository, revision, row.rfilename, row.format ?? null, row.quantization ?? null,
+        row.architecture ?? null, row.parameterCount ?? null, row.contextLength ?? null, row.license ?? null,
+        row.localPath, row.fileSizeBytes ?? null, row.checksum ?? null, row.downloadStatus ?? 'completed',
+        row.installStatus ?? 'installed', row.runtimeId ?? null, row.displayName,
+        row.discoveredAt ?? now, now, row.extraJson ?? null,
+      )
+  }
+
+  getRegistryRow(id: string): ModelRegistryRow | null {
+    const r = this.db.raw.prepare('SELECT * FROM model_registry WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return r ? this.toRegistryRow(r) : null
+  }
+
+  listRegistryRows(): ModelRegistryRow[] {
+    const rows = this.db.raw.prepare('SELECT * FROM model_registry ORDER BY updated_at DESC').all() as Record<string, unknown>[]
+    return rows.map((r) => this.toRegistryRow(r))
+  }
+
+  listRegistryRowsByRuntime(runtimeId: string): ModelRegistryRow[] {
+    const rows = this.db.raw
+      .prepare('SELECT * FROM model_registry WHERE runtime_id = ? ORDER BY updated_at DESC')
+      .all(runtimeId) as Record<string, unknown>[]
+    return rows.map((r) => this.toRegistryRow(r))
+  }
+
+  updateRegistryRow(id: string, patch: Partial<Pick<
+    ModelRegistryRow,
+    'localPath' | 'fileSizeBytes' | 'checksum' | 'downloadStatus' | 'installStatus' | 'runtimeId' | 'displayName' | 'extraJson' | 'rfilename'
+  >>): void {
+    const sets: string[] = []
+    const vals: Array<string | number | null> = []
+    const push = (col: string, v: string | number | null): void => { sets.push(`${col} = ?`); vals.push(v) }
+    if (patch.localPath !== undefined) push('local_path', patch.localPath)
+    if (patch.fileSizeBytes !== undefined) push('file_size_bytes', patch.fileSizeBytes)
+    if (patch.checksum !== undefined) push('checksum', patch.checksum)
+    if (patch.downloadStatus !== undefined) push('download_status', patch.downloadStatus)
+    if (patch.installStatus !== undefined) push('installation_status', patch.installStatus)
+    if (patch.runtimeId !== undefined) push('runtime_id', patch.runtimeId)
+    if (patch.displayName !== undefined) push('display_name', patch.displayName)
+    if (patch.extraJson !== undefined) push('extra_json', patch.extraJson)
+    if (patch.rfilename !== undefined) push('rfilename', patch.rfilename)
+    if (sets.length === 0) return
+    sets.push('updated_at = ?')
+    vals.push(Date.now(), id)
+    this.db.raw.prepare(`UPDATE model_registry SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  }
+
+  removeRegistryRow(id: string): void {
+    this.db.raw.prepare('DELETE FROM model_registry WHERE id = ?').run(id)
+  }
+
+  /** Remove every registry row whose resolved file path matches. */
+  removeRegistryRowsByPath(localPathAbs: string): void {
+    this.db.raw.prepare('DELETE FROM model_registry WHERE local_path = ?').run(localPathAbs)
+  }
+
+  private toRegistryRow(r: Record<string, unknown>): ModelRegistryRow {
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    const status = str(r['download_status'])
+    const ok: DownloadRowStatus[] = ['queued', 'downloading', 'paused', 'completed', 'failed', 'cancelled', 'verifying']
+    const install = str(r['installation_status'])
+    return {
+      id: str(r['id']),
+      sourceProvider: str(r['source_provider']) || 'huggingface',
+      repository: str(r['repository']),
+      revision: str(r['revision']) || 'main',
+      rfilename: str(r['rfilename']),
+      format: str(r['format']) || null,
+      quantization: str(r['quantization']) || null,
+      architecture: str(r['architecture']) || null,
+      parameterCount: str(r['parameter_count']) || null,
+      contextLength: numOrNull(r['context_length']),
+      license: str(r['license']) || null,
+      localPath: str(r['local_path']),
+      fileSizeBytes: numOrNull(r['file_size_bytes']),
+      checksum: str(r['checksum']) || null,
+      downloadStatus: (ok as string[]).includes(status) ? (status as DownloadRowStatus) : 'completed',
+      installStatus: install === 'missing' || install === 'unregistered' ? install : 'installed',
+      runtimeId: str(r['runtime_id']) || null,
+      displayName: str(r['display_name']),
+      discoveredAt: typeof r['discovered_at'] === 'number' ? (r['discovered_at'] as number) : Date.now(),
+      updatedAt: typeof r['updated_at'] === 'number' ? (r['updated_at'] as number) : Date.now(),
+      extraJson: typeof r['extra_json'] === 'string' ? (r['extra_json'] as string) : null,
+    }
   }
 
   private toDownloadRow(r: Record<string, unknown>): DownloadRow {
