@@ -771,12 +771,37 @@ export async function listExplorerModels(opts: ExplorerListOpts = {}): Promise<E
  * HF is used ONLY here (file enumeration) — every user-facing field comes
  * from the LM Studio catalog. Never called for listing/search.
  */
+const SIB_TTL_MS = 15 * 60 * 1000
+const sibCache = new Map<string, { at: number; v: { repoId: string; siblings: Array<{ rfilename: string }>; downloads: number } }>()
+const HEAD_TTL_MS = 60 * 60 * 1000
+const headCache = new Map<string, { at: number; bytes: number }>()
+
 async function fetchHfSiblings(repoId: string): Promise<{ repoId: string; siblings: Array<{ rfilename: string }>; downloads: number }> {
+  const hit = sibCache.get(repoId.toLowerCase())
+  if (hit && Date.now() - hit.at < SIB_TTL_MS) return hit.v
   const res = await hfGet(`${HF_MODELS_API}/${repoId}`).catch(() => null)
   if (!res || !res.ok) return { repoId, siblings: [], downloads: 0 }
   const row = (await res.json().catch(() => null)) as HfRow | null
   if (!row) return { repoId, siblings: [], downloads: 0 }
-  return { repoId, siblings: row.siblings ?? [], downloads: typeof row.downloads === 'number' ? row.downloads : 0 }
+  const v = { repoId, siblings: row.siblings ?? [], downloads: typeof row.downloads === 'number' ? row.downloads : 0 }
+  sibCache.set(repoId.toLowerCase(), { at: Date.now(), v })
+  return v
+}
+
+/** HEAD byte size with a 1h cache (failures are not cached → retried next time). */
+async function headBytes(url: string): Promise<number> {
+  const hit = headCache.get(url)
+  if (hit && Date.now() - hit.at < HEAD_TTL_MS) return hit.bytes
+  try {
+    const head = await hfGet(url, 'HEAD')
+    const len = head.headers.get('content-length')
+    const n = len ? parseInt(len, 10) : NaN
+    if (Number.isFinite(n) && n > 0) {
+      headCache.set(url, { at: Date.now(), bytes: n })
+      return n
+    }
+  } catch { /* fall through */ }
+  return 0
 }
 
 /** Filenames that are helpers, not runnable weights (projectors, drafts, shards). */
@@ -859,10 +884,38 @@ export async function overlayLmStudioDetails(model: ExploreModel): Promise<Explo
  * GGUF quant files enumerated from the variant's GGUF Source repo on HF
  * (LM's own download dropdown is only a deep-link/CLI hook — the site
  * publishes no direct file URLs; LM Studio's app resolves the same way).
+ *
+ * Speed: built models are cached 5 min and concurrent requests for the same
+ * id share one in-flight build — the renderer's model + compatibility +
+ * recommendations triple-call per click costs a single build.
  */
+const MODEL_TTL_MS = 5 * 60 * 1000
+const modelCache = new Map<string, { at: number; model: ExploreModel }>()
+const modelInflight = new Map<string, Promise<ExploreModel>>()
+
+export function clearExplorerModelCache(): void {
+  modelCache.clear()
+  modelInflight.clear()
+  sibCache.clear()
+  headCache.clear()
+}
+
 export async function getExplorerModel(modelId: string): Promise<ExploreModel> {
   const id = (modelId ?? '').trim().replace(/\/$/, '')
   if (!id.includes('/')) throw new Error(`“${modelId}” is not an LM Studio model id (expected owner/name).`)
+  const hit = modelCache.get(id)
+  if (hit && Date.now() - hit.at < MODEL_TTL_MS) return hit.model
+  let p = modelInflight.get(id)
+  if (!p) {
+    p = buildExplorerModel(id)
+      .then((m) => { modelCache.set(id, { at: Date.now(), model: m }); return m })
+      .finally(() => { modelInflight.delete(id) })
+    modelInflight.set(id, p)
+  }
+  return p
+}
+
+async function buildExplorerModel(id: string): Promise<ExploreModel> {
   let html: string
   try {
     html = await lmGetText(`${LM_BASE}/models/${id}`)
@@ -896,12 +949,8 @@ export async function getExplorerModel(modelId: string): Promise<ExploreModel> {
   // HEAD sizes for real 17.74 GB labels (resolve URLs only — never pages)
   await Promise.all(
     mapped.files.filter((f) => f.downloadUrl.includes('/resolve/')).slice(0, 12).map(async (f) => {
-      try {
-        const head = await hfGet(f.downloadUrl, 'HEAD')
-        const len = head.headers.get('content-length')
-        const n = len ? parseInt(len, 10) : NaN
-        if (Number.isFinite(n) && n > 0) { f.sizeBytes = n; f.sizeGB = n / 1024 ** 3 }
-      } catch { /* keep seeded size */ }
+      const n = await headBytes(f.downloadUrl)
+      if (n > 0) { f.sizeBytes = n; f.sizeGB = n / 1024 ** 3 }
     }),
   )
   // README from the picked source repo (main or master branch)
