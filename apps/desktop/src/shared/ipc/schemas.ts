@@ -136,6 +136,12 @@ export const zLibraryDownload = z
     parts: z.array(zDownloadPart).min(2).max(8).optional(),
     /** Vision projector sidecar, fetched automatically with the weight. */
     companion: zDownloadPart.optional(),
+    /** HF revision the bytes come from (Explorer pins 'main'). Part of the stable identity. */
+    revision: z.string().min(1).max(128).optional(),
+    format: z.string().max(32).optional(),
+    quantization: z.string().max(32).optional(),
+    license: z.string().max(128).optional(),
+    gated: z.boolean().optional(),
   })
   .strict()
 
@@ -151,7 +157,11 @@ export const zLibraryDelete = z
   .strict()
 
 export const zLibraryIsDownloaded = z
-  .object({ modelId: z.string().min(1).max(128), rfilename: z.string().min(1).max(512) })
+  .object({ modelId: z.string().min(1).max(128), rfilename: z.string().min(1).max(512), revision: z.string().min(1).max(128).optional() })
+  .strict()
+
+export const zLibraryFileRef = z
+  .object({ modelId: z.string().min(1).max(128), rfilename: z.string().min(1).max(512), revision: z.string().min(1).max(128).optional() })
   .strict()
 
 export const zShellOpenExternal = z

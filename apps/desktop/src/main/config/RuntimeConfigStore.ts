@@ -36,6 +36,59 @@ export interface RuntimeSnapshot {
   lastError: string | null
 }
 
+/**
+ * Persistent download lifecycle (Explorer → model library).
+ *
+ * One row per downloadable artifact identity:
+ *   provider + repo + revision + rfilename  (NOT bare filename — two repos
+ *   may ship the same basename).
+ * Shard sets are ONE group row (kind='set', parts JSON); vision projectors
+ * ride in `companion` JSON. Filesystem stays the truth for "installed", this
+ * table is the truth for lifecycle/progress so pause/queue survive restart.
+ */
+export type DownloadRowStatus =
+  | 'queued'
+  | 'downloading'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'verifying'
+
+export interface DownloadRow {
+  id: string
+  provider: string
+  repoId: string
+  revision: string
+  rfilename: string
+  downloadUrl: string
+  destPath: string
+  tempPath: string
+  totalBytes: number | null
+  downloadedBytes: number
+  status: DownloadRowStatus
+  /** 'single' file or 'set' (sharded GGUF group row). */
+  kind: 'single' | 'set'
+  /** JSON array of {rfilename, downloadUrl, sizeBytes} for kind='set'. */
+  parts: string | null
+  /** JSON {rfilename, downloadUrl, sizeBytes} vision sidecar, if any. */
+  companion: string | null
+  format: string | null
+  quantization: string | null
+  license: string | null
+  gated: number | null
+  error: string | null
+  speedBps: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** Stable identity: provider + repo + revision + file (all lowercased). */
+export function downloadRowId(provider: string, repoId: string, revision: string, rfilename: string): string {
+  const clean = (s: string): string => s.trim().toLowerCase().slice(0, 512)
+  return `${clean(provider)}|${clean(repoId)}|${clean(revision || 'main')}|${clean(rfilename).replace(/^\/+/, '')}`
+}
+
 const MAX_SNAPSHOT_MODELS = 200
 
 export class RuntimeConfigStore {
@@ -56,7 +109,40 @@ export class RuntimeConfigStore {
         lastError TEXT,
         updatedAt INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS model_downloads (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'huggingface',
+        repo_id TEXT NOT NULL,
+        revision TEXT NOT NULL DEFAULT 'main',
+        rfilename TEXT NOT NULL,
+        download_url TEXT NOT NULL,
+        dest_path TEXT NOT NULL,
+        temp_path TEXT NOT NULL,
+        total_bytes INTEGER,
+        downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'queued',
+        kind TEXT NOT NULL DEFAULT 'single',
+        parts TEXT,
+        companion TEXT,
+        format TEXT,
+        quantization TEXT,
+        license TEXT,
+        gated INTEGER,
+        error TEXT,
+        speed_bps REAL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_downloads_repo ON model_downloads(repo_id, revision);
+      CREATE INDEX IF NOT EXISTS idx_model_downloads_status ON model_downloads(status);
     `)
+    // Restart recovery: an interrupted transfer is resumable, never auto-run.
+    // downloading/verifying → paused (bytes kept in .part); queued stays queued.
+    try {
+      this.db.raw.exec(`UPDATE model_downloads SET status = 'paused', updated_at = ${Date.now()} WHERE status IN ('downloading', 'verifying')`)
+    } catch {
+      // best-effort — table may be locked mid-migration
+    }
   }
 
   listRuntimes(): ModelRuntimeEntry[] {
@@ -159,6 +245,115 @@ export class RuntimeConfigStore {
   /** Generic persisted app setting (General section and friends). Null when unset. */
   getAppSetting(key: string): string | null {
     return this.db.getMeta(key) ?? null
+  }
+
+  // ── Persistent download registry (Explorer lifecycle) ──
+  // Thin wrappers over model_downloads; callers own identity + paths.
+
+  upsertDownloadRow(row: Omit<DownloadRow, 'createdAt' | 'updatedAt'> & { createdAt?: number; updatedAt?: number }): void {
+    const now = Date.now()
+    this.db.raw
+      .prepare(
+        `INSERT INTO model_downloads (id, provider, repo_id, revision, rfilename, download_url, dest_path, temp_path,
+          total_bytes, downloaded_bytes, status, kind, parts, companion, format, quantization, license, gated,
+          error, speed_bps, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           download_url = excluded.download_url, dest_path = excluded.dest_path, temp_path = excluded.temp_path,
+           total_bytes = COALESCE(excluded.total_bytes, model_downloads.total_bytes),
+           downloaded_bytes = excluded.downloaded_bytes, status = excluded.status, kind = excluded.kind,
+           parts = COALESCE(excluded.parts, model_downloads.parts),
+           companion = COALESCE(excluded.companion, model_downloads.companion),
+           format = COALESCE(excluded.format, model_downloads.format),
+           quantization = COALESCE(excluded.quantization, model_downloads.quantization),
+           license = COALESCE(excluded.license, model_downloads.license),
+           gated = COALESCE(excluded.gated, model_downloads.gated),
+           error = excluded.error, speed_bps = excluded.speed_bps, updated_at = excluded.updated_at`
+      )
+      .run(
+        row.id, row.provider, row.repoId, row.revision, row.rfilename, row.downloadUrl, row.destPath, row.tempPath,
+        row.totalBytes, row.downloadedBytes, row.status, row.kind, row.parts, row.companion, row.format,
+        row.quantization, row.license, row.gated, row.error, row.speedBps,
+        row.createdAt ?? now, row.updatedAt ?? now,
+      )
+  }
+
+  getDownloadRow(id: string): DownloadRow | null {
+    const r = this.db.raw.prepare('SELECT * FROM model_downloads WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return r ? this.toDownloadRow(r) : null
+  }
+
+  listDownloadRows(): DownloadRow[] {
+    const rows = this.db.raw.prepare('SELECT * FROM model_downloads ORDER BY updated_at DESC').all() as Record<string, unknown>[]
+    return rows.map((r) => this.toDownloadRow(r))
+  }
+
+  listDownloadRowsByRepo(repoId: string): DownloadRow[] {
+    const rows = this.db.raw
+      .prepare('SELECT * FROM model_downloads WHERE repo_id = ? COLLATE NOCASE ORDER BY updated_at DESC')
+      .all(repoId) as Record<string, unknown>[]
+    return rows.map((r) => this.toDownloadRow(r))
+  }
+
+  updateDownloadRow(id: string, patch: Partial<Pick<DownloadRow, 'totalBytes' | 'downloadedBytes' | 'status' | 'error' | 'speedBps' | 'destPath' | 'tempPath' | 'parts' | 'companion'>>): void {
+    const sets: string[] = []
+    const vals: Array<string | number | null> = []
+    const push = (col: string, v: string | number | null): void => { sets.push(`${col} = ?`); vals.push(v) }
+    if (patch.totalBytes !== undefined) push('total_bytes', patch.totalBytes)
+    if (patch.downloadedBytes !== undefined) push('downloaded_bytes', patch.downloadedBytes)
+    if (patch.status !== undefined) push('status', patch.status)
+    if (patch.error !== undefined) push('error', patch.error)
+    if (patch.speedBps !== undefined) push('speed_bps', patch.speedBps)
+    if (patch.destPath !== undefined) push('dest_path', patch.destPath)
+    if (patch.tempPath !== undefined) push('temp_path', patch.tempPath)
+    if (patch.parts !== undefined) push('parts', patch.parts)
+    if (patch.companion !== undefined) push('companion', patch.companion)
+    if (sets.length === 0) return
+    sets.push('updated_at = ?')
+    vals.push(Date.now(), id)
+    this.db.raw.prepare(`UPDATE model_downloads SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  }
+
+  removeDownloadRow(id: string): void {
+    this.db.raw.prepare('DELETE FROM model_downloads WHERE id = ?').run(id)
+  }
+
+  /** Remove rows whose dest matches. Set-group rows share their first part's
+   *  dest, so deleting the group file drops the group row; deleting a later
+   *  part is picked up by reconciliation (set → failed/partial, resumable). */
+  removeDownloadRowsByDest(destAbs: string): void {
+    this.db.raw.prepare('DELETE FROM model_downloads WHERE dest_path = ?').run(destAbs)
+  }
+
+  private toDownloadRow(r: Record<string, unknown>): DownloadRow {
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    const status = str(r['status'])
+    const ok: DownloadRowStatus[] = ['queued', 'downloading', 'paused', 'completed', 'failed', 'cancelled', 'verifying']
+    return {
+      id: str(r['id']),
+      provider: str(r['provider']) || 'huggingface',
+      repoId: str(r['repo_id']),
+      revision: str(r['revision']) || 'main',
+      rfilename: str(r['rfilename']),
+      downloadUrl: str(r['download_url']),
+      destPath: str(r['dest_path']),
+      tempPath: str(r['temp_path']),
+      totalBytes: numOrNull(r['total_bytes']),
+      downloadedBytes: typeof r['downloaded_bytes'] === 'number' ? r['downloaded_bytes'] : 0,
+      status: (ok as string[]).includes(status) ? (status as DownloadRowStatus) : 'queued',
+      kind: r['kind'] === 'set' ? 'set' : 'single',
+      parts: typeof r['parts'] === 'string' ? (r['parts'] as string) : null,
+      companion: typeof r['companion'] === 'string' ? (r['companion'] as string) : null,
+      format: typeof r['format'] === 'string' ? (r['format'] as string) : null,
+      quantization: typeof r['quantization'] === 'string' ? (r['quantization'] as string) : null,
+      license: typeof r['license'] === 'string' ? (r['license'] as string) : null,
+      gated: typeof r['gated'] === 'number' ? (r['gated'] as number) : null,
+      error: typeof r['error'] === 'string' ? (r['error'] as string) : null,
+      speedBps: numOrNull(r['speed_bps']),
+      createdAt: typeof r['created_at'] === 'number' ? (r['created_at'] as number) : Date.now(),
+      updatedAt: typeof r['updated_at'] === 'number' ? (r['updated_at'] as number) : Date.now(),
+    }
   }
 
   setAppSetting(key: string, value: string): void {

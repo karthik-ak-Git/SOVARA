@@ -22,6 +22,7 @@ import { loadEnabledSkillsContent } from '../services/skillsScanner'
 import {
   resolveLibraryDir, setLibraryDir, scanLibrary, startDownload, startModelSetDownload,
   cancelDownload, pauseDownload, resumeDownload, getActiveDownloads, isDownloaded, deleteLibraryEntry,
+  getFileStatus, reconcileLibrary, resolveModelFolder,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
 
@@ -65,6 +66,9 @@ export class AppBackend {
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
     this.ensureGlobalWorkspace()
     try { this.ensureMcpDir() } catch {}
+    // Registry ↔ filesystem reconciliation on startup: registry rows for
+    // vanished files are repaired, pre-registry sidecar downloads adopted.
+    try { this.reconcileLibrary() } catch {}
     this.chat = new ChatService({
       persistence: this.persistenceAdapter,
       llm,
@@ -153,23 +157,24 @@ export class AppBackend {
     rfilename: string,
     downloadUrl: string,
     emit: (event: DownloadEvent) => void,
-    extra?: { parts?: Array<{ rfilename: string; downloadUrl: string; sizeBytes?: number }>; companion?: { rfilename: string; downloadUrl: string; sizeBytes?: number } }
+    extra?: { parts?: Array<{ rfilename: string; downloadUrl: string; sizeBytes?: number }>; companion?: { rfilename: string; downloadUrl: string; sizeBytes?: number }; revision?: string; format?: string; quantization?: string; license?: string; gated?: boolean }
   ): Promise<{ ok: true; resumed: boolean }> {
+    const meta = { revision: extra?.revision, format: extra?.format, quantization: extra?.quantization, license: extra?.license, gated: extra?.gated }
     // Shard sets download sequentially as one job with aggregate progress;
     // everything else takes the classic single-file path.
     if (extra?.parts && extra.parts.length >= 2) {
-      return startModelSetDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.parts, extra.companion, emit)
+      return startModelSetDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.parts, extra.companion, emit, meta)
     }
-    const first = startDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+    const first = startDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit, meta)
     if (extra?.companion) {
       // Vision projector sidecar: quiet companion job with its own event row.
-      void startDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.companion.rfilename, extra.companion.downloadUrl, emit).catch(() => {})
+      void startDownload(this.runtimeConfig, app.getPath('userData'), modelId, extra.companion.rfilename, extra.companion.downloadUrl, emit, meta).catch(() => {})
     }
     return first
   }
 
-  cancelModelDownload(modelId: string, rfilename: string): boolean {
-    return cancelDownload(modelId, rfilename)
+  cancelModelDownload(modelId: string, rfilename: string, revision?: string): boolean {
+    return cancelDownload(modelId, rfilename, this.runtimeConfig, revision)
   }
 
   pauseModelDownload(modelId: string, rfilename: string): boolean {
@@ -180,21 +185,41 @@ export class AppBackend {
     modelId: string,
     rfilename: string,
     downloadUrl: string,
-    emit: (event: DownloadEvent) => void
+    emit: (event: DownloadEvent) => void,
+    revision?: string
   ): boolean {
-    return resumeDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit)
+    return resumeDownload(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, downloadUrl, emit, { revision })
   }
 
-  getActiveDownloads(): Array<{ modelId: string; rfilename: string; state: string }> {
-    return getActiveDownloads()
+  getActiveDownloads(): Array<{ modelId: string; rfilename: string; state: string; receivedBytes?: number; totalBytes?: number | null }> {
+    return getActiveDownloads(this.runtimeConfig, app.getPath('userData'))
   }
 
   isDownloaded(modelId: string, rfilename: string): boolean {
     return isDownloaded(this.getLibraryDir(), modelId, rfilename)
   }
 
+  /** Exact per-variant status (registry + filesystem, restart-safe). */
+  getFileStatus(modelId: string, rfilename: string, revision?: string): import('../services/modelDownloads').FileStatus {
+    return getFileStatus(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, revision)
+  }
+
+  /** Filesystem ↔ registry reconciliation (startup + view activation). */
+  reconcileLibrary(): import('../services/modelDownloads').ReconcileReport {
+    try {
+      return reconcileLibrary(this.runtimeConfig, app.getPath('userData'))
+    } catch {
+      return { checked: 0, fixed: 0, adopted: 0, unregistered: [], orphanPartials: [], missing: [] }
+    }
+  }
+
+  /** Trusted folder resolution for open-folder (confined to the library). */
+  getModelFolder(modelId: string, rfilename: string, revision?: string): string {
+    return resolveModelFolder(this.runtimeConfig, app.getPath('userData'), modelId, rfilename, revision)
+  }
+
   deleteLibraryEntry(entryPath: string): void {
-    return deleteLibraryEntry(this.getLibraryDir(), entryPath)
+    return deleteLibraryEntry(this.getLibraryDir(), entryPath, this.runtimeConfig)
   }
 
   // ── Validation per MODEL_HARDWARE_VALIDATION (DETECT→PROFILE→ESTIMATE→PRE→LOAD→INFER→MEASURE→VALIDATE) ──

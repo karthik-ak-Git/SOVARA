@@ -448,11 +448,18 @@ export interface DownloadEventView {
   receivedBytes: number
   totalBytes: number | null
   error?: string
+  speedBps?: number
+  etaSeconds?: number
 }
 
 export interface DownloadExtra {
   parts?: Array<{ rfilename: string; downloadUrl: string; sizeBytes?: number }>
   companion?: { rfilename: string; downloadUrl: string; sizeBytes?: number }
+  revision?: string
+  format?: string
+  quantization?: string
+  license?: string
+  gated?: boolean
 }
 
 export async function downloadModelFile(
@@ -475,16 +482,51 @@ export async function pauseModelDownload(modelId: string, rfilename: string): Pr
   return (await sovara().invoke('library:pauseDownload', { modelId, rfilename })) as { paused: boolean }
 }
 
-export async function resumeModelDownload(modelId: string, rfilename: string, downloadUrl: string): Promise<{ resumed: boolean }> {
-  return (await sovara().invoke('library:resumeDownload', { modelId, rfilename, downloadUrl })) as { resumed: boolean }
+export async function resumeModelDownload(modelId: string, rfilename: string, downloadUrl: string, revision?: string): Promise<{ resumed: boolean }> {
+  return (await sovara().invoke('library:resumeDownload', { modelId, rfilename, downloadUrl, ...(revision ? { revision } : {}) })) as { resumed: boolean }
 }
 
-export async function getActiveDownloads(): Promise<Array<{ modelId: string; rfilename: string; state: string }>> {
-  return (await sovara().invoke('library:getActiveDownloads')) as Array<{ modelId: string; rfilename: string; state: string }>
+export async function getActiveDownloads(): Promise<Array<{ modelId: string; rfilename: string; state: string; receivedBytes?: number; totalBytes?: number | null }>> {
+  return (await sovara().invoke('library:getActiveDownloads')) as Array<{ modelId: string; rfilename: string; state: string; receivedBytes?: number; totalBytes?: number | null }>
 }
 
 export async function isDownloaded(modelId: string, rfilename: string): Promise<{ downloaded: boolean }> {
   return (await sovara().invoke('library:isDownloaded', { modelId, rfilename })) as { downloaded: boolean }
+}
+
+export type ModelFileState = 'downloaded' | 'partial' | 'paused' | 'queued' | 'downloading' | 'failed' | 'missing'
+
+export interface ModelFileStatus {
+  state: ModelFileState
+  downloadedBytes: number
+  totalBytes: number | null
+  destPath?: string
+  error?: string
+  partsPresent?: number
+  partsTotal?: number
+  companionMissing?: boolean
+  source: 'registry' | 'filesystem' | 'none'
+}
+
+export async function getModelFileStatus(modelId: string, rfilename: string, revision = 'main'): Promise<ModelFileStatus> {
+  return (await sovara().invoke('library:getFileStatus', { modelId, rfilename, revision })) as ModelFileStatus
+}
+
+export interface ReconcileReport {
+  checked: number
+  fixed: number
+  adopted: number
+  unregistered: string[]
+  orphanPartials: string[]
+  missing: string[]
+}
+
+export async function reconcileLibrary(): Promise<ReconcileReport> {
+  return (await sovara().invoke('library:reconcile')) as ReconcileReport
+}
+
+export async function openModelFolder(modelId: string, rfilename: string, revision = 'main'): Promise<{ ok: boolean; path: string }> {
+  return (await sovara().invoke('library:openFolder', { modelId, rfilename, revision })) as { ok: boolean; path: string }
 }
 
 export async function openExternal(url: string): Promise<{ ok: boolean }> {

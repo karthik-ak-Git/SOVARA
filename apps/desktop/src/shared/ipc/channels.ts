@@ -76,6 +76,9 @@ export const IPC_CHANNELS = {
   'library:resumeDownload': { type: 'invoke' as const },
   'library:getActiveDownloads': { type: 'invoke' as const },
   'library:isDownloaded': { type: 'invoke' as const },
+  'library:getFileStatus': { type: 'invoke' as const },
+  'library:reconcile': { type: 'invoke' as const },
+  'library:openFolder': { type: 'invoke' as const },
   'library:delete': { type: 'invoke' as const },
   'shell:openExternal': { type: 'invoke' as const },
   // First-run setup (Python env for sidecars)

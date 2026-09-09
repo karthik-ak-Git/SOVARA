@@ -10,7 +10,7 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
 import { listExplorerModels, getExplorerModel } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import { getHardwareProfile } from '../services/hardwareProfile'
@@ -481,7 +481,7 @@ export function registerIpcHandlers(): void {
         parsed.data.rfilename,
         parsed.data.downloadUrl,
         broadcastDownload,
-        { parts: parsed.data.parts, companion: parsed.data.companion }
+        { parts: parsed.data.parts, companion: parsed.data.companion, revision: parsed.data.revision, format: parsed.data.format, quantization: parsed.data.quantization, license: parsed.data.license, gated: parsed.data.gated }
       )
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'could not start download')
@@ -503,7 +503,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('library:resumeDownload', async (_e, raw: unknown) => {
     const parsed = zLibraryDownload.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:resumeDownload payload: ${parsed.error.message}`)
-    return { resumed: getBackend().resumeModelDownload(parsed.data.modelId, parsed.data.rfilename, parsed.data.downloadUrl, broadcastDownload) }
+    return { resumed: getBackend().resumeModelDownload(parsed.data.modelId, parsed.data.rfilename, parsed.data.downloadUrl, broadcastDownload, parsed.data.revision) }
   })
 
   ipcMain.handle('library:getActiveDownloads', async () => {
@@ -514,6 +514,28 @@ export function registerIpcHandlers(): void {
     const parsed = zLibraryIsDownloaded.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:isDownloaded payload: ${parsed.error.message}`)
     return { downloaded: getBackend().isDownloaded(parsed.data.modelId, parsed.data.rfilename) }
+  })
+
+  ipcMain.handle('library:getFileStatus', async (_e, raw: unknown) => {
+    const parsed = zLibraryFileRef.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:getFileStatus payload: ${parsed.error.message}`)
+    return getBackend().getFileStatus(parsed.data.modelId, parsed.data.rfilename, parsed.data.revision)
+  })
+
+  ipcMain.handle('library:reconcile', async () => {
+    return getBackend().reconcileLibrary()
+  })
+
+  ipcMain.handle('library:openFolder', async (_e, raw: unknown) => {
+    const parsed = zLibraryFileRef.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:openFolder payload: ${parsed.error.message}`)
+    try {
+      const dir = getBackend().getModelFolder(parsed.data.modelId, parsed.data.rfilename, parsed.data.revision)
+      await shell.openPath(dir)
+      return { ok: true, path: dir }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not open model folder')
+    }
   })
 
   ipcMain.handle('shell:openExternal', async (_e, raw: unknown) => {

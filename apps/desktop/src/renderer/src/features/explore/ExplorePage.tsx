@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import {
   ArrowLeft, BadgeCheck, Brain, Check, ChevronDown, ChevronsUpDown, Download,
-  ExternalLink, Eye, FileCode, Loader2, MessageSquare, RefreshCw, Search, Star,
+  ExternalLink, Eye, FileCode, FolderOpen, Loader2, MessageSquare, RefreshCw, Search, Star,
   Wrench, X, Pause, Play,
 } from 'lucide-react'
 import {
   listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
-  onDownloadEvents, isDownloaded, getActiveDownloads, openExternal,
+  onDownloadEvents, getModelFileStatus, reconcileLibrary, openModelFolder,
+  getActiveDownloads, openExternal,
   type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
-  type ExploreFormatFilter,
+  type ModelFileStatus, type ExploreFormatFilter,
 } from '../../lib/ipc'
 
 // ── Format-aware repo view (files are the source of truth) ──────────
@@ -52,6 +53,20 @@ function fmtSize(bytes: number): string {
 function fmtCount(n: number): string {
   if (!Number.isFinite(n)) return '0'
   return n.toLocaleString('en-US')
+}
+function fmtSpeed(bps: number | undefined): string | null {
+  if (!bps || !Number.isFinite(bps) || bps <= 0) return null
+  const mb = bps / 1024 ** 2
+  if (mb >= 1) return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB/s`
+  return `${Math.max(1, Math.round(bps / 1024))} KB/s`
+}
+function fmtEta(seconds: number | undefined): string | null {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null
+  if (seconds < 5) return 'a few seconds'
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  if (m < 60) return `${m}m ${String(Math.round(seconds % 60)).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 function fmtAgo(iso: string): string {
   const d = new Date(iso)
@@ -549,7 +564,9 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const [spinning, setSpinning] = useState(false)
   const [downloads, setDownloads] = useState<Record<string, DownloadEventView>>({})
   const [downloadsOpen, setDownloadsOpen] = useState(false)
-  const [installed, setInstalled] = useState<Record<string, boolean>>({})
+  // Persistent per-variant file states (registry + filesystem, restart-safe).
+  // Keyed by model + file — two repos may ship the same basename.
+  const [fileStates, setFileStates] = useState<Record<string, ModelFileStatus>>({})
   const [downloadTo, setDownloadTo] = useState('This device')
   const timer = useRef<number | null>(null)
   const sortRef = useRef<HTMLDivElement>(null)
@@ -608,7 +625,20 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     return () => { dead = true }
   }, [selected?.id])
 
-  // Installed flags per file
+  // Reconcile registry ↔ filesystem on mount (startup repair also runs in
+  // main): vanished files flip back to Download, orphans get adopted.
+  useEffect(() => {
+    void reconcileLibrary().catch(() => {})
+  }, [])
+
+  // Installed flags per file — authoritative lookup in main (registry +
+  // filesystem), cached here only. Refreshed on every terminal event so a
+  // completed file reads Downloaded even after an app restart.
+  const refreshFileState = useCallback((modelId: string, rfilename: string): void => {
+    void getModelFileStatus(modelId, rfilename).then((s) => {
+      setFileStates((p) => ({ ...p, [`${modelId}\n${rfilename}`]: s }))
+    }).catch(() => {})
+  }, [])
   useEffect(() => {
     const m = detail ?? selected
     if (!m) return
@@ -616,15 +646,16 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     void Promise.all(m.files.map(async (f) => {
       if (!f.rfilename) return
       try {
-        const r = await isDownloaded(m.id, f.rfilename)
-        if (!dead && r.downloaded) setInstalled((p) => ({ ...p, [f.rfilename as string]: true }))
+        const s = await getModelFileStatus(m.id, f.rfilename)
+        if (!dead) setFileStates((p) => ({ ...p, [`${m.id}\n${f.rfilename as string}`]: s }))
       } catch { /* ignore */ }
     }))
     return () => { dead = true }
   }, [detail, selected])
 
   // Download events — error rows STAY visible with their message + retry so a
-  // failed GGUF fetch is diagnosable instead of vanishing at 0%.
+  // failed GGUF fetch is diagnosable instead of vanishing at 0%. Terminal
+  // events re-read the persistent file state (restart-safe Downloaded).
   useEffect(() => {
     const dispose = onDownloadEvents((ev) => {
       setDownloads((prev) => {
@@ -634,11 +665,11 @@ export function ExplorePage({ onBack }: Props): ReactElement {
         else next[k] = ev
         return next
       })
-      if (ev.state === 'done') setInstalled((p) => ({ ...p, [ev.rfilename]: true }))
+      if (ev.state === 'done' || ev.state === 'error') refreshFileState(ev.modelId, ev.rfilename)
     })
     void getActiveDownloads().catch(() => {})
     return dispose
-  }, [])
+  }, [refreshFileState])
 
   // Real file URL for pause/resume/retry actions (backend rejects '' safely).
   const urlFor = useCallback((modelId: string, rfilename: string): string => {
@@ -691,8 +722,16 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const headerFit: CompatibilityResult | null = recCompat(selectedRec) ?? compat
   const dlKey = active && activeFile?.rfilename ? `${active.id}\n${activeFile.rfilename}` : null
   const dl = dlKey ? downloads[dlKey] : undefined
+  // Real byte ratio only — never timers or estimates. Clamped, never >100.
+  // Resumed transfers start from existing .part bytes (backend emits them in
+  // `started`), so 2.7/5.2 GB reads ≈52%, never 0%.
   const pct = dl && dl.totalBytes ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : null
-  const isInstalled = activeFile?.rfilename ? Boolean(installed[activeFile.rfilename]) : false
+  const statusOf = useCallback((modelId: string, rfilename: string | undefined): ModelFileStatus | undefined => {
+    if (!rfilename) return undefined
+    return fileStates[`${modelId}\n${rfilename}`]
+  }, [fileStates])
+  const activeStatus = active && activeFile?.rfilename ? statusOf(active.id, activeFile.rfilename) : undefined
+  const isInstalled = activeStatus?.state === 'downloaded'
   const dlCount = Object.keys(downloads).length
   const openReadmeLink = useCallback((url: string): void => {
     void openExternal(url).catch(() => window.open(url, '_blank', 'noopener'))
@@ -704,9 +743,21 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     // Shard sets download every part sequentially as one job (+ vision
     // projector sidecar when present); progress aggregates on this row.
     const extra = activeFile.multipart && activeFile.parts
-      ? { parts: activeFile.parts, companion: activeFile.companion }
-      : activeFile.companion ? { companion: activeFile.companion } : undefined
+      ? { parts: activeFile.parts, companion: activeFile.companion, revision: 'main', format: activeFile.format, quantization: activeFile.quantization, license: active.license, gated: active.gated }
+      : activeFile.companion
+        ? { companion: activeFile.companion, revision: 'main', format: activeFile.format, quantization: activeFile.quantization, license: active.license, gated: active.gated }
+        : { revision: 'main', format: activeFile.format, quantization: activeFile.quantization, license: active.license, gated: active.gated }
     try { await downloadModelFile(active.id, activeFile.rfilename, activeFile.downloadUrl, extra) } catch { /* toast-less */ }
+  }, [active, activeFile])
+
+  const doResume = useCallback(async (): Promise<void> => {
+    if (!active?.id || !activeFile?.rfilename || !activeFile.downloadUrl) return
+    try { await resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl, 'main') } catch { /* toast-less */ }
+  }, [active, activeFile])
+
+  const doOpenFolder = useCallback(async (): Promise<void> => {
+    if (!active?.id || !activeFile?.rfilename) return
+    try { await openModelFolder(active.id, activeFile.rfilename, 'main') } catch { /* toast-less */ }
   }, [active, activeFile])
 
   const refresh = useCallback((): void => {
@@ -747,17 +798,21 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                         <div className="explorer-dl-error" role="alert">{ev.error ?? 'Download failed'}</div>
                       </div>
                       <div className="explorer-dl-actions">
-                        {retryUrl ? <button type="button" aria-label="Retry download" title="Retry" onClick={() => { dismissDl(ev.modelId, ev.rfilename); void downloadModelFile(ev.modelId, ev.rfilename, retryUrl).catch(() => {}) }}><RefreshCw size={13} /></button> : null}
+                        {/* Resume (not fresh start): shard sets rebuild from the
+                            sidecar, singles continue their .part via Range. */}
+                        {retryUrl ? <button type="button" aria-label="Retry download" title="Retry" onClick={() => { dismissDl(ev.modelId, ev.rfilename); void resumeModelDownload(ev.modelId, ev.rfilename, retryUrl, 'main').catch(() => {}) }}><RefreshCw size={13} /></button> : null}
                         <button type="button" aria-label="Dismiss" onClick={() => dismissDl(ev.modelId, ev.rfilename)}><X size={13} /></button>
                       </div>
                     </div>
                   )
                 }
+                const speed = fmtSpeed(ev.speedBps)
+                const eta = fmtEta(ev.etaSeconds)
                 return (
                   <div key={`${ev.modelId}\n${ev.rfilename}`} className="explorer-dl-row">
                     <div className="explorer-dl-info">
                       <div className="explorer-dl-name">{(ev.rfilename ?? '').split('/').pop()}</div>
-                      <div className="explorer-dl-meta">{stateLabel}{ev.totalBytes ? ` · ${fmtSize(ev.receivedBytes)} / ${fmtSize(ev.totalBytes)}` : ev.receivedBytes > 0 ? ` · ${fmtSize(ev.receivedBytes)}` : ''}</div>
+                      <div className="explorer-dl-meta">{stateLabel}{ev.totalBytes ? ` · ${fmtSize(ev.receivedBytes)} / ${fmtSize(ev.totalBytes)}` : ev.receivedBytes > 0 ? ` · ${fmtSize(ev.receivedBytes)} downloaded` : ''}{speed ? ` · ${speed}` : ''}{eta ? ` · ETA ${eta}` : ''}</div>
                       <div className="explorer-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p}>
                         <span className="explorer-progress-fill" style={{ width: `${ev.state === 'paused' || ev.state === 'queued' ? 0 : Math.max(p, 2)}%` }} />
                       </div>
@@ -875,7 +930,6 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                     <span className="explorer-row-main">
                       <span className="explorer-row-titlerow">
                         <span className="explorer-row-title">{shortName(m.name, 30)}</span>
-                        <BadgeCheck size={14} className="explorer-verified" />
                       </span>
                       <span className="explorer-row-desc">{shortName(m.longDescription || m.description, 52)}</span>
                       <span className="explorer-row-time">{fmtAgo(m.updatedAt)}</span>
@@ -1000,7 +1054,15 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                               {isRec ? <span className="explorer-rec-pill">Recommended</span> : null}
                               <MiniFit rec={rec} />
                               <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
-                              {installed[f.rfilename ?? ''] ? <span className="explorer-file-done" title="In library">✓</span> : null}
+                              {(() => {
+                                const s = active ? statusOf(active.id, f.rfilename) : undefined
+                                if (s?.state === 'downloaded') return <span className="explorer-file-done" title="Downloaded — in library">✓</span>
+                                if (s && (s.state === 'partial' || s.state === 'paused')) {
+                                  const label = s.partsTotal ? `${s.partsPresent ?? 0}/${s.partsTotal}` : fmtSize(s.downloadedBytes)
+                                  return <span className="explorer-file-partial" title="Partially downloaded — resume to finish">{label}</span>
+                                }
+                                return null
+                              })()}
                             </button>
                           )
                         })}
@@ -1014,17 +1076,66 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                 <div className="explorer-fitrow"><FitBadge result={headerFit} /></div>
                 <div className="explorer-downloaderow">
                   {isInstalled ? (
-                    <div className="explorer-installed">✓ Already in library</div>
+                    <div className="explorer-downloaded">
+                      <div className="explorer-installed">✓ Downloaded</div>
+                      <div className="explorer-downloaded-meta">{fmtSize(activeFile?.sizeBytes ?? 0)}</div>
+                      <button type="button" className="explorer-mini-btn" onClick={() => void doOpenFolder()}>
+                        <FolderOpen size={12} /> Open folder
+                      </button>
+                    </div>
+                  ) : dl && dl.state === 'error' ? (
+                    <div className="explorer-download-failed" role="alert">
+                      <div className="explorer-dl-error">Download failed{dl.error ? ` — ${dl.error}` : ''}</div>
+                      {dl.totalBytes
+                        ? <div className="explorer-dl-meta">{fmtSize(dl.receivedBytes)} / {fmtSize(dl.totalBytes)}</div>
+                        : dl.receivedBytes > 0 ? <div className="explorer-dl-meta">{fmtSize(dl.receivedBytes)} downloaded</div> : null}
+                      <div className="explorer-download-actions">
+                        <button type="button" className="explorer-mini-btn" onClick={() => { if (activeFile?.rfilename) { dismissDl(active.id, activeFile.rfilename); void doResume() } }}><RefreshCw size={12} /> Retry</button>
+                        <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Dismiss" onClick={() => activeFile?.rfilename && dismissDl(active.id, activeFile.rfilename)}><X size={12} /></button>
+                      </div>
+                    </div>
+                  ) : activeStatus?.state === 'failed' && !dl ? (
+                    <div className="explorer-download-failed" role="alert">
+                      <div className="explorer-dl-error">Download failed{activeStatus.error ? ` — ${activeStatus.error}` : ''}</div>
+                      {activeStatus.totalBytes
+                        ? <div className="explorer-dl-meta">{fmtSize(activeStatus.downloadedBytes)} / {fmtSize(activeStatus.totalBytes)}</div>
+                        : activeStatus.downloadedBytes > 0 ? <div className="explorer-dl-meta">{fmtSize(activeStatus.downloadedBytes)} downloaded</div> : null}
+                      <div className="explorer-download-actions">
+                        <button type="button" className="explorer-mini-btn" onClick={() => void doResume()}><RefreshCw size={12} /> Retry</button>
+                      </div>
+                    </div>
                   ) : dl ? (
                     <div className="explorer-progress-row">
                       <div className="explorer-progress explorer-progress--big" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}>
                         <span className="explorer-progress-fill" style={{ width: `${pct ?? 4}%` }} />
                       </div>
-                      <span className="explorer-progress-label">{dl.state === 'paused' ? 'Paused' : `${pct ?? 0}%`}</span>
+                      <span className="explorer-progress-label">
+                        {dl.state === 'paused' ? 'Paused' : dl.totalBytes ? `${pct ?? 0}%` : 'Downloading…'}
+                      </span>
+                      <span className="explorer-dl-meta">
+                        {dl.totalBytes
+                          ? `${fmtSize(dl.receivedBytes)} / ${fmtSize(dl.totalBytes)}`
+                          : `${fmtSize(dl.receivedBytes)} downloaded`}
+                        {fmtSpeed(dl.speedBps) ? ` · ${fmtSpeed(dl.speedBps)}` : ''}
+                        {fmtEta(dl.etaSeconds) ? ` · ETA ${fmtEta(dl.etaSeconds)}` : ''}
+                      </span>
                       {dl.state === 'paused'
-                        ? <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl ?? '').catch(() => {})}><Play size={12} /> Resume</button>
+                        ? <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl ?? '', 'main').catch(() => {})}><Play size={12} /> Resume</button>
                         : <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void pauseModelDownload(active.id, activeFile.rfilename).catch(() => {})}><Pause size={12} /> Pause</button>}
                       <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Cancel download" onClick={() => activeFile?.rfilename && void cancelModelDownload(active.id, activeFile.rfilename).catch(() => {})}><X size={12} /></button>
+                    </div>
+                  ) : activeStatus && (activeStatus.state === 'partial' || activeStatus.state === 'paused' || activeStatus.state === 'queued') ? (
+                    <div className="explorer-download-resume">
+                      <div className="explorer-dl-meta" role="status">
+                        {activeStatus.state === 'paused' ? 'Paused' : activeStatus.state === 'queued' ? 'Queued' : 'Partial download'}
+                        {activeStatus.partsTotal
+                          ? ` — ${activeStatus.partsPresent ?? 0} / ${activeStatus.partsTotal} files`
+                          : ''}
+                        {` · ${fmtSize(activeStatus.downloadedBytes)}${activeStatus.totalBytes ? ` / ${fmtSize(activeStatus.totalBytes)}` : ' downloaded'}`}
+                      </div>
+                      <div className="explorer-download-actions">
+                        <button type="button" className="explorer-mini-btn" onClick={() => void doResume()}><Play size={12} /> Resume</button>
+                      </div>
                     </div>
                   ) : (
                     <button
