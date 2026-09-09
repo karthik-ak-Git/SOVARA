@@ -321,7 +321,9 @@ function partComplete(root: string, modelId: string, rfilename: string): boolean
 }
 
 export function cancelDownload(modelId: string, rfilename: string, config?: RuntimeConfigStore, revision = DEFAULT_REVISION): boolean {
-  try { regOf(config)?.updateDownloadRow(rowIdFor(modelId, rfilename, revision), { status: 'cancelled', error: null, speedBps: null }) } catch { /* best-effort */ }
+  const markCancelled = (): void => {
+    try { regOf(config)?.updateDownloadRow(rowIdFor(modelId, rfilename, revision), { status: 'cancelled', error: null, speedBps: null }) } catch { /* best-effort */ }
+  }
   const k = key(modelId, rfilename)
   const job = sets.get(k)
   if (job) {
@@ -331,6 +333,7 @@ export function cancelDownload(modelId: string, rfilename: string, config?: Runt
     const entry = cur ? active.get(key(modelId, cur.rfilename)) : undefined
     if (entry) {
       try { entry.ctrl.abort() } catch { /* already settled */ }
+      markCancelled()
       return true
     }
     const qIdx = cur ? queue.findIndex((q) => q.modelId === modelId && q.rfilename === cur.rfilename) : -1
@@ -348,18 +351,21 @@ export function cancelDownload(modelId: string, rfilename: string, config?: Runt
     try { entry.ctrl.abort() } catch { /* already settled */ }
     // Abort will trigger cancelled emit in run(); also delete .part synchronously after
     // Do not delete here — run's catch handles it; but we also dequeue
+    markCancelled()
     return true
   }
   // Also remove from queue if queued
   const qIdx = queue.findIndex((q) => q.modelId === modelId && q.rfilename === rfilename)
   if (qIdx >= 0) {
     queue.splice(qIdx, 1)
+    markCancelled()
     return true
   }
   if (paused.has(k)) {
     paused.delete(k)
     // Delete .part on explicit cancel of paused item
     // Caller should provide config/userData to locate file, but we try best-effort via queued info
+    markCancelled()
     return true
   }
   return false
