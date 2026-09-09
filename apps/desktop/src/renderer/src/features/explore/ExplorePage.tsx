@@ -44,23 +44,97 @@ function shortName(name: string, max = 34): string {
 // Relative image/asset URLs resolve against the HF repo so provider
 // images and diagrams load instead of 404ing.
 interface ReadmeDoc { html: string; code: string[] }
-function escHtml(s: string): string {
+export function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
-function resolveAsset(src: string, modelSlug: string): string {
+export function resolveAsset(src: string, modelSlug: string): string {
   const s = src.trim()
   if (/^(https?:|data:|blob:)/i.test(s)) return s
   if (s.startsWith('/')) return `https://huggingface.co${s}`
   return `https://huggingface.co/${modelSlug}/resolve/main/${s.replace(/^\.\//, '')}`
 }
-function inlineReadme(t: string, modelSlug: string): string {
+// ── Literal HTML inside model cards (Gemma-style READMEs mix <div>/<img>/<a>/
+// into markdown). Everything is escaped first; only this safe whitelist is
+// restored — script/iframe/form/event-handlers/javascript: URLs stay escaped.
+const HTML_PHRASING = new Set(['a', 'img', 'b', 'strong', 'i', 'em', 'code', 'br', 'span'])
+const HTML_BLOCK = new Set(['div', 'p', 'details', 'summary', 'ul', 'ol', 'li', 'blockquote', 'pre', 'h1', 'h2', 'h3', 'h4', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr'])
+const HTML_VOID = new Set(['img', 'br', 'hr'])
+
+function unescEntities(s: string): string {
+  return s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+}
+function htmlAttr(attrs: string, name: string): string | null {
+  const m = attrs.match(new RegExp(`${name}\\s*=\\s*("[^"]*"|'[^']*'|[^\\s"'>]+)`, 'i'))
+  if (!m) return null
+  let v = m[1]
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+  return unescEntities(v)
+}
+export function restoreHtmlTags(s: string, modelSlug: string): string {
+  return s.replace(/&lt;(\/?)([a-zA-Z][a-zA-Z0-9]*)\b((?:(?!&gt;).)*)&gt;/g, (full, close: string, rawName: string, rawAttrs: string) => {
+    const name = rawName.toLowerCase()
+    if (!HTML_PHRASING.has(name) && !HTML_BLOCK.has(name)) return full // keep escaped
+    const attrs = unescEntities(rawAttrs)
+    if (close) {
+      if (HTML_VOID.has(name)) return ''
+      return `</${name}>`
+    }
+    if (name === 'a') {
+      const href = htmlAttr(attrs, 'href')
+      if (!href || /^(javascript|data|vbscript|file):/i.test(href.trim())) return full
+      const abs = /^https?:\/\//i.test(href)
+        ? href
+        : href.startsWith('/') ? `https://huggingface.co${href}` : `https://huggingface.co/${modelSlug}/blob/main/${href.replace(/^\.\//, '')}`
+      if (!/^https?:\/\//i.test(abs)) return full
+      return `<a href="${escHtml(abs)}" data-ext="1" class="explorer-md-link">`
+    }
+    if (name === 'img') {
+      const src = htmlAttr(attrs, 'src')
+      if (!src) return ''
+      return `<img class="explorer-md-img" alt="${escHtml(htmlAttr(attrs, 'alt') ?? '')}" src="${escHtml(resolveAsset(src, modelSlug))}" loading="lazy" />`
+    }
+    if (name === 'div' || name === 'p') {
+      const align = (htmlAttr(attrs, 'align') ?? '').toLowerCase()
+      return ['center', 'left', 'right', 'justify'].includes(align) ? `<${name} align="${align}">` : `<${name}>`
+    }
+    if (name === 'br' || name === 'hr') return name === 'hr' ? '<hr class="explorer-md-hr"/>' : '<br/>'
+    if (name === 'code') return '<code class="explorer-md-code">'
+    // Structural table attributes survive (colspan/rowspan/align); every
+    // presentational attribute (class/style/id/...) is dropped like HF.
+    if (name === 'td' || name === 'th') {
+      let extra = ''
+      const cs = htmlAttr(attrs, 'colspan')
+      const rs = htmlAttr(attrs, 'rowspan')
+      if (cs && /^\d+$/.test(cs) && Number(cs) > 1 && Number(cs) <= 20) extra += ` colspan="${cs}"`
+      if (rs && /^\d+$/.test(rs) && Number(rs) > 1 && Number(rs) <= 20) extra += ` rowspan="${rs}"`
+      const align = (htmlAttr(attrs, 'align') ?? '').toLowerCase()
+      if (['left', 'center', 'right', 'justify'].includes(align)) extra += ` align="${align}"`
+      return `<${name}${extra}>`
+    }
+    return `<${name}>`
+  })
+}
+
+/** Sanitize a raw HTML block (already-escaped chunk): tags restored, text
+ *  segments get inline markdown — inner lines are never <p>-wrapped. */
+function sanitizeHtmlBlock(chunk: string, modelSlug: string): string {
+  return chunk
+    .split(/(&lt;\/?[a-zA-Z][a-zA-Z0-9]*\b(?:(?!&gt;).)*&gt;)/g)
+    .map((tok, idx) => (idx % 2 === 1 ? restoreHtmlTags(tok, modelSlug) : inlineCore(tok, modelSlug)))
+    .join('')
+}
+
+function inlineCore(escaped: string, modelSlug: string): string {
   // Pull `code` spans aside so inner * _ ~ [ ] are not formatted.
   const stash: string[] = []
-  let s = escHtml(t)
+  let s = escaped
   s = s.replace(/`([^`\n]+)`/g, (_m, c: string) => {
     stash.push(`<code class="explorer-md-code">${c}</code>`)
     return `ZZCODE${stash.length - 1}CODEZZ`
   })
+  // Restore whitelisted literal HTML next so markdown formatting applies
+  // uniformly (autolink stays safe: restored hrefs are quote-prefixed).
+  s = restoreHtmlTags(s, modelSlug)
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, src: string) =>
     `<img class="explorer-md-img" alt="${alt}" src="${resolveAsset(src, modelSlug)}" loading="lazy" />`)
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)(?:\s+"[^"]*")?\)/g, '<a href="$2" data-ext="1" class="explorer-md-link">$1</a>')
@@ -72,10 +146,32 @@ function inlineReadme(t: string, modelSlug: string): string {
   s = s.replace(/ZZCODE(\d+)CODEZZ/g, (_m, i: string) => stash[Number(i)] ?? '')
   return s
 }
-function renderReadmeDoc(md: string, modelSlug: string): ReadmeDoc {
+function inlineReadme(t: string, modelSlug: string): string {
+  return inlineCore(escHtml(t), modelSlug)
+}
+
+// Block-level HTML containers: consumed to their matching close tag (depth
+// counted) and emitted as one sanitized unit — HF/CommonMark html-block
+// behavior, so table cell text is never wrapped in <p>.
+const HTML_CONTAINER = new Set(['table', 'div', 'details', 'figure', 'section', 'article', 'aside', 'header', 'footer', 'blockquote', 'pre', 'ul', 'ol', 'dl'])
+function tagOpenCount(line: string, tag: string): number {
+  const m = line.match(new RegExp(`<${tag}(?=[\\s>/])`, 'gi'))
+  return m ? m.length : 0
+}
+function tagCloseCount(line: string, tag: string): number {
+  const m = line.match(new RegExp(`</${tag}\\s*>`, 'gi'))
+  return m ? m.length : 0
+}
+
+export function renderReadmeDoc(md: string, modelSlug: string): ReadmeDoc {
   const code: string[] = []
   const out: string[] = []
-  const lines = md.split('\n')
+  // HF strips <style>/<script> server-side: drop whole spans (even unclosed)
+  // so CSS text never leaks into the card like in the bug report.
+  const clean = md
+    .replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<(style|script)\b[^>]*>[\s\S]*$/gi, '')
+  const lines = clean.split('\n')
   let ul: string[] = []
   let ol: string[] = []
   let quote: string[] = []
@@ -103,6 +199,34 @@ function renderReadmeDoc(md: string, modelSlug: string): ReadmeDoc {
         `<button type="button" data-copy-idx="${idx}" class="explorer-copy-btn">Copy</button></div>` +
         `<pre class="explorer-codeblock-pre"><code>${escHtml(body) || ' '}</code></pre></div>`,
       )
+      continue
+    }
+    // HTML container blocks (<table> … </table>, <div> … </div>): consume to
+    // the matching close tag and emit one sanitized unit — inner lines are
+    // never markdown-paragraph-wrapped (HF/CommonMark html-block behavior).
+    const container = raw.match(/^\s*<([a-zA-Z][a-zA-Z0-9]*)\b/)
+    if (container && HTML_CONTAINER.has(container[1].toLowerCase())) {
+      const tag = container[1].toLowerCase()
+      flushLists()
+      const buf = [raw]
+      let depth = tagOpenCount(raw, tag) - tagCloseCount(raw, tag)
+      // Cap: a never-closed tag must not swallow the rest of the document.
+      while (depth > 0 && i + 1 < lines.length && buf.length < 150) {
+        i += 1
+        const l = lines[i].replace(/\r$/, '')
+        buf.push(l)
+        depth += tagOpenCount(l, tag) - tagCloseCount(l, tag)
+      }
+      const blockHtml = sanitizeHtmlBlock(escHtml(buf.join('\n')), modelSlug)
+      // Wide benchmark tables scroll horizontally like HF's card layout.
+      out.push(tag === 'table' ? `<div class="explorer-md-tablewrap">${blockHtml}</div>` : blockHtml)
+      continue
+    }
+    // Standalone HTML tag-only lines (<br>, <img …>) pass through sanitized
+    // instead of being wrapped in <p> or shown escaped.
+    if (/^\s*(?:<\/?[a-zA-Z][^<>]*>\s*)+$/.test(raw)) {
+      flushLists()
+      out.push(restoreHtmlTags(escHtml(raw.trim()), modelSlug))
       continue
     }
     // Table (header + delimiter + rows)
@@ -314,6 +438,33 @@ function MiniFit({ rec }: { rec: FileRecommendationView | undefined }): ReactEle
   )
 }
 
+// Canonical capability order + human explanations (tooltips).
+const CAP_ORDER = ['Vision', 'Tools', 'Reasoning', 'Code', 'Text', 'Chat', 'Embeddings'] as const
+const CAP_HINT: Record<string, string> = {
+  Vision: 'Understands images as well as text',
+  Tools: 'Can call functions and use tools',
+  Reasoning: 'Thinks step by step before answering',
+  Code: 'Tuned for writing and understanding code',
+  Text: 'General text generation',
+  Chat: 'Tuned for conversation',
+  Embeddings: 'Produces text embeddings',
+}
+function sortCaps(caps: string[]): string[] {
+  const rank = (c: string): number => {
+    const i = (CAP_ORDER as readonly string[]).indexOf(c)
+    return i < 0 ? 99 : i
+  }
+  return [...caps].sort((a, b) => rank(a) - rank(b))
+}
+function capClass(cap: string): string {
+  if (cap === 'Vision') return 'explorer-cap--vision'
+  if (cap === 'Tools') return 'explorer-cap--tools'
+  if (cap === 'Reasoning') return 'explorer-cap--reasoning'
+  if (cap === 'Code') return 'explorer-cap--code'
+  if (cap === 'Text' || cap === 'Chat') return 'explorer-cap--text'
+  return ''
+}
+
 // ── Sort options (LM Studio order) ───────────────────────────────────
 const SORTS = [
   { value: 'Recommended', label: 'Recommended' },
@@ -416,13 +567,14 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     return () => { dead = true }
   }, [detail, selected])
 
-  // Download events
+  // Download events — error rows STAY visible with their message + retry so a
+  // failed GGUF fetch is diagnosable instead of vanishing at 0%.
   useEffect(() => {
     const dispose = onDownloadEvents((ev) => {
       setDownloads((prev) => {
         const next = { ...prev }
         const k = `${ev.modelId}\n${ev.rfilename}`
-        if (ev.state === 'done' || ev.state === 'error' || ev.state === 'cancelled') delete next[k]
+        if (ev.state === 'done' || ev.state === 'cancelled') delete next[k]
         else next[k] = ev
         return next
       })
@@ -430,6 +582,26 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     })
     void getActiveDownloads().catch(() => {})
     return dispose
+  }, [])
+
+  // Real file URL for pause/resume/retry actions (backend rejects '' safely).
+  const urlFor = useCallback((modelId: string, rfilename: string): string => {
+    for (const m of [detail, selected]) {
+      if (m && m.id === modelId) {
+        const hit = m.files.find((f) => f.rfilename === rfilename)
+        if (hit?.downloadUrl) return hit.downloadUrl
+      }
+    }
+    return ''
+  }, [detail, selected])
+  const dismissDl = useCallback((modelId: string, rfilename: string): void => {
+    const k = `${modelId}\n${rfilename}`
+    setDownloads((prev) => {
+      if (!(k in prev)) return prev
+      const next = { ...prev }
+      delete next[k]
+      return next
+    })
   }, [])
 
   // Close popups on outside click / Escape
@@ -499,20 +671,38 @@ export function ExplorePage({ onBack }: Props): ReactElement {
               ? <div className="explorer-downloads-empty">No active downloads.</div>
               : Object.values(downloads).map((ev) => {
                 const p = ev.totalBytes ? Math.min(100, Math.round((ev.receivedBytes / ev.totalBytes) * 100)) : 0
+                const stateLabel = ev.state === 'started' ? 'Starting…' : ev.state === 'queued' ? 'Queued' : ev.state === 'paused' ? 'Paused' : `${p}%`
+                if (ev.state === 'error') {
+                  const retryUrl = urlFor(ev.modelId, ev.rfilename)
+                  return (
+                    <div key={`${ev.modelId}\n${ev.rfilename}`} className="explorer-dl-row explorer-dl-row--error">
+                      <div className="explorer-dl-info">
+                        <div className="explorer-dl-name">{(ev.rfilename ?? '').split('/').pop()}</div>
+                        <div className="explorer-dl-error" role="alert">{ev.error ?? 'Download failed'}</div>
+                      </div>
+                      <div className="explorer-dl-actions">
+                        {retryUrl ? <button type="button" aria-label="Retry download" title="Retry" onClick={() => { dismissDl(ev.modelId, ev.rfilename); void downloadModelFile(ev.modelId, ev.rfilename, retryUrl).catch(() => {}) }}><RefreshCw size={13} /></button> : null}
+                        <button type="button" aria-label="Dismiss" onClick={() => dismissDl(ev.modelId, ev.rfilename)}><X size={13} /></button>
+                      </div>
+                    </div>
+                  )
+                }
                 return (
                   <div key={`${ev.modelId}\n${ev.rfilename}`} className="explorer-dl-row">
                     <div className="explorer-dl-info">
                       <div className="explorer-dl-name">{(ev.rfilename ?? '').split('/').pop()}</div>
-                      <div className="explorer-dl-meta">{ev.state} · {p}% · {fmtSize(ev.receivedBytes)}</div>
+                      <div className="explorer-dl-meta">{stateLabel}{ev.totalBytes ? ` · ${fmtSize(ev.receivedBytes)} / ${fmtSize(ev.totalBytes)}` : ev.receivedBytes > 0 ? ` · ${fmtSize(ev.receivedBytes)}` : ''}</div>
                       <div className="explorer-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p}>
-                        <span className="explorer-progress-fill" style={{ width: `${p}%` }} />
+                        <span className="explorer-progress-fill" style={{ width: `${ev.state === 'paused' || ev.state === 'queued' ? 0 : Math.max(p, 2)}%` }} />
                       </div>
                     </div>
                     <div className="explorer-dl-actions">
                       {ev.state === 'paused'
-                        ? <button type="button" aria-label="Resume" onClick={() => void resumeModelDownload(ev.modelId, ev.rfilename, '')}><Play size={13} /></button>
-                        : <button type="button" aria-label="Pause" onClick={() => void pauseModelDownload(ev.modelId, ev.rfilename)}><Pause size={13} /></button>}
-                      <button type="button" aria-label="Cancel" onClick={() => void cancelModelDownload(ev.modelId, ev.rfilename)}><X size={13} /></button>
+                        ? <button type="button" aria-label="Resume" onClick={() => void resumeModelDownload(ev.modelId, ev.rfilename, urlFor(ev.modelId, ev.rfilename)).catch(() => {})}><Play size={13} /></button>
+                        : ev.state === 'queued' || ev.state === 'started'
+                          ? <button type="button" aria-label="Cancel" onClick={() => void cancelModelDownload(ev.modelId, ev.rfilename).catch(() => {})}><X size={13} /></button>
+                          : <button type="button" aria-label="Pause" onClick={() => void pauseModelDownload(ev.modelId, ev.rfilename).catch(() => {})}><Pause size={13} /></button>}
+                      {ev.state !== 'queued' && ev.state !== 'started' ? <button type="button" aria-label="Cancel" onClick={() => void cancelModelDownload(ev.modelId, ev.rfilename).catch(() => {})}><X size={13} /></button> : null}
                     </div>
                   </div>
                 )
@@ -579,7 +769,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
             ) : (
               models.map((m, i) => {
                 const isActive = m.id === selectedId
-                const caps = m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c)).slice(0, 3)
+                const caps = sortCaps(m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c))).slice(0, 3)
                 return (
                   <button
                     key={m.id} type="button" role="option" aria-selected={isActive}
@@ -596,8 +786,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                       <span className="explorer-row-desc">{shortName(m.longDescription || m.description, 52)}</span>
                       <span className="explorer-row-time">{fmtAgo(m.updatedAt)}</span>
                     </span>
-                    <span className="explorer-row-caps" aria-hidden>
-                      {caps.length > 0 ? caps.map((c) => <span key={c} className="explorer-row-cap"><CapIcon cap={c} /></span>) : null}
+                    <span className="explorer-row-caps">
+                      {caps.length > 0 ? caps.map((c) => <span key={c} className="explorer-row-cap" title={CAP_HINT[c] ?? c}><CapIcon cap={c} /></span>) : null}
                     </span>
                   </button>
                 )
@@ -668,7 +858,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                           const isRec = rec?.rank === 0
                           return (
                             <button
-                              key={f.rfilename ?? i} type="button" role="option" aria-selected={i === fileIdx}
+                              key={f.downloadUrl || f.rfilename || i} type="button" role="option" aria-selected={i === fileIdx}
                               className={`explorer-fileitem ${i === fileIdx ? 'active' : ''}`}
                               onClick={() => { setFileIdx(i); setFileOpen(false) }}
                             >
@@ -698,9 +888,9 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                       </div>
                       <span className="explorer-progress-label">{dl.state === 'paused' ? 'Paused' : `${pct ?? 0}%`}</span>
                       {dl.state === 'paused'
-                        ? <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl ?? '')}><Play size={12} /> Resume</button>
-                        : <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void pauseModelDownload(active.id, activeFile.rfilename)}><Pause size={12} /> Pause</button>}
-                      <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Cancel download" onClick={() => activeFile?.rfilename && void cancelModelDownload(active.id, activeFile.rfilename)}><X size={12} /></button>
+                        ? <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void resumeModelDownload(active.id, activeFile.rfilename, activeFile.downloadUrl ?? '').catch(() => {})}><Play size={12} /> Resume</button>
+                        : <button type="button" className="explorer-mini-btn" onClick={() => activeFile?.rfilename && void pauseModelDownload(active.id, activeFile.rfilename).catch(() => {})}><Pause size={12} /> Pause</button>}
+                      <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Cancel download" onClick={() => activeFile?.rfilename && void cancelModelDownload(active.id, activeFile.rfilename).catch(() => {})}><X size={12} /></button>
                     </div>
                   ) : (
                     <button type="button" className="explorer-download-btn" disabled={!activeFile?.downloadUrl} onClick={doDownload}>
@@ -727,9 +917,27 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                 <div className="explorer-meta">
                   <span className="explorer-meta-label">Capabilities</span>
                   <span className="explorer-pill-group">
-                    {active.capabilities.map((c) => <span key={c} className="explorer-cap"><CapIcon cap={c} /> {c}</span>)}
+                    {sortCaps(active.capabilities).map((c) => <span key={c} className={`explorer-cap ${capClass(c)}`} title={CAP_HINT[c] ?? c}><CapIcon cap={c} /> {c}</span>)}
                   </span>
                 </div>
+                {active.license || (active.languages && active.languages.length > 0) ? (
+                  <div className="explorer-meta">
+                    {active.license ? (
+                      <>
+                        <span className="explorer-meta-label">License</span>
+                        <span className="explorer-pill">{active.license}</span>
+                      </>
+                    ) : null}
+                    {active.languages && active.languages.length > 0 ? (
+                      <>
+                        <span className="explorer-meta-label">Languages</span>
+                        <span className="explorer-pill-group">
+                          {active.languages.slice(0, 6).map((l) => <span key={l} className="explorer-pill">{l}</span>)}
+                        </span>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               {/* README viewer: full markdown, images, code copy, expand */}

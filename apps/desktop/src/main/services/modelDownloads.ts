@@ -10,8 +10,8 @@
 
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'fs'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
-import { Readable } from 'stream'
-import { finished } from 'stream/promises'
+import { Readable, Transform } from 'stream'
+import { pipeline } from 'stream/promises'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 
 export interface LibraryEntry {
@@ -203,9 +203,29 @@ export function resumeDownload(
     // Not paused/queued — treat as fresh start if not active
     if (active.has(k)) return false
   }
+  // Validate upfront: an empty/invalid URL must return false, never an
+  // unhandled rejection from the detached startDownload below.
+  try {
+    assertHuggingFaceUrl(downloadUrl)
+  } catch {
+    return false
+  }
   paused.delete(k)
-  void startDownload(config, userData, modelId, rfilename, downloadUrl, emit)
+  // startDownload validates again and can reject — surface as an error event,
+  // never an unhandled rejection (main-process crash dialog).
+  void startDownload(config, userData, modelId, rfilename, downloadUrl, emit).catch((e: unknown) => {
+    safeEmitTo(emit, { modelId, rfilename, state: 'error', receivedBytes: 0, totalBytes: null, error: e instanceof Error ? e.message : String(e) })
+  })
   return true
+}
+
+/** Emit that can never throw — a dead renderer must not crash main. */
+function safeEmitTo(emit: Emit, event: DownloadEvent): void {
+  try {
+    emit(event)
+  } catch {
+    // ignore — channel torn down
+  }
 }
 
 export function deleteLibraryEntry(root: string, entryPath: string): void {
@@ -230,7 +250,9 @@ function dequeueIfNeeded(): void {
   if (active.size >= MAX_CONCURRENT) return
   const next = queue.shift()
   if (!next) return
-  void startDownload(next.config, next.userData, next.modelId, next.rfilename, next.downloadUrl, next.emit)
+  void startDownload(next.config, next.userData, next.modelId, next.rfilename, next.downloadUrl, next.emit).catch((e: unknown) => {
+    safeEmitTo(next.emit, { modelId: next.modelId, rfilename: next.rfilename, state: 'error', receivedBytes: 0, totalBytes: null, error: e instanceof Error ? e.message : String(e) })
+  })
 }
 
 /**
@@ -261,16 +283,20 @@ export async function startDownload(
 
   if (active.size >= MAX_CONCURRENT) {
     queue.push({ modelId: cleanId, rfilename: cleanFile, downloadUrl: url.toString(), config, userData, emit })
-    emit({ modelId: cleanId, rfilename: cleanFile, state: 'queued', receivedBytes: 0, totalBytes: null })
+    safeEmitTo(emit, { modelId: cleanId, rfilename: cleanFile, state: 'queued', receivedBytes: 0, totalBytes: null })
     return { ok: true, resumed: false, queued: true }
   }
 
   const ctrl = new AbortController()
   active.set(k, { ctrl, modelId: cleanId, rfilename: cleanFile, downloadUrl: url.toString() })
   const base = { modelId: cleanId, rfilename: cleanFile }
-  emit({ ...base, state: 'started', receivedBytes: 0, totalBytes: null })
+  safeEmitTo(emit, { ...base, state: 'started', receivedBytes: 0, totalBytes: null })
 
   const run = async (): Promise<void> => {
+    // Nothing inside run() may ever escape: every emit is guarded and the
+    // whole body is covered, so pause/cancel aborts can only surface as
+    // paused/cancelled/error EVENTS — never an uncaught main-process error.
+    const safeEmit: Emit = (event) => safeEmitTo(emit, event)
     let received = 0
     let wasPaused = false
     try {
@@ -299,19 +325,28 @@ export async function startDownload(
       }
       received = startAt
       if (!res.body) throw new Error('empty download response')
+      // Report headers immediately so the UI shows the real total instead of 0%.
+      safeEmit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total })
       const out = createWriteStream(part, { flags: startAt > 0 ? 'a' : 'w' })
       let lastEmit = 0
-      const nodeStream = Readable.fromWeb(res.body as import('stream/web').ReadableStream)
-      nodeStream.on('data', (chunk: Buffer) => {
-        received += chunk.length
-        const now = Date.now()
-        if (now - lastEmit > 250) {
-          lastEmit = now
-          emit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total })
-        }
+      const source = Readable.fromWeb(res.body as import('stream/web').ReadableStream)
+      // pipeline() owns error forwarding on every leg: an abort during the
+      // body can only reject the awaited promise (handled below) — it can
+      // never surface as an uncaught 'error' event the way manual
+      // .on('data') + .pipe() + finished() does.
+      const tap = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          received += chunk.length
+          const now = Date.now()
+          if (now - lastEmit > 250) {
+            lastEmit = now
+            safeEmit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total })
+          }
+          cb(null, chunk)
+        },
       })
-      await finished(nodeStream.pipe(out))
-      emit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total ?? received })
+      await pipeline(source, tap, out)
+      safeEmit({ ...base, state: 'progress', receivedBytes: received, totalBytes: total ?? received })
       renameSync(part, dest)
       // Write sidecar with minimal provenance (C drive global location)
       try {
@@ -330,20 +365,20 @@ export async function startDownload(
         }
         require('node:fs').writeFileSync(sidecar, JSON.stringify(meta, null, 2), 'utf8')
       } catch { /* best-effort sidecar */ }
-      emit({ ...base, state: 'done', receivedBytes: received, totalBytes: total ?? received })
+      safeEmit({ ...base, state: 'done', receivedBytes: received, totalBytes: total ?? received })
     } catch (e) {
       if (ctrl.signal.aborted) {
         wasPaused = paused.has(k)
         if (wasPaused) {
-          emit({ ...base, state: 'paused', receivedBytes: received, totalBytes: null })
+          safeEmit({ ...base, state: 'paused', receivedBytes: received, totalBytes: null })
         } else {
           // Cancelled — delete .part to keep library clean
           try { if (existsSync(part)) unlinkSync(part) } catch { /* ignore */ }
-          emit({ ...base, state: 'cancelled', receivedBytes: received, totalBytes: null })
+          safeEmit({ ...base, state: 'cancelled', receivedBytes: received, totalBytes: null })
         }
       } else {
         const message = e instanceof Error ? e.message : String(e)
-        emit({ ...base, state: 'error', receivedBytes: received, totalBytes: null, error: message })
+        safeEmit({ ...base, state: 'error', receivedBytes: received, totalBytes: null, error: message })
       }
     } finally {
       active.delete(k)
@@ -355,6 +390,8 @@ export async function startDownload(
       }
     }
   }
-  void run()
+  // run() is exhaustive by construction, but never let a rejection escape
+  // into an unhandled main-process error under any future edit.
+  void run().catch(() => {})
   return { ok: true, resumed: false }
 }
