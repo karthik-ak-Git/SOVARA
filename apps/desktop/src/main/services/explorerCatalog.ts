@@ -15,7 +15,9 @@
  * Everything else (text-to-image, audio, video, classification heads) is dropped.
  * Download Options lists GGUF weights only — never meta/helper files.
  */
-import type { ExploreModel, ExploreModelFile } from '@shared/types/explore'
+import type { ExploreModel, ExploreModelFile, HardwareInfo } from '@shared/types/explore'
+import { estimateExplorerFit } from './explorerFit'
+import { getHardwareProfile } from './hardwareProfile'
 
 const HF_MODELS_API = 'https://huggingface.co/api/models'
 const HF_TIMEOUT_MS = 20000
@@ -51,19 +53,9 @@ const BLOCKED_PIPELINE = new Set([
 
 export type ExplorerCapability = 'Text' | 'Vision' | 'Tools' | 'Code' | 'Thinking'
 
-// Curated staff picks for the empty-query Recommended view.
-// Fetched individually so Recommended is stable even when HF trending shifts.
-export const STAFF_PICKS: string[] = [
-  'Qwen/Qwen3.8-27B',
-  'prismml/bonsai-27b',
-  'google/gemma-4-12b',
-  'google/gemma-4-26b-a4b',
-  'google/gemma-4-31b',
-  'google/gemma-4-12b-qat',
-  'Qwen/Qwen3.6-27B',
-  'google/gemma-4-4b',
-  'google/gemma-4-2b',
-]
+// NOTE: no hardcoded model lists. The Recommended view is computed live from
+// the user's own hardware (full + partial fits) — see recommendForHardware.
+// Anything that cannot be verified against a real signal is never asserted.
 
 interface HfCard {
   license?: string
@@ -177,27 +169,11 @@ export function classifyCapabilities(tags: string[], pipelineTag: string | undef
     if (pt === '' || ALLOWED_PIPELINE.has(pt)) caps.push('Text')
     else return []
   }
-  // Curated family knowledge: well-known lines whose HF tags under-report
-  // capabilities (e.g. unsloth GGUF quants carry no code/tool tags at all).
-  for (const fam of KNOWN_FAMILIES) {
-    if (fam.match.some((m) => id.includes(m))) {
-      for (const c of fam.add) if (!caps.includes(c)) caps.push(c)
-    }
-  }
   if (caps.length === 0) return []
   // Text is implied for tool/code/thinking bases — surface it so the row always shows its base family
   if (!caps.includes('Text') && (pt === 'text-generation' || pt === 'conversational' || pt === '')) caps.unshift('Text')
   return caps
 }
-
-// Curated family knowledge (id substrings → ensured capabilities).
-const KNOWN_FAMILIES: Array<{ match: string[]; add: ExplorerCapability[] }> = [
-  { match: ['coder', 'codestral', 'devstral', 'starcoder', 'wizardcoder', 'deepseek-coder', 'starcoder2', 'codegemma', 'codeqwen'], add: ['Code', 'Tools'] },
-  { match: ['qwen2-vl', 'qwen2.5-vl', 'qwen3-vl', 'qwen3.8', 'gemma-3', 'gemma-4', 'llama-3.2-vision', 'llama-3.2-11b', 'llama-3.2-90b', 'mistral-small-3.1', 'phi-4-multimodal', 'minicpm-v', 'llava', 'janus', 'qwen-vl'], add: ['Vision'] },
-  { match: ['deepseek-r1', 'qwq', 'qwen3-thinking', 'phi-4-reasoning', 'magistral', 'r1-distill', 'open-reasoner', 's1-', 'nemotron-thinking'], add: ['Thinking'] },
-  { match: ['gpt-oss'], add: ['Tools', 'Thinking'] },
-  { match: ['functiongemma', 'granite-4', 'glm-4', 'hermes-2-pro', 'hermes-3', 'nexusraven', 'toolace', 'firefunction', 'hammer2'], add: ['Tools'] },
-]
 
 /** Phrase evidence mined from the model card text (README fallback when tags
  *  are silent). STRONG multi-word phrases only: single generic words like
@@ -327,7 +303,8 @@ function toExplore(hf: HfRow): ExploreModel | null {
     longDescription: `${name} is a ${caps.join('/').toLowerCase()} model by ${author} on Hugging Face.`,
     downloads: typeof hf.downloads === 'number' ? hf.downloads : 0,
     likes: typeof hf.likes === 'number' ? hf.likes : 0,
-    staffPick: STAFF_PICKS.includes(hf.id),
+    // No curated picks: the Recommended view is hardware-computed instead.
+    staffPick: false,
     updatedAt: iso(hf.lastModified ?? hf.createdAt),
     parameters: paramsLabel(hf.safetensors?.total, tags, hf.id),
     architecture: archLabel(tags, hf.id, hf.gguf?.architecture, hf.config?.model_type),
@@ -393,13 +370,54 @@ async function fetchOne(modelId: string): Promise<ExploreModel | null> {
   return toExplore(row)
 }
 
+/** Billions of params from a resolved label ("27B" → 27, "Unknown" → 0). */
+function parseParamsB(label: string): number {
+  const m = (label ?? '').match(/([\d.]+)\s*B/i)
+  return m ? parseFloat(m[1]) : 0
+}
+
+/**
+ * Hardware-aware Recommended: sweep trending, estimate each model's typical
+ * Q4-GGUF footprint from its params (same 0.62 GB/B factor as the fit
+ * engine), run it through the real fit estimator, and keep FULL fits first,
+ * PARTIAL fits next, most-downloaded first inside each tier. Models that
+ * won't fit — or whose size can't be verified — are left out instead of
+ * guessed. `hwOverride` exists for tests; production uses the live profile.
+ */
+async function recommendForHardware(limit: number, hwOverride?: HardwareInfo): Promise<ExploreModel[]> {
+  const sweep = await searchHf('', 'trending', 100)
+  let hw: HardwareInfo
+  if (hwOverride) {
+    hw = hwOverride
+  } else {
+    try {
+      hw = getHardwareProfile()
+    } catch {
+      hw = { totalRamMB: 16 * 1024, freeRamMB: 8 * 1024, gpuAvailable: false }
+    }
+  }
+  const ranked: Array<{ m: ExploreModel; tier: number }> = []
+  for (const m of sweep) {
+    const pb = parseParamsB(m.parameters)
+    if (!(pb > 0)) continue // size unverifiable — exclude, never guess
+    const probe: ExploreModelFile = { format: 'GGUF', sizeGB: pb * 0.62, sizeBytes: 0, downloadUrl: '', runnable: true }
+    const r = estimateExplorerFit(probe, m, hw)
+    const tier = r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU' ? 0 : r.fit === 'partialGPUOffload' ? 1 : -1
+    if (tier < 0) continue
+    ranked.push({ m, tier })
+  }
+  ranked.sort((a, b) => a.tier - b.tier || b.m.downloads - a.m.downloads)
+  return ranked.slice(0, limit).map((x) => x.m)
+}
+
 /**
  * Public listing — Hugging Face primary:
  * 1. Full HF URL or org/name paste → exact model (single row).
- * 2. Empty query + Recommended → staff picks in curated order.
+ * 2. Empty query + Recommended → models that FULLY or PARTIALLY fit this
+ *    machine (computed live from RAM/VRAM, most-downloaded first per tier).
  * 3. Else broad keyword/trending sweep (default 60, max 100), 5 families only.
  */
-export async function listExplorerModels(opts: ExplorerListOpts = {}): Promise<ExploreModel[]> {
+export async function listExplorerModels(opts: ExplorerListOpts = {}, hwOverride?: HardwareInfo): Promise<ExploreModel[]> {
   const sortBy = opts.sortBy ?? 'Recommended'
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
   const parsed = parseExplorerSearch(opts.query ?? '')
@@ -412,11 +430,7 @@ export async function listExplorerModels(opts: ExplorerListOpts = {}): Promise<E
   }
 
   if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
-    // Staff picks first — parallel, bounded, order-preserving.
-    // Misses (renamed/gated repos) are skipped; empty result falls through to live trending.
-    const settled = await Promise.all(STAFF_PICKS.map((id) => fetchOne(id).catch(() => null)))
-    const picks = settled.filter((m): m is ExploreModel => m !== null)
-    if (picks.length > 0) return picks.slice(0, Math.max(limit, picks.length))
+    return recommendForHardware(limit, hwOverride)
   }
 
   return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit)

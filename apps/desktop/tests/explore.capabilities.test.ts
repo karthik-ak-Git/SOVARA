@@ -9,11 +9,10 @@ import {
 const UNSLOTH_CODER_TAGS = ['transformers', 'gguf', 'unsloth', 'qwen3', 'qwen', 'text-generation', 'arxiv:2505.09388', 'license:apache-2.0', 'conversational']
 const DAVIDAU_TAGS = ['gguf', 'thinking', 'reasoning', 'coder', 'image-text-to-text', 'conversational']
 
-describe('capability classifier (tags + id + families)', () => {
-  it('coder GGUF quant with silent tags still gets Code + Tools + Text', () => {
+describe('capability classifier (signals only, no hardcoded model lists)', () => {
+  it('coder id pattern surfaces Code + Text from tags alone', () => {
     const caps = classifyCapabilities(UNSLOTH_CODER_TAGS, 'text-generation', 'unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF')
     expect(caps).toContain('Code')
-    expect(caps).toContain('Tools')
     expect(caps).toContain('Text')
   })
 
@@ -28,12 +27,13 @@ describe('capability classifier (tags + id + families)', () => {
     expect(classifyCapabilities(['gguf'], 'text-generation', 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B')).toContain('Thinking')
   })
 
-  it('known families fill gaps: devstral, gemma-3n, gpt-oss', () => {
-    expect(classifyCapabilities(['gguf'], 'text-generation', 'mistralai/Devstral-Small-2505')).toContain('Tools')
+  it('silent tags stay Text-only — nothing asserted without evidence', () => {
+    expect(classifyCapabilities(['gguf'], 'text-generation', 'mistralai/Devstral-Small-2505')).toEqual(['Text'])
+    expect(classifyCapabilities(['gguf'], 'text-generation', 'openai/gpt-oss-20b')).toEqual(['Text'])
+  })
+
+  it('vision pipeline tag alone still surfaces Vision', () => {
     expect(classifyCapabilities(['gguf'], 'image-text-to-text', 'google/gemma-3n-E4B-it-GGUF')).toContain('Vision')
-    const oss = classifyCapabilities(['gguf'], 'text-generation', 'openai/gpt-oss-20b')
-    expect(oss).toContain('Tools')
-    expect(oss).toContain('Thinking')
   })
 
   it('plain text models stay Text-only (no false families)', () => {
