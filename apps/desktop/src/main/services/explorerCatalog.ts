@@ -1,145 +1,24 @@
 /**
- * Explorer catalog — LM Studio model catalog as the source of truth.
+ * Explorer catalog — Hugging Face as the primary listing source.
  *
- * Source: https://lmstudio.ai/models (server-rendered, no key, no auth).
- * - List:   GET /models → family cards (slug, name, downloads, sizes, dates,
- *           capability chips: lm-yellow=Vision, lm-blue=Tools, lm-green=Reasoning)
- * - Family: GET /models/{slug} → downloadable variants `owner/name` + sizes +
- *           stars + base HF repo link
- * - Variant: GET /models/{owner}/{name} → embedded `artifact` JSON (downloads,
- *           likes, dates, revision) + config YAML booleans (`vision`, `reasoning`,
- *           `trainedForToolUse`, `contextLengths`, `paramsStrings`,
- *           `minMemoryUsageBytes`, `architectures`, `compatibilityTypes`) +
- *           Sources (HF repo per format: GGUF / MLX)
- * - Download dropdown on the site is only a deep-link (`/deeplink`) + CLI
- *   (`lms get owner/name`) — no direct file URLs. Actual weight files are
- *   enumerated from the variant's GGUF Source repo via the HF file API.
+ * - List:   GET https://huggingface.co/api/models?search=&sort=trendingScore|downloads|likes|lastModified&direction=-1&limit=&expand=
+ *   (valid expands: author, cardData, gated, lastModified, safetensors, siblings,
+ *   likes, downloads, tags, pipeline_tag, trendingScore, createdAt — usedStorage is
+ *   NOT a valid list expand and returns 400; `expand[]` bracket form is rejected)
+ * - Search accepts keyword, `org/name`, or full HF URL paste; empty query +
+ *   Recommended shows curated staff picks, everything else loads broadly
+ *   (default 60 rows, up to 100 per sweep).
+ * - Detail: full row + GGUF quant options aggregated from linked community
+ *   quant repos (lmstudio-community first) + exact HEAD sizes + README.
  *
- * Hugging Face is therefore used ONLY as the weight-file backend (siblings
- * listing, HEAD sizes, README raw). Every user-facing field — capabilities,
- * params, arch, memory, context, downloads — comes from LM Studio curation.
+ * Scope: ONLY text / vision / tools / code / thinking (reasoning) models.
+ * Everything else (text-to-image, audio, video, classification heads) is dropped.
+ * Download Options lists GGUF weights only — never meta/helper files.
  */
 import type { ExploreModel, ExploreModelFile } from '@shared/types/explore'
 
-const LM_BASE = 'https://lmstudio.ai'
-const LM_TIMEOUT_MS = 25000
-const LM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SOVARA-Explorer/1.0'
-
 const HF_MODELS_API = 'https://huggingface.co/api/models'
 const HF_TIMEOUT_MS = 20000
-
-// ── LM fetch + TTL cache ─────────────────────────────────────────────
-// List page ~1 MB, variant pages ~1 MB; cache aggressively so repeat
-// opens/searches never refetch (51 families + variants on first sweep).
-const lmCache = new Map<string, { at: number; body: string }>()
-const LM_TTL_MS = 30 * 60 * 1000
-
-export function clearLmCache(): void {
-  lmCache.clear()
-}
-
-async function lmGetText(url: string): Promise<string> {
-  const hit = lmCache.get(url)
-  if (hit && Date.now() - hit.at < LM_TTL_MS) return hit.body
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), LM_TIMEOUT_MS)
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { 'User-Agent': LM_UA, Accept: 'text/html' },
-    }).catch((e) => {
-      throw new Error(e instanceof Error && e.name === 'AbortError' ? 'LM Studio catalog timed out.' : 'Could not reach lmstudio.ai.')
-    })
-    if (!res.ok) {
-      const err = new Error(`LM Studio catalog error ${res.status}`) as Error & { status?: number }
-      err.status = res.status
-      throw err
-    }
-    const body = await res.text()
-    lmCache.set(url, { at: Date.now(), body })
-    return body
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-// ── Small parsers (exported for tests) ───────────────────────────────
-/** "1.2M" / "3.4K" / "102" → number. */
-export function parseLmCount(raw: string): number {
-  const s = (raw ?? '').trim().replace(/,/g, '')
-  const m = s.match(/^([\d.]+)\s*([KMB])?$/i)
-  if (!m) return 0
-  const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1
-  return Math.round(parseFloat(m[1]) * mult)
-}
-
-/** "16.10 GB" / "850 MB" / "900 KB" → GB. */
-export function parseLmSizeGB(raw: string): number {
-  const m = (raw ?? '').trim().match(/^([\d.]+)\s*([KMGT]?B)$/i)
-  if (!m) return 0
-  const n = parseFloat(m[1])
-  const u = m[2].toUpperCase()
-  if (u === 'TB') return n * 1024
-  if (u === 'GB') return n
-  if (u === 'MB') return n / 1024
-  return n / 1024 ** 2
-}
-
-/** "25 days ago" / "3 months ago" / "1 year ago" / "5 hours ago" → ISO date. */
-export function parseLmUpdatedAgo(raw: string): string {
-  const m = (raw ?? '').trim().match(/^(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago$/i)
-  if (!m) return new Date().toISOString()
-  const n = parseInt(m[1], 10)
-  const unit = m[2].toLowerCase()
-  const ms = unit.startsWith('minute') ? n * 60e3 : unit.startsWith('hour') ? n * 3600e3 : unit.startsWith('week') ? n * 7 * 86400e3 : unit.startsWith('month') ? n * 30 * 86400e3 : unit.startsWith('year') ? n * 365 * 86400e3 : n * 86400e3
-  return new Date(Date.now() - ms).toISOString()
-}
-
-/**
- * Extract the embedded `artifact` object from LM RSC payloads.
- * The JSON sits inside an escaped JS string, so EVERY quote — structural
- * ones included — is written `\"`. The scan therefore treats `\"` as a
- * plain quote toggle and `\\` as an escaped backslash; bare braces outside
- * strings count toward depth. The slice is unescaped before JSON.parse,
- * which validates the boundary (null on failure).
- */
-export function extractLmArtifact(html: string): Record<string, unknown> | null {
-  const marker = '\\"artifact\\"'
-  const mi = html.indexOf(marker)
-  if (mi < 0) return null
-  let i = mi + marker.length
-  while (i < html.length && html[i] !== '{') i++
-  if (i >= html.length) return null
-  let depth = 0
-  let inStr = false
-  let start = -1
-  for (let j = i; j < html.length; j++) {
-    const ch = html[j]
-    if (ch === '\\' && j + 1 < html.length) {
-      const nx = html[j + 1]
-      if (nx === '"') { inStr = !inStr; j++; continue }
-      if (nx === '\\') { j++; continue }
-    }
-    if (inStr) {
-      if (ch === '"') inStr = false
-      continue
-    }
-    if (ch === '"') { inStr = true; continue }
-    if (ch === '{') { if (depth === 0) start = j; depth++ }
-    else if (ch === '}') {
-      depth--
-      if (depth === 0 && start >= 0) {
-        const raw = html.slice(start, j + 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-        try {
-          return JSON.parse(raw) as Record<string, unknown>
-        } catch {
-          return null
-        }
-      }
-    }
-  }
-  return null
-}
 
 // ── Allowed families ──────────────────────────────────────────────
 // Text   → pipeline text-generation / conversational / text2text-generation
@@ -172,19 +51,18 @@ const BLOCKED_PIPELINE = new Set([
 
 export type ExplorerCapability = 'Text' | 'Vision' | 'Tools' | 'Code' | 'Thinking'
 
-// Recommended view = lmstudio.ai/models page order (LM's own curation).
-// Kept as a fallback seed; live page order wins whenever reachable.
+// Curated staff picks for the empty-query Recommended view.
+// Fetched individually so Recommended is stable even when HF trending shifts.
 export const STAFF_PICKS: string[] = [
-  'qwen/qwen3.8-27b',
-  'qwen/qwen3.6-27b',
+  'Qwen/Qwen3.8-27B',
+  'prismml/bonsai-27b',
   'google/gemma-4-12b',
+  'google/gemma-4-26b-a4b',
   'google/gemma-4-31b',
-  'deepseek-ai/deepseek-r1-distill-qwen-7b',
-  'meta-llama/llama-3.1-8b-instruct',
-  'mistralai/mistral-7b-instruct-v0.3',
-  'microsoft/phi-4-reasoning',
-  'qwen/qwen2.5-vl-7b-instruct',
-  'mistralai/codestral-22b',
+  'google/gemma-4-12b-qat',
+  'Qwen/Qwen3.6-27B',
+  'google/gemma-4-4b',
+  'google/gemma-4-2b',
 ]
 
 interface HfCard {
@@ -216,7 +94,7 @@ interface HfRow {
 export interface ExplorerListOpts {
   sortBy?: string // Recommended | trending | downloads | likes | lastModified
   query?: string // keyword, user/model, or full HF URL
-  limit?: number
+  limit?: number // default 60, max 100
 }
 
 function authHeader(): Record<string, string> {
@@ -242,18 +120,10 @@ async function hfGet(url: string, method = 'GET'): Promise<Response> {
   }
 }
 
-/**
- * Explorer search accepts keyword, `owner/name`, an lmstudio.ai model URL
- * paste (`/models/{owner}/{name}` or family `/models/{slug}`), or a legacy
- * Hugging Face URL paste (resolved best-effort against LM sources).
- */
-export function parseExplorerSearch(input: string): { kind: 'empty' | 'url' | 'id' | 'family' | 'keyword'; modelId?: string; slug?: string; query?: string } {
+/** Search box accepts keyword, `org/name`, or a full HF URL paste. */
+export function parseExplorerSearch(input: string): { kind: 'empty' | 'url' | 'id' | 'keyword'; modelId?: string; query?: string } {
   const s = (input ?? '').trim()
   if (!s) return { kind: 'empty' }
-  const lmVariant = s.match(/^https?:\/\/(?:www\.)?lmstudio\.ai\/models\/([^/\s]+\/[^/\s?#]+)/i)
-  if (lmVariant) return { kind: 'url', modelId: lmVariant[1].replace(/\/$/, '') }
-  const lmFamily = s.match(/^https?:\/\/(?:www\.)?lmstudio\.ai\/models\/([^/\s?#]+)/i)
-  if (lmFamily) return { kind: 'family', slug: lmFamily[1].replace(/\/$/, '') }
   const urlM = s.match(/^https?:\/\/(?:www\.)?huggingface\.co\/([^/\s]+\/[^/\s?#]+)/i)
   if (urlM) return { kind: 'url', modelId: urlM[1].replace(/\/$/, '') }
   const idM = s.match(/^([^/\s]+\/[^/\s]+)$/)
@@ -357,243 +227,6 @@ export function mergeCapabilities(base: ExplorerCapability[], extra: ExplorerCap
   return CAP_ORDER.filter((c) => set.has(c))
 }
 
-// ── LM Studio catalog provider ───────────────────────────────────────
-export interface LmFamilyCard {
-  slug: string
-  name: string
-  downloadable: boolean
-  cloud: boolean
-  sizes: string[]
-  downloads: number
-  likes: number
-  updatedAgo: string
-  /** Capability chip colors: lm-yellow=Vision, lm-blue=Tools, lm-green=Reasoning. */
-  chips: string[]
-  description: string
-}
-
-export interface LmVariantRow {
-  id: string // owner/name
-  sizeGB: number
-  stars: number
-}
-
-/** Parse family cards from the /models list HTML. */
-export function parseLmFamilies(html: string): LmFamilyCard[] {
-  const out: LmFamilyCard[] = []
-  const re = /<a data-model-page-([^>]*?)href="\/models\/([a-z0-9][a-z0-9._-]*)"([\s\S]*?)<\/a>/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(html))) {
-    const attrs = m[1]
-    const slug = m[2]
-    const card = m[3]
-    const nameM = card.match(/text-lg font-medium">([^<]{1,80})/)
-    if (!nameM) continue
-    const chips = [...new Set([...card.matchAll(/--(lm-[a-z]+)/g)].map((x) => x[1]))]
-    const sizes = [...new Set([...card.matchAll(/title="Model size: ([^"]+?)"/g)].map((x) => x[1].replace(/\s*parameters$/, '').trim()))]
-    const dlM = card.match(/data-model-page-downloads="(\d+)"/)
-    const likesM = card.match(/polygon points="12 2 15\.09[\s\S]{0,500}?<span class="font-medium">([\d,]+)<\/span>/)
-    const updM = card.match(/Updated <!-- -->([^<]+)</)
-    const descM = card.match(/<div[^>]*>([^<]{30,600})<\/div><\/div><div class="flex flex-row items-center justify-between/)
-    out.push({
-      slug,
-      name: nameM[1].trim(),
-      downloadable: attrs.includes('data-model-page-has-downloads="true"'),
-      cloud: attrs.includes('data-model-page-has-cloud="true"'),
-      sizes,
-      downloads: dlM ? parseInt(dlM[1], 10) : 0,
-      likes: likesM ? parseInt(likesM[1].replace(/,/g, ''), 10) : 0,
-      updatedAgo: updM ? updM[1].trim() : '',
-      chips,
-      description: descM ? descM[1].trim() : '',
-    })
-  }
-  return out
-}
-
-/** Parse downloadable variant rows from a family page (/models/{slug}). */
-export function parseLmFamilyVariants(html: string): LmVariantRow[] {
-  const out: LmVariantRow[] = []
-  const re = /href="\/models\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)">\1<\/a>/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(html))) {
-    const id = m[1]
-    const tail = html.slice(m.index, m.index + 900)
-    const sizeM = tail.match(/>(\d[\d.]* [KMGT]B)</)
-    const starsM = tail.match(/data-model-page-stars="(\d+)"/)
-    if (!out.some((r) => r.id.toLowerCase() === id.toLowerCase())) {
-      out.push({ id, sizeGB: sizeM ? parseLmSizeGB(sizeM[1]) : 0, stars: starsM ? parseInt(starsM[1], 10) : 0 })
-    }
-  }
-  return out
-}
-
-export interface LmVariantConfig {
-  vision: boolean
-  reasoning: boolean
-  toolUse: boolean
-  params: string[]
-  arch: string[]
-  formats: string[]
-  minMemoryBytes: number
-  contextLengths: number[]
-  sources: Array<{ repo: string; format: string }>
-}
-
-/** Parse variant detail (/models/{owner}/{name}): artifact JSON + config + sources. */
-export function parseLmVariant(html: string): { artifact: Record<string, unknown>; config: LmVariantConfig } | null {
-  const artifact = extractLmArtifact(html)
-  if (!artifact || typeof artifact.identifier !== 'string') return null
-  const bool = (key: string): boolean => new RegExp(`${key}:\\s*true(?:\\s|\\\\|$)`).test(html)
-  const listAfter = (key: string): string[] => {
-    const m = html.match(new RegExp(`${key}:((?:\\\\n\\s*-\\s*[^\\\\\\s]+)+)`))
-    if (!m) return []
-    return [...m[1].matchAll(/-\s*([^\s\\]+)/g)].map((x) => x[1])
-  }
-  const ctxM = html.match(/contextLengths:\\n\s*-\s*(\d+)/)
-  const memM = html.match(/minMemoryUsageBytes:\s*(\d+)/)
-  const sources: Array<{ repo: string; format: string }> = []
-  const seen = new Set<string>()
-  for (const sm of html.matchAll(/https:\/\/huggingface\.co\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g)) {
-    const repo = sm[1]
-    if (seen.has(repo.toLowerCase())) continue
-    seen.add(repo.toLowerCase())
-    const tail = html.slice(sm.index, sm.index + 1500)
-    const fmtM = tail.match(/>(GGUF|MLX|safetensors)<\/p>/)
-    let format = fmtM ? fmtM[1] : ''
-    if (!format) format = /-gguf$/i.test(repo) ? 'GGUF' : /-mlx/i.test(repo) ? 'MLX' : ''
-    sources.push({ repo, format })
-  }
-  return {
-    artifact,
-    config: {
-      vision: bool('vision'),
-      reasoning: bool('reasoning'),
-      toolUse: bool('trainedForToolUse'),
-      params: listAfter('paramsStrings'),
-      arch: listAfter('architectures'),
-      formats: listAfter('compatibilityTypes'),
-      minMemoryBytes: memM ? parseInt(memM[1], 10) : 0,
-      contextLengths: ctxM ? [parseInt(ctxM[1], 10)] : [],
-      sources,
-    },
-  }
-}
-
-/** Family page extras: ld+json description + base HF repo link. */
-export function parseLmFamilyMeta(html: string): { description: string; baseRepo: string } {
-  const descM = html.match(/"@type":"CreativeWork"[^}]*?"description":"((?:[^"\\]|\\.)*)"/)
-  const hfM = html.match(/https:\/\/huggingface\.co\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/)
-  return {
-    description: descM ? descM[1].replace(/\\"/g, '"').slice(0, 600) : '',
-    baseRepo: hfM ? hfM[1] : '',
-  }
-}
-
-/** Capabilities from LM curated booleans + id knowledge + Text baseline. */
-export function capsFromLm(detail: { vision: boolean; reasoning: boolean; toolUse: boolean }, modelId: string): ExplorerCapability[] {
-  const caps: ExplorerCapability[] = []
-  if (detail.vision) caps.push('Vision')
-  if (detail.toolUse) caps.push('Tools')
-  if (detail.reasoning) caps.push('Thinking')
-  const id = modelId.toLowerCase()
-  if (['coder', 'codestral', 'devstral', 'starcoder', 'wizardcoder', 'codegemma', 'codeqwen'].some((k) => id.includes(k)) && !caps.includes('Code')) {
-    caps.push('Code')
-  }
-  if (caps.length === 0) return ['Text']
-  return mergeCapabilities(['Text'], caps)
-}
-
-function shortLmDesc(s: string, max = 140): string {
-  const t = (s ?? '').trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
-}
-
-function toExploreVariant(
-  family: LmFamilyCard,
-  familyOrder: number,
-  row: LmVariantRow,
-  artifact: Record<string, unknown>,
-  config: LmVariantConfig,
-  familyMeta: { description: string; baseRepo: string },
-): ExploreModel {
-  const [owner, ...rest] = row.id.split('/')
-  const name = rest.join('/') || row.id
-  const caps = capsFromLm(config, row.id)
-  const uiCaps = caps.map((c) => (c === 'Thinking' ? 'Reasoning' : c))
-  const params = config.params[0] ?? ''
-  const desc = (artifact.description as string) || familyMeta.description || family.description || `${name} by ${owner}`
-  const memGB = config.minMemoryBytes > 0 ? Math.round(config.minMemoryBytes / 1e9) : 0
-  const ctx = config.contextLengths[0] ?? 0
-  const extras = [
-    memGB > 0 ? `Needs ≥${memGB} GB RAM` : '',
-    ctx > 0 ? `${Math.round(ctx / 1000)}K context` : '',
-    config.formats.length > 0 ? config.formats.join('/') : '',
-  ].filter(Boolean).join(' · ')
-  const num = (v: unknown): number => (typeof v === 'number' ? v : 0)
-  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-  return {
-    id: row.id,
-    name,
-    slug: row.id,
-    author: owner || 'unknown',
-    description: shortLmDesc(desc),
-    longDescription: extras ? `${desc}\n\n${extras}.` : desc,
-    downloads: num(artifact.downloadCount),
-    likes: num(artifact.likeCount),
-    staffPick: familyOrder < 10,
-    updatedAt: iso(str(artifact.updatedAt)),
-    parameters: params || paramsLabel(undefined, [], row.id),
-    architecture: config.arch[0] ?? archLabel([], row.id),
-    capabilities: uiCaps,
-    files: [],
-    tags: [...config.arch, ...config.formats, ...config.params],
-    iconType: detectIcon(owner || ''),
-    ...(familyMeta.baseRepo ? { baseModel: familyMeta.baseRepo } : {}),
-  }
-}
-
-// ── Cached LM sweeps ─────────────────────────────────────────────────
-let lmFamiliesCache: Promise<LmFamilyCard[]> | null = null
-
-function fetchLmFamilies(): Promise<LmFamilyCard[]> {
-  if (!lmFamiliesCache) {
-    lmFamiliesCache = lmGetText(`${LM_BASE}/models`).then((html) => parseLmFamilies(html).filter((f) => f.downloadable))
-    lmFamiliesCache.catch(() => { lmFamiliesCache = null })
-  }
-  return lmFamiliesCache
-}
-
-const lmFamilyVariantsCache = new Map<string, Promise<{ family: LmFamilyCard; order: number; rows: LmVariantRow[]; meta: { description: string; baseRepo: string } }>>()
-
-function fetchLmFamily(slug: string, family: LmFamilyCard, order: number): Promise<{ family: LmFamilyCard; order: number; rows: LmVariantRow[]; meta: { description: string; baseRepo: string } }> {
-  let p = lmFamilyVariantsCache.get(slug)
-  if (!p) {
-    p = lmGetText(`${LM_BASE}/models/${slug}`).then((html) => ({
-      family,
-      order,
-      rows: parseLmFamilyVariants(html),
-      meta: parseLmFamilyMeta(html),
-    }))
-    p.catch(() => { lmFamilyVariantsCache.delete(slug) })
-    lmFamilyVariantsCache.set(slug, p)
-  }
-  return p
-}
-
-async function fetchAllLmVariants(): Promise<Array<{ family: LmFamilyCard; order: number; row: LmVariantRow; meta: { description: string; baseRepo: string } }>> {
-  const families = await fetchLmFamilies()
-  const settled = await Promise.all(families.map((f, i) => fetchLmFamily(f.slug, f, i).catch(() => null)))
-  const out: Array<{ family: LmFamilyCard; order: number; row: LmVariantRow; meta: { description: string; baseRepo: string } }> = []
-  for (const s of settled) {
-    if (!s) continue
-    for (const row of s.rows) out.push({ family: s.family, order: s.order, row, meta: s.meta })
-  }
-  return out
-}
-
-
-
 function paramsLabel(total?: number, tags: string[] = [], modelId = ''): string {
   if (typeof total === 'number' && total > 0) {
     if (total >= 1_000_000_000) return `${(total / 1_000_000_000).toFixed(total >= 10_000_000_000 ? 0 : 1)}B`
@@ -630,52 +263,84 @@ function archLabel(tags: string[], modelId: string, ggufArch?: string, modelType
 
 const QUANT_RE = /(Q\d+_[A-Z0-9_]+|IQ\d+_[A-Z0-9_]+|MXFP\d+(?:_[A-Z0-9_]+)?|QAT[^/]*)/i
 
+/** Filenames that are helpers, not runnable weights (projectors, drafts, shards). */
+function isAuxWeightFile(rfilename: string): boolean {
+  const b = rfilename.split('/').pop()?.toLowerCase() ?? ''
+  return b.includes('mmproj') || b.includes('mtp') || b.includes('imatrix') || b.includes('draft') || b.includes('shiakai')
+}
+
+/**
+ * Sibling kind for Download Options rows (GGUF weights only):
+ * - weight: runnable `.gguf` (excluding projector/draft/shard helpers)
+ * - aux: helper weights (mmproj, imatrix, drafts) — hidden
+ * - meta: informational files (.gitattributes, README.md, …) — hidden
+ */
+export function classifySibling(rfilename: string): 'weight' | 'aux' | 'meta' {
+  const b = (rfilename.split('/').pop() ?? '').toLowerCase()
+  if (b.endsWith('.gguf')) return isAuxWeightFile(rfilename) ? 'aux' : 'weight'
+  if (isAuxWeightFile(rfilename)) return 'aux'
+  return 'meta'
+}
+
 function iso(raw?: string): string {
   if (raw) { const d = new Date(raw); if (!isNaN(d.getTime())) return d.toISOString() }
   return new Date().toISOString()
 }
 
-/**
- * List row from LM family + variant data (no per-variant detail fetch —
- * downloads/likes/dates are family-level, matching LM's own cards).
- */
-function toExploreRow(
-  family: LmFamilyCard,
-  order: number,
-  row: LmVariantRow,
-  meta: { description: string; baseRepo: string },
-): ExploreModel {
-  const [owner, ...rest] = row.id.split('/')
-  const name = rest.join('/') || row.id
-  const caps: ExplorerCapability[] = []
-  if (family.chips.includes('lm-yellow')) caps.push('Vision')
-  if (family.chips.includes('lm-blue')) caps.push('Tools')
-  if (family.chips.includes('lm-green')) caps.push('Thinking')
-  const id = row.id.toLowerCase()
-  if (['coder', 'codestral', 'devstral', 'starcoder', 'wizardcoder', 'codegemma', 'codeqwen'].some((k) => id.includes(k)) && !caps.includes('Code')) {
-    caps.push('Code')
+function toExplore(hf: HfRow): ExploreModel | null {
+  const tags = Array.isArray(hf.tags) ? hf.tags : []
+  const caps = classifyCapabilities(tags, hf.pipeline_tag, hf.id)
+  if (caps.length === 0) return null
+  const author = hf.author || hf.id.split('/')[0] || 'unknown'
+  const name = hf.id.split('/').pop() || hf.id
+  // List rows carry runnable GGUF weights only (meta/helper files hidden).
+  const files: ExploreModelFile[] = []
+  for (const s of hf.siblings ?? []) {
+    if (classifySibling(s.rfilename) !== 'weight') continue
+    const base = s.rfilename.split('/').pop() ?? s.rfilename
+    const q = base.match(QUANT_RE)
+    files.push({
+      format: 'GGUF',
+      quantization: q ? q[0].toUpperCase() : undefined,
+      sizeGB: 0,
+      downloadUrl: `https://huggingface.co/${hf.id}/resolve/main/${s.rfilename}`,
+      rfilename: s.rfilename,
+      sizeBytes: 0,
+      runnable: true,
+    })
   }
-  const merged = caps.length === 0 ? (['Text'] as ExplorerCapability[]) : mergeCapabilities(['Text'], caps)
-  const uiCaps = merged.map((c) => (c === 'Thinking' ? 'Reasoning' : c))
-  const desc = family.description || meta.description || `${name} by ${owner}`
+  // Seed single-file size from repo storage so badges render before HEAD lookups.
+  if (files.length === 1 && typeof hf.usedStorage === 'number' && hf.usedStorage > 0) {
+    files[0].sizeBytes = hf.usedStorage
+    files[0].sizeGB = hf.usedStorage / 1024 ** 3
+  }
+  const card = hf.cardData ?? {}
+  const uiCaps = caps.map((c) => (c === 'Thinking' ? 'Reasoning' : c))
+  const languages = Array.isArray(card.language) ? card.language : typeof card.language === 'string' ? [card.language] : undefined
+  const baseModel = Array.isArray(card.base_model) ? card.base_model[0] : card.base_model
   return {
-    id: row.id,
+    id: hf.id,
     name,
-    slug: row.id,
-    author: owner || 'unknown',
-    description: shortLmDesc(desc),
-    longDescription: desc,
-    downloads: family.downloads,
-    likes: row.stars > 0 ? row.stars : family.likes,
-    staffPick: order < 10,
-    updatedAt: family.updatedAgo ? parseLmUpdatedAgo(family.updatedAgo) : new Date().toISOString(),
-    parameters: family.sizes[0] ?? paramsLabel(undefined, [], row.id),
-    architecture: archLabel([], row.id),
+    slug: hf.id,
+    author,
+    description: `${name} by ${author}`,
+    longDescription: `${name} is a ${caps.join('/').toLowerCase()} model by ${author} on Hugging Face.`,
+    downloads: typeof hf.downloads === 'number' ? hf.downloads : 0,
+    likes: typeof hf.likes === 'number' ? hf.likes : 0,
+    staffPick: STAFF_PICKS.includes(hf.id),
+    updatedAt: iso(hf.lastModified ?? hf.createdAt),
+    parameters: paramsLabel(hf.safetensors?.total, tags, hf.id),
+    architecture: archLabel(tags, hf.id, hf.gguf?.architecture, hf.config?.model_type),
     capabilities: uiCaps,
-    files: [],
-    tags: [...family.sizes],
-    iconType: detectIcon(owner || ''),
-    ...(meta.baseRepo ? { baseModel: meta.baseRepo } : {}),
+    files,
+    tags,
+    iconType: detectIcon(author),
+    ...(typeof card.license === 'string' ? { license: card.license } : {}),
+    ...(languages ? { languages } : {}),
+    ...(typeof baseModel === 'string' ? { baseModel } : {}),
+    ...(typeof hf.pipeline_tag === 'string' ? { pipelineTag: hf.pipeline_tag } : {}),
+    ...(typeof hf.gated === 'boolean' ? { gated: hf.gated } : {}),
+    ...(typeof hf.usedStorage === 'number' ? { repoSizeBytes: hf.usedStorage } : {}),
   }
 }
 
@@ -686,91 +351,78 @@ export function cleanExplorerReadme(raw: string, max = 12000): string {
   return t.length > max ? `${t.slice(0, max)}\n\n…(truncated — open on web for full README)` : t
 }
 
-type LmEntry = { family: LmFamilyCard; order: number; row: LmVariantRow; meta: { description: string; baseRepo: string } }
-
-function scoreLmEntry(e: LmEntry, tokens: string[], fullQuery: string): number {
-  const hay = `${e.row.id} ${e.family.name} ${e.family.description} ${e.meta.description}`.toLowerCase()
-  let score = 0
-  for (const t of tokens) if (hay.includes(t)) score++
-  if (fullQuery && e.row.id.toLowerCase().includes(fullQuery)) score += 2
-  if (fullQuery && e.family.slug.toLowerCase().includes(fullQuery)) score += 2
-  return score
+function sortParam(sortBy?: string): string {
+  switch ((sortBy ?? 'Recommended').toLowerCase()) {
+    case 'trending': return 'trendingScore'
+    case 'recommended': return 'trendingScore'
+    case 'downloads': return 'downloads'
+    case 'likes': return 'likes'
+    case 'lastmodified': return 'lastModified'
+    default: return 'trendingScore'
+  }
 }
 
-function sortLmEntries(entries: LmEntry[], sortBy: string): LmEntry[] {
-  const arr = [...entries]
-  switch (sortBy) {
-    case 'downloads':
-    case 'trending':
-      arr.sort((a, b) => b.family.downloads - a.family.downloads || a.order - b.order)
-      break
-    case 'likes':
-      arr.sort((a, b) => (b.row.stars || b.family.likes) - (a.row.stars || a.family.likes) || a.order - b.order)
-      break
-    case 'lastmodified':
-      // Family card order approximates recency poorly; keep stable LM order.
-      break
-    default:
-      break // Recommended = lmstudio.ai/models page order
+/** Core HF search — keyword / sort, broad sweeps up to 100 rows. */
+async function searchHf(query: string, sortBy: string | undefined, limit: number): Promise<ExploreModel[]> {
+  const params = new URLSearchParams()
+  params.set('sort', sortParam(sortBy))
+  params.set('direction', '-1')
+  params.set('limit', String(Math.min(Math.max(limit, 1), 100)))
+  const q = query.trim()
+  if (q) params.set('search', q)
+  // Ask HF for the fields the Explorer needs (siblings keep GGUF file rows).
+  // NOTE: `expand` (repeated param) with only server-valid keys — `usedStorage`
+  // and `expand[]` bracket form with invalid keys return 400.
+  for (const f of ['author', 'cardData', 'gated', 'lastModified', 'safetensors', 'siblings', 'likes', 'downloads', 'tags', 'pipeline_tag', 'trendingScore', 'createdAt']) {
+    params.append('expand', f)
   }
-  return arr
+  const res = await hfGet(`${HF_MODELS_API}?${params.toString()}`).catch((e) => {
+    throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face timed out.' : 'Could not reach Hugging Face.')
+  })
+  if (!res.ok) throw new Error(`Hugging Face error ${res.status}`)
+  const rows = (await res.json()) as HfRow[]
+  const out: ExploreModel[] = []
+  for (const r of rows) { const m = toExplore(r); if (m) out.push(m) }
+  return out
+}
+
+async function fetchOne(modelId: string): Promise<ExploreModel | null> {
+  const res = await hfGet(`${HF_MODELS_API}/${modelId}`).catch(() => null)
+  if (!res || !res.ok) return null
+  const row = (await res.json()) as HfRow
+  return toExplore(row)
 }
 
 /**
- * Public listing — LM Studio catalog as source:
- * 1. lmstudio.ai URL or `owner/name` paste → exact variant (single row).
- * 2. Family URL paste → that family's variants.
- * 3. Empty query + Recommended → catalog page order (LM curation).
- * 4. Else fuzzy keyword search over variants, LM order preserved.
+ * Public listing — Hugging Face primary:
+ * 1. Full HF URL or org/name paste → exact model (single row).
+ * 2. Empty query + Recommended → staff picks in curated order.
+ * 3. Else broad keyword/trending sweep (default 60, max 100), 5 families only.
  */
 export async function listExplorerModels(opts: ExplorerListOpts = {}): Promise<ExploreModel[]> {
-  const sortBy = (opts.sortBy ?? 'Recommended').toLowerCase()
-  const limit = opts.limit ?? 30
+  const sortBy = opts.sortBy ?? 'Recommended'
+  const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
   const parsed = parseExplorerSearch(opts.query ?? '')
 
   if (parsed.kind === 'url' || parsed.kind === 'id') {
-    const lmId = parsed.modelId as string
-    const one = await getExplorerModel(lmId).catch(() => null)
+    const one = await fetchOne(parsed.modelId as string).catch(() => null)
     if (one) return [one]
-    // Legacy HF paste (e.g. unsloth/...-GGUF): fall back to a fuzzy search on
-    // the repo short name instead of failing outright.
-    const short = lmId.split('/').pop()?.replace(/[-_](gguf|mlx|q[248](_[a-z0-9]+)?|iq[a-z0-9_]+|bf16|f16|8bit|4bit).*$/i, '') ?? lmId
-    const fuzzy = await listExplorerModels({ sortBy: opts.sortBy, limit, query: short }).catch((): ExploreModel[] => [])
-    if (fuzzy.length > 0) return fuzzy
-    throw new Error(`“${lmId}” is not in the LM Studio catalog — try a keyword search.`)
+    // Fall through to keyword search when the id does not resolve
+    return searchHf(parsed.modelId as string, sortBy, limit)
   }
 
-  if (parsed.kind === 'family') {
-    const families = await fetchLmFamilies()
-    const hit = families.find((f) => f.slug.toLowerCase() === (parsed.slug as string).toLowerCase())
-    if (!hit) throw new Error(`“${parsed.slug}” is not in the LM Studio catalog.`)
-    const order = families.indexOf(hit)
-    const fam = await fetchLmFamily(hit.slug, hit, order)
-    return fam.rows.map((row) => toExploreRow(hit, order, row, fam.meta)).slice(0, limit)
+  if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
+    // Staff picks first — parallel, bounded, order-preserving.
+    // Misses (renamed/gated repos) are skipped; empty result falls through to live trending.
+    const settled = await Promise.all(STAFF_PICKS.map((id) => fetchOne(id).catch(() => null)))
+    const picks = settled.filter((m): m is ExploreModel => m !== null)
+    if (picks.length > 0) return picks.slice(0, Math.max(limit, picks.length))
   }
 
-  const all = await fetchAllLmVariants()
-  let entries = all
-  if (parsed.kind === 'keyword') {
-    const q = (parsed.query as string).toLowerCase()
-    const tokens = q.split(/[^a-z0-9.]+/).filter((t) => t.length > 1)
-    entries = all
-      .map((e) => ({ e, s: scoreLmEntry(e, tokens, q) }))
-      .filter((x) => x.s > 0)
-      .sort((a, b) => b.s - a.s || a.e.order - b.e.order)
-      .map((x) => x.e)
-    entries = sortBy === 'recommended' ? entries : sortLmEntries(entries, sortBy)
-  } else if (sortBy !== 'recommended') {
-    entries = sortLmEntries(entries, sortBy)
-  }
-  return entries.slice(0, limit).map((e) => toExploreRow(e.family, e.order, e.row, e.meta))
+  return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit)
 }
 
-/**
- * HF weight-file backend: sibling listing for one repo.
- * HF is used ONLY here (file enumeration) — every user-facing field comes
- * from the LM Studio catalog. Never called for listing/search.
- */
+// ── HF weight-file backend caches ────────────────────────────────────
 const SIB_TTL_MS = 15 * 60 * 1000
 const sibCache = new Map<string, { at: number; v: { repoId: string; siblings: Array<{ rfilename: string }>; downloads: number } }>()
 const HEAD_TTL_MS = 60 * 60 * 1000
@@ -804,34 +456,74 @@ async function headBytes(url: string): Promise<number> {
   return 0
 }
 
-/** Filenames that are helpers, not runnable weights (projectors, drafts, shards). */
-function isAuxWeightFile(rfilename: string): boolean {
-  const b = rfilename.split('/').pop()?.toLowerCase() ?? ''
-  return b.includes('mmproj') || b.includes('mtp') || b.includes('imatrix') || b.includes('draft') || b.includes('shiakai')
+/**
+ * Community GGUF quants for a base repo (Download Options aggregates quant
+ * files from quant repos, e.g. Qwen3.8-27B → Q4_K_M 17.74 GB). Matches repos
+ * whose card base_model/tags reference the base model and that actually
+ * publish .gguf siblings. Bounded: 12 search hits, max 4 repos.
+ */
+async function fetchQuantRepos(baseId: string): Promise<Array<{ repoId: string; siblings: Array<{ rfilename: string }>; downloads: number }>> {
+  const baseShort = (baseId.split('/').pop() ?? baseId).toLowerCase()
+  const params = new URLSearchParams()
+  params.set('sort', 'downloads')
+  params.set('direction', '-1')
+  params.set('limit', '12')
+  params.set('search', `${baseShort} GGUF`)
+  for (const f of ['likes', 'downloads', 'tags', 'pipeline_tag', 'siblings', 'cardData']) params.append('expand', f)
+  const res = await hfGet(`${HF_MODELS_API}?${params.toString()}`).catch(() => null)
+  if (!res || !res.ok) return []
+  const rows = (await res.json()) as HfRow[]
+  const out: Array<{ repoId: string; siblings: Array<{ rfilename: string }>; downloads: number }> = []
+  for (const r of rows) {
+    if (r.id.toLowerCase() === baseId.toLowerCase()) continue
+    const ggufs = (r.siblings ?? []).filter((s) => s.rfilename.toLowerCase().endsWith('.gguf'))
+    if (ggufs.length === 0) continue
+    const bm = r.cardData?.base_model
+    const bases = Array.isArray(bm) ? bm : bm ? [bm] : []
+    const tags = (r.tags ?? []).map((t) => t.toLowerCase())
+    const linked =
+      bases.some((b) => b.toLowerCase().includes(baseShort) || baseId.toLowerCase().includes(b.toLowerCase())) ||
+      tags.includes(`base_model:${baseId.toLowerCase()}`) ||
+      r.id.toLowerCase().includes(baseShort)
+    if (!linked) continue
+    out.push({ repoId: r.id, siblings: ggufs, downloads: typeof r.downloads === 'number' ? r.downloads : 0 })
+    if (out.length >= 4) break
+  }
+  // Curated publishers first (LM Studio's own community quants carry the clean
+  // Q4_K_M / Q6_K / Q8_0 sets), then by downloads.
+  const prio = (id: string): number => {
+    const l = id.toLowerCase()
+    if (l.startsWith('lmstudio-community/')) return 0
+    if (l.startsWith('ggml-org/')) return 1
+    if (l.startsWith('bartowski/')) return 2
+    if (l.startsWith('unsloth/')) return 3
+    return 4
+  }
+  return out.sort((a, b) => prio(a.repoId) - prio(b.repoId) || b.downloads - a.downloads)
 }
 
 /**
- * Pick the LM Studio-style quant menu: preferred K-quants first
- * (Q4_K_M → Q8_0), skipping projector/draft/shard helpers, max 10 files.
+ * Pick the quant menu: preferred K-quants first (Q4_K_M → Q8_0), runnable
+ * GGUF weights only, skipping projector/draft/shard helpers AND informational
+ * files (.gitattributes, README.md). Max 10 files, every model alike.
  */
 export function pickQuantOptions(repos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>): ExploreModelFile[] {
   const PREF = ['Q4_K_M', 'Q4_K_S', 'Q5_K_M', 'Q5_K_S', 'Q6_K', 'Q8_0', 'Q4_0', 'Q5_0', 'Q3_K_M', 'Q2_K']
   const out: ExploreModelFile[] = []
   const used = new Set<string>()
-  const push = (repoId: string, rfilename: string, runnable: boolean): void => {
+  const push = (repoId: string, rfilename: string): void => {
     if (out.length >= 10 || used.has(rfilename)) return
     used.add(rfilename)
     const base = rfilename.split('/').pop() ?? rfilename
     const q = base.match(QUANT_RE)
     out.push({
-      // LM Studio shows the GGUF pill on every repo row, weights and meta alike.
       format: 'GGUF',
-      quantization: runnable ? q ? q[0].toUpperCase() : undefined : undefined,
+      quantization: q ? q[0].toUpperCase() : undefined,
       sizeGB: 0,
       downloadUrl: `https://huggingface.co/${repoId}/resolve/main/${rfilename}`,
       rfilename,
       sizeBytes: 0,
-      runnable,
+      runnable: true,
     })
   }
   for (const quant of PREF) {
@@ -841,54 +533,24 @@ export function pickQuantOptions(repos: Array<{ repoId: string; siblings: Array<
         const b = (s.rfilename.split('/').pop() ?? '').toUpperCase()
         return b.includes(`-${quant}.GGUF`) || b.endsWith(`_${quant}.GGUF`)
       })
-      if (hit) { push(repo.repoId, hit.rfilename, true); break }
+      if (hit) { push(repo.repoId, hit.rfilename); break }
     }
   }
-  // Fill remaining slots with other runnable weights (still skipping helpers
-  // and informational files — Download Options lists GGUF weights only).
+  // Fill remaining slots with other runnable weights (helpers + meta hidden)
   for (const repo of repos) {
     for (const s of repo.siblings) {
       if (out.length >= 10) break
       if (classifySibling(s.rfilename) !== 'weight') continue
-      push(repo.repoId, s.rfilename, true)
+      push(repo.repoId, s.rfilename)
     }
     if (out.length >= 10) break
   }
   return out
 }
 
-/**
- * Sibling kind for Download Options rows (GGUF weights only):
- * - weight: runnable `.gguf` (excluding projector/draft/shard helpers)
- * - aux: helper weights (mmproj, imatrix, drafts) — hidden
- * - meta: informational files (.gitattributes, README.md, …) — hidden
- */
-export function classifySibling(rfilename: string): 'weight' | 'aux' | 'meta' {
-  const b = (rfilename.split('/').pop() ?? '').toLowerCase()
-  if (b.endsWith('.gguf')) return isAuxWeightFile(rfilename) ? 'aux' : 'weight'
-  if (isAuxWeightFile(rfilename)) return 'aux'
-  return 'meta'
-}
-
-/**
- * Detail is already LM-curated at every layer, so the legacy overlay is now
- * an identity (kept for export compatibility).
- */
-export async function overlayLmStudioDetails(model: ExploreModel): Promise<ExploreModel> {
-  return model
-}
-
-/**
- * Detail for one LM variant (`owner/name`):
- * LM artifact + config (caps, params, arch, memory, context, sources) with
- * GGUF quant files enumerated from the variant's GGUF Source repo on HF
- * (LM's own download dropdown is only a deep-link/CLI hook — the site
- * publishes no direct file URLs; LM Studio's app resolves the same way).
- *
- * Speed: built models are cached 5 min and concurrent requests for the same
- * id share one in-flight build — the renderer's model + compatibility +
- * recommendations triple-call per click costs a single build.
- */
+// ── Built-model cache + in-flight dedup ──────────────────────────────
+// The renderer fires model + compatibility + recommendations per click —
+// all three share one build; repeat opens within 5 min cost zero fetches.
 const MODEL_TTL_MS = 5 * 60 * 1000
 const modelCache = new Map<string, { at: number; model: ExploreModel }>()
 const modelInflight = new Map<string, Promise<ExploreModel>>()
@@ -900,9 +562,10 @@ export function clearExplorerModelCache(): void {
   headCache.clear()
 }
 
+/** Detail: full row + GGUF quant options + exact HEAD sizes + README. */
 export async function getExplorerModel(modelId: string): Promise<ExploreModel> {
   const id = (modelId ?? '').trim().replace(/\/$/, '')
-  if (!id.includes('/')) throw new Error(`“${modelId}” is not an LM Studio model id (expected owner/name).`)
+  if (!id.includes('/')) throw new Error(`“${modelId}” is not a model id (expected owner/name).`)
   const hit = modelCache.get(id)
   if (hit && Date.now() - hit.at < MODEL_TTL_MS) return hit.model
   let p = modelInflight.get(id)
@@ -916,35 +579,19 @@ export async function getExplorerModel(modelId: string): Promise<ExploreModel> {
 }
 
 async function buildExplorerModel(id: string): Promise<ExploreModel> {
-  let html: string
-  try {
-    html = await lmGetText(`${LM_BASE}/models/${id}`)
-  } catch (e) {
-    if (e instanceof Error && (e as Error & { status?: number }).status === 404) {
-      throw new Error(`“${id}” is not in the LM Studio catalog.`)
-    }
-    throw e instanceof Error ? e : new Error('Could not reach lmstudio.ai.')
-  }
-  const parsed = parseLmVariant(html)
-  if (!parsed) throw new Error(`“${id}” is not in the LM Studio catalog.`)
-  const [owner] = id.split('/')
-  const stubFamily: LmFamilyCard = {
-    slug: '', name: owner, downloadable: true, cloud: false, sizes: [],
-    downloads: 0, likes: 0, updatedAgo: '', chips: [], description: '',
-  }
-  const mapped = toExploreVariant(stubFamily, 99, { id, sizeGB: 0, stars: 0 }, parsed.artifact, parsed.config, { description: '', baseRepo: '' })
-  // Prefer the variant's own GGUF Source repo; fall back to scanning all
-  // sources for a repo that actually publishes .gguf files.
-  const ggufSources = parsed.config.sources.filter((s) => s.format === 'GGUF')
-  const candidates = [...ggufSources.map((s) => s.repo), ...parsed.config.sources.map((s) => s.repo)]
-  let picked: { repoId: string; siblings: Array<{ rfilename: string }>; downloads: number } | null = null
-  for (const repo of candidates.slice(0, 4)) {
-    const hit = await fetchHfSiblings(repo)
-    if (hit.siblings.some((s) => s.rfilename.toLowerCase().endsWith('.gguf'))) { picked = hit; break }
-    if (!picked) picked = hit
-  }
-  if (picked) {
-    mapped.files.push(...pickQuantOptions([picked]))
+  const res = await hfGet(`${HF_MODELS_API}/${id}`).catch((e) => {
+    throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face timed out.' : 'Could not reach Hugging Face.')
+  })
+  if (!res.ok) throw new Error(`Hugging Face error ${res.status}`)
+  const row = (await res.json()) as HfRow
+  const mapped = toExplore(row)
+  if (!mapped) throw new Error('Model is not a text/vision/tools/code/reasoning model.')
+  // Base repos (e.g. Qwen/Qwen3.8-27B) ship safetensors only — pull the GGUF
+  // quant options from linked community quant repos (lmstudio-community first:
+  // the clean Q4_K_M / Q6_K / Q8_0 sets).
+  if (!mapped.files.some((f) => f.format === 'GGUF')) {
+    const quantRepos = await fetchQuantRepos(mapped.id)
+    mapped.files.push(...pickQuantOptions(quantRepos))
   }
   // HEAD sizes for real 17.74 GB labels (resolve URLs only — never pages)
   await Promise.all(
@@ -953,18 +600,15 @@ async function buildExplorerModel(id: string): Promise<ExploreModel> {
       if (n > 0) { f.sizeBytes = n; f.sizeGB = n / 1024 ** 3 }
     }),
   )
-  // README from the picked source repo (main or master branch)
-  const readmeRepo = picked?.repoId ?? ''
-  if (readmeRepo) {
-    for (const branch of ['main', 'master']) {
-      try {
-        const readme = await hfGet(`https://huggingface.co/${readmeRepo}/raw/${branch}/README.md`)
-        if (readme.ok) { mapped.readme = cleanExplorerReadme(await readme.text()); break }
-      } catch { /* try next branch */ }
-    }
+  // README lives on main or master depending on the repo
+  for (const branch of ['main', 'master']) {
+    try {
+      const readme = await hfGet(`https://huggingface.co/${id}/raw/${branch}/README.md`)
+      if (readme.ok) { mapped.readme = cleanExplorerReadme(await readme.text()); break }
+    } catch { /* try next branch */ }
   }
-  // Second evidence pass: strong card phrases (tool calling, benchmarks,
-  // chain-of-thought) merge into the LM-curated capabilities.
+  // Second evidence pass: the card text often states capabilities the tags
+  // omit (tool calling, benchmarks, chain-of-thought) — merge them in.
   if (mapped.readme) {
     const extra = detectCapabilitiesFromText(mapped.readme)
     if (extra.length > 0) {
