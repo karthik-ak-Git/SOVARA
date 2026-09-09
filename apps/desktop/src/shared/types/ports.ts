@@ -12,15 +12,28 @@ export interface LocalModel {
   discoveredAt?: number
 }
 
+export type InstanceStatus = 'loaded' | 'loading' | 'generating' | 'idle' | 'unloading' | 'unloaded' | 'error' | 'failed' | 'crashed'
+
 export interface ModelInstance {
   id: InstanceId
   modelId: ModelId
   runtimeId: string
-  status: 'loaded' | 'loading' | 'unloaded' | 'error'
+  status: InstanceStatus
   ctxLen: number
   port?: number
   pid?: number
   startedAt?: number
+  /** Live resource metrics — undefined when unavailable (e.g. macOS Metal). */
+  metrics?: InstanceMetrics
+}
+
+export interface InstanceMetrics {
+  gpuUtilization?: number   // 0–100 percent
+  vramUsedMB?: number       // megabytes
+  cpuUsage?: number         // 0–100 percent
+  ramUsedMB?: number        // megabytes
+  tokensPerSec?: number     // throughput
+  lastUpdatedAt?: number    // Date.now() timestamp
 }
 
 export interface ModelRuntimePort {

@@ -1,8 +1,8 @@
 import { useState, type ReactElement } from 'react'
 import { Database, Plug, RefreshCw, Trash2 } from 'lucide-react'
-import { Button } from '@renderer/components/ui/Button'
-import { Card } from '@renderer/components/ui/Card'
-import { EmptyState } from '@renderer/components/ui/EmptyState'
+import { Button } from '../../components/ui/Button'
+import { Card } from '../../components/ui/Card'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { useModelWorkbench } from './useModelWorkbench'
 
 function formatCtx(n?: number): string {

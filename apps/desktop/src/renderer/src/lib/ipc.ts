@@ -153,6 +153,52 @@ export async function getActiveModel(): Promise<ActiveModelState> {
   return (await sovara().invoke('models:getActiveModel')) as ActiveModelState
 }
 
+// ── Local model library registry (SQLite-backed inventory) ──
+export type RegistryInstallStatus = 'installed' | 'missing' | 'unregistered'
+export type DownloadRowStatus = 'queued' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'verifying'
+
+export interface ModelRegistryView {
+  id: string
+  sourceProvider: string
+  repository: string
+  revision: string
+  rfilename: string
+  format: string | null
+  quantization: string | null
+  architecture: string | null
+  parameterCount: string | null
+  contextLength: number | null
+  license: string | null
+  localPath: string
+  fileSizeBytes: number | null
+  downloadStatus: DownloadRowStatus
+  installStatus: RegistryInstallStatus
+  runtimeId: string | null
+  displayName: string
+  discoveredAt: number
+  updatedAt: number
+  extraJson: string | null
+}
+
+export async function listRegistryRows(runtimeId?: string): Promise<ModelRegistryView[]> {
+  return (await sovara().invoke('models:listRegistry', runtimeId ? { runtimeId } : {})) as ModelRegistryView[]
+}
+
+export async function updateRegistryRow(
+  id: string,
+  patch: { installStatus?: RegistryInstallStatus; runtimeId?: string | null; displayName?: string }
+): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('models:updateRegistry', { id, patch })) as { ok: boolean }
+}
+
+export async function removeRegistryRow(id: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('models:removeRegistry', { id })) as { ok: boolean }
+}
+
+export async function removeRegistryRowsByPath(localPath: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('models:removeRegistryByPath', { localPath })) as { ok: boolean }
+}
+
 export interface SystemResourcesView {
   cpu: { logicalCores: number; loadAvg1: number }
   ram: { totalMB: number; freeMB: number; usedByAppMB: number }
@@ -630,4 +676,33 @@ export async function listValidations(): Promise<ValidationJob[]> {
 }
 export async function listValidationCache(): Promise<ValidationStoreEntry[]> {
   return (await sovara().invoke('validation:storeList')) as ValidationStoreEntry[]
+}
+
+// ── Loaded instances (runtime monitoring & management) ──
+import type { ModelInstance, InstanceMetrics } from '@shared/types/ports'
+export type { ModelInstance, InstanceMetrics, InstanceStatus } from '@shared/types/ports'
+
+export async function listInstances(): Promise<ModelInstance[]> {
+  return (await sovara().invoke('instances:list')) as ModelInstance[]
+}
+
+export async function unloadInstance(instanceId: string): Promise<{ ok: boolean }> {
+  return (await sovara().invoke('instances:unload', { instanceId })) as { ok: boolean }
+}
+
+export async function getInstanceMetrics(instanceId: string): Promise<{ ok: boolean; vramUsedMB?: number; error?: string }> {
+  return (await sovara().invoke('instances:getMetrics', { instanceId })) as { ok: boolean; vramUsedMB?: number; error?: string }
+}
+
+export interface InstanceEvent {
+  type: 'status-changed' | 'metrics-updated' | 'removed'
+  instanceId: string
+  instance?: ModelInstance
+  metrics?: InstanceMetrics
+}
+
+export function onInstanceEvents(callback: (event: InstanceEvent) => void): () => void {
+  return sovara().on('events:instances', (...args: unknown[]) => {
+    callback(args[0] as InstanceEvent)
+  })
 }

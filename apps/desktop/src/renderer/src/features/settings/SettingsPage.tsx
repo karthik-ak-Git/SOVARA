@@ -9,6 +9,7 @@ import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession,
 import type { DiscoveredModel } from '@shared/types/models'
 import { LibraryPage } from '../library/LibraryPage'
 import { ExplorePage } from '../explore/ExplorePage'
+import { LoadedInstancesSection } from './LoadedInstancesSection'
 
 type SettingsSection =
   | 'general'
@@ -1608,6 +1609,11 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       case 'library':
         return (
           <LibraryPage onBack={() => setActiveSection('general')} />
+        )
+
+      case 'loaded-instances':
+        return (
+          <LoadedInstancesSection onBack={() => setActiveSection('general')} />
         )
 
       default:

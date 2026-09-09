@@ -9,7 +9,7 @@ import {
   selectModel,
   testRuntimeConnection,
   type SystemResourcesView,
-} from '@renderer/lib/ipc'
+} from '../../lib/ipc'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry, RuntimeProbeResult } from '@shared/types/models'
 
 /**

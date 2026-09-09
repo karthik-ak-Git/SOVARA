@@ -32,6 +32,11 @@ export const IPC_CHANNELS = {
   'models:listModels': { type: 'invoke' as const },
   'models:selectModel': { type: 'invoke' as const },
   'models:getActiveModel': { type: 'invoke' as const },
+  // Local model library registry (SQLite-backed inventory)
+  'models:listRegistry': { type: 'invoke' as const },
+  'models:updateRegistry': { type: 'invoke' as const },
+  'models:removeRegistry': { type: 'invoke' as const },
+  'models:removeRegistryByPath': { type: 'invoke' as const },
   // Settings (preferences)
   'settings:get': { type: 'invoke' as const },
   'settings:set': { type: 'invoke' as const },
@@ -99,12 +104,17 @@ export const IPC_CHANNELS = {
   'mcp:remove': { type: 'invoke' as const },
   'mcp:toggle': { type: 'invoke' as const },
   'mcp:probe': { type: 'invoke' as const },
+  // Loaded instances (runtime monitoring & management)
+  'instances:list': { type: 'invoke' as const },
+  'instances:unload': { type: 'invoke' as const },
+  'instances:getMetrics': { type: 'invoke' as const },
   // Voice transcription (local faster-whisper)
   'voice:transcribe': { type: 'invoke' as const },
   'voice:status': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
   'events:download': { type: 'on' as const },
+  'events:instances': { type: 'on' as const },
 } as const
 
 export type IpcChannel = keyof typeof IPC_CHANNELS

@@ -1838,6 +1838,153 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   font-weight: 500;
 }
 
+/* ── Loaded Instances ── */
+.instance-summary {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.instance-summary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+}
+.instance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.instance-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+.instance-card:hover { border-color: var(--accent); }
+.instance-card--error { border-color: var(--warn); }
+.instance-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.instance-card-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.instance-card-icon { color: var(--muted-2); flex-shrink: 0; }
+.instance-card-model {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.instance-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.instance-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+.instance-confirm-text {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.instance-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.instance-meta-item {
+  font-size: 11px;
+  color: var(--muted-2);
+}
+.instance-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.instance-metric { display: flex; flex-direction: column; gap: 3px; }
+.instance-metric-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.instance-metric-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+}
+.instance-metric-value {
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.instance-metric-bar {
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.instance-metric-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.instance-metric-fill--high { background: var(--warn); }
+.instance-metric-fill--unknown {
+  background: var(--muted-2);
+  opacity: 0.4;
+  width: 100% !important;
+}
+.instance-card-throughput {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.instance-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--warn);
+}
+.instance-error-banner Button { color: var(--warn); }
+
 /* ── Explore tab (HuggingFace catalog) ── */
 .explore-page {
   display: flex;

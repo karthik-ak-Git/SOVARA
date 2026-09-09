@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -221,6 +221,33 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('models:getActiveModel', async () => {
     return getBackend().workbench.getActiveModel()
+  })
+
+  ipcMain.handle('models:listRegistry', async (_e, raw: unknown) => {
+    const parsed = zModelsRegistryList.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid list payload: ${parsed.error.message}`)
+    return getBackend().workbench.listRegistryRows(parsed.data.runtimeId)
+  })
+
+  ipcMain.handle('models:updateRegistry', async (_e, raw: unknown) => {
+    const parsed = zModelsRegistryUpdate.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid registry update: ${parsed.error.message}`)
+    getBackend().workbench.updateRegistryRow(parsed.data.id, parsed.data.patch)
+    return { ok: true }
+  })
+
+  ipcMain.handle('models:removeRegistry', async (_e, raw: unknown) => {
+    const parsed = zModelsRegistryRef.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid registry ref: ${parsed.error.message}`)
+    getBackend().workbench.removeRegistryRow(parsed.data.id)
+    return { ok: true }
+  })
+
+  ipcMain.handle('models:removeRegistryByPath', async (_e, raw: unknown) => {
+    const parsed = zModelsRegistryPath.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid registry path: ${parsed.error.message}`)
+    getBackend().workbench.removeRegistryRowsByPath(parsed.data.localPath)
+    return { ok: true }
   })
 
   ipcMain.handle('settings:get', async () => {
@@ -626,6 +653,32 @@ export function registerIpcHandlers(): void {
       return { ok: true, ...result }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // ── Loaded instances (runtime monitoring & management) ──
+  ipcMain.handle('instances:list', async () => {
+    return getBackend().ports.models.listInstances()
+  })
+
+  ipcMain.handle('instances:unload', async (_e, raw: unknown) => {
+    const parsed = zInstanceId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid instances:unload payload: ${parsed.error.message}`)
+    try {
+      await getBackend().ports.models.unload(parsed.data.instanceId as import('@shared/types/branded').InstanceId)
+      return { ok: true }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'unload failed')
+    }
+  })
+
+  ipcMain.handle('instances:getMetrics', async (_e, raw: unknown) => {
+    const parsed = zInstanceId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid instances:getMetrics payload: ${parsed.error.message}`)
+    try {
+      return await getBackend().ports.models.health(parsed.data.instanceId as import('@shared/types/branded').InstanceId)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'health check failed')
     }
   })
 }

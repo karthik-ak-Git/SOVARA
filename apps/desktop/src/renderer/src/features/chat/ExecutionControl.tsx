@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { Shield } from 'lucide-react'
-import { Badge } from '@renderer/components/ui/Badge'
+import { Badge } from '../../components/ui/Badge'
 
 type ExecMode = 'disabled' | 'ask' | 'policy' | 'automatic'
 

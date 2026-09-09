@@ -12,7 +12,7 @@ import {
   sendChatMessage,
   type SessionEventView,
   type SessionHeaderView,
-} from '@renderer/lib/ipc'
+} from '../../lib/ipc'
 import type { ActiveModelState } from '@shared/types/models'
 
 /**

@@ -75,6 +75,32 @@ export const zModelsLoad = z
   .object({ modelId: z.string().min(1).max(128) })
   .strict()
 
+export const zModelsRegistryList = z
+  .object({ runtimeId: zRuntimeId.optional() })
+  .strict()
+  .default({})
+
+export const zModelsRegistryUpdate = z
+  .object({
+    id: z.string().min(1).max(2048),
+    patch: z
+      .object({
+        installStatus: z.enum(['installed', 'missing', 'unregistered']).optional(),
+        runtimeId: z.string().min(1).max(64).nullable().optional(),
+        displayName: z.string().min(1).max(120).optional(),
+      })
+      .strict(),
+  })
+  .strict()
+
+export const zModelsRegistryRef = z
+  .object({ id: z.string().min(1).max(2048) })
+  .strict()
+
+export const zModelsRegistryPath = z
+  .object({ localPath: z.string().min(1).max(1024) })
+  .strict()
+
 export const zSkillsToggle = z
   .object({ sourceName: z.string().min(1).max(128), enabled: z.boolean() })
   .strict()
@@ -225,3 +251,5 @@ export const zValidationStart = z
   .strict()
 
 export const zValidationGet = z.object({ jobId: z.string().min(1).max(64) }).strict()
+
+export const zInstanceId = z.object({ instanceId: z.string().min(1).max(128) }).strict()

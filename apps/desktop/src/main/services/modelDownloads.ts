@@ -61,11 +61,11 @@ function rowIdFor(modelId: string, rfilename: string, revision: string): string 
 }
 
 /** Test fakes pass {getAppSetting} only — registry access degrades to null. */
-function regOf(config: RuntimeConfigStore | undefined): Pick<RuntimeConfigStore, 'upsertDownloadRow' | 'getDownloadRow' | 'listDownloadRows' | 'updateDownloadRow' | 'removeDownloadRow' | 'removeDownloadRowsByDest'> | null {
+function regOf(config: RuntimeConfigStore | undefined): Pick<RuntimeConfigStore, 'upsertDownloadRow' | 'getDownloadRow' | 'listDownloadRows' | 'updateDownloadRow' | 'removeDownloadRow' | 'removeDownloadRowsByDest' | 'upsertRegistryRow' | 'removeRegistryRowsByPath'> | null {
   if (!config) return null
   const c = config as unknown as Record<string, unknown>
-  return typeof c['upsertDownloadRow'] === 'function' && typeof c['getDownloadRow'] === 'function'
-    ? (config as unknown as Pick<RuntimeConfigStore, 'upsertDownloadRow' | 'getDownloadRow' | 'listDownloadRows' | 'updateDownloadRow' | 'removeDownloadRow' | 'removeDownloadRowsByDest'>)
+  return typeof c['upsertDownloadRow'] === 'function' && typeof c['getDownloadRow'] === 'function' && typeof c['upsertRegistryRow'] === 'function'
+    ? (config as unknown as Pick<RuntimeConfigStore, 'upsertDownloadRow' | 'getDownloadRow' | 'listDownloadRows' | 'updateDownloadRow' | 'removeDownloadRow' | 'removeDownloadRowsByDest' | 'upsertRegistryRow' | 'removeRegistryRowsByPath'>)
     : null
 }
 
@@ -269,6 +269,8 @@ interface SetJob {
   root: string
   /** Registry revision for the group row (Explorer pins 'main'). */
   revision: string
+  /** Provenance captured at download time for the inventory row. */
+  meta?: DownloadMeta
 }
 
 const sets = new Map<string, SetJob>()
@@ -489,8 +491,12 @@ export function deleteLibraryEntry(root: string, entryPath: string, config?: Run
       if (existsSync(sidecar)) unlinkSync(sidecar)
     } catch { /* ignore */ }
   }
-  // Drop the persistent lifecycle rows so the UI offers Download again.
-  try { regOf(config)?.removeDownloadRowsByDest(abs) } catch { /* best-effort */ }
+  // Drop the persistent lifecycle + inventory rows so the UI offers Download again.
+  try {
+    const reg = regOf(config)
+    reg?.removeDownloadRowsByDest(abs)
+    reg?.removeRegistryRowsByPath(abs)
+  } catch { /* best-effort */ }
 }
 
 function dequeueIfNeeded(): void {
@@ -579,6 +585,26 @@ export async function startDownload(
         } catch { okSize = false }
         if (okSize) {
           reg?.updateDownloadRow(rowId, { status: 'completed', downloadedBytes: ev.receivedBytes, ...(ev.totalBytes !== null ? { totalBytes: ev.totalBytes } : {}), error: null, speedBps: null })
+          // Inventory row: size-verified local file, honestly imported (never Verified).
+          try {
+            let fileSize = 0
+            try { fileSize = statSync(dest).size } catch { fileSize = 0 }
+            reg?.upsertRegistryRow({
+              id: rowId,
+              sourceProvider: 'huggingface',
+              repository: cleanId,
+              revision,
+              rfilename: cleanFile,
+              localPath: dest,
+              displayName: basename(dest),
+              format: meta?.format ?? null,
+              quantization: meta?.quantization ?? null,
+              license: meta?.license ?? null,
+              fileSizeBytes: fileSize > 0 ? fileSize : null,
+              downloadStatus: 'completed',
+              installStatus: 'installed',
+            })
+          } catch { /* best-effort */ }
           safeEmitTo(emit, ev)
         } else {
           const msg = 'Downloaded file failed size verification — resume to repair.'
@@ -825,7 +851,7 @@ export async function startModelSetDownload(
       error: null, speedBps: null,
     })
   } catch { /* best-effort */ }
-  const job: SetJob = { modelId: cleanId, groupFile, parts: cleanParts, companion: cleanCompanion, idx: 0, doneBytes: 0, totalBytes: total, cancelled: false, paused: false, config, userData, emit, root, revision }
+  const job: SetJob = { modelId: cleanId, groupFile, parts: cleanParts, companion: cleanCompanion, idx: 0, doneBytes: 0, totalBytes: total, cancelled: false, paused: false, config, userData, emit, root, revision, meta }
   sets.set(gk, job)
   persistSetRow(job, 'downloading', existingBytes, null)
   safeEmitTo(emit, { modelId: cleanId, rfilename: groupFile, state: 'started', receivedBytes: existingBytes, totalBytes: total })
@@ -952,6 +978,28 @@ async function runSet(job: SetJob): Promise<void> {
     return
   }
   persistSetRow(job, 'completed', job.doneBytes, null)
+  // Inventory row: every part verified on disk → group's first part is the
+  // library's honest handle (shard files join on the same repo folder).
+  try {
+    const groupDest = partDest(root, job.modelId, job.groupFile)
+    let fileSize = 0
+    try { fileSize = statSync(groupDest).size } catch { fileSize = 0 }
+    regOf(job.config)?.upsertRegistryRow({
+      id: rowIdFor(job.modelId, job.groupFile, job.revision),
+      sourceProvider: 'huggingface',
+      repository: job.modelId,
+      revision: job.revision,
+      rfilename: job.groupFile,
+      localPath: groupDest,
+      displayName: basename(groupDest),
+      format: job.meta?.format ?? null,
+      quantization: job.meta?.quantization ?? null,
+      license: job.meta?.license ?? null,
+      fileSizeBytes: fileSize > 0 ? fileSize : null,
+      downloadStatus: 'completed',
+      installStatus: 'installed',
+    })
+  } catch { /* best-effort */ }
   emitGroupDone(job)
   // Re-emit with a concrete total when every byte was observed.
   if (job.totalBytes === null) {
@@ -1185,6 +1233,18 @@ export function reconcileLibrary(config: RuntimeConfigStore, userData: string): 
           downloadedBytes: entry.sizeBytes, status: 'completed', kind: 'single',
           parts: null, companion: null, format: null, quantization: null,
           license: null, gated: null, error: null, speedBps: null,
+        })
+        reg.upsertRegistryRow({
+          id: rowIdFor(meta.modelId, rfilename, DEFAULT_REVISION),
+          sourceProvider: 'huggingface',
+          repository: meta.modelId,
+          revision: DEFAULT_REVISION,
+          rfilename,
+          localPath: entry.path,
+          displayName: entry.file,
+          fileSizeBytes: typeof meta.sizeBytes === 'number' ? meta.sizeBytes : entry.sizeBytes,
+          downloadStatus: 'completed',
+          installStatus: 'installed',
         })
         report.adopted++
       } catch { report.unregistered.push(entry.path) }

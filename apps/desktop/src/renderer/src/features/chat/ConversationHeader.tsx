@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { Button } from '@renderer/components/ui/Button'
+import { Button } from '../../components/ui/Button'
 
 interface ConversationHeaderProps {
   sessionId?: string

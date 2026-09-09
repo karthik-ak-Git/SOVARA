@@ -10,7 +10,7 @@
  */
 import { isLoopbackUrl } from '../network/HttpClient'
 import { appendRuntimeLog } from '../logging/runtimeLog'
-import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
+import { RuntimeConfigStore, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
 import { CustomOpenAICompatibleAdapter, type HttpGet } from './ports/CustomOpenAICompatibleAdapter'
 import type { SystemResourceManagerPort } from '@shared/types/ports'
 import type {
@@ -93,6 +93,27 @@ export class ModelWorkbench {
 
   removeRuntime(runtimeId: string): boolean {
     return this.config.removeRuntime(runtimeId)
+  }
+
+  /** Registry inventory (no network). Optional runtimeId narrows to one runtime's models. */
+  listRegistryRows(runtimeId?: string): ModelRegistryRow[] {
+    return runtimeId ? this.config.listRegistryRowsByRuntime(runtimeId) : this.config.listRegistryRows()
+  }
+
+  /** UI-settable fields only — download status is written by the download manager, not the UI. */
+  updateRegistryRow(
+    id: string,
+    patch: { installStatus?: RegistryInstallStatus; runtimeId?: string | null; displayName?: string }
+  ): void {
+    this.config.updateRegistryRow(id, patch)
+  }
+
+  removeRegistryRow(id: string): void {
+    this.config.removeRegistryRow(id)
+  }
+
+  removeRegistryRowsByPath(localPath: string): void {
+    this.config.removeRegistryRowsByPath(localPath)
   }
 
   /** Live probe → persists snapshot → returns normalized result (never throws for probe failures). */
