@@ -590,7 +590,7 @@ export async function startModelSetDownload(
   parts: SetPart[],
   companion: SetPart | undefined,
   emit: Emit,
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; resumed: boolean }> {
   const cleanId = modelId.trim().slice(0, 128)
   if (!cleanId) throw new Error('invalid download target')
   if (!Array.isArray(parts) || parts.length < 2 || parts.length > 8) throw new Error('invalid shard set')
@@ -607,7 +607,7 @@ export async function startModelSetDownload(
   }
   const groupFile = cleanParts[0].rfilename
   const gk = key(cleanId, groupFile)
-  if (sets.has(gk)) return { ok: true }
+  if (sets.has(gk)) return { ok: true, resumed: true }
   const root = resolveLibraryDir(config, userData)
   const total = setTotalBytes(cleanParts)
   writeSetSidecar(root, cleanId, groupFile, cleanParts, cleanCompanion)
@@ -615,14 +615,14 @@ export async function startModelSetDownload(
   sets.set(gk, job)
   safeEmitTo(emit, { modelId: cleanId, rfilename: groupFile, state: 'started', receivedBytes: 0, totalBytes: total })
   void runSet(job).catch(() => {})
-  return { ok: true }
+  return { ok: true, resumed: false }
 }
 
-function finishSetCancelled(job: SetJob, emit: Emit): void {
+function finishSetCancelled(job: SetJob): void {
   sets.delete(key(job.modelId, job.groupFile))
   // Sidecar + finished parts stay: a later download resumes the set instead
   // of restarting gigabytes (same as single-file cancel keeping dest).
-  safeEmitTo(emit, { modelId: job.modelId, rfilename: job.groupFile, state: 'cancelled', receivedBytes: job.doneBytes, totalBytes: job.totalBytes })
+  safeEmitTo(job.emit, { modelId: job.modelId, rfilename: job.groupFile, state: 'cancelled', receivedBytes: job.doneBytes, totalBytes: job.totalBytes })
 }
 
 type PartOutcome = { status: 'done' | 'error' | 'paused' | 'cancelled'; received: number; error?: string }
@@ -690,7 +690,7 @@ async function runSet(job: SetJob): Promise<void> {
   }
   for (; i < job.parts.length; i++) {
     job.idx = i
-    if (job.cancelled) { finishSetCancelled(job, emit); return }
+    if (job.cancelled) { finishSetCancelled(job); return }
     if (job.paused) { emitGroup('paused', job.doneBytes); return }
     const part = job.parts[i]
     const res = await downloadPartOnce(config, userData, job, part, emit, root, true)
@@ -699,7 +699,7 @@ async function runSet(job: SetJob): Promise<void> {
       continue
     }
     if (res.status === 'paused') { emitGroup('paused', job.doneBytes); return }
-    if (res.status === 'cancelled') { finishSetCancelled(job, emit); return }
+    if (res.status === 'cancelled') { finishSetCancelled(job); return }
     // error: sidecar stays so a later download resumes the set.
     sets.delete(gk)
     emitGroup('error', job.doneBytes, res.error ?? `part ${i + 1}/${job.parts.length} failed`)
