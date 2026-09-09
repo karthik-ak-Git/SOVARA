@@ -7,6 +7,12 @@ export interface ExploreModelFile {
   rfilename?: string
   /** Exact bytes (HEAD lookup; 0 when unknown). */
   sizeBytes?: number
+  /**
+   * False for informational repo files (.gitattributes, README.md, …) that LM
+   * Studio lists with a red badge but that cannot load on a GPU. Undefined or
+   * true = runnable weight.
+   */
+  runnable?: boolean
 }
 
 export interface ExploreModel {

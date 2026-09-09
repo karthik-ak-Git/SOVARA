@@ -44,13 +44,17 @@ describe('capability classifier (tags + id + families)', () => {
 
 describe('README capability fallback', () => {
   it('finds tool/code/reasoning/vision phrases', () => {
-    const text = 'A vision-language model with native image understanding. Supports function calling and tool use. Excels at coding and long-horizon reasoning with chain of thought.'
+    const text = 'A vision-language model with native image understanding. Supports function calling and tool use. Excels at code generation and long-horizon reasoning with chain of thought.'
     const found = detectCapabilitiesFromText(text)
     expect(found).toEqual(expect.arrayContaining(['Vision', 'Tools', 'Code', 'Thinking']))
   })
 
   it('ignores encode/decode boilerplate (no bare-code false positive)', () => {
     expect(detectCapabilitiesFromText('Use the encode and decode helpers below.')).toEqual([])
+  })
+
+  it('ignores generic hype words shared by nearly every card', () => {
+    expect(detectCapabilitiesFromText('An agentic model with strong reasoning and coding skills, trained with multimodal data and verified by software engineers.')).toEqual([])
   })
 
   it('merges in canonical order without duplicates', () => {

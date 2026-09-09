@@ -639,7 +639,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   }, [])
 
   const doDownload = useCallback(async (): Promise<void> => {
-    if (!active || !activeFile?.downloadUrl || !activeFile.rfilename) return
+    if (!active || !activeFile?.downloadUrl || !activeFile.rfilename || activeFile.runnable === false) return
     try { await downloadModelFile(active.id, activeFile.rfilename, activeFile.downloadUrl) } catch { /* toast-less */ }
   }, [active, activeFile])
 
@@ -769,7 +769,10 @@ export function ExplorePage({ onBack }: Props): ReactElement {
             ) : (
               models.map((m, i) => {
                 const isActive = m.id === selectedId
-                const caps = sortCaps(m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c))).slice(0, 3)
+                // Row shows distinctive caps only; Text is the implied baseline
+                // and is shown only when a model has no distinctive capability.
+                const distinctive = sortCaps(m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c)))
+                const caps = (distinctive.length > 0 ? distinctive : sortCaps(m.capabilities.filter((c) => c === 'Text' || c === 'Chat')).slice(0, 1)).slice(0, 3)
                 return (
                   <button
                     key={m.id} type="button" role="option" aria-selected={isActive}
@@ -893,7 +896,11 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                       <button type="button" className="explorer-mini-btn explorer-mini-btn--danger" aria-label="Cancel download" onClick={() => activeFile?.rfilename && void cancelModelDownload(active.id, activeFile.rfilename).catch(() => {})}><X size={12} /></button>
                     </div>
                   ) : (
-                    <button type="button" className="explorer-download-btn" disabled={!activeFile?.downloadUrl} onClick={doDownload}>
+                    <button
+                      type="button" className="explorer-download-btn"
+                      disabled={!activeFile?.downloadUrl || activeFile?.runnable === false}
+                      title={activeFile?.runnable === false ? 'Not a runnable model file — select a GGUF weight to download.' : undefined}
+                      onClick={doDownload}>
                       <Download size={15} /> Download <span className="explorer-download-size">{fmtSize(activeFile?.sizeBytes ?? 0)}</span>
                     </button>
                   )}

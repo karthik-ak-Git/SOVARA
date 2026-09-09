@@ -100,6 +100,18 @@ export function estimateExplorerFit(
   hw: HardwareInfo,
   opts: ExplorerFitOptions = {},
 ): ExplorerFitResult {
+  // LM Studio badges informational repo files (.gitattributes, README.md, …)
+  // red: they are listed but can never load on a GPU, whatever their size.
+  if (file.runnable === false) {
+    const bytes = file.sizeBytes ?? 0
+    const gb = bytes > 0 ? bytes / 1024 ** 3 : file.sizeGB
+    return { fit: 'willNotFit', needGB: 0, fileGB: gb, kvGB: 0, confidence: 'high', passesGuardrails: false, message: 'Not a runnable model weight — informational file only.' }
+  }
+  // A weight with genuinely unknown size cannot be verified (LM Studio shows
+  // "size unknown" + red) — never synthesize a params-based size for it.
+  if (!((file.sizeBytes ?? 0) > 0) && !(file.sizeGB > 0)) {
+    return { fit: 'willNotFit', needGB: 0, fileGB: 0, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Size unknown — cannot verify fit on your GPU.' }
+  }
   const ctx = opts.contextLength ?? DEFAULT_CTX
   const { need, fileGB, kv } = needGBOf(file, model, ctx, opts)
   if (need <= 0) {
@@ -185,23 +197,32 @@ export function fitExplorerFiles(model: ExploreModel, hw: HardwareInfo, opts: Ex
   if (!model.files.length) return []
   const rows = model.files.map((file, index) => {
     const r = estimateExplorerFit(file, model, hw, opts)
-    return { ...r, index, isRecommended: false as boolean, score: quantScore(file.quantization, file.quantization ?? file.format) }
+    // Informational files never compete for Recommended (LM Studio).
+    const score = file.runnable === false ? -1 : quantScore(file.quantization, file.quantization ?? file.format)
+    return { ...r, index, isRecommended: false as boolean, score }
   })
-  // Recommended = highest quant score among full fits; else highest quant overall
-  const fullFits = rows.filter((r) => r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU')
-  const pool = fullFits.length > 0 ? fullFits : rows
+  // Recommended = highest quant score among full fits; else highest quant
+  // among RUNNABLE weights. Meta rows (.gitattributes, README.md) are never
+  // eligible — a file list of only meta rows yields no recommendation.
+  const eligible = rows.filter((r) => model.files[r.index]?.runnable !== false)
+  const fullFits = eligible.filter((r) => r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU')
+  const pool = fullFits.length > 0 ? fullFits : eligible
   let best = pool[0]
   for (const r of pool) {
     if (r.score > (best?.score ?? -1)) best = r
     else if (r.score === best?.score && r.needGB > (best?.needGB ?? 0) && fullFits.length > 0) best = r
   }
   if (best) best.isRecommended = true
-  // Display order: recommended first, then full → partial/cpu → too-large, then smaller need
+  // Display order: recommended first, then full → partial/cpu → too-large;
+  // inside a bucket runnable weights come before informational files
+  // (.gitattributes, README.md sink to the bottom), then smaller need.
   const order: Record<ExplorerFit, number> = { fullGPUOffload: 0, fitWithoutGPU: 0, partialGPUOffload: 1, willNotFit: 2 }
+  const runnableOf = (r: (typeof rows)[number]): number => (model.files[r.index]?.runnable === false ? 1 : 0)
   return [...rows]
     .sort((a, b) => {
       if ((b.isRecommended ? 1 : 0) !== (a.isRecommended ? 1 : 0)) return (b.isRecommended ? 1 : 0) - (a.isRecommended ? 1 : 0)
       if (order[a.fit] !== order[b.fit]) return order[a.fit] - order[b.fit]
+      if (runnableOf(a) !== runnableOf(b)) return runnableOf(a) - runnableOf(b)
       return a.needGB - b.needGB
     })
     .map(({ score: _s, ...rest }) => rest)
