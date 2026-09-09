@@ -3283,6 +3283,15 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .explorer-file-check { color: var(--text); flex-shrink: 0; }
 .explorer-file-checkspacer { width: 13px; flex-shrink: 0; }
 .explorer-file-done { color: var(--success); font-size: 12px; font-weight: 800; flex-shrink: 0; }
+/* Format-aware repo view: header format row, gated badge, inventory, notices */
+.explorer-format-row { display: flex; align-items: center; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.explorer-gated-pill { font-size: 10px; font-weight: 800; letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; border: 1px solid #b45309; color: #b45309; background: rgba(180,83,9,.08); flex-shrink: 0; }
+.explorer-format-note { font-size: 11px; color: var(--muted); padding: 8px 2px 0; }
+.explorer-file-src { font-size: 10px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; flex-basis: 100%; }
+.explorer-repofiles { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.explorer-repofiles-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.explorer-repofile { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel-2); }
+.explorer-repofiles-more { font-size: 11px; color: var(--muted); text-align: center; padding: 4px; }
 /* Per-quant fit state inside the dropdown — same 4 LM Studio states as the header badge */
 .explorer-minifit { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px; color: #fff; white-space: nowrap; animation: explorerPop 160ms ease-out; }
 .explorer-minifit--full { background: #16a34a; }

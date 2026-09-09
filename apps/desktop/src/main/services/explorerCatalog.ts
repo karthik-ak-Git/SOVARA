@@ -15,7 +15,7 @@
  * Everything else (text-to-image, audio, video, classification heads) is dropped.
  * Download Options lists GGUF weights only — never meta/helper files.
  */
-import type { ExploreModel, ExploreModelFile, HardwareInfo } from '@shared/types/explore'
+import type { ExploreModel, ExploreModelFile, ExploreRepoFile, HardwareInfo, ModelFormat, RepoWeightFormat } from '@shared/types/explore'
 import { estimateExplorerFit } from './explorerFit'
 import { getHardwareProfile } from './hardwareProfile'
 
@@ -83,10 +83,27 @@ interface HfRow {
   siblings?: Array<{ rfilename: string }>
 }
 
+export type ExplorerFormatFilter = 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
+
 export interface ExplorerListOpts {
   sortBy?: string // Recommended | trending | downloads | likes | lastModified
   query?: string // keyword, user/model, or full HF URL
   limit?: number // default 60, max 100
+  /** File-list based format filter (default 'all'). */
+  format?: ExplorerFormatFilter
+}
+
+/**
+ * Backend-supported format filter. `gguf` keeps repos that HAVE GGUF
+ * (gguf + mixed) so the local-inference workflow filters in one tap;
+ * `safetensors` likewise keeps safetensors + mixed.
+ */
+export function matchesFormatFilter(format: ModelFormat | undefined, filter: ExplorerFormatFilter): boolean {
+  if (filter === 'all') return true
+  if (!format) return false
+  if (filter === 'gguf') return format === 'gguf' || format === 'mixed'
+  if (filter === 'safetensors') return format === 'safetensors' || format === 'mixed'
+  return format === filter
 }
 
 function authHeader(): Record<string, string> {
@@ -237,7 +254,41 @@ function archLabel(tags: string[], modelId: string, ggufArch?: string, modelType
   return tags.find((t) => ['llama', 'qwen', 'gemma', 'mistral', 'phi'].includes(t)) ?? 'transformers'
 }
 
-const QUANT_RE = /(Q\d+_[A-Z0-9_]+|IQ\d+_[A-Z0-9_]+|MXFP\d+(?:_[A-Z0-9_]+)?|QAT[^/]*)/i
+/**
+ * Tolerant quantization parser. Matches a known quant token bounded by
+ * separators or string ends (case-insensitive, `-`/`_` interchangeable), so
+ * `model-Q4_K_M.gguf`, `model_q4km.gguf` and `Model.F16.gguf` all resolve —
+ * anything else falls back to undefined and the UI shows the filename.
+ * Covers Q2_K … Q8_0, F16/F32 (+FP16/FP32 aliases), BF16, IQ1–IQ4, MXFP, QAT.
+ */
+const KNOWN_QUANTS = [
+  'Q3_K_L', 'Q3_K_M', 'Q3_K_S', 'Q4_K_M', 'Q4_K_S', 'Q5_K_M', 'Q5_K_S',
+  'IQ2_XXS', 'IQ3_XXS', 'IQ2_XS', 'IQ3_XS', 'IQ4_XS', 'IQ4_NL',
+  'IQ1_S', 'IQ1_M', 'IQ2_S', 'IQ2_M', 'IQ3_S', 'IQ3_M',
+  'Q2_K', 'Q4_0', 'Q4_1', 'Q5_0', 'Q5_1', 'Q6_K', 'Q8_0', 'Q8_1',
+  'BF16', 'F16', 'F32',
+]
+const QUANT_ALIAS: Record<string, string> = {
+  Q4KM: 'Q4_K_M', Q4KS: 'Q4_K_S', Q5KM: 'Q5_K_M', Q5KS: 'Q5_K_S',
+  Q3KM: 'Q3_K_M', Q3KS: 'Q3_K_S', Q2K: 'Q2_K', Q6K: 'Q6_K', Q80: 'Q8_0', Q40: 'Q4_0', Q50: 'Q5_0',
+  FP16: 'F16', FP32: 'F32', FLOAT16: 'F16', FLOAT32: 'F32',
+}
+
+export function parseQuantization(basename: string): string | undefined {
+  const norm = basename.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  const padded = `_${norm}_`
+  for (const q of KNOWN_QUANTS) {
+    if (padded.includes(`_${q}_`)) return q
+  }
+  for (const [alias, q] of Object.entries(QUANT_ALIAS)) {
+    if (padded.includes(`_${alias}_`)) return q
+  }
+  const mx = norm.match(/MXFP\d+/)
+  if (mx && padded.includes(`_${mx[0]}_`)) return mx[0]
+  const qat = norm.match(/QAT[A-Z0-9]*/)
+  if (qat && padded.includes(`_${qat[0]}_`)) return qat[0]
+  return undefined
+}
 
 /** Filenames that are helpers, not runnable weights (projectors, drafts, shards). */
 function isAuxWeightFile(rfilename: string): boolean {
@@ -250,12 +301,66 @@ function isAuxWeightFile(rfilename: string): boolean {
  * - weight: runnable `.gguf` (excluding projector/draft/shard helpers)
  * - aux: helper weights (mmproj, imatrix, drafts) — hidden
  * - meta: informational files (.gitattributes, README.md, …) — hidden
+ *
+ * NOTE: safetensors / .bin / .pth siblings are `meta` HERE on purpose — this
+ * classifier drives the GGUF-only download pipeline. Use `weightFormatOf` /
+ * `classifyRepoFormat` for the format-aware repo view.
  */
 export function classifySibling(rfilename: string): 'weight' | 'aux' | 'meta' {
   const b = (rfilename.split('/').pop() ?? '').toLowerCase()
   if (b.endsWith('.gguf')) return isAuxWeightFile(rfilename) ? 'aux' : 'weight'
   if (isAuxWeightFile(rfilename)) return 'aux'
   return 'meta'
+}
+
+// ── Format-aware repo inspection (files are the source of truth) ──
+
+/**
+ * Weight format of ONE repo file from its extension — never from the repo
+ * name, README, or tags. Returns null for non-weight files. Sharded
+ * safetensors (`model-00001-of-00002.safetensors`) and `.safetensors.index.json`
+ * (an index, not weights) are handled: shards count, index files don't.
+ */
+export function weightFormatOf(rfilename: string): RepoWeightFormat | null {
+  const b = (rfilename.split('/').pop() ?? '').toLowerCase()
+  if (!b || b.endsWith('.safetensors.index.json')) return null
+  if (b.endsWith('.gguf')) return 'gguf'
+  if (b.endsWith('.safetensors')) return 'safetensors'
+  if (/\.(bin|pth|pt|ckpt|onnx|h5|hdf5|msgpack|ot)$/.test(b)) return 'other'
+  return null
+}
+
+/** Non-aux weight files: helper projectors/drafts never decide the format. */
+export function listRepoWeightFiles(siblings: Array<{ rfilename: string }>): Array<{ rfilename: string; format: RepoWeightFormat }> {
+  const out: Array<{ rfilename: string; format: RepoWeightFormat }> = []
+  for (const s of siblings ?? []) {
+    const f = weightFormatOf(s.rfilename)
+    if (!f) continue
+    if (f === 'gguf' && isAuxWeightFile(s.rfilename)) continue
+    out.push({ rfilename: s.rfilename, format: f })
+  }
+  return out
+}
+
+/**
+ * Repo-level format from the actual sibling files. Exactly one weight kind
+ * → that kind; several → `mixed`. Null = no weight files at all → callers
+ * must NOT present the repo as a downloadable model.
+ */
+export function classifyRepoFormat(siblings: Array<{ rfilename: string }>): ModelFormat | null {
+  const kinds = new Set(listRepoWeightFiles(siblings).map((w) => w.format))
+  if (kinds.size === 0) return null
+  if (kinds.size === 1) return [...kinds][0]
+  return 'mixed'
+}
+
+/** HF `gated` is boolean, occasionally a mode string — any truthy value gates. */
+export function normalizeGated(gated: unknown): boolean {
+  if (typeof gated === 'string') {
+    const s = gated.trim().toLowerCase()
+    return s !== '' && s !== 'false' && s !== 'open' && s !== 'null'
+  }
+  return gated === true
 }
 
 function iso(raw?: string): string {
@@ -267,24 +372,30 @@ function toExplore(hf: HfRow): ExploreModel | null {
   const tags = Array.isArray(hf.tags) ? hf.tags : []
   const caps = classifyCapabilities(tags, hf.pipeline_tag, hf.id)
   if (caps.length === 0) return null
+  // Format comes from the actual repo files — and a repo with NO weight
+  // files at all is not a downloadable model (never listed with fake files).
+  const repoFormat = classifyRepoFormat(hf.siblings ?? [])
+  if (!repoFormat) return null
   const author = hf.author || hf.id.split('/')[0] || 'unknown'
   const name = hf.id.split('/').pop() || hf.id
   // List rows carry runnable GGUF weights only (meta/helper files hidden;
   // shard parts never stand alone — detail groups them into sets).
+  // Safetensors-only repos keep files=[] — the UI shows their format with
+  // NO GGUF download button instead of pretending.
   const files: ExploreModelFile[] = []
   for (const s of hf.siblings ?? []) {
     if (classifySibling(s.rfilename) !== 'weight') continue
     const base = s.rfilename.split('/').pop() ?? s.rfilename
     if (parseShard(base)) continue
-    const q = base.match(QUANT_RE)
     files.push({
       format: 'GGUF',
-      quantization: q ? q[0].toUpperCase() : undefined,
+      quantization: quantOf(base),
       sizeGB: 0,
       downloadUrl: `https://huggingface.co/${hf.id}/resolve/main/${s.rfilename}`,
       rfilename: s.rfilename,
       sizeBytes: 0,
       runnable: true,
+      sourceRepo: hf.id,
     })
   }
   // Seed single-file size from repo storage so badges render before HEAD lookups.
@@ -307,6 +418,7 @@ function toExplore(hf: HfRow): ExploreModel | null {
     likes: typeof hf.likes === 'number' ? hf.likes : 0,
     // No curated picks: the Recommended view is hardware-computed instead.
     staffPick: false,
+    format: repoFormat,
     updatedAt: iso(hf.lastModified ?? hf.createdAt),
     parameters: paramsLabel(hf.safetensors?.total, tags, hf.id),
     architecture: archLabel(tags, hf.id, hf.gguf?.architecture, hf.config?.model_type),
@@ -318,7 +430,9 @@ function toExplore(hf: HfRow): ExploreModel | null {
     ...(languages ? { languages } : {}),
     ...(typeof baseModel === 'string' ? { baseModel } : {}),
     ...(typeof hf.pipeline_tag === 'string' ? { pipelineTag: hf.pipeline_tag } : {}),
-    ...(typeof hf.gated === 'boolean' ? { gated: hf.gated } : {}),
+    // Gated comes back boolean (sometimes a 'true'/'manual'/'auto' string);
+    // normalize so the UI can honestly mark gated repos.
+    gated: normalizeGated(hf.gated),
     ...(typeof hf.usedStorage === 'number' ? { repoSizeBytes: hf.usedStorage } : {}),
   }
 }
@@ -363,19 +477,19 @@ async function fetchHfRows(query: string, serverSort: string, limit: number): Pr
   return Array.isArray(rows) ? rows : []
 }
 
-function toExploreMany(rows: HfRow[], limit: number): ExploreModel[] {
+function toExploreMany(rows: HfRow[], limit: number, format: ExplorerFormatFilter = 'all'): ExploreModel[] {
   const out: ExploreModel[] = []
   for (const r of rows) {
     if (out.length >= limit) break
     const m = toExplore(r)
-    if (m) out.push(m)
+    if (m && matchesFormatFilter(m.format, format)) out.push(m)
   }
   return out
 }
 
 /** Core HF search — keyword / sort, broad sweeps up to 100 rows. */
-async function searchHf(query: string, sortBy: string | undefined, limit: number): Promise<ExploreModel[]> {
-  return toExploreMany(await fetchHfRows(query, sortParam(sortBy), limit), limit)
+async function searchHf(query: string, sortBy: string | undefined, limit: number, format: ExplorerFormatFilter = 'all'): Promise<ExploreModel[]> {
+  return toExploreMany(await fetchHfRows(query, sortParam(sortBy), limit), limit, format)
 }
 
 /**
@@ -404,7 +518,7 @@ function rankByUsage(rows: HfRow[]): HfRow[] {
  * Trending = top models developers actually use: merge the momentum,
  * downloads, and likes sweeps, then rank by developer-usage score.
  */
-async function searchTrending(query: string, limit: number): Promise<ExploreModel[]> {
+async function searchTrending(query: string, limit: number, format: ExplorerFormatFilter = 'all'): Promise<ExploreModel[]> {
   const q = query.trim()
   const lists: HfRow[][] = q
     ? [await fetchHfRows(q, 'trendingScore', limit)]
@@ -413,7 +527,7 @@ async function searchTrending(query: string, limit: number): Promise<ExploreMode
       fetchHfRows('', 'downloads', 100),
       fetchHfRows('', 'likes', 100),
     ])
-  return toExploreMany(rankByUsage(lists.flat()), limit)
+  return toExploreMany(rankByUsage(lists.flat()), limit, format)
 }
 
 async function fetchOne(modelId: string): Promise<ExploreModel | null> {
@@ -451,6 +565,9 @@ async function recommendForHardware(limit: number, hwOverride?: HardwareInfo): P
   }
   const ranked: Array<{ m: ExploreModel; tier: number }> = []
   for (const m of sweep) {
+    // Recommended is the local-inference view: only repos with runnable
+    // GGUF options qualify (safetensors-only can never load locally).
+    if (m.files.length === 0) continue
     const pb = parseParamsB(m.parameters)
     if (!(pb > 0)) continue // size unverifiable — exclude, never guess
     const probe: ExploreModelFile = { format: 'GGUF', sizeGB: pb * 0.62, sizeBytes: 0, downloadUrl: '', runnable: true }
@@ -473,26 +590,32 @@ async function recommendForHardware(limit: number, hwOverride?: HardwareInfo): P
 export async function listExplorerModels(opts: ExplorerListOpts = {}, hwOverride?: HardwareInfo): Promise<ExploreModel[]> {
   const sortBy = opts.sortBy ?? 'Recommended'
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
+  const format: ExplorerFormatFilter = opts.format ?? 'all'
   const parsed = parseExplorerSearch(opts.query ?? '')
 
   if (parsed.kind === 'url' || parsed.kind === 'id') {
+    // Exact lookup bypasses the format filter — the detail view shows the
+    // repo's true format (even safetensors-only) instead of hiding it.
     const one = await fetchOne(parsed.modelId as string).catch(() => null)
     if (one) return [one]
     // Fall through to keyword search when the id does not resolve
-    return searchHf(parsed.modelId as string, sortBy, limit)
+    return searchHf(parsed.modelId as string, sortBy, limit, format)
   }
 
   if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
-    return recommendForHardware(limit, hwOverride)
+    // Recommended is inherently GGUF (local inference); a non-GGUF format
+    // filter yields the honest empty set rather than a fake list.
+    const recs = await recommendForHardware(limit, hwOverride)
+    return recs.filter((m) => matchesFormatFilter(m.format, format))
   }
 
   // Trending = what developers actually use (usage-blended rank), not the raw
   // server trend score. Recommended stays hardware-aware (fits this machine).
   if (sortBy.toLowerCase() === 'trending') {
-    return searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit)
+    return searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit, format)
   }
 
-  return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit)
+  return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit, format)
 }
 
 // ── HF weight-file backend caches ────────────────────────────────────
@@ -606,8 +729,7 @@ function ggufUrl(repoId: string, rfilename: string): string {
 }
 
 function quantOf(basename: string): string | undefined {
-  const q = basename.match(QUANT_RE)
-  return q ? q[0].toUpperCase() : undefined
+  return parseQuantization(basename)
 }
 
 /**
@@ -671,6 +793,7 @@ function buildRepoOptions(
       rfilename,
       sizeBytes: n,
       runnable: true,
+      sourceRepo: repoId,
     })
   }
   const pushSet = (stem: string, parts: Array<{ rfilename: string; idx: number; total: number }>): void => {
@@ -694,6 +817,7 @@ function buildRepoOptions(
       rfilename: first,
       sizeBytes: sum,
       runnable: true,
+      sourceRepo: repoId,
       multipart: true,
       parts: partRows,
     })
@@ -746,8 +870,9 @@ function attachProjector(out: ExploreModelFile[], repoId: string, siblings: Arra
 }
 
 /**
- * HEAD every GGUF sibling of one repo (bounded, cached) so shard totals and
- * the 20 MB fragment floor use real bytes, then build that repo's exact rows.
+ * HEAD every weight sibling of one repo — GGUF, safetensors and other
+ * weights alike (bounded, cached) — so shard totals, the 20 MB fragment
+ * floor and the repo inventory use real bytes. Then build exact rows.
  */
 async function sizeAndPick(
   repoId: string,
@@ -755,9 +880,9 @@ async function sizeAndPick(
   sizes: Map<string, number>,
   vision: boolean,
 ): Promise<ExploreModelFile[]> {
-  const ggufs = siblings.filter((s) => s.rfilename.toLowerCase().endsWith('.gguf')).slice(0, 40)
+  const weights = siblings.filter((s) => weightFormatOf(s.rfilename) !== null).slice(0, 40)
   await Promise.all(
-    ggufs.map(async (s) => {
+    weights.map(async (s) => {
       const k = sizeKey(repoId, s.rfilename)
       if (!sizes.has(k)) sizes.set(k, await headBytes(ggufUrl(repoId, s.rfilename)))
     }),
@@ -765,17 +890,38 @@ async function sizeAndPick(
   return pickQuantOptions([{ repoId, siblings }], { sizes, vision })
 }
 
+/**
+ * Full weight inventory of the BASE repo for the detail view (read-only —
+ * only `files` rows are downloadable). Sizes come from the shared HEAD map
+ * filled by sizeAndPick, so this costs zero extra fetches.
+ */
+function buildRepoInventory(
+  repoId: string,
+  siblings: Array<{ rfilename: string }>,
+  sizes: Map<string, number>,
+): ExploreRepoFile[] {
+  return listRepoWeightFiles(siblings).map((w) => {
+    const base = w.rfilename.split('/').pop() ?? w.rfilename
+    return {
+      rfilename: w.rfilename,
+      format: w.format,
+      quantization: parseQuantization(base),
+      sizeBytes: sizes.get(sizeKey(repoId, w.rfilename)) ?? 0,
+    }
+  })
+}
+
 async function pickExactForModel(
   modelId: string,
   baseSiblings: Array<{ rfilename: string }>,
   quantRepos: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }>,
   vision: boolean,
+  sizes: Map<string, number>,
 ): Promise<ExploreModelFile[]> {
-  const sizes = new Map<string, number>()
   const cands: Array<{ repoId: string; siblings: Array<{ rfilename: string }> }> = []
-  if (baseSiblings.some((s) => s.rfilename.toLowerCase().endsWith('.gguf'))) {
-    cands.push({ repoId: modelId, siblings: baseSiblings })
-  }
+  // Base repo always first: its weights get HEAD-sized for the inventory even
+  // when it holds no GGUF (pickQuantOptions then yields [] and we move on).
+  cands.push({ repoId: modelId, siblings: baseSiblings })
   for (const q of quantRepos.slice(0, 4)) cands.push(q)
   for (const c of cands.slice(0, 5)) {
     const rows = await sizeAndPick(c.repoId, c.siblings, sizes, vision)
@@ -827,12 +973,15 @@ async function buildExplorerModel(id: string): Promise<ExploreModel> {
   // order. First repo with a complete single weight or shard set wins — quant
   // labels never mix files from different publishers, shard parts are never
   // listed alone, and sub-20 MB fragments are dropped.
-  mapped.files = await pickExactForModel(
-    mapped.id,
-    row.siblings ?? [],
-    await fetchQuantRepos(mapped.id),
-    mapped.capabilities.some((c) => c.toLowerCase().includes('vision')),
-  )
+  // A safetensors-only base repo is NOT downloadable GGUF: its own files stay
+  // empty while community GGUF rows (each tagged with its source repo) may
+  // still offer runnable options — association without merging.
+  const sizes = new Map<string, number>()
+  const vision = mapped.capabilities.some((c) => c.toLowerCase().includes('vision'))
+  mapped.files = await pickExactForModel(mapped.id, row.siblings ?? [], await fetchQuantRepos(mapped.id), vision, sizes)
+  // Repo format + full weight inventory from the BASE repo's own files.
+  mapped.format = classifyRepoFormat(row.siblings ?? []) ?? mapped.format
+  mapped.repoFiles = buildRepoInventory(mapped.id, row.siblings ?? [], sizes)
   // README lives on main or master depending on the repo
   for (const branch of ['main', 'master']) {
     try {

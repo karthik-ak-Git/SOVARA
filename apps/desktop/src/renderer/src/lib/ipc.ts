@@ -367,7 +367,7 @@ export async function importSkillFromUrl(url: string): Promise<BionicSkillView> 
 
 // ── Explore (HuggingFace catalog) ──
 import type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
-export type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
+export type { ExploreModelFile, ExploreModel, CompatibilityResult, ExploreRepoFile, ModelFormat, ExploreFormatFilter } from '@shared/types/explore'
 
 export interface ExploreListOpts {
   sortBy?: string
@@ -375,6 +375,7 @@ export interface ExploreListOpts {
   pipelineTag?: string
   tag?: string
   limit?: number
+  format?: 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
 }
 
 export async function listExploreModels(

@@ -23,7 +23,7 @@ function row(id: string, total: number | undefined, downloads: number): Record<s
     lastModified: '2026-02-01T00:00:00.000Z',
     cardData: {},
     ...(typeof total === 'number' ? { safetensors: { total } } : {}),
-    siblings: [],
+    siblings: [{ rfilename: `${id.split('/').pop()}-Q4_K_M.gguf` }],
   }
 }
 

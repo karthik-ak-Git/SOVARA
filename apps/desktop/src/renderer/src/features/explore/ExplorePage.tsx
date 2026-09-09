@@ -9,7 +9,36 @@ import {
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, isDownloaded, getActiveDownloads, openExternal,
   type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
+  type ExploreFormatFilter,
 } from '../../lib/ipc'
+
+// ── Format-aware repo view (files are the source of truth) ──────────
+// Present formats from the repo inventory (+ GGUF download rows): a
+// Safetensors-only repo shows [Safetensors] with NO GGUF button; mixed
+// repos show each format actually present.
+function presentFormats(m: ExploreModel): Array<'gguf' | 'safetensors' | 'other'> {
+  const set = new Set<'gguf' | 'safetensors' | 'other'>()
+  for (const f of m.repoFiles ?? []) set.add(f.format)
+  for (const f of m.files) {
+    const t = (f.format ?? '').toLowerCase()
+    if (t === 'gguf') set.add('gguf')
+    else if (t.includes('safetensor')) set.add('safetensors')
+  }
+  if (m.format === 'gguf') set.add('gguf')
+  else if (m.format === 'safetensors') set.add('safetensors')
+  else if (m.format === 'other') set.add('other')
+  else if (m.format === 'mixed' && set.size === 0) { set.add('gguf'); set.add('safetensors') }
+  return (['gguf', 'safetensors', 'other'] as const).filter((x) => set.has(x))
+}
+const FORMAT_LABEL: Record<string, string> = { gguf: 'GGUF', safetensors: 'Safetensors', other: 'Other weights' }
+
+const FORMAT_FILTERS: Array<{ value: ExploreFormatFilter; label: string }> = [
+  { value: 'all', label: 'All formats' },
+  { value: 'gguf', label: 'GGUF' },
+  { value: 'safetensors', label: 'Safetensors' },
+  { value: 'mixed', label: 'Mixed' },
+  { value: 'other', label: 'Other' },
+]
 
 // ── Formatting (fresh, LM Studio labels) ─────────────────────────────
 function fmtSize(bytes: number): string {
@@ -465,6 +494,30 @@ function capClass(cap: string): string {
   return ''
 }
 
+// ── Read-only repo file inventory (all formats, never downloadable) ──
+// Safetensors/other weights are shown for what they are — no download
+// button is ever rendered for them (no silent format conversion).
+function RepoFileList({ files }: { files: NonNullable<ExploreModel['repoFiles']> }): ReactElement | null {
+  if (files.length === 0) return null
+  const shown = files.slice(0, 12)
+  return (
+    <div className="explorer-repofiles">
+      <div className="explorer-repofiles-title">Repository files</div>
+      {shown.map((f) => (
+        <div key={f.rfilename} className="explorer-repofile">
+          <span className="explorer-format-pill">{FORMAT_LABEL[f.format] ?? f.format}</span>
+          <span className="explorer-file-name">{shortName((f.rfilename ?? '').split('/').pop() || 'file', 30)}</span>
+          {f.quantization ? <span className="explorer-quant-pill">{f.quantization}</span> : null}
+          <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
+        </div>
+      ))}
+      {files.length > shown.length ? (
+        <div className="explorer-repofiles-more">+{files.length - shown.length} more on Hugging Face</div>
+      ) : null}
+    </div>
+  )
+}
+
 // ── Sort options (LM Studio order) ───────────────────────────────────
 const SORTS = [
   { value: 'Recommended', label: 'Recommended' },
@@ -481,6 +534,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const [debounced, setDebounced] = useState('')
   const [sortBy, setSortBy] = useState('Recommended')
   const [sortOpen, setSortOpen] = useState(false)
+  const [formatFilter, setFormatFilter] = useState<ExploreFormatFilter>('all')
+  const [formatOpen, setFormatOpen] = useState(false)
   const [models, setModels] = useState<ExploreModel[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ExploreModel | null>(null)
@@ -498,6 +553,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const [downloadTo, setDownloadTo] = useState('This device')
   const timer = useRef<number | null>(null)
   const sortRef = useRef<HTMLDivElement>(null)
+  const formatRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLDivElement>(null)
 
   const selected = useMemo(
@@ -513,10 +569,10 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     return () => { if (timer.current) window.clearTimeout(timer.current) }
   }, [query])
 
-  const reload = useCallback(async (q: string, s: string): Promise<void> => {
+  const reload = useCallback(async (q: string, s: string, f: ExploreFormatFilter): Promise<void> => {
     setLoading(true); setError(null)
     try {
-      const rows = await listExploreModels({ sortBy: s, query: q, limit: 30 })
+      const rows = await listExploreModels({ sortBy: s, query: q, limit: 30, format: f })
       setModels(rows)
       if (rows.length > 0) setSelectedId((prev) => (prev && rows.some((r) => r.id === prev) ? prev : rows[0].id))
       else setSelectedId(null)
@@ -527,7 +583,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     }
   }, [])
 
-  useEffect(() => { void reload(debounced, sortBy) }, [debounced, sortBy, reload])
+  useEffect(() => { void reload(debounced, sortBy, formatFilter) }, [debounced, sortBy, formatFilter, reload])
 
   // Detail + fit (LM Studio: per-file estimate, recommended preselected)
   useEffect(() => {
@@ -608,10 +664,11 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   useEffect(() => {
     const onDoc = (e: MouseEvent): void => {
       if (sortRef.current && !sortRef.current.contains(e.target as Node)) setSortOpen(false)
+      if (formatRef.current && !formatRef.current.contains(e.target as Node)) setFormatOpen(false)
       if (fileRef.current && !fileRef.current.contains(e.target as Node)) setFileOpen(false)
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') { setSortOpen(false); setFileOpen(false); setDownloadsOpen(false) }
+      if (e.key === 'Escape') { setSortOpen(false); setFormatOpen(false); setFileOpen(false); setDownloadsOpen(false) }
     }
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onKey)
@@ -619,6 +676,9 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   }, [])
 
   const activeFile = active?.files[fileIdx]
+  // Mixed repos: GGUF rows stay downloadable; other formats are disclosed,
+  // never offered as downloads.
+  const hasNonGgufWeights = (active?.repoFiles ?? []).some((f) => f.format !== 'gguf')
   // Dropdown order: backend rank (TOP RECOMMENDED first), then the rest —
   // never truncated, the menu scrolls. Header badge always reflects the
   // SELECTED file's own fit so its state updates on every selection.
@@ -639,7 +699,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   }, [])
 
   const doDownload = useCallback(async (): Promise<void> => {
-    if (!active || !activeFile?.downloadUrl || !activeFile.rfilename || activeFile.runnable === false) return
+    // Gated repos need access approval — never start an anonymous download.
+    if (!active || active.gated || !activeFile?.downloadUrl || !activeFile.rfilename || activeFile.runnable === false) return
     // Shard sets download every part sequentially as one job (+ vision
     // projector sidecar when present); progress aggregates on this row.
     const extra = activeFile.multipart && activeFile.parts
@@ -650,8 +711,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
 
   const refresh = useCallback((): void => {
     setSpinning(true)
-    void reload(debounced, sortBy)
-  }, [debounced, sortBy, reload])
+    void reload(debounced, sortBy, formatFilter)
+  }, [debounced, sortBy, formatFilter, reload])
 
   return (
     <div className="explorer">
@@ -734,6 +795,30 @@ export function ExplorePage({ onBack }: Props): ReactElement {
             <button type="button" className="explorer-staff" onClick={refresh} title="Refresh staff picks">
               Staff picks <RefreshCw size={12} className={spinning ? 'explorer-spin' : ''} />
             </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+            <div className="explorer-sort" ref={formatRef}>
+              <button
+                type="button" className="explorer-sort-btn"
+                aria-haspopup="listbox" aria-expanded={formatOpen} aria-label="Filter by model format"
+                onClick={() => setFormatOpen((v) => !v)}
+              >
+                {FORMAT_FILTERS.find((f) => f.value === formatFilter)?.label ?? 'All formats'}
+                <ChevronsUpDown size={13} className={`explorer-sort-chev ${formatOpen ? 'open' : ''}`} />
+              </button>
+              {formatOpen ? (
+                <div className="explorer-sort-menu" role="listbox" aria-label="Model format">
+                  {FORMAT_FILTERS.map((o) => (
+                    <button
+                      key={o.value} type="button" role="option" aria-selected={formatFilter === o.value}
+                      className={`explorer-sort-item ${formatFilter === o.value ? 'active' : ''}`}
+                      onClick={() => { setFormatFilter(o.value); setFormatOpen(false) }}
+                    >
+                      {o.label} {formatFilter === o.value ? <Check size={12} /> : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <div className="explorer-sort" ref={sortRef}>
               <button
                 type="button" className="explorer-sort-btn"
@@ -756,6 +841,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                   ))}
                 </div>
               ) : null}
+            </div>
             </div>
           </div>
 
@@ -815,6 +901,14 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                 <div className="explorer-detail-titles">
                   <h2 className="explorer-detail-name">{active.name}</h2>
                   <div className="explorer-detail-slug">{active.slug}</div>
+                  <div className="explorer-format-row" aria-label="Model formats">
+                    {presentFormats(active).map((f) => (
+                      <span key={f} className="explorer-format-pill" title="Detected from the repository's actual files">{FORMAT_LABEL[f]}</span>
+                    ))}
+                    {active.gated ? (
+                      <span className="explorer-gated-pill" title="This repository is gated — downloading needs Hugging Face access approval">Gated</span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
@@ -842,8 +936,31 @@ export function ExplorePage({ onBack }: Props): ReactElement {
               <div className="explorer-card">
                 {detailLoading ? (
                   <div className="explorer-loading"><Loader2 size={13} className="explorer-spin" /> Loading files…</div>
+                ) : active.gated ? (
+                  <>
+                    <div className="explorer-empty">
+                      <strong>Gated repository</strong>
+                      <span>Downloading needs Hugging Face access approval — sign in with an approved account, then retry.</span>
+                    </div>
+                    {active.repoFiles ? <RepoFileList files={active.repoFiles} /> : null}
+                  </>
                 ) : active.files.length === 0 ? (
-                  <div className="explorer-empty">No GGUF/MLX files published for this model.</div>
+                  <>
+                    <div className="explorer-empty">
+                      {presentFormats(active).includes('safetensors') ? (
+                        <>
+                          <strong>Safetensors model</strong>
+                          <span>GGUF version not available in this repository.</span>
+                        </>
+                      ) : (
+                        <>
+                          <strong>No downloadable weights</strong>
+                          <span>No GGUF weights are published in this repository.</span>
+                        </>
+                      )}
+                    </div>
+                    {active.repoFiles ? <RepoFileList files={active.repoFiles} /> : null}
+                  </>
                 ) : (
                   <div className="explorer-filewrap" ref={fileRef}>
                     <button
@@ -877,6 +994,9 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                               {f.quantization ? <span className="explorer-quant-pill">{f.quantization}</span> : null}
                               {f.multipart && f.parts ? <span className="explorer-quant-pill" title="Sharded model — all parts download as one">{f.parts.length} parts</span> : null}
                               {f.companion ? <span className="explorer-quant-pill" title="Vision projector downloads automatically with this weight">+mmproj</span> : null}
+                              {f.sourceRepo && active && f.sourceRepo !== active.id ? (
+                                <span className="explorer-file-src" title="These bytes come from this quant repository, not the base model page">from {f.sourceRepo}</span>
+                              ) : null}
                               {isRec ? <span className="explorer-rec-pill">Recommended</span> : null}
                               <MiniFit rec={rec} />
                               <span className="explorer-file-size">{fmtSize(f.sizeBytes ?? 0)}</span>
@@ -888,6 +1008,9 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                     ) : null}
                   </div>
                 )}
+                {hasNonGgufWeights ? (
+                  <div className="explorer-format-note">Also contains {presentFormats(active).filter((f) => f !== 'gguf').map((f) => FORMAT_LABEL[f]).join(' + ')} weights (see Details) — only GGUF is downloadable here.</div>
+                ) : null}
                 <div className="explorer-fitrow"><FitBadge result={headerFit} /></div>
                 <div className="explorer-downloaderow">
                   {isInstalled ? (
@@ -906,8 +1029,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                   ) : (
                     <button
                       type="button" className="explorer-download-btn"
-                      disabled={!activeFile?.downloadUrl || activeFile?.runnable === false}
-                      title={activeFile?.runnable === false ? 'Not a runnable model file — select a GGUF weight to download.' : undefined}
+                      disabled={!activeFile?.downloadUrl || activeFile?.runnable === false || active.gated === true}
+                      title={active.gated === true ? 'Gated repository — needs Hugging Face access approval.' : activeFile?.runnable === false ? 'Not a runnable model file — select a GGUF weight to download.' : undefined}
                       onClick={doDownload}>
                       <Download size={15} /> Download <span className="explorer-download-size">{fmtSize(activeFile?.sizeBytes ?? 0)}</span>
                     </button>
@@ -926,8 +1049,14 @@ export function ExplorePage({ onBack }: Props): ReactElement {
                   <span className="explorer-pill">{active.architecture}</span>
                   <span className="explorer-meta-label">Formats</span>
                   <span className="explorer-pill-group">
-                    {[...new Set(active.files.map((f) => f.format))].map((f) => <span key={f} className="explorer-pill">{f}</span>)}
+                    {presentFormats(active).map((f) => <span key={f} className="explorer-pill">{FORMAT_LABEL[f]}</span>)}
                   </span>
+                  {active.baseModel ? (
+                    <>
+                      <span className="explorer-meta-label">Based on</span>
+                      <span className="explorer-pill" title="Base model from the repo card — GGUF rows above come from their own quant repositories">{active.baseModel}</span>
+                    </>
+                  ) : null}
                 </div>
                 <div className="explorer-meta">
                   <span className="explorer-meta-label">Capabilities</span>

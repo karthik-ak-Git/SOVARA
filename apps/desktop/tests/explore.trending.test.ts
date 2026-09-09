@@ -13,7 +13,7 @@ function row(id: string, downloads: number, likes: number, trendingScore: number
     createdAt: '2026-01-01T00:00:00.000Z',
     lastModified: '2026-02-01T00:00:00.000Z',
     cardData: {},
-    siblings: [],
+    siblings: [{ rfilename: `${id.split('/').pop()}-Q4_K_M.gguf` }],
   }
 }
 

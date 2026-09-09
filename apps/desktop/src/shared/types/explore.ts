@@ -6,6 +6,33 @@ export interface ExploreDownloadPart {
   sizeBytes: number
 }
 
+/**
+ * Weight format of ONE repo file, from its extension — never from the repo
+ * name, README, or tags. `other` covers .bin / .pth / .pt / .ckpt / .onnx /
+ * .h5 / .msgpack weights.
+ */
+export type RepoWeightFormat = 'gguf' | 'safetensors' | 'other'
+
+/**
+ * Repo-level format from the ACTUAL sibling files: exactly one weight kind
+ * present → that kind; more than one → `mixed`. Repos with no weight files
+ * are never listed as downloadable models (callers skip them).
+ */
+export type ModelFormat = 'gguf' | 'safetensors' | 'mixed' | 'other'
+
+/**
+ * One weight file in the repo inventory (detail only). Safetensors/other
+ * entries are informational — only GGUF rows in `files` are downloadable
+ * (no silent safetensors→GGUF conversion).
+ */
+export interface ExploreRepoFile {
+  rfilename: string
+  format: RepoWeightFormat
+  quantization?: string
+  /** Exact bytes when HEAD-resolved; 0/undefined when unknown. */
+  sizeBytes?: number
+}
+
 export interface ExploreModelFile {
   format: string          // GGUF, MLX, safetensors
   quantization?: string   // Q4_K_M, Q5_K_S, etc.
@@ -15,6 +42,12 @@ export interface ExploreModelFile {
   rfilename?: string
   /** Exact bytes (HEAD lookup; 0 when unknown). */
   sizeBytes?: number
+  /**
+   * Which Hub repo this row's bytes actually come from. Download Options
+   * aggregates community quant repos onto a base model page — this keeps the
+   * association honest instead of merging repos silently.
+   */
+  sourceRepo?: string
   /**
    * False for informational repo files (.gitattributes, README.md, …) that LM
    * Studio lists with a red badge but that cannot load on a GPU. Undefined or
@@ -54,6 +87,12 @@ export interface ExploreModel {
   files: ExploreModelFile[]
   tags: string[]
   iconType: 'hf' | 'google' | 'meta' | 'mistral' | 'qwen' | 'microsoft' | 'deepseek'
+  /**
+   * Repo-level format from actual sibling files (gguf/safetensors/mixed/
+   * other). Always set by the catalog; a Safetensors-only repo carries
+   * `format: 'safetensors'` with an empty `files` (no fake GGUF button).
+   */
+  format?: ModelFormat
   /** Detail-only fields (explore:getModel). Absent on list rows. */
   license?: string
   languages?: string[]
@@ -61,6 +100,8 @@ export interface ExploreModel {
   pipelineTag?: string
   gated?: boolean
   repoSizeBytes?: number
+  /** Full weight-file inventory (detail only, all formats, read-only). */
+  repoFiles?: ExploreRepoFile[]
   readme?: string
 }
 
@@ -83,9 +124,13 @@ export interface CompatibilityResult {
 
 export type ExploreSortBy = 'recommended' | 'trending' | 'likes' | 'downloads' | 'lastModified'
 
+/** Format filter the backend actually supports (HF file-list based). */
+export type ExploreFormatFilter = 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
+
 export interface ExploreListParams {
   sortBy?: ExploreSortBy
   query?: string
   pipelineTag?: string
   tag?: string
+  format?: ExploreFormatFilter
 }

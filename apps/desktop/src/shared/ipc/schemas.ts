@@ -98,6 +98,8 @@ export const zExploreListModels = z
     pipelineTag: z.string().max(64).optional(),
     tag: z.string().max(64).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    /** Format filter the backend supports (HF file-list based). */
+    format: z.enum(['all', 'gguf', 'safetensors', 'mixed', 'other']).optional(),
   })
   .strict()
   .default({})

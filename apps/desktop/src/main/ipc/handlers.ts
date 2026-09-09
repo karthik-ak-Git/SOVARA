@@ -379,6 +379,7 @@ export function registerIpcHandlers(): void {
       sortBy: parsed.data.sortBy ?? 'Recommended',
       query: scopeQuery,
       limit: parsed.data.limit ?? 30,
+      format: parsed.data.format ?? 'all',
     })
   })
 
