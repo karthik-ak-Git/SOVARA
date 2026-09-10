@@ -4,7 +4,7 @@
  * only the final assistant message becomes a durable session event.
  */
 
-export type ChatStreamKind = 'assistant-delta' | 'assistant-done' | 'assistant-error' | 'assistant-cancelled'
+export type ChatStreamKind = 'assistant-delta' | 'reasoning-delta' | 'assistant-done' | 'assistant-error' | 'assistant-cancelled'
 
 export interface ChatStreamEvent {
   sessionId: string

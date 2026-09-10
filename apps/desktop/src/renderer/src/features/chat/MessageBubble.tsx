@@ -12,6 +12,10 @@ interface MessageBubbleProps {
   streaming?: boolean
   /** Stopped generation marker (durable `assistant/cancelled` event). */
   cancelled?: boolean
+  /** Reasoning content (when reasoning enabled) */
+  reasoning?: string
+  /** Whether reasoning is currently streaming */
+  reasoningStreaming?: boolean
   /** Action handlers — provided by MessageList/ChatView */
   onCopy?: (content: string) => void
   onRegenerate?: () => void
@@ -31,6 +35,8 @@ export function MessageBubble({
   thinking = false,
   streaming = false,
   cancelled = false,
+  reasoning,
+  reasoningStreaming = false,
   onCopy,
   onRegenerate,
   onEditAndResend,
@@ -41,6 +47,7 @@ export function MessageBubble({
   const bubbles = isUser ? 'user-bubble' : 'assistant-bubble'
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(content)
+  const [showReasoning, setShowReasoning] = useState(true)
 
   if (loading) {
     return (
@@ -139,15 +146,37 @@ export function MessageBubble({
     )
   }
 
+  const hasReasoning = typeof reasoning === 'string' && reasoning.length > 0
+
   return (
     <article
       key={id}
       data-testid={streaming ? 'message-streaming' : isUser ? 'message-user' : 'message-assistant'}
       data-role={role}
-      className={`bubble ${bubbles}${streaming ? ' bubble--streaming' : ''}${cancelled ? ' bubble--cancelled' : ''}`}
+      className={`bubble ${bubbles}${streaming ? ' bubble--streaming' : ''}${cancelled ? ' bubble--cancelled' : ''}${hasReasoning ? ' bubble--with-reasoning' : ''}`}
       aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : isUser ? 'Your message' : 'Assistant response'}
       aria-live={streaming ? 'polite' : undefined}
     >
+      {hasReasoning ? (
+        <div className="bubble-reasoning" data-testid="message-reasoning">
+          <button
+            type="button"
+            className="bubble-reasoning-toggle"
+            onClick={() => setShowReasoning((v) => !v)}
+            aria-expanded={showReasoning}
+            aria-label={showReasoning ? 'Hide reasoning' : 'Show reasoning'}
+          >
+            <span className="bubble-reasoning-label">{reasoningStreaming ? 'Thinking…' : 'Reasoning'}</span>
+            <span className="bubble-reasoning-chevron" aria-hidden>{showReasoning ? '▾' : '▸'}</span>
+          </button>
+          {showReasoning ? (
+            <div className={`bubble-reasoning-content ${reasoningStreaming ? 'bubble-reasoning-content--streaming' : ''}`}>
+              {reasoning}
+              {reasoningStreaming ? <span className="stream-caret" aria-hidden="true" /> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <p className="bubble-text">
         {content}
         {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
@@ -165,7 +194,7 @@ export function MessageBubble({
       {!streaming && !thinking && !loading ? (
         <MessageActions
           role={role}
-          content={content}
+          content={hasReasoning && reasoning ? `${reasoning}\n\n${content}` : content}
           onCopy={onCopy}
           onRegenerate={onRegenerate}
           onEdit={isUser && onEditAndResend ? () => setIsEditing(true) : undefined}

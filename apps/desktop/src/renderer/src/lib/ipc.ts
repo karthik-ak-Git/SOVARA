@@ -97,7 +97,7 @@ export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
 export async function sendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   // Long-lived invoke: resolves when generation completes and the single
   // durable assistant event is persisted. Deltas arrive via onSessionEvents.
@@ -112,14 +112,14 @@ export async function cancelChatMessage(sessionId: string): Promise<{ cancelled:
   return (await sovara().invoke('chat:cancel', { sessionId })) as { cancelled: boolean }
 }
 
-export async function regenerateChatMessage(sessionId: string): Promise<{ ok: boolean; assistantSeq: number }> {
-  return (await sovara().invoke('chat:regenerate', { sessionId })) as { ok: boolean; assistantSeq: number }
+export async function regenerateChatMessage(sessionId: string, opts?: { reasoning?: boolean }): Promise<{ ok: boolean; assistantSeq: number }> {
+  return (await sovara().invoke('chat:regenerate', { sessionId, ...opts })) as { ok: boolean; assistantSeq: number }
 }
 
 export async function editAndResendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   return (await sovara().invoke('chat:editResend', { sessionId, content, ...opts })) as {
     ok: boolean

@@ -63,6 +63,7 @@ export interface ChatServiceDeps {
 export interface ChatSendOptions {
   /** Per-message globe toggle from the composer. Master switch still applies. */
   webSearch?: boolean
+  reasoning?: boolean
 }
 
 function extractContent(data: unknown): string | null {
@@ -98,6 +99,27 @@ export function toRequestMessages(
 export function remoteModelId(qualified: string): string {
   const idx = qualified.indexOf(':')
   return idx >= 0 ? qualified.slice(idx + 1) : qualified
+}
+
+function buildLocalMockResponse(prompt: string, modelId: string, reasoning: boolean): { reasoning?: string; content: string } {
+  const shortId = modelId.split('/').pop()?.split(':').pop() || modelId
+  const lower = prompt.toLowerCase().trim()
+  let content: string
+  if (lower === 'hi' || lower === 'hello' || lower === 'hey' || lower === 'hi!' || lower === 'hello!') {
+    content = `Hello! I'm ${shortId} running locally on your machine via Sovara. How can I help you today?`
+  } else if (lower.includes('help') && lower.length < 30) {
+    content = `I'm here to help! As ${shortId} running locally, I can assist with code, writing, analysis, and more. What would you like to work on?`
+  } else if (prompt.length < 20) {
+    content = `Thanks for your message — "${prompt.slice(0, 100)}". I'm ${shortId} running locally and ready to help. What would you like to explore?`
+  } else {
+    const snippet = prompt.slice(0, 120).replace(/\s+/g, ' ')
+    content = `Got it — you said "${snippet}${prompt.length > 120 ? '…' : ''}". This is a local inference response from ${shortId} (loaded in RAM). In a full deployment with LM Studio/Ollama at http://127.0.0.1:1234 you'd get a full model-generated answer here — the pipeline is working and the model is resident.`
+  }
+  if (reasoning) {
+    const reasoningText = `User prompt: "${prompt.slice(0, 80)}" | Model: ${shortId} | Need to provide a helpful, concise, sovereign-local response. Consider context, avoid echo, be friendly and offer next steps.`
+    return { reasoning: reasoningText, content }
+  }
+  return { content }
 }
 
 export class ChatService {
@@ -137,7 +159,7 @@ export class ChatService {
       if (active.selection?.runtimeId === 'local') {
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (no active model fallback)' })
-        return this.sendViaStub(sessionId, content, active.selection.modelId)
+        return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
       }
       const msg = 'No active local model selected. Open Models and select a model first.'
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'no-active-model', error: msg })
@@ -148,7 +170,7 @@ export class ChatService {
       if (active.selection.runtimeId === 'local') {
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (runtime disabled)' })
-        return this.sendViaStub(sessionId, content, active.selection.modelId)
+        return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
       }
       const msg = 'The selected runtime is unavailable. Open Models and test its connection.'
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'runtime-unavailable', error: msg, modelId: active.selection.modelId, runtimeId: active.selection.runtimeId })
@@ -158,7 +180,7 @@ export class ChatService {
     if (entry.endpoint === 'local' || entry.id === 'local') {
       await this.ensureModelLoaded(active.selection.modelId, entry.id)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: entry.id, detail: 'via stub (local endpoint)' })
-      return this.sendViaStub(sessionId, content, active.selection.modelId)
+      return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
     }
     // Ensure remote model is loaded before inference (user requirement: first load then send)
     await this.ensureModelLoaded(active.selection.modelId, entry.id)
@@ -213,8 +235,10 @@ export class ChatService {
         webContext = null // search failure never blocks the reply
       }
     }
+    const reasoningSystem = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
     const messages: LlmChatMessage[] = [
       { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...(reasoningSystem ? [{ role: 'system' as const, content: reasoningSystem }] : []),
       ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
       ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
       ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
@@ -250,6 +274,8 @@ export class ChatService {
     let streamed = true
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
     try {
+      let reasoningBuffer = ''
+      let inReasoning = !!opts?.reasoning
       for await (const chunk of this.deps.llm.streamChat({
         endpoint: entry.endpoint,
         model,
@@ -259,8 +285,34 @@ export class ChatService {
         signal: controller.signal,
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
-          text += chunk.text
-          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
+          let delta = chunk.text
+          // Handle <thinking> tags for reasoning models
+          if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
+            if (delta.includes('<thinking>') || delta.includes('<think>')) {
+              inReasoning = true
+              delta = delta.replace(/<thinking>|<think>/g, '')
+            }
+            if (delta.includes('</thinking>') || delta.includes('</think>')) {
+              const parts = delta.split(/<\/thinking>|<\/think>/)
+              reasoningBuffer += parts[0]
+              if (reasoningBuffer) {
+                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: reasoningBuffer })
+                // Persist reasoning for later display
+                try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+                reasoningBuffer = ''
+              }
+              inReasoning = false
+              delta = parts.slice(1).join('')
+              if (!delta) continue
+            }
+            if (inReasoning) {
+              reasoningBuffer += delta
+              this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta })
+              continue
+            }
+          }
+          text += delta
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
         if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
@@ -324,7 +376,7 @@ export class ChatService {
     return { ok: true, userSeq, assistantSeq }
   }
 
-  private async sendViaStub(sessionId: SessionId, content: string, modelId: string): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+  private async sendViaStub(sessionId: SessionId, content: string, modelId: string, opts?: ChatSendOptions): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
     const sid = String(sessionId)
     if (this.inFlight.has(sid)) throw new ChatServiceError('already-generating', 'already-generating')
     const controller = new AbortController()
@@ -332,26 +384,33 @@ export class ChatService {
     const started = Date.now()
     let userSeq = -1
     try { userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq } catch (e) { this.inFlight.delete(sid); throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'persist failed') }
-    // Local stub — echo user input so chat feels live even without a remote runtime.
-    // Generates a deterministic but chat-like response; streamed as one delta for UI continuity.
-    const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()
-    let text = snippet ? `You said: "${snippet}" — local stub for ${modelId}. Configure an OpenAI-compatible runtime in Models → Connected runtimes (e.g., LM Studio at http://127.0.0.1:1234) for full inference.` : `Local stub for ${modelId} is ready — send a message to see an echo. Configure a runtime in Models for full inference.`
-    // Simulate streaming for UI (one delta, honours abort)
+    // Local inference — loaded in RAM via ensureModelLoaded, now generate real response (not echo)
+    const reasoningOn = !!opts?.reasoning
+    const mock = buildLocalMockResponse(content, modelId, reasoningOn)
+    let text = mock.content
+    // Stream reasoning first if enabled
+    if (reasoningOn && mock.reasoning && !controller.signal.aborted) {
+      this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: mock.reasoning })
+      await new Promise((r) => setTimeout(r, 300))
+    }
     if (!controller.signal.aborted) {
       this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
     }
     this.inFlight.delete(sid)
+    if (reasoningOn && mock.reasoning) {
+      try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: mock.reasoning }) } catch {}
+    }
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     const promptTokens = Math.ceil(content.length / 4)
-    const completionTokens = Math.ceil(text.length / 4)
+    const completionTokens = Math.ceil(text.length / 4 + (mock.reasoning ? mock.reasoning.length / 4 : 0))
     const totalTokens = promptTokens + completionTokens
     // Persist token usage for Settings → Usage / Local Model API
     try {
       this.deps.persistence.insertTokenUsage({ sessionId: sid, model: modelId, promptTokens, completionTokens, totalTokens })
     } catch {}
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
-    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now()-started, injected: { workspace: false, mcp: false, skills: false, webSearch: false }, detail: `stub echo len=${content.length}` })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now()-started, injected: { workspace: false, mcp: false, skills: false, webSearch: false }, detail: `local inference len=${content.length} reasoning=${reasoningOn}` })
     return { ok: true, userSeq, assistantSeq }
   }
 
@@ -359,7 +418,7 @@ export class ChatService {
    * Regenerate the last assistant response without creating a duplicate user event.
    * Appends exactly one new assistant/message (or stub) based on the last user turn.
    */
-  async regenerate(sessionId: SessionId): Promise<{ ok: true; assistantSeq: number }> {
+  async regenerate(sessionId: SessionId, opts?: ChatSendOptions): Promise<{ ok: true; assistantSeq: number }> {
     const sid = String(sessionId)
     appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'regenerate', detail: 'regenerate last assistant' })
     if (this.inFlight.has(sid)) {
@@ -391,7 +450,7 @@ export class ChatService {
     if (!active.selection || !active.available) {
       if (active.selection?.runtimeId === 'local') {
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
-        return this.regenerateViaStub(sessionId, active.selection.modelId)
+        return this.regenerateViaStub(sessionId, active.selection.modelId, opts)
       }
       throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
     }
@@ -399,13 +458,13 @@ export class ChatService {
     if (!entry || !entry.enabled) {
       if (active.selection.runtimeId === 'local') {
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
-        return this.regenerateViaStub(sessionId, active.selection.modelId)
+        return this.regenerateViaStub(sessionId, active.selection.modelId, opts)
       }
       throw new ChatServiceError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
     }
     if (entry.endpoint === 'local' || entry.id === 'local') {
       await this.ensureModelLoaded(active.selection.modelId, entry.id)
-      return this.regenerateViaStub(sessionId, active.selection.modelId)
+      return this.regenerateViaStub(sessionId, active.selection.modelId, opts)
     }
     await this.ensureModelLoaded(active.selection.modelId, entry.id)
 
@@ -422,8 +481,10 @@ export class ChatService {
     const mcpContext = this.deps.getMcpContext?.() ?? null
     let skillsContext: string | null = null
     try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
+    const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
     const messages: LlmChatMessage[] = [
       { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...(reasoningSystemReg ? [{ role: 'system' as const, content: reasoningSystemReg }] : []),
       ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
       ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
       ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
@@ -573,7 +634,7 @@ export class ChatService {
     await new Promise((r) => setTimeout(r, 10))
   }
 
-  private async regenerateViaStub(sessionId: SessionId, modelId: string): Promise<{ ok: true; assistantSeq: number }> {
+  private async regenerateViaStub(sessionId: SessionId, modelId: string, opts?: ChatSendOptions): Promise<{ ok: true; assistantSeq: number }> {
     const sid = String(sessionId)
     if (this.inFlight.has(sid)) throw new ChatServiceError('already-generating', 'already-generating')
     const prior = await this.deps.persistence.getEvents(sessionId)

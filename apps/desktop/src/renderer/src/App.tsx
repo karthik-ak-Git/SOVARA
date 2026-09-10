@@ -145,22 +145,24 @@ export function App(): React.JSX.Element {
     .filter((s): s is (typeof chat.sessions)[number] => Boolean(s))
     .map((s) => ({ id: s.id, title: s.title }))
 
-  const handleSend = useCallback((content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }): void => {
+  const handleSend = useCallback((content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean }): void => {
     let enrichedContent = content
     if (attachments && attachments.length > 0) {
       const fileSummary = attachments.map((a) => `[Attached: ${a.name} (${a.type})]`).join(' ')
       enrichedContent = `${fileSummary}\n\n${content}`
     }
-    chat.handleSend(enrichedContent, opts)
-  }, [chat])
+    const sendOpts: { webSearch?: boolean; reasoning?: boolean } = { ...opts }
+    if (reasoningEnabled) sendOpts.reasoning = true
+    chat.handleSend(enrichedContent, sendOpts)
+  }, [chat, reasoningEnabled])
 
   const handleRegenerate = useCallback((): void => {
-    void chat.handleRegenerate()
-  }, [chat])
+    void chat.handleRegenerate(reasoningEnabled ? { reasoning: true } : undefined)
+  }, [chat, reasoningEnabled])
 
   const handleEditAndResend = useCallback((content: string): void => {
-    void chat.handleEditAndResend(content)
-  }, [chat])
+    void chat.handleEditAndResend(content, reasoningEnabled ? { reasoning: true } : undefined)
+  }, [chat, reasoningEnabled])
 
   const handleCopy = useCallback((_content: string): void => {
     // Clipboard handled inside MessageBubble/MessageActions; hook for analytics
@@ -213,6 +215,7 @@ export function App(): React.JSX.Element {
             busy={chat.busy}
             phase={chat.phase}
             streamingText={chat.streamingText}
+            streamingReasoning={chat.streamingReasoning}
             error={chat.error}
             model={workbench.active}
             onDismissError={chat.dismissError}

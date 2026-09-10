@@ -31,7 +31,8 @@ export const zChatSend = z
   .object({
     sessionId: z.string().min(1).max(128),
     content: z.string().min(1).max(32_000),
-    webSearch: z.boolean().optional()
+    webSearch: z.boolean().optional(),
+    reasoning: z.boolean().optional()
   })
   .strict()
 
@@ -40,7 +41,7 @@ export const zChatCancel = z
   .strict()
 
 export const zChatRegenerate = z
-  .object({ sessionId: z.string().min(1).max(128) })
+  .object({ sessionId: z.string().min(1).max(128), reasoning: z.boolean().optional() })
   .strict()
 
 export const zChatEditResend = z
@@ -48,6 +49,7 @@ export const zChatEditResend = z
     sessionId: z.string().min(1).max(128),
     content: z.string().min(1).max(32_000),
     webSearch: z.boolean().optional(),
+    reasoning: z.boolean().optional(),
   })
   .strict()
 

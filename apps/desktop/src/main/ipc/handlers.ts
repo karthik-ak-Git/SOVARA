@@ -138,12 +138,12 @@ export function registerIpcHandlers(): void {
       throw new Error(`invalid chat payload: ${parsed.error.message}`)
     }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
-    console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch}`)
+    console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch} reasoning=${!!parsed.data.reasoning}`)
     try {
       // Real local inference via ChatService → LlmPort → loopback runtime.
       // Deltas stream back on `events:session`; the invoke resolves on
       // completion with the durable seqs. Globe flag adds web context.
-      const res = await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      const res = await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
       console.log(`[SOVARA][IPC] chat:send ok sid=${parsed.data.sessionId} userSeq=${res.userSeq} assistantSeq=${res.assistantSeq}`)
       return res
     } catch (e) {
@@ -167,9 +167,9 @@ export function registerIpcHandlers(): void {
       throw new Error(`invalid regenerate payload: ${parsed.error.message}`)
     }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
-    console.log(`[SOVARA][IPC] chat:regenerate sid=${parsed.data.sessionId}`)
+    console.log(`[SOVARA][IPC] chat:regenerate sid=${parsed.data.sessionId} reasoning=${!!parsed.data.reasoning}`)
     try {
-      const res = await getBackend().chat.regenerate(sid)
+      const res = await getBackend().chat.regenerate(sid, { reasoning: parsed.data.reasoning })
       console.log(`[SOVARA][IPC] chat:regenerate ok sid=${parsed.data.sessionId} assistantSeq=${res.assistantSeq}`)
       return res
     } catch (e) {
@@ -185,9 +185,9 @@ export function registerIpcHandlers(): void {
       throw new Error(`invalid editResend payload: ${parsed.error.message}`)
     }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
-    console.log(`[SOVARA][IPC] chat:editResend sid=${parsed.data.sessionId} len=${parsed.data.content.length}`)
+    console.log(`[SOVARA][IPC] chat:editResend sid=${parsed.data.sessionId} len=${parsed.data.content.length} reasoning=${!!parsed.data.reasoning}`)
     try {
-      const res = await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      const res = await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
       console.log(`[SOVARA][IPC] chat:editResend ok sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
       return res
     } catch (e) {

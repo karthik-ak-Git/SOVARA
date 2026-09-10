@@ -8,7 +8,7 @@ import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shar
 interface ComposerProps {
   value: string
   onChange: (value: string) => void
-  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }) => void
+  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean; reasoning?: boolean }) => void
   onCancel?: () => void
   disabled?: boolean
   busy?: boolean
@@ -205,8 +205,15 @@ export function Composer({
     const content = value.trim()
     if (content.length === 0 || disabled) return
     const atts = attachments.length > 0 ? attachments : undefined
-    if (webSearch) onSend(content, atts, { webSearch: true })
-    else onSend(content, atts)
+    const hasOpts = webSearch || reasoningEnabled
+    if (hasOpts) {
+      const opts: { webSearch?: boolean; reasoning?: boolean } = {}
+      if (webSearch) opts.webSearch = true
+      if (reasoningEnabled) opts.reasoning = true
+      onSend(content, atts, opts)
+    } else {
+      onSend(content, atts)
+    }
     setAttachments([])
   }
 

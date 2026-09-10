@@ -60,6 +60,7 @@ export function useChatSession() {
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState<ChatPhase>('idle')
   const [streamingText, setStreamingText] = useState('')
+  const [streamingReasoning, setStreamingReasoning] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [model, setModel] = useState<ActiveModelState>({ selection: null, available: false })
   const loadSeq = useRef(0)
@@ -118,13 +119,18 @@ export function useChatSession() {
     const dispose = onSessionEvents((ev) => {
       if (!ev) return
       const isSelected = ev.sessionId === selectedRef.current
-      if (ev.kind === 'assistant-delta' && ev.text) {
+      if (ev.kind === 'reasoning-delta' && ev.text) {
+        if (!isSelected) return
+        setPhase('streaming')
+        setStreamingReasoning((t) => t + (ev.text ?? ''))
+      } else if (ev.kind === 'assistant-delta' && ev.text) {
         if (!isSelected) return
         setPhase('streaming')
         setStreamingText((t) => t + (ev.text ?? ''))
       } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
         if (isSelected) {
           setStreamingText('')
+          setStreamingReasoning('')
           setPhase('idle')
           const seq = ++loadSeq.current
           void refreshEvents(ev.sessionId, seq).then(() => refreshSessions()).then((list) => {
@@ -146,6 +152,7 @@ export function useChatSession() {
       } else if (ev.kind === 'assistant-error') {
         if (!isSelected) return
         setStreamingText('')
+        setStreamingReasoning('')
         setPhase('idle')
         setError(ev.error ?? 'The local model interrupted the reply.')
       }
@@ -162,6 +169,7 @@ export function useChatSession() {
       setError(null)
       setEvents([])
       setStreamingText('')
+      setStreamingReasoning('')
       setPhase('idle')
       try {
         await refreshEvents(id, seq)
@@ -228,12 +236,13 @@ export function useChatSession() {
   }, [refreshSessions, sessions, switchSession])
 
   const handleSend = useCallback(
-    async (content: string, opts?: { webSearch?: boolean }): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean }): Promise<void> => {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
       setPhase('streaming')
       setStreamingText('')
+      setStreamingReasoning('')
       setError(null)
       try {
         await sendChatMessage(selectedId, text, opts)
@@ -244,6 +253,7 @@ export function useChatSession() {
       } catch (e) {
         // Keep the draft so nothing successfully-persisted is faked.
         setStreamingText('')
+        setStreamingReasoning('')
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusy(false)
@@ -262,19 +272,21 @@ export function useChatSession() {
     }
   }, [selectedId, busy])
 
-  const handleRegenerate = useCallback(async (): Promise<void> => {
+  const handleRegenerate = useCallback(async (opts?: { reasoning?: boolean }): Promise<void> => {
     if (!selectedId || busy) return
     setBusy(true)
     setPhase('streaming')
     setStreamingText('')
+    setStreamingReasoning('')
     setError(null)
     try {
-      await regenerateChatMessage(selectedId)
+      await regenerateChatMessage(selectedId, opts)
       const seq = ++loadSeq.current
       await refreshEvents(selectedId, seq)
       await refreshSessions()
     } catch (e) {
       setStreamingText('')
+      setStreamingReasoning('')
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
@@ -283,12 +295,13 @@ export function useChatSession() {
   }, [selectedId, busy, refreshEvents, refreshSessions])
 
   const handleEditAndResend = useCallback(
-    async (content: string, opts?: { webSearch?: boolean }): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean }): Promise<void> => {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
       setPhase('streaming')
       setStreamingText('')
+      setStreamingReasoning('')
       setError(null)
       try {
         await editAndResendChatMessage(selectedId, text, opts)
@@ -297,6 +310,7 @@ export function useChatSession() {
         await refreshSessions()
       } catch (e) {
         setStreamingText('')
+        setStreamingReasoning('')
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusy(false)
@@ -314,6 +328,7 @@ export function useChatSession() {
     setSelectedId(null)
     setEvents([])
     setStreamingText('')
+    setStreamingReasoning('')
     setPhase('idle')
     setError(null)
   }, [])
@@ -329,6 +344,7 @@ export function useChatSession() {
     busy,
     phase,
     streamingText,
+    streamingReasoning,
     error,
     model,
     dismissError,

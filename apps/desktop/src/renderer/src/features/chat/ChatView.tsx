@@ -16,10 +16,11 @@ interface ChatViewProps {
   busy: boolean
   phase?: ChatPhase
   streamingText?: string
+  streamingReasoning?: string
   error: string | null
   model?: ActiveModelState
   onDismissError?: () => void
-  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch: boolean }) => void
+  onSend: (content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean; reasoning?: boolean }) => void
   onCancel?: () => void
   onRegenerate?: () => void
   onEditAndResend?: (content: string) => void
@@ -49,6 +50,7 @@ export function ChatView({
   busy,
   phase = 'idle',
   streamingText = '',
+  streamingReasoning = '',
   error,
   model = { selection: null, available: false },
   onDismissError,
@@ -208,8 +210,9 @@ export function ChatView({
 
           <MessageList
             events={events}
-            thinking={busy && streamingText === ''}
+            thinking={busy && streamingText === '' && streamingReasoning === ''}
             streamingText={streamingText}
+            streamingReasoning={streamingReasoning}
             onCopy={onCopy}
             onRegenerate={onRegenerate}
             onEditAndResend={onEditAndResend}
