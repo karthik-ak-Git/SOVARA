@@ -112,6 +112,22 @@ export async function cancelChatMessage(sessionId: string): Promise<{ cancelled:
   return (await sovara().invoke('chat:cancel', { sessionId })) as { cancelled: boolean }
 }
 
+export async function regenerateChatMessage(sessionId: string): Promise<{ ok: boolean; assistantSeq: number }> {
+  return (await sovara().invoke('chat:regenerate', { sessionId })) as { ok: boolean; assistantSeq: number }
+}
+
+export async function editAndResendChatMessage(
+  sessionId: string,
+  content: string,
+  opts?: { webSearch?: boolean }
+): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
+  return (await sovara().invoke('chat:editResend', { sessionId, content, ...opts })) as {
+    ok: boolean
+    userSeq: number
+    assistantSeq: number
+  }
+}
+
 export type { ChatStreamEvent } from '@shared/types/chat'
 
 export function onSessionEvents(callback: (event: import('@shared/types/chat').ChatStreamEvent) => void): () => void {

@@ -21,6 +21,8 @@ export const IPC_CHANNELS = {
   'sessions:listArchived': { type: 'invoke' as const },
   'chat:send': { type: 'invoke' as const },
   'chat:cancel': { type: 'invoke' as const },
+  'chat:regenerate': { type: 'invoke' as const },
+  'chat:editResend': { type: 'invoke' as const },
   'models:listLocal': { type: 'invoke' as const },
   'models:load': { type: 'invoke' as const },
   'models:probeRuntime': { type: 'invoke' as const },

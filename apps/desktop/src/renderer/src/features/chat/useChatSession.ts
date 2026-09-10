@@ -3,11 +3,13 @@ import {
   cancelChatMessage,
   createSession,
   deleteSession,
+  editAndResendChatMessage,
   getActiveModel,
   getAppSettings,
   getSessionEvents,
   listSessions,
   onSessionEvents,
+  regenerateChatMessage,
   renameSession,
   sendChatMessage,
   type SessionEventView,
@@ -260,6 +262,50 @@ export function useChatSession() {
     }
   }, [selectedId, busy])
 
+  const handleRegenerate = useCallback(async (): Promise<void> => {
+    if (!selectedId || busy) return
+    setBusy(true)
+    setPhase('streaming')
+    setStreamingText('')
+    setError(null)
+    try {
+      await regenerateChatMessage(selectedId)
+      const seq = ++loadSeq.current
+      await refreshEvents(selectedId, seq)
+      await refreshSessions()
+    } catch (e) {
+      setStreamingText('')
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setPhase('idle')
+    }
+  }, [selectedId, busy, refreshEvents, refreshSessions])
+
+  const handleEditAndResend = useCallback(
+    async (content: string, opts?: { webSearch?: boolean }): Promise<void> => {
+      const text = content.trim()
+      if (!selectedId || text.length === 0 || busy) return
+      setBusy(true)
+      setPhase('streaming')
+      setStreamingText('')
+      setError(null)
+      try {
+        await editAndResendChatMessage(selectedId, text, opts)
+        const seq = ++loadSeq.current
+        await refreshEvents(selectedId, seq)
+        await refreshSessions()
+      } catch (e) {
+        setStreamingText('')
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setBusy(false)
+        setPhase('idle')
+      }
+    },
+    [selectedId, busy, refreshEvents, refreshSessions]
+  )
+
   const dismissError = useCallback(() => setError(null), [])
 
   /** Clear the conversation view (no tab selected) without deleting anything. */
@@ -291,6 +337,8 @@ export function useChatSession() {
     handleDelete,
     handleSend,
     handleCancel,
+    handleRegenerate,
+    handleEditAndResend,
     switchSession,
     clearSelection,
     refreshModelStatus,

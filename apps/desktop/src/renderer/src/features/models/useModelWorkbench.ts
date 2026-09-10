@@ -28,7 +28,8 @@ export function useModelWorkbench() {
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
-    const [rt, md, ac, lib] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
+    const [rt, md, ac, libRaw] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
+    const lib = Array.isArray(libRaw) ? libRaw : []
     // Merge library files as local-discovered models so chat selector is library-driven (dynamic, not hardcoded)
     const libModels: DiscoveredModel[] = lib.map((m) => ({
       modelId: m.name.replace(/\.gguf$/i, '').replace(/__/g, '/') || m.file.replace(/\.gguf$/i, ''),
@@ -47,9 +48,9 @@ export function useModelWorkbench() {
     }
     setRuntimes(runtimesOut)
     setModels(merged)
-    // auto-select first library model if nothing selected
-    if (!ac.selection && merged.length > 0) {
-      try { const s = await selectModel(merged[0].runtimeId, merged[0].modelId); setActive(s); } catch { setActive(ac) }
+    // auto-select first library model if nothing selected (only when library provides a model)
+    if (!ac.selection && libModels.length > 0) {
+      try { const s = await selectModel(libModels[0].runtimeId, libModels[0].modelId); setActive(s); } catch { setActive(ac) }
     } else setActive(ac)
   }, [])
 

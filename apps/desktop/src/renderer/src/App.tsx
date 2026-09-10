@@ -154,6 +154,22 @@ export function App(): React.JSX.Element {
     chat.handleSend(enrichedContent, opts)
   }, [chat])
 
+  const handleRegenerate = useCallback((): void => {
+    void chat.handleRegenerate()
+  }, [chat])
+
+  const handleEditAndResend = useCallback((content: string): void => {
+    void chat.handleEditAndResend(content)
+  }, [chat])
+
+  const handleCopy = useCallback((_content: string): void => {
+    // Clipboard handled inside MessageBubble/MessageActions; hook for analytics
+  }, [])
+
+  const handleOpenModels = useCallback((): void => {
+    setActiveNav('models')
+  }, [])
+
   const projectChats = (projectId: string): Array<{ id: string; title: string }> =>
     chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
 
@@ -202,8 +218,12 @@ export function App(): React.JSX.Element {
             onDismissError={chat.dismissError}
             onSend={handleSend}
             onCancel={chat.handleCancel}
+            onRegenerate={handleRegenerate}
+            onEditAndResend={handleEditAndResend}
+            onCopy={handleCopy}
             onCreateSession={handleNewSession}
             onSwitchSession={chat.switchSession}
+            onOpenModels={handleOpenModels}
             activeModel={workbench.active}
             runtimes={workbench.runtimes}
             discoveredModels={workbench.models}

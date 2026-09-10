@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -151,6 +151,28 @@ export function registerIpcHandlers(): void {
     const parsed = zChatCancel.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid cancel payload: ${parsed.error.message}`)
     return getBackend().chat.cancel(brand<'SessionId'>(parsed.data.sessionId))
+  })
+
+  ipcMain.handle('chat:regenerate', async (_e, raw: unknown) => {
+    const parsed = zChatRegenerate.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid regenerate payload: ${parsed.error.message}`)
+    const sid = brand<'SessionId'>(parsed.data.sessionId)
+    try {
+      return await getBackend().chat.regenerate(sid)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'regenerate failed')
+    }
+  })
+
+  ipcMain.handle('chat:editResend', async (_e, raw: unknown) => {
+    const parsed = zChatEditResend.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid editResend payload: ${parsed.error.message}`)
+    const sid = brand<'SessionId'>(parsed.data.sessionId)
+    try {
+      return await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'editResend failed')
+    }
   })
 
   ipcMain.handle('models:listLocal', async () => getBackend().ports.models.listLocalModels())

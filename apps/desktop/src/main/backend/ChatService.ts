@@ -35,7 +35,8 @@ export class ChatServiceError extends Error {
       | 'runtime-unavailable'
       | 'resource-pressure'
       | 'already-generating'
-      | 'persistence-failed',
+      | 'persistence-failed'
+      | 'no-message-to-regenerate',
     message: string
   ) {
     super(message)
@@ -126,11 +127,10 @@ export class ChatService {
       } catch { /* ignore */ }
     }
     if (!active.selection || !active.available) {
-      // Still nothing — allow local library file fallback (no runtime needed): stream via stub so UX isn't blocked
-      const fallbackId = active.selection?.modelId ?? 'local-library-model'
-      // If runtime is 'local' synthetic, handle below without requiring an OpenAI endpoint
-      if (active.selection?.runtimeId === 'local' || !active.selection) {
-        return this.sendViaStub(sessionId, content, fallbackId)
+      // No active model — honest failure per spec §8. Only the explicit 'local' synthetic
+      // runtime may use the stub path; an empty selection must not fabricate a response.
+      if (active.selection?.runtimeId === 'local') {
+        return this.sendViaStub(sessionId, content, active.selection.modelId)
       }
       throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
     }
@@ -300,6 +300,190 @@ export class ChatService {
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
     return { ok: true, userSeq, assistantSeq }
+  }
+
+  /**
+   * Regenerate the last assistant response without creating a duplicate user event.
+   * Appends exactly one new assistant/message (or stub) based on the last user turn.
+   */
+  async regenerate(sessionId: SessionId): Promise<{ ok: true; assistantSeq: number }> {
+    const sid = String(sessionId)
+    if (this.inFlight.has(sid)) {
+      throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
+    }
+    const prior = await this.deps.persistence.getEvents(sessionId)
+    const lastUser = [...prior].reverse().find((e) => e.type === 'user/message')
+    if (!lastUser) {
+      throw new ChatServiceError('no-message-to-regenerate', 'no user message to regenerate')
+    }
+    const lastContent = extractContent(lastUser.data)
+    if (!lastContent) {
+      throw new ChatServiceError('no-message-to-regenerate', 'last user message is empty')
+    }
+
+    // Resolve model — reuse send's logic but without persisting a new user event
+    let active = this.deps.workbench.getActiveModel()
+    if (!active.selection || !active.available) {
+      try {
+        const m = this.deps.workbench.listModels()
+        if (m.length > 0) {
+          const first = m[0]
+          active = await this.deps.workbench.selectModel(first.runtimeId, first.modelId)
+        }
+      } catch { /* ignore */ }
+    }
+    if (!active.selection || !active.available) {
+      if (active.selection?.runtimeId === 'local') {
+        return this.regenerateViaStub(sessionId, active.selection.modelId)
+      }
+      throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
+    }
+    const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
+    if (!entry || !entry.enabled) {
+      if (active.selection.runtimeId === 'local') return this.regenerateViaStub(sessionId, active.selection.modelId)
+      throw new ChatServiceError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
+    }
+    if (entry.endpoint === 'local' || entry.id === 'local') {
+      return this.regenerateViaStub(sessionId, active.selection.modelId)
+    }
+
+    const pressure = await this.deps.resources.checkBeforeLoad(
+      { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
+      {}
+    )
+    if (pressure.blocking) {
+      throw new ChatServiceError('resource-pressure', `resource-pressure: ${pressure.reason ?? 'inference refused'}`)
+    }
+
+    // Build full history (already includes last user), plus system contexts
+    const workspaceContext = await this.resolveWorkspaceContext(sessionId)
+    const mcpContext = this.deps.getMcpContext?.() ?? null
+    let skillsContext: string | null = null
+    try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
+    const messages: LlmChatMessage[] = [
+      { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
+      ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
+      ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
+      ...toRequestMessages(prior),
+    ]
+
+    const controller = new AbortController()
+    this.inFlight.set(sid, controller)
+    const started = Date.now()
+    const model = remoteModelId(active.selection.modelId)
+    const timeoutMs = Math.max(entry.timeoutMs, CHAT_TIMEOUT_FLOOR_MS)
+    let text = ''
+    let streamed = true
+    let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+    try {
+      for await (const chunk of this.deps.llm.streamChat({
+        endpoint: entry.endpoint,
+        model,
+        messages,
+        timeoutMs,
+        stream: true,
+        signal: controller.signal,
+      })) {
+        if (chunk.type === 'text-delta' && chunk.text) {
+          text += chunk.text
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
+        }
+        if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
+        if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+        if (chunk.type === 'done') break
+      }
+    } catch (e) {
+      if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
+        return this.finishCancelled(sessionId, sid, started, entry.id, entry.endpoint, model, streamed)
+      }
+      const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
+      this.log(entry.id, entry.endpoint, model, started, undefined, outcomeOf(e), streamed)
+      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+      throw new ChatServiceError('runtime-unavailable', safe)
+    } finally {
+      this.inFlight.delete(sid)
+    }
+
+    if (text === '') {
+      const msg = 'invalid-response: the local model returned an empty reply'
+      this.log(entry.id, entry.endpoint, model, started, undefined, 'invalid-response', streamed)
+      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
+      throw new ChatServiceError('runtime-unavailable', msg)
+    }
+
+    const promptText = messages.map((m) => m.content).join(' ')
+    const tokenUsage = usage ?? {
+      promptTokens: Math.ceil(promptText.length / CHARS_PER_TOKEN),
+      completionTokens: Math.ceil(text.length / CHARS_PER_TOKEN),
+      totalTokens: Math.ceil((promptText.length + text.length) / CHARS_PER_TOKEN),
+    }
+    try {
+      this.deps.persistence.insertTokenUsage({
+        sessionId: sid,
+        model,
+        promptTokens: tokenUsage.promptTokens,
+        completionTokens: tokenUsage.completionTokens,
+        totalTokens: tokenUsage.totalTokens,
+      })
+    } catch { /* non-critical */ }
+
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    this.log(entry.id, entry.endpoint, model, started, 200, 'ok', streamed)
+    this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    return { ok: true, assistantSeq }
+  }
+
+  /**
+   * Edit and resend — appends the edited content as a new user/message then generates.
+   * Preserves append-only invariant: never rewrites historical events.
+   */
+  async editAndResend(sessionId: SessionId, content: string, opts?: ChatSendOptions): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+    const text = content.trim()
+    if (!text) throw new ChatServiceError('persistence-failed', 'cannot resend empty message')
+    // Delegates to send which already handles persistence + streaming correctly.
+    return this.send(sessionId, text, opts)
+  }
+
+  private async resolveWorkspaceContext(sessionId: SessionId): Promise<string | null> {
+    try {
+      const header = await this.deps.persistence.get(sessionId)
+      const pid = header?.projectId ?? null
+      const projectRoot = this.deps.getProjectWorkspace?.(pid) ?? null
+      const globalRoot = this.deps.getGlobalWorkspace?.() ?? null
+      const root = projectRoot ?? globalRoot
+      if (!root) return null
+      return pid && projectRoot
+        ? `Project workspace: ${projectRoot} (project ${pid}) — global fallback: ${globalRoot ?? 'none'}`
+        : `Global workspace: ${root}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
+    } catch {
+      return null
+    }
+  }
+
+  private async regenerateViaStub(sessionId: SessionId, modelId: string): Promise<{ ok: true; assistantSeq: number }> {
+    const sid = String(sessionId)
+    if (this.inFlight.has(sid)) throw new ChatServiceError('already-generating', 'already-generating')
+    const prior = await this.deps.persistence.getEvents(sessionId)
+    const lastUser = [...prior].reverse().find((e) => e.type === 'user/message')
+    const prompt = lastUser ? (extractContent(lastUser.data) ?? '') : ''
+    const controller = new AbortController()
+    this.inFlight.set(sid, controller)
+    const started = Date.now()
+    let text = ''
+    try {
+      for await (const chunk of this.deps.llm.stream(`[local ${modelId}] ${prompt.slice(0, 120)}: `)) {
+        if (controller.signal.aborted) break
+        if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
+        if (chunk.type === 'done') break
+      }
+    } catch { /* stub never throws */ }
+    this.inFlight.delete(sid)
+    if (!text) text = `Loaded model ${modelId} is ready. (Local library — no remote runtime configured. Add an OpenAI-compatible endpoint in Models for full inference.)`
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now() - started, outcome: 'ok', modelId, streamed: true })
+    return { ok: true, assistantSeq }
   }
 
   cancel(sessionId: SessionId): { cancelled: boolean } {

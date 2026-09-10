@@ -1,4 +1,5 @@
-import type { ReactNode, ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
+import { MessageActions } from './components/MessageActions'
 
 interface MessageBubbleProps {
   id: string
@@ -11,6 +12,14 @@ interface MessageBubbleProps {
   streaming?: boolean
   /** Stopped generation marker (durable `assistant/cancelled` event). */
   cancelled?: boolean
+  /** Action handlers — provided by MessageList/ChatView */
+  onCopy?: (content: string) => void
+  onRegenerate?: () => void
+  onEditAndResend?: (newContent: string) => void
+  /** Whether regenerate is allowed (only latest assistant) */
+  canRegenerate?: boolean
+  /** Disable actions while streaming/sending */
+  busy?: boolean
 }
 
 export function MessageBubble({
@@ -22,9 +31,16 @@ export function MessageBubble({
   thinking = false,
   streaming = false,
   cancelled = false,
+  onCopy,
+  onRegenerate,
+  onEditAndResend,
+  canRegenerate = false,
+  busy = false,
 }: MessageBubbleProps): ReactElement {
   const isUser = role === 'user'
   const bubbles = isUser ? 'user-bubble' : 'assistant-bubble'
+  const [isEditing, setIsEditing] = useState(false)
+  const [editDraft, setEditDraft] = useState(content)
 
   if (loading) {
     return (
@@ -73,6 +89,56 @@ export function MessageBubble({
     )
   }
 
+  // Edit mode for user messages — inline resend without destroying history (append-only)
+  if (isEditing && isUser && onEditAndResend) {
+    return (
+      <article
+        key={id}
+        data-testid="message-user-editing"
+        data-role={role}
+        className={`bubble ${bubbles} bubble--editing`}
+        aria-label="Edit your message"
+      >
+        <textarea
+          className="bubble-edit-input"
+          value={editDraft}
+          onChange={(e) => setEditDraft(e.target.value.slice(0, 32_000))}
+          rows={3}
+          autoFocus
+          aria-label="Edit message"
+          data-testid="edit-input"
+        />
+        <div className="bubble-edit-actions">
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => {
+              const next = editDraft.trim()
+              if (!next) return
+              onEditAndResend(next)
+              setIsEditing(false)
+            }}
+            disabled={!editDraft.trim() || busy}
+            aria-label="Send edited message"
+          >
+            Send
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={() => {
+              setEditDraft(content)
+              setIsEditing(false)
+            }}
+            aria-label="Cancel edit"
+          >
+            Cancel
+          </button>
+        </div>
+      </article>
+    )
+  }
+
   return (
     <article
       key={id}
@@ -96,6 +162,17 @@ export function MessageBubble({
           ''
         )}
       </span>
+      {!streaming && !thinking && !loading ? (
+        <MessageActions
+          role={role}
+          content={content}
+          onCopy={onCopy}
+          onRegenerate={onRegenerate}
+          onEdit={isUser && onEditAndResend ? () => setIsEditing(true) : undefined}
+          canRegenerate={canRegenerate}
+          busy={busy}
+        />
+      ) : null}
     </article>
   )
 }

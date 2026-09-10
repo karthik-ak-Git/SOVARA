@@ -8,11 +8,15 @@ interface MessageListProps {
   /** Transient in-progress assistant text (never persisted). */
   streamingText?: string
   onRemove?: (eventSeq: number) => void
+  onCopy?: (content: string) => void
+  onRegenerate?: () => void
+  onEditAndResend?: (content: string) => void
+  busy?: boolean
 }
 
 const STICK_THRESHOLD_PX = 80
 
-export function MessageList({ events, thinking = false, streamingText = '', onRemove }: MessageListProps): ReactElement {
+export function MessageList({ events, thinking = false, streamingText = '', onRemove, onCopy, onRegenerate, onEditAndResend, busy = false }: MessageListProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const messages = deriveMessages(events)
@@ -51,6 +55,10 @@ export function MessageList({ events, thinking = false, streamingText = '', onRe
     )
   }
 
+  // Latest assistant eligible for regenerate (not cancelled, not streaming)
+  const lastAssistantIdx = [...messages].reverse().findIndex((m) => m.role === 'assistant' && !m.cancelled)
+  const lastAssistantSeq = lastAssistantIdx >= 0 ? messages[messages.length - 1 - lastAssistantIdx]?.seq : null
+
   let content: ReactNode = (
     <>
       {messages.map((m) => (
@@ -61,10 +69,15 @@ export function MessageList({ events, thinking = false, streamingText = '', onRe
           content={m.content}
           timestamp={m.time}
           cancelled={m.cancelled}
+          onCopy={onCopy}
+          onRegenerate={m.role === 'assistant' && m.seq === lastAssistantSeq ? onRegenerate : undefined}
+          canRegenerate={m.role === 'assistant' && m.seq === lastAssistantSeq}
+          onEditAndResend={m.role === 'user' ? onEditAndResend : undefined}
+          busy={busy}
         />
       ))}
       {streamingText !== '' ? (
-        <MessageBubble id="streaming" role="assistant" content={streamingText} streaming />
+        <MessageBubble id="streaming" role="assistant" content={streamingText} streaming busy={busy} />
       ) : thinking ? (
         <MessageBubble id="thinking" role="assistant" content="" thinking />
       ) : null}
