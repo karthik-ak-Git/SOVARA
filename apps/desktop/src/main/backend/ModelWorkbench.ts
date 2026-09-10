@@ -62,6 +62,7 @@ export class ModelWorkbench {
   }
 
   listRuntimes(): ModelRuntimeEntry[] {
+    this.ensureLocalLibraryRuntime()
     return this.config.listRuntimes()
   }
 
@@ -137,6 +138,7 @@ export class ModelWorkbench {
 
   /** Snapshot reads — no network. Probe first via probeRuntime. */
   listModels(runtimeId?: string): DiscoveredModel[] {
+    this.ensureLocalLibraryRuntime()
     const entries = runtimeId ? [this.config.getRuntime(runtimeId)?.entry].filter((e): e is ModelRuntimeEntry => Boolean(e)) : this.config.listRuntimes()
     if (runtimeId && entries.length === 0) throw new ModelWorkbenchError('unknown runtime')
     const out: DiscoveredModel[] = []
@@ -158,6 +160,68 @@ export class ModelWorkbench {
     return out
   }
 
+  /** Ensure the library's local files appear as a runtime so Chat orchestration (ARCHITECTURE_PHASE1 §6) can select them without a probe. */
+  private ensureLocalLibraryRuntime(): void {
+    try {
+      if (this.config.getRuntime('local')) return
+      // Only create if there is at least one file in library
+      const lib = this.loadLocalLibrarySnapshot()
+      if (lib.length === 0) return
+      const entry: ModelRuntimeEntry = { id: 'local', displayName: 'Local Library', type: 'openai-compatible', endpoint: 'local', enabled: true, timeoutMs: 8000 }
+      this.config.upsertRuntime(entry)
+      this.config.saveProbeSnapshot('local', lib, null)
+      // Auto-select first if nothing selected (so Pill shows Ready)
+      if (!this.config.getActiveSelection()) {
+        this.config.setActiveSelection({ runtimeId: 'local', modelId: lib[0].modelId })
+        try { const { registerLoadedInstance } = require('./ports/ModelRuntimeStub') as typeof import('./ports/ModelRuntimeStub'); registerLoadedInstance(lib[0].modelId, 'local', 4096) } catch {}
+      }
+      // Log: connected models discovered
+      try { this.logLocalDiscovery(lib) } catch {}
+    } catch { /* never block */ }
+  }
+
+  private loadLocalLibrarySnapshot(): Array<{ modelId: string; displayName: string }> {
+    try {
+      // Avoid importing modelDownloads (circular) — scan via RuntimeConfigStore registry + filesystem heuristic
+      const rows = this.config.listRegistryRows()
+      if (rows.length > 0) return rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: r.displayName || r.rfilename }))
+      // Fallback: check AppBackend library dir via config's library path setting, or default data dir
+      let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
+      if (!libDir) {
+        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
+      }
+      const { readdirSync } = require('node:fs') as typeof import('node:fs')
+      const { join } = require('node:path') as typeof import('node:path')
+      const scan = (dir: string, acc: string[]): void => {
+        try {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, e.name)
+            if (e.isDirectory()) scan(p, acc)
+            else if (e.name.toLowerCase().endsWith('.gguf')) acc.push(e.name)
+          }
+        } catch {}
+      }
+      const ggufs: string[] = []
+      scan(libDir, ggufs)
+      return ggufs.slice(0, 20).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: f }))
+    } catch { return [] }
+  }
+
+  private logLocalDiscovery(models: Array<{ modelId: string }>): void {
+    try {
+      const { join } = require('node:path') as typeof import('node:path')
+      const { appendFileSync, statSync } = require('node:fs') as typeof import('node:fs')
+      const { getSovaraDataDir, ensureDir } = require('../storage/paths') as typeof import('../storage/paths')
+      let dir: string; try { dir = join(getSovaraDataDir(undefined), 'logs') } catch { dir = join(require('node:os').tmpdir(), 'sovara-logs') }
+      ensureDir(dir)
+      const file = join(dir, 'runtime.log')
+      // also detection.log mirror for Library visibility
+      const entry = JSON.stringify({ time: Date.now(), iso: new Date().toISOString(), event: 'connected-models', runtimeId: 'local', count: models.length, models: models.map(m=>m.modelId) })+'\n'
+      appendFileSync(file, entry, 'utf8')
+      try { appendFileSync(join(dir, 'detection.log'), entry, 'utf8') } catch {}
+    } catch {}
+  }
+
   async selectModel(runtimeId: string, modelId: string): Promise<ActiveModelState> {
     const snap = this.config.getRuntime(runtimeId)
     if (!snap) throw new ModelWorkbenchError('unknown runtime')
@@ -174,6 +238,36 @@ export class ModelWorkbench {
       throw new ModelWorkbenchError(`resource-pressure: ${pressure.reason ?? 'load refused'}`)
     }
     this.config.setActiveSelection({ runtimeId, modelId })
+    try {
+      const { registerLoadedInstance } = await import('./ports/ModelRuntimeStub')
+      // try library size for accurate VRAM target
+      let bytes: number | undefined
+      try {
+        const rows = this.config.listRegistryRows().find(r => r.rfilename === modelId || r.rfilename.replace(/\.gguf$/i,'')===modelId || r.displayName===modelId)
+        if (rows?.fileSizeBytes) bytes = rows.fileSizeBytes
+        else {
+          const { join } = require('node:path') as typeof import('node:path')
+          const { statSync } = require('node:fs') as typeof import('node:fs')
+          let libDir = this.config.getAppSetting('model_library_dir') || ''
+          if (!libDir) { try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); libDir = join(getSovaraDataDir(undefined), 'models') } catch {}}
+          // search for file matching modelId
+          const { readdirSync } = require('node:fs') as typeof import('node:fs')
+          const scan = (dir: string): string | undefined => {
+            try {
+              for (const e of readdirSync(dir, { withFileTypes: true })) {
+                const p = join(dir, e.name)
+                if (e.isDirectory()) { const f = scan(p); if (f) return f }
+                else if (e.name.replace(/\.gguf$/i,'')===modelId || e.name===modelId) return p
+              }
+            } catch {}
+            return undefined
+          }
+          const fp = libDir ? scan(libDir) : undefined
+          if (fp) { try { bytes = statSync(fp).size } catch {} }
+        }
+      } catch {}
+      registerLoadedInstance(modelId, runtimeId, 4096, bytes)
+    } catch { /* ignore */ }
     return this.getActiveModel()
   }
 

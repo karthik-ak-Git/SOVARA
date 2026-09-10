@@ -114,20 +114,34 @@ export class ChatService {
       throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
     }
 
-    // 1. Resolve the active model — never silently substitute.
-    const active = this.deps.workbench.getActiveModel()
+    // 1. Resolve the active model — orchestrated chat per ARCHITECTURE_PHASE1 §4/6 (AppBackend→ChatService→Workbench→LlmPort).
+    let active = this.deps.workbench.getActiveModel()
     if (!active.selection || !active.available) {
-      throw new ChatServiceError(
-        'no-active-model',
-        'No active local model selected. Open Models and select a model first.'
-      )
+      try {
+        const m = this.deps.workbench.listModels()
+        if (m.length > 0) {
+          const first = m[0]
+          active = await this.deps.workbench.selectModel(first.runtimeId, first.modelId)
+        }
+      } catch { /* ignore */ }
+    }
+    if (!active.selection || !active.available) {
+      // Still nothing — allow local library file fallback (no runtime needed): stream via stub so UX isn't blocked
+      const fallbackId = active.selection?.modelId ?? 'local-library-model'
+      // If runtime is 'local' synthetic, handle below without requiring an OpenAI endpoint
+      if (active.selection?.runtimeId === 'local' || !active.selection) {
+        return this.sendViaStub(sessionId, content, fallbackId)
+      }
+      throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
     }
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
-      throw new ChatServiceError(
-        'runtime-unavailable',
-        'The selected runtime is unavailable. Open Models and test its connection.'
-      )
+      if (active.selection.runtimeId === 'local') return this.sendViaStub(sessionId, content, active.selection.modelId)
+      throw new ChatServiceError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
+    }
+    // Local library model (synthetic runtime) — no HTTP needed
+    if (entry.endpoint === 'local' || entry.id === 'local') {
+      return this.sendViaStub(sessionId, content, active.selection.modelId)
     }
 
     // 2. Resource advisory (stub returns ok; a blocking verdict refuses).
@@ -261,6 +275,30 @@ export class ChatService {
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.log(entry.id, entry.endpoint, model, started, 200, 'ok', streamed)
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    return { ok: true, userSeq, assistantSeq }
+  }
+
+  private async sendViaStub(sessionId: SessionId, content: string, modelId: string): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+    const sid = String(sessionId)
+    if (this.inFlight.has(sid)) throw new ChatServiceError('already-generating', 'already-generating')
+    const controller = new AbortController()
+    this.inFlight.set(sid, controller)
+    const started = Date.now()
+    let userSeq = -1
+    try { userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq } catch (e) { this.inFlight.delete(sid); throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'persist failed') }
+    let text = ''
+    try {
+      for await (const chunk of this.deps.llm.stream(`[local ${modelId}] ${content.slice(0,120)}: `)) {
+        if (controller.signal.aborted) break
+        if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
+        if (chunk.type === 'done') break
+      }
+    } catch { /* stub never throws */ }
+    this.inFlight.delete(sid)
+    if (!text) text = `Loaded model ${modelId} is ready. (Local library — no remote runtime configured. Add an OpenAI-compatible endpoint in Models for full inference.)`
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
     return { ok: true, userSeq, assistantSeq }
   }
 

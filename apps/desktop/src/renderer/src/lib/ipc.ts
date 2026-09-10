@@ -507,6 +507,20 @@ export async function getLibraryDirectory(): Promise<{ path: string }> {
   return (await sovara().invoke('library:getDirectory')) as { path: string }
 }
 
+export type DetectedModelLocationKind = 'lmstudio' | 'ollama'
+
+export interface DetectedModelLocation {
+  kind: DetectedModelLocationKind
+  name: string
+  path: string
+  exists: boolean
+  modelCount: number
+}
+
+export async function detectLibraryLocations(): Promise<DetectedModelLocation[]> {
+  return (await sovara().invoke('library:detectLocations')) as DetectedModelLocation[]
+}
+
 export async function setLibraryDirectory(path = ''): Promise<{ ok: boolean; path: string }> {
   return (await sovara().invoke('library:setDirectory', { path })) as { ok: boolean; path: string }
 }
@@ -736,4 +750,8 @@ export function onInstanceEvents(callback: (event: InstanceEvent) => void): () =
   return sovara().on('events:instances', (...args: unknown[]) => {
     callback(args[0] as InstanceEvent)
   })
+}
+
+export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app' = 'all'): Promise<Record<string,string[]>> {
+  return (await sovara().invoke('logs:getRecent', { kind })) as Record<string,string[]>
 }

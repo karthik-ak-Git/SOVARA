@@ -498,6 +498,13 @@ export function registerIpcHandlers(): void {
     return { path: getBackend().getLibraryDir() }
   })
 
+  ipcMain.handle('library:detectLocations', async () => {
+    const t0 = Date.now()
+    const res = getBackend().detectModelLocations()
+    console.info(`[ipc] library:detectLocations -> ${res.length} locations in ${Date.now() - t0}ms`, res.map((r) => `${r.kind}:${r.path} exists=${r.exists} count=${r.modelCount}`).join(' | '))
+    return res
+  })
+
   ipcMain.handle('library:setDirectory', async (_e, raw: unknown) => {
     const parsed = zLibrarySetDirectory.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid library:setDirectory payload: ${parsed.error.message}`)
@@ -668,6 +675,22 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+  })
+
+  ipcMain.handle('logs:getRecent', async (_e, raw: unknown) => {
+    const kind = (raw as { kind?: string })?.kind ?? 'all'
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const { getSovaraDataDir } = await import('../storage/paths')
+    const tail = (file: string, n = 40): string[] => {
+      try { const t = fs.readFileSync(file,'utf8').trim().split('\n').slice(-n); return t.filter(Boolean) } catch { return [] }
+    }
+    let dir: string; try { dir = path.join(getSovaraDataDir(undefined),'logs') } catch { dir = path.join(require('node:os').tmpdir(),'sovara-logs') }
+    const out: Record<string,string[]> = {}
+    if (kind==='all' || kind==='detection') out.detection = tail(path.join(dir,'detection.log'), 30)
+    if (kind==='all' || kind==='runtime') out.runtime = tail(path.join(dir,'runtime.log'), 30)
+    if (kind==='all' || kind==='app') out.app = tail(path.join(dir,'app.log'), 30)
+    return out
   })
 
   // ── Loaded instances (runtime monitoring & management) ──

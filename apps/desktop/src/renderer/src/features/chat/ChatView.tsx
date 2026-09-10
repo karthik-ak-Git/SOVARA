@@ -33,6 +33,7 @@ interface ChatViewProps {
   execAvailable?: boolean
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
+  onSelectModel?: (runtimeId: string, modelId: string) => void
 }
 
 export function ChatView({
@@ -61,6 +62,7 @@ export function ChatView({
   execAvailable = false,
   reasoningEnabled = false,
   onReasoningToggle = () => {},
+  onSelectModel,
 }: ChatViewProps): ReactElement {
   const streaming = busy && phase === 'streaming'
   const hasConversation = !!selectedId
@@ -99,6 +101,7 @@ export function ChatView({
               execAvailable={execAvailable}
               reasoningEnabled={reasoningEnabled}
               onReasoningToggle={onReasoningToggle}
+              onSelectModel={onSelectModel}
             />
           </div>
 
@@ -154,6 +157,7 @@ export function ChatView({
                 execAvailable={execAvailable}
                 reasoningEnabled={reasoningEnabled}
                 onReasoningToggle={onReasoningToggle}
+                onSelectModel={onSelectModel}
               />
             </div>
             {streaming ? (

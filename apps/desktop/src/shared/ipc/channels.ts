@@ -74,6 +74,7 @@ export const IPC_CHANNELS = {
   // Library (downloaded models)
   'library:listModels': { type: 'invoke' as const },
   'library:getDirectory': { type: 'invoke' as const },
+  'library:detectLocations': { type: 'invoke' as const },
   'library:setDirectory': { type: 'invoke' as const },
   'library:download': { type: 'invoke' as const },
   'library:cancelDownload': { type: 'invoke' as const },
@@ -111,6 +112,7 @@ export const IPC_CHANNELS = {
   // Voice transcription (local faster-whisper)
   'voice:transcribe': { type: 'invoke' as const },
   'voice:status': { type: 'invoke' as const },
+  'logs:getRecent': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },
   'events:download': { type: 'on' as const },

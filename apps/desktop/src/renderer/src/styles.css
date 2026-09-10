@@ -1348,9 +1348,16 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
 }
 
+/* ── Instance GPU load animation (ModelRuntimeStub → loading → loaded) ── */
+.instance-card--loading { animation: gpu-pulse 900ms ease-in-out infinite; border-color: var(--accent) !important; }
+@keyframes gpu-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(74,144,217,.0) } 50% { box-shadow: 0 0 0 6px rgba(74,144,217,.22) } }
+.instance-card--loading .instance-metric-fill { animation: vram-stripes 800ms linear infinite; background-image: linear-gradient(45deg, rgba(74,144,217,.35) 25%, transparent 25%, transparent 50%, rgba(74,144,217,.35) 50%, rgba(74,144,217,.35) 75%, transparent 75%); background-size: 20px 20px; }
+@keyframes vram-stripes { from { background-position: 20px 0 } to { background-position: 0 0 } }
+.instance-metric-fill { transition: width 320ms cubic-bezier(.22,1,.36,1); }
+
 /* ═══════════════════════════════════════════════════════════════
-   Settings Page
-   ═══════════════════════════════════════════════════════════════ */
+    Settings Page
+    ═══════════════════════════════════════════════════════════════ */
 .settings-page {
   display: flex;
   flex: 1;
@@ -1642,6 +1649,8 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   color: #fff;
 }
 .settings-action-btn--primary:hover { background: var(--accent-2); }
+.settings-action-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.settings-action-btn:disabled:hover { background: var(--bg); border-color: var(--border); }
 
 /* Permission status badge */
 .settings-perm-status {
@@ -2886,6 +2895,78 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.library-detect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-soft);
+  border-top: 1px solid var(--border);
+}
+.library-detect-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.library-detect-empty {
+  font-size: 12px;
+  color: var(--muted-2);
+  padding: 4px 0;
+}
+.library-detect-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.library-detect-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.library-detect-body {
+  flex: 1;
+  min-width: 0;
+}
+.library-detect-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.library-detect-kind {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin-left: 6px;
+}
+.library-detect-path {
+  font-size: 11px;
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-detect-meta {
+  flex-shrink: 0;
+}
+.library-detect-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 /* ═══════════════════════════════════════════════════════════════

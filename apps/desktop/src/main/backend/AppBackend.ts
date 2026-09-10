@@ -25,6 +25,7 @@ import {
   getFileStatus, reconcileLibrary, resolveModelFolder,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
+import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -146,6 +147,10 @@ export class AppBackend {
 
   setLibraryDir(dir: string): string {
     return setLibraryDir(this.runtimeConfig, dir)
+  }
+
+  detectModelLocations(): DetectedModelLocation[] {
+    return detectLocations({ homeDir: os.homedir(), platform: process.platform, env: process.env })
   }
 
   scanLibrary(): LibraryEntry[] {

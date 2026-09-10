@@ -23,6 +23,7 @@ interface ComposerProps {
   execAvailable: boolean
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
+  onSelectModel?: (runtimeId: string, modelId: string) => void
 }
 
 export interface FileAttachment {
@@ -51,6 +52,7 @@ export function Composer({
   execAvailable,
   reasoningEnabled = false,
   onReasoningToggle,
+  onSelectModel,
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -314,7 +316,7 @@ export function Composer({
             active={active}
             models={models}
             runtimes={runtimes}
-            onSelect={() => {}}
+            onSelect={(rid,mid)=>{ console.info('[select-model]', rid, mid); onSelectModel?.(rid,mid)}}
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={onReasoningToggle}
           />

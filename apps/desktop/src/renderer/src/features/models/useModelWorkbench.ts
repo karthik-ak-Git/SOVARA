@@ -5,6 +5,7 @@ import {
   getSystemResources,
   listDiscoveredModels,
   listRuntimes,
+  listLibraryModels,
   removeRuntime,
   selectModel,
   testRuntimeConnection,
@@ -27,10 +28,29 @@ export function useModelWorkbench() {
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
-    const [rt, md, ac] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel()])
-    setRuntimes(rt)
-    setModels(md)
-    setActive(ac)
+    const [rt, md, ac, lib] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
+    // Merge library files as local-discovered models so chat selector is library-driven (dynamic, not hardcoded)
+    const libModels: DiscoveredModel[] = lib.map((m) => ({
+      modelId: m.name.replace(/\.gguf$/i, '').replace(/__/g, '/') || m.file.replace(/\.gguf$/i, ''),
+      displayName: m.file,
+      runtimeId: rt[0]?.id ?? 'local',
+      source: 'sovara' as const,
+      capabilities: [],
+      available: true,
+    }))
+    const merged = [...md]
+    for (const lm of libModels) if (!merged.some((x) => x.modelId === lm.modelId)) merged.push(lm)
+    // ensure at least one local runtime entry for the pill label
+    let runtimesOut = rt
+    if (libModels.length > 0 && rt.length === 0) {
+      runtimesOut = [{ id: 'local', displayName: 'Local Library', type: 'openai-compatible' as const, endpoint: 'local', enabled: true, timeoutMs: 8000 }]
+    }
+    setRuntimes(runtimesOut)
+    setModels(merged)
+    // auto-select first library model if nothing selected
+    if (!ac.selection && merged.length > 0) {
+      try { const s = await selectModel(merged[0].runtimeId, merged[0].modelId); setActive(s); } catch { setActive(ac) }
+    } else setActive(ac)
   }, [])
 
   useEffect(() => {

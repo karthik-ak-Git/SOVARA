@@ -198,7 +198,7 @@ export function App(): React.JSX.Element {
             phase={chat.phase}
             streamingText={chat.streamingText}
             error={chat.error}
-            model={chat.model}
+            model={workbench.active}
             onDismissError={chat.dismissError}
             onSend={handleSend}
             onCancel={chat.handleCancel}
@@ -214,6 +214,7 @@ export function App(): React.JSX.Element {
             execAvailable={execMode !== 'off'}
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={setReasoningEnabled}
+            onSelectModel={(rid,mid)=>{ console.info('[app] select', rid, mid); void workbench.handleSelect(rid,mid).then(()=>chat.refreshModelStatus()) }}
           />
         ) : null}
 

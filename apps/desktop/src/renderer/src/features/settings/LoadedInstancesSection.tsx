@@ -9,7 +9,7 @@ interface Props {
   onBack: () => void
 }
 
-const POLL_INTERVAL_MS = 1500
+const POLL_INTERVAL_MS = 320
 
 function formatUptime(startedAt?: number): string {
   if (!startedAt) return '—'
@@ -78,9 +78,10 @@ function MetricBar({ label, value, max, unit }: { label: string; value?: number;
 function InstanceCard({ instance, onUnload }: { instance: ModelInstance; onUnload: (id: string) => void }) {
   const [confirming, setConfirming] = useState(false)
   const m = instance.metrics
+  const loading = instance.status === 'loading'
 
   return (
-    <div className={`instance-card ${instance.status === 'error' || instance.status === 'failed' || instance.status === 'crashed' ? 'instance-card--error' : ''}`}>
+    <div className={`instance-card ${loading ? 'instance-card--loading' : ''} ${instance.status === 'error' || instance.status === 'failed' || instance.status === 'crashed' ? 'instance-card--error' : ''}`}>
       <div className="instance-card-header">
         <div className="instance-card-identity">
           <Cpu size={14} className="instance-card-icon" />
@@ -89,8 +90,8 @@ function InstanceCard({ instance, onUnload }: { instance: ModelInstance; onUnloa
         </div>
         <div className="instance-card-actions">
           <StatusPill title="Uptime">
-            <Activity size={11} />
-            <span>{formatUptime(instance.startedAt)}</span>
+            <Activity size={11} className={loading ? 'spin' : undefined} />
+            <span>{loading ? `Loading to GPU… ${m?.vramUsedMB ?? 0} MB` : formatUptime(instance.startedAt)}</span>
           </StatusPill>
           {instance.status !== 'unloading' && instance.status !== 'unloaded' ? (
             confirming ? (
