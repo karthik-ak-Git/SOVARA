@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -375,6 +375,10 @@ describe('Commit 7 — history mapping', () => {
 })
 
 describe('Commit 7 — ChatService', () => {
+  beforeEach(async () => {
+    const { clearAllInstances } = await import('../src/main/backend/ports/ModelRuntimeStub')
+    clearAllInstances()
+  })
   it('persists user + exactly one assistant event, emits deltas then done', async () => {
     const dir = mkTmp()
     const persistence = makePersistence()

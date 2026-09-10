@@ -3,6 +3,10 @@ import type { LocalModel, ModelInstance, ModelRuntimePort } from '@shared/types/
 
 const instances = new Map<string, ModelInstance>()
 
+export function clearAllInstances(): void {
+  instances.clear()
+}
+
 export class ModelRuntimeStub implements ModelRuntimePort {
   async listLocalModels(): Promise<LocalModel[]> { return [] }
   async load(_modelId: ModelId, _opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance> {

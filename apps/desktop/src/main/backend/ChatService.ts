@@ -15,6 +15,7 @@ import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmChatMessage, LlmPort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendRuntimeLog, appendChatLog, safeTarget } from '../logging/runtimeLog'
+import { ModelRuntimeStub, registerLoadedInstance } from './ports/ModelRuntimeStub'
 import type { ModelWorkbench } from './ModelWorkbench'
 
 /** Minimal local system prompt. Main-only: never renderer-provided. */
@@ -157,6 +158,12 @@ export class ChatService {
       // No active model — honest failure per spec §8. Only the explicit 'local' synthetic
       // runtime may use the stub path; an empty selection must not fabricate a response.
       if (active.selection?.runtimeId === 'local') {
+        const pressure0 = await this.deps.resources.checkBeforeLoad({ id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' } as any, {})
+        if (pressure0.blocking) {
+          const msg0 = `resource-pressure: ${pressure0.reason ?? 'load refused (local fallback)'}`
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg0, modelId: active.selection.modelId, runtimeId: 'local' })
+          throw new ChatServiceError('resource-pressure', msg0)
+        }
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (no active model fallback)' })
         return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
@@ -168,6 +175,12 @@ export class ChatService {
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
       if (active.selection.runtimeId === 'local') {
+        const pressure1 = await this.deps.resources.checkBeforeLoad({ id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' } as any, {})
+        if (pressure1.blocking) {
+          const msg1 = `resource-pressure: ${pressure1.reason ?? 'load refused (runtime disabled)'}`
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg1, modelId: active.selection.modelId, runtimeId: 'local' })
+          throw new ChatServiceError('resource-pressure', msg1)
+        }
         await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (runtime disabled)' })
         return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
@@ -178,14 +191,17 @@ export class ChatService {
     }
     // Local library model (synthetic runtime) — no HTTP needed
     if (entry.endpoint === 'local' || entry.id === 'local') {
+      const pressureLocal = await this.deps.resources.checkBeforeLoad({ id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' } as any, {})
+      if (pressureLocal.blocking) {
+        const msgLocal = `resource-pressure: ${pressureLocal.reason ?? 'load refused (local endpoint)'}`
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msgLocal, modelId: active.selection.modelId, runtimeId: entry.id })
+        throw new ChatServiceError('resource-pressure', msgLocal)
+      }
       await this.ensureModelLoaded(active.selection.modelId, entry.id)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: entry.id, detail: 'via stub (local endpoint)' })
       return this.sendViaStub(sessionId, content, active.selection.modelId, opts)
     }
-    // Ensure remote model is loaded before inference (user requirement: first load then send)
-    await this.ensureModelLoaded(active.selection.modelId, entry.id)
-
-    // 2. Resource advisory (stub returns ok; a blocking verdict refuses).
+    // 2. Resource advisory (must be before load for remote — respect VRAM/limits)
     const pressure = await this.deps.resources.checkBeforeLoad(
       { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
       {}
@@ -195,6 +211,7 @@ export class ChatService {
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg, modelId: active.selection.modelId, runtimeId: entry.id })
       throw new ChatServiceError('resource-pressure', msg)
     }
+    await this.ensureModelLoaded(active.selection.modelId, entry.id)
 
     // 3. History + user persistence first (durable before any network).
     const prior = await this.deps.persistence.getEvents(sessionId)
@@ -597,8 +614,6 @@ export class ChatService {
     appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `loading model ${modelId} on ${runtimeId}...` })
     // eslint-disable-next-line no-console
     console.log(`[SOVARA][CHAT] LOADING model=${modelId} runtime=${runtimeId}`)
-    // Emit a transient loading hint to the UI via a synthetic delta (optional)
-    // Check if already loaded
     if (this.deps.models) {
       try {
         const instances = await this.deps.models.listInstances()
@@ -609,6 +624,24 @@ export class ChatService {
           console.log(`[SOVARA][CHAT] model ${modelId} already loaded — skipping load`)
           return
         }
+        // Respect maxConcurrentModels — evict oldest if at limit (user asked: how will other models load)
+        try {
+          const limits = await this.deps.resources.getLimits()
+          if (instances.length >= limits.maxConcurrentModels) {
+            const toEvict = instances[0]
+            if (toEvict) {
+              appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `at limit (${limits.maxConcurrentModels}) — evicting ${toEvict.modelId} to make room` })
+              // eslint-disable-next-line no-console
+              console.log(`[SOVARA][CHAT] EVICTING model=${toEvict.modelId} to load ${modelId} (maxConcurrent=${limits.maxConcurrentModels})`)
+              try { await this.deps.models.unload(toEvict.id) } catch {}
+              // Also remove from stub's global map via direct import for stub path
+              try {
+                const tmp = new ModelRuntimeStub()
+                try { await tmp.unload(toEvict.id) } catch {}
+              } catch {}
+            }
+          }
+        } catch {}
         // Try real load
         try {
           await this.deps.models.load(modelId as any, { runtimeId })
@@ -621,10 +654,9 @@ export class ChatService {
           const msg = e instanceof Error ? e.message : String(e)
           appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `load failed (${msg}) — using stub register` })
           try {
-            const { registerLoadedInstance } = await import('./ports/ModelRuntimeStub')
             registerLoadedInstance(modelId, runtimeId)
             await new Promise((r) => setTimeout(r, 10))
-            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `model ${modelId} registered (stub)` })
+            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `model ${modelId} registered (stub) — GPU VRAM will be reflected in SystemResources` })
           } catch {}
           return
         }

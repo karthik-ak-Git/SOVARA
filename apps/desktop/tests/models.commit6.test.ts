@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -253,6 +253,10 @@ describe('Commit 6 — workbench registry + selection + restart', () => {
 })
 
 describe('Commit 6 — resource stub honesty', () => {
+  beforeEach(async () => {
+    const { clearAllInstances } = await import('../src/main/backend/ports/ModelRuntimeStub')
+    clearAllInstances()
+  })
   it('reports VRAM as unknown, never fabricated', async () => {
     const snap = await new SystemResourceStub().getSnapshot()
     expect(snap.vram.totalMB).toBeUndefined()
