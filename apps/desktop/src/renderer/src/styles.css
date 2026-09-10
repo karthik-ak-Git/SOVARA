@@ -3374,6 +3374,9 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .explorer-sort-item:hover { background: var(--panel-2); }
 .explorer-sort-item.active { font-weight: 700; }
 .explorer-sort-item:disabled { opacity: .45; cursor: default; }
+/* Left-aligned variant for the filter row (left side of the column):
+   right-pinned menus would extend leftward underneath the sidebar. */
+.explorer-sort-menu--left { left: 0; right: auto; z-index: 150; }
 .explorer-filter-count { margin-left: auto; margin-right: 6px; font-size: 11px; color: var(--muted-2); font-weight: 400; }
 
 /* Second filter row */

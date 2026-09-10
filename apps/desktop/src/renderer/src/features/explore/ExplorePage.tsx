@@ -129,7 +129,7 @@ function FilterMenu({ label, ariaLabel, value, options, onChange }: {
         <ChevronsUpDown size={13} className={`explorer-sort-chev ${open ? 'open' : ''}`} />
       </button>
       {open ? (
-        <div className="explorer-sort-menu" role="listbox" aria-label={ariaLabel}>
+        <div className="explorer-sort-menu explorer-sort-menu--left" role="listbox" aria-label={ariaLabel}>
           {options.map((o) => (
             <button
               key={o.value} type="button" role="option" aria-selected={value === o.value}
