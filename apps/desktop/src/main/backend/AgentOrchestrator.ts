@@ -214,7 +214,7 @@ export class AgentOrchestrator {
           if (h.ok) break
           if (h.error === 'not-found') break
           // If still loading (vram 0) wait a bit
-          if ((inst.status as string) === 'loading' || (h.vramUsedMB ?? 0) === 0) {
+          if ((inst.status as string) === 'loading' || ((h as { vramUsedMB?: number }).vramUsedMB ?? 0) === 0) {
             await new Promise((r) => setTimeout(r, 180))
             continue
           }
@@ -353,8 +353,43 @@ export class AgentOrchestrator {
           return await this.finishCancelled(sessionId, sid, startedAll, entry.id, endpoint, model, streamed, userSeq)
         }
         text = stubText
-        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
-        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `local stub — ${text.length} chars` })
+        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: stubText })
+        // Optional tool step for tool-use/agent tasks — honest multi-step via ToolPort
+        if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
+          const defs = this.deps.tools.list()
+          if (defs.some((d) => d.name === 'web_search')) {
+            this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `dispatching web_search for: ${content.slice(0,60)}` })
+            try {
+              const raw = await this.deps.tools.dispatch('web_search', { queries: [content.slice(0,200)] })
+              let toolText = ''
+              try {
+                const parsed = JSON.parse(raw)
+                if (parsed.error) {
+                  toolText = `Tool error: ${parsed.error}`
+                  this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: toolText })
+                } else {
+                  toolText = String(raw).slice(0, 1500)
+                  this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
+                  this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
+                }
+              } catch {
+                toolText = String(raw).slice(0, 1500)
+                this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
+                this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
+              }
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, content: toolText }) } catch {}
+              if (toolText && !controller.signal.aborted) {
+                const augmented = `\n\n[Tool web_search result: ${toolText.slice(0,800)}]`
+                text += augmented
+                this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: augmented })
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e)
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool failed: ${msg}` })
+            }
+          }
+        }
+        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `local stub — ${text.length} chars steps=${(classification.kind === 'tool-use' || classification.kind === 'agent') ? 2 : 1}` })
 
         const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
         const promptTokens = Math.ceil(content.length / 4)
@@ -428,6 +463,79 @@ export class AgentOrchestrator {
       }
 
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars streamed=${streamed}` })
+
+      // ── Optional second step: tool use (honest multi-step) ──
+      if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
+        const defs = this.deps.tools.list()
+        if (defs.some((d) => d.name === 'web_search')) {
+          this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `dispatching web_search for: ${content.slice(0,60)}` })
+          let toolText = ''
+          try {
+            const raw = await this.deps.tools.dispatch('web_search', { queries: [content.slice(0,200)] })
+            try {
+              const parsed = JSON.parse(raw)
+              if (parsed.error) {
+                toolText = `Tool error: ${parsed.error}`
+                this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: toolText })
+              } else {
+                toolText = String(raw).slice(0, 1500)
+                this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
+                this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
+              }
+            } catch {
+              toolText = String(raw).slice(0, 1500)
+              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
+            }
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, content: toolText }) } catch {}
+            if (toolText && !controller.signal.aborted) {
+              // Second LLM step with tool context — honest agent loop continuation
+              this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: 'llm generation (with tool context)' })
+              const followMessages: import('@shared/types/ports').LlmChatMessage[] = [
+                ...messages,
+                { role: 'assistant', content: text },
+                { role: 'system', content: `Tool web_search result (untrusted external content):\n${toolText.slice(0, 3000)}` },
+                { role: 'user', content: 'Using the tool result above, provide the final answer concisely.' },
+              ]
+              let secondText = ''
+              try {
+                for await (const chunk of this.deps.llm.streamChat({
+                  endpoint,
+                  model,
+                  messages: followMessages,
+                  timeoutMs,
+                  stream: true,
+                  signal: controller.signal,
+                })) {
+                  if (controller.signal.aborted) break
+                  if (chunk.type === 'text-delta' && chunk.text) {
+                    secondText += chunk.text
+                    this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
+                  }
+                  if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+                  if (chunk.type === 'done') break
+                }
+                if (secondText.trim() !== '') {
+                  text += '\n\n' + secondText
+                }
+                this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `llm+tool done — second step ${secondText.length} chars` })
+              } catch (e) {
+                // Second step failure is non-fatal — keep first answer and tool result
+                if (!(controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled'))) {
+                  const safe2 = e instanceof ChatInferenceError ? e.message : 'tool follow-up failed'
+                  this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `second step failed: ${safe2}` })
+                } else {
+                  this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: 'cancelled during tool follow-up' })
+                  return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
+                }
+              }
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool failed: ${msg}` })
+          }
+        }
+      }
 
       if (controller.signal.aborted) {
         return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)

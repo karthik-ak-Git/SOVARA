@@ -214,6 +214,7 @@ export function App(): React.JSX.Element {
             setDraft={chat.setDraft}
             busy={chat.busy}
             phase={chat.phase}
+            execution={chat.execution}
             streamingText={chat.streamingText}
             streamingReasoning={chat.streamingReasoning}
             error={chat.error}

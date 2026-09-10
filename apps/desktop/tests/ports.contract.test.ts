@@ -22,11 +22,22 @@ describe('Commit 1 — stub ports satisfy contracts', () => {
     expect(snap.limits.maxConcurrentModels).toBe(1)
   })
 
-  it('ModelRuntimeStub is unavailable-by-design', async () => {
+  it('ModelRuntimeStub supports honest lifecycle (loading→ready)', async () => {
+    const { clearAllInstances } = await import('../src/main/backend/ports/ModelRuntimeStub')
+    clearAllInstances()
     const m = new ModelRuntimeStub()
     expect(await m.listLocalModels()).toEqual([])
     expect(await m.probeRuntime('ollama')).toEqual({ available: false })
-    await expect(m.load('any' as never, {})).rejects.toThrow(/unavailable/)
+    const inst = await m.load('any' as never, { runtimeId: 'local' })
+    expect(inst.status).toBe('loading')
+    expect(inst.modelId).toBe('any')
+    const health = await m.health(inst.id)
+    expect(health.ok).toBe(true)
+    const list = await m.listInstances()
+    expect(list.some((i) => i.id === inst.id)).toBe(true)
+    await m.unload(inst.id)
+    expect((await m.listInstances()).some((i) => i.id === inst.id)).toBe(false)
+    clearAllInstances()
   })
 
   it('LlmStub streams a stub chunk', async () => {

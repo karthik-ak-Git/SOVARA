@@ -12,7 +12,7 @@ interface ComposerProps {
   onCancel?: () => void
   disabled?: boolean
   busy?: boolean
-  phase?: 'idle' | 'streaming'
+  phase?: 'idle' | 'streaming' | 'planning' | 'loading' | 'tool'
   active: ActiveModelState
   runtimes: ModelRuntimeEntry[]
   models: DiscoveredModel[]

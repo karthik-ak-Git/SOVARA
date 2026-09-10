@@ -5,7 +5,8 @@ import type { SessionEventLike } from './conversation'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 import type { ChatPhase } from './useChatSession'
 import type { ExecMode } from '../../components/ui/PermissionControl'
-import { MessageSquare, Cpu } from 'lucide-react'
+import { MessageSquare, Cpu, Loader2, Wrench, Brain, CheckCircle2, XCircle } from 'lucide-react'
+import type { AgentExecutionState } from './useChatSession'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -15,6 +16,7 @@ interface ChatViewProps {
   setDraft: (value: string) => void
   busy: boolean
   phase?: ChatPhase
+  execution?: AgentExecutionState
   streamingText?: string
   streamingReasoning?: string
   error: string | null
@@ -49,6 +51,7 @@ export function ChatView({
   setDraft,
   busy,
   phase = 'idle',
+  execution,
   streamingText = '',
   streamingReasoning = '',
   error,
@@ -74,7 +77,9 @@ export function ChatView({
   onReasoningToggle = () => {},
   onSelectModel,
 }: ChatViewProps): ReactElement {
-  const streaming = busy && phase === 'streaming'
+  const exec = execution ?? { taskKind: null, phase: phase as AgentExecutionState['phase'] }
+  const isStreaming = busy && (phase === 'streaming' || exec.phase === 'streaming' || exec.phase === 'loading' || exec.phase === 'planning' || exec.phase === 'selecting' || exec.phase === 'ready' || exec.phase === 'tool')
+  const streaming = isStreaming
   const hasConversation = !!selectedId
   const hasMessages = events.length > 0
   const showEmpty = !hasConversation || !hasMessages
@@ -92,17 +97,22 @@ export function ChatView({
     return () => window.removeEventListener('keydown', onKey)
   }, [streaming, onCancel])
 
-  const getActionableError = (err: string | null): { title: string; hint: string } | null => {
+  const getActionableError = (err: string | null): { title: string; hint: string; action?: 'models' | 'retry' } | null => {
     if (!err) return null
     const lower = err.toLowerCase()
-    if (lower.includes('no active local model') || lower.includes('no-active-model')) {
-      return { title: 'No local model selected', hint: 'Open Models and select a model to start chatting.' }
+    if (lower.includes('no active local model') || lower.includes('no-active-model') || lower.includes('no compatible model')) {
+      return { title: 'No local model available', hint: 'No compatible model is available for this task. Open Models and select a model or download one.', action: 'models' }
     }
     if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable')) {
-      return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.' }
+      return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
     }
-    if (lower.includes('resource-pressure')) {
-      return { title: 'Resource pressure', hint: 'The system is under memory pressure and refused the request. Close other models or lower context.' }
+    if (lower.includes('model could not be loaded') || lower.includes('model-load-failed') || lower.includes('failed')) {
+      // Distinguish VRAM vs generic load fail
+      if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }
+      return { title: 'Model could not be loaded', hint: err, action: 'models' }
+    }
+    if (lower.includes('resource-pressure') || lower.includes('resource-blocked')) {
+      return { title: 'Resource pressure', hint: 'The system is under memory pressure and refused the request. Close other models or lower context.', action: 'models' }
     }
     if (lower.includes('already-generating')) {
       return { title: 'Already generating', hint: 'Wait for the current reply to finish or press Stop.' }
@@ -113,6 +123,25 @@ export function ChatView({
     return { title: 'Generation failed', hint: err }
   }
   const actionable = getActionableError(error)
+
+  // Honest execution status — only when orchestrator has emitted a real state
+  const showExecution = exec.phase !== 'idle' && exec.phase !== 'done'
+  const executionLabel = (() => {
+    switch (exec.phase) {
+      case 'planning': return exec.taskKind ? `Planning — task: ${exec.taskKind}` : 'Understanding task…'
+      case 'selecting': return `Selecting model${exec.modelId ? ` — ${exec.modelId.split(':').pop()}` : ''}…`
+      case 'loading': return exec.modelId ? `Loading ${exec.modelId.split(':').pop()?.split('/').pop() ?? exec.modelId}…` : 'Loading model…'
+      case 'ready': return exec.modelId ? `${exec.modelId.split(':').pop()?.split('/').pop() ?? exec.modelId} — Ready` : 'Model ready'
+      case 'tool': return exec.toolName ? `Running tool: ${exec.toolName}…` : 'Running tool…'
+      case 'streaming': return exec.taskKind ? `Generating — task: ${exec.taskKind}` : 'Generating…'
+      case 'error': return exec.error ?? 'Task failed'
+      case 'cancelled': return 'Cancelled'
+      default: return null
+    }
+  })()
+  const showVramBar = exec.phase === 'loading' && typeof exec.vramTotalMB === 'number'
+  // Show task kind badge when known
+  const taskKindBadge = exec.taskKind ? exec.taskKind : null
 
   const modelHeader = model.available && model.displayName ? (
     <span className="status-badge" aria-label={`Model header ${model.displayName}`}>
@@ -194,10 +223,15 @@ export function ChatView({
               <div className="chat-error-title">{actionable.title}</div>
               <div className="chat-error-hint muted small">{actionable.hint}</div>
               <div className="chat-error-actions">
-                {(actionable.title.includes('model') || actionable.title.includes('Model')) ? (
-                  <button type="button" className="btn btn-sm" onClick={onOpenModels} aria-label="Open Models">
-                    Open Models
-                  </button>
+                {actionable.action === 'models' ? (
+                  <>
+                    <button type="button" className="btn btn-sm" onClick={onOpenModels} aria-label="Open Models">
+                      Open Models
+                    </button>
+                    <button type="button" className="btn btn-sm btn-ghost" onClick={onOpenModels} aria-label="Choose another model">
+                      Choose another model
+                    </button>
+                  </>
                 ) : null}
                 {onDismissError ? (
                   <button type="button" className="btn btn-sm btn-ghost" onClick={onDismissError} aria-label="Dismiss error">
@@ -208,9 +242,55 @@ export function ChatView({
             </div>
           ) : null}
 
+          {/* Honest agent execution status — real backend events only */}
+          {showExecution && executionLabel ? (
+            <div className="chat-execution" role="status" aria-live="polite" aria-label="Agent execution">
+              <div className="chat-execution-head">
+                <span className="chat-execution-icon" aria-hidden>
+                  {exec.phase === 'loading' ? <Loader2 size={14} className="spin" /> : exec.phase === 'tool' ? <Wrench size={14} /> : exec.phase === 'planning' || exec.phase === 'selecting' ? <Brain size={14} /> : exec.phase === 'error' ? <XCircle size={14} /> : exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
+                </span>
+                <span className="chat-execution-label">{executionLabel}</span>
+                {taskKindBadge ? <span className="badge badge--info chat-execution-task">{taskKindBadge}</span> : null}
+                {exec.modelId ? <span className="muted small chat-execution-model">{exec.modelId.split(':').pop()}{exec.runtimeId ? ` on ${exec.runtimeId}` : ''}</span> : null}
+              </div>
+              {showVramBar ? (
+                <div className="chat-execution-vram" aria-label="VRAM usage">
+                  <div className="chat-execution-vram-bar">
+                    <div
+                      className="chat-execution-vram-fill"
+                      style={{ width: `${Math.min(100, Math.round(((exec.vramUsedMB ?? 0) / (exec.vramTotalMB ?? 8192)) * 100))}%` }}
+                    />
+                  </div>
+                  <span className="muted small chat-execution-vram-text">
+                    VRAM {typeof exec.vramUsedMB === 'number' ? `${(exec.vramUsedMB / 1024).toFixed(1)}` : '0.0'} / {(exec.vramTotalMB ?? 8192) / 1024} GB
+                  </span>
+                </div>
+              ) : null}
+              {exec.detail ? <div className="muted small chat-execution-detail">{exec.detail}</div> : null}
+              {exec.phase === 'loading' ? (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={onCancel} aria-label="Cancel model loading">
+                  Cancel
+                </button>
+              ) : null}
+              {/* Expandable execution details — not raw logs */}
+              {exec.phase === 'ready' || exec.phase === 'streaming' ? (
+                <details className="chat-execution-details">
+                  <summary className="muted small">Execution details</summary>
+                  <div className="chat-execution-details-body muted small">
+                    <div>Task: {exec.taskKind ?? 'chat'}</div>
+                    {exec.modelId ? <div>Model: {exec.modelId}</div> : null}
+                    {exec.runtimeId ? <div>Runtime: {exec.runtimeId}</div> : null}
+                    {typeof exec.stepIndex === 'number' ? <div>Step: {exec.stepIndex + 1}</div> : null}
+                    {exec.detail ? <div>Detail: {exec.detail}</div> : null}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
+
           <MessageList
             events={events}
-            thinking={busy && streamingText === '' && streamingReasoning === ''}
+            thinking={busy && streamingText === '' && streamingReasoning === '' && exec.phase === 'streaming'}
             streamingText={streamingText}
             streamingReasoning={streamingReasoning}
             onCopy={onCopy}
@@ -229,7 +309,10 @@ export function ChatView({
                 NO LOCAL MODEL
               </span>
             )}
+            {taskKindBadge && exec.phase !== 'idle' ? <span className="badge badge--info" aria-label={`Task ${taskKindBadge}`}>{taskKindBadge}</span> : null}
             {streaming ? <span className="streaming-indicator" aria-live="polite" aria-label="Generating">● Streaming…</span> : null}
+            {exec.phase === 'loading' ? <span className="streaming-indicator" aria-live="polite">● Loading model…</span> : null}
+            {exec.phase === 'tool' ? <span className="streaming-indicator" aria-live="polite">● Tool running…</span> : null}
           </div>
 
           <div className="composer-row">
