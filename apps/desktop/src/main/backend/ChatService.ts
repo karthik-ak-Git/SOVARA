@@ -326,20 +326,26 @@ export class ChatService {
     const started = Date.now()
     let userSeq = -1
     try { userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq } catch (e) { this.inFlight.delete(sid); throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'persist failed') }
-    let text = ''
-    try {
-      for await (const chunk of this.deps.llm.stream(`[local ${modelId}] ${content.slice(0,120)}: `)) {
-        if (controller.signal.aborted) break
-        if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
-        if (chunk.type === 'done') break
-      }
-    } catch { /* stub never throws */ }
+    // Local stub — echo user input so chat feels live even without a remote runtime.
+    // Generates a deterministic but chat-like response; streamed as one delta for UI continuity.
+    const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()
+    let text = snippet ? `You said: "${snippet}" — local stub for ${modelId}. Configure an OpenAI-compatible runtime in Models → Connected runtimes (e.g., LM Studio at http://127.0.0.1:1234) for full inference.` : `Local stub for ${modelId} is ready — send a message to see an echo. Configure a runtime in Models for full inference.`
+    // Simulate streaming for UI (one delta, honours abort)
+    if (!controller.signal.aborted) {
+      this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
+    }
     this.inFlight.delete(sid)
-    if (!text) text = `Loaded model ${modelId} is ready. (Local library — no remote runtime configured. Add an OpenAI-compatible endpoint in Models for full inference.)`
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    const promptTokens = Math.ceil(content.length / 4)
+    const completionTokens = Math.ceil(text.length / 4)
+    const totalTokens = promptTokens + completionTokens
+    // Persist token usage for Settings → Usage / Local Model API
+    try {
+      this.deps.persistence.insertTokenUsage({ sessionId: sid, model: modelId, promptTokens, completionTokens, totalTokens })
+    } catch {}
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
-    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', totalTokens: Math.ceil((content.length + text.length)/4), latencyMs: Date.now()-started })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now()-started, injected: { workspace: false, mcp: false, skills: false, webSearch: false }, detail: `stub echo len=${content.length}` })
     return { ok: true, userSeq, assistantSeq }
   }
 
@@ -521,20 +527,23 @@ export class ChatService {
     const controller = new AbortController()
     this.inFlight.set(sid, controller)
     const started = Date.now()
-    let text = ''
-    try {
-      for await (const chunk of this.deps.llm.stream(`[local ${modelId}] ${prompt.slice(0, 120)}: `)) {
-        if (controller.signal.aborted) break
-        if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
-        if (chunk.type === 'done') break
-      }
-    } catch { /* stub never throws */ }
+    // Regenerated stub — echo with a hint that it's a regeneration
+    const snippet = prompt.slice(0, 500).replace(/\s+/g, ' ').trim()
+    let text = snippet ? `Regenerated: You said "${snippet}" — local stub for ${modelId} (regenerated at ${new Date().toLocaleTimeString()}).` : `Local stub for ${modelId} — regenerated response. Configure a runtime in Models for full inference.`
+    if (!controller.signal.aborted) {
+      this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
+    }
     this.inFlight.delete(sid)
-    if (!text) text = `Loaded model ${modelId} is ready. (Local library — no remote runtime configured. Add an OpenAI-compatible endpoint in Models for full inference.)`
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
+    const promptTokens = Math.ceil(prompt.length / 4)
+    const completionTokens = Math.ceil(text.length / 4)
+    const totalTokens = promptTokens + completionTokens
+    try {
+      this.deps.persistence.insertTokenUsage({ sessionId: sid, model: modelId, promptTokens, completionTokens, totalTokens })
+    } catch {}
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now() - started, outcome: 'ok', modelId, streamed: true })
-    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', totalTokens: Math.ceil((prompt.length + text.length)/4), latencyMs: Date.now() - started })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now() - started, detail: 'regenerate stub' })
     return { ok: true, assistantSeq }
   }
 
@@ -543,7 +552,7 @@ export class ChatService {
     if (!controller) return { cancelled: false }
     appendChatLog(this.deps.baseDir, { sessionId: String(sessionId), action: 'cancel', outcome: 'cancelled' })
     // eslint-disable-next-line no-console
-    console.log(`[SOVARA][CHAT] ⊘ cancel sid=${String(sessionId)}`)
+    console.log(`[SOVARA][CHAT] CANCEL cancel sid=${String(sessionId)}`)
     controller.abort(new Error('cancelled'))
     return { cancelled: true }
   }

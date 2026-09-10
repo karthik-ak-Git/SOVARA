@@ -36,11 +36,12 @@ export function safeTarget(rawUrl: string): string {
 
 export function appendRuntimeLog(baseDir: string | undefined, entry: RuntimeLogEntry): void {
   // Terminal visibility (user requirement: errors/actions visible in terminal)
+  // Use ASCII-safe glyphs to avoid garbled output on Windows codepages
   try {
-    const tag = entry.outcome === 'ok' ? '✓' : entry.outcome === 'cancelled' ? '⊘' : '✗'
+    const tag = entry.outcome === 'ok' ? 'OK' : entry.outcome === 'cancelled' ? 'CANCEL' : 'ERR'
     // eslint-disable-next-line no-console
     console.log(
-      `[SOVARA][RUNTIME] ${tag} ${entry.method} ${entry.target} → ${entry.outcome} ${entry.status ? `status=${entry.status} ` : ''}model=${entry.modelId ?? '—'} ${entry.streamed ? 'streamed' : 'non-stream'} latency=${entry.latencyMs}ms runtime=${entry.runtimeId}`
+      `[SOVARA][RUNTIME] ${tag} ${entry.method} ${entry.target} -> ${entry.outcome} ${entry.status ? `status=${entry.status} ` : ''}model=${entry.modelId ?? '-'} ${entry.streamed ? 'streamed' : 'non-stream'} latency=${entry.latencyMs}ms runtime=${entry.runtimeId}`
     )
     if (entry.outcome !== 'ok' && entry.outcome !== 'cancelled') {
       // eslint-disable-next-line no-console
@@ -97,13 +98,13 @@ export function appendChatLog(baseDir: string | undefined, entry: Omit<ChatLogEn
     iso: new Date().toISOString(),
     ...entry,
   } as ChatLogEntry
-  // Terminal
+  // Terminal - ASCII safe
   try {
-    const icon = full.action === 'error' ? '✗' : full.action === 'done' ? '✓' : full.action === 'cancel' ? '⊘' : '→'
-    const tok = full.totalTokens !== undefined ? ` tokens=${full.totalTokens} (p=${full.promptTokens} c=${full.completionTokens})` : ''
+    const icon = full.action === 'error' ? 'ERR' : full.action === 'done' ? 'OK' : full.action === 'cancel' ? 'CANCEL' : '->'
+    const tok = full.totalTokens !== undefined ? ` tokens=${full.totalTokens} (p=${full.promptTokens ?? 0} c=${full.completionTokens ?? 0})` : ''
     const inj = full.injected ? ` injected=${Object.entries(full.injected).filter(([,v]) => v).map(([k]) => k).join(',') || 'none'}` : ''
     // eslint-disable-next-line no-console
-    console.log(`[SOVARA][CHAT] ${icon} ${full.action} sid=${full.sessionId} model=${full.modelId ?? '—'} ${full.outcome ? `outcome=${full.outcome} ` : ''}${full.latencyMs ? `latency=${full.latencyMs}ms` : ''}${tok}${inj}${full.error ? ` error=${full.error}` : ''}`)
+    console.log(`[SOVARA][CHAT] ${icon} ${full.action} sid=${full.sessionId} model=${full.modelId ?? '-'} ${full.outcome ? `outcome=${full.outcome} ` : ''}${full.latencyMs ? `latency=${full.latencyMs}ms` : ''}${tok}${inj}${full.error ? ` error=${full.error}` : ''}${full.detail ? ` detail=${full.detail}` : ''}`)
     if (full.action === 'error' && full.error) {
       // eslint-disable-next-line no-console
       console.error(`[SOVARA][CHAT][ERROR] sid=${full.sessionId} ${full.error}`)

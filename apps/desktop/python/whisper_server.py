@@ -362,4 +362,13 @@ if __name__ == "__main__":
     model_name = sys.argv[1] if len(sys.argv) > 1 else "base"
     load_model(model_name)
     print(f"[voice] Server starting on http://127.0.0.1:51820", flush=True)
-    app.run(host="127.0.0.1", port=51820, debug=False, threaded=True)
+    # Try production WSGI server (waitress) to avoid Flask dev-server warning
+    # Fallback to Flask with suppressed warning if not available
+    try:
+        from waitress import serve
+        print(f"[voice] Serving with waitress (production) on http://127.0.0.1:51820", flush=True)
+        serve(app, host="127.0.0.1", port=51820, threads=4)
+    except ImportError:
+        import logging
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        app.run(host="127.0.0.1", port=51820, debug=False, threaded=True, use_reloader=False)

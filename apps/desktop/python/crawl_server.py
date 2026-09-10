@@ -546,4 +546,11 @@ def crawl():
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 51821
     print(f"[crawl] starting on 127.0.0.1:{port} (crawl4ai={'yes' if HAVE_CRAWL4AI else 'NO — pip install crawl4ai'})", flush=True)
-    app.run(host="127.0.0.1", port=port, threaded=True)
+    try:
+        from waitress import serve
+        print(f"[crawl] Serving with waitress (production) on 127.0.0.1:{port}", flush=True)
+        serve(app, host="127.0.0.1", port=port, threads=4)
+    except ImportError:
+        import logging
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        app.run(host="127.0.0.1", port=port, threaded=True, use_reloader=False)

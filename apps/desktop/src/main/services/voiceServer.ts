@@ -72,13 +72,33 @@ export async function startVoiceServer(): Promise<void> {
       })
 
       server.stdout?.on('data', (data: Buffer) => {
-        const msg = data.toString().trim()
-        if (msg) console.log(`[voice:py] ${msg}`)
+        const raw = data.toString()
+        // Filter Flask/Werkzeug dev-server banner (user reported garbled + warning)
+        const filtered = raw
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0)
+          .filter((l) => !l.includes('development server') && !l.includes('Do not use it in a production deployment') && !l.includes('Use a production WSGI server'))
+        for (const line of filtered) {
+          // Keep useful lines like "* Running on ..." but without the warning
+          if (line.includes('Running on')) {
+            console.log(`[voice] Server listening on ${line.split('Running on')[1]?.trim() ?? ''}`)
+          } else {
+            console.log(`[voice:py] ${line}`)
+          }
+        }
       })
 
       server.stderr?.on('data', (data: Buffer) => {
-        const msg = data.toString().trim()
-        if (msg) console.error(`[voice:py] ${msg}`)
+        const raw = data.toString()
+        const filtered = raw
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0)
+          .filter((l) => !l.includes('development server') && !l.includes('Do not use it in a production deployment') && !l.includes('Use a production WSGI server'))
+        for (const line of filtered) {
+          if (line) console.error(`[voice:py] ${line}`)
+        }
       })
 
       server.on('exit', (code) => {
