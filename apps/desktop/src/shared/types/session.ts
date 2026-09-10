@@ -4,7 +4,16 @@ import type { SessionId, ToolCallId } from './branded'
  * Minimal SessionEvent vocabulary — compatible shape with DSH's SessionEvent
  * without importing Cordis. Only `user/message` in Phase 1; others reserved.
  */
-export type SessionEventType = 'user/message' | 'assistant/message' | 'tool/result' | 'system/resource-blocked'
+export type SessionEventType =
+  | 'user/message'
+  | 'assistant/message'
+  | 'assistant/reasoning'
+  | 'assistant/cancelled'
+  | 'agent/execution'
+  | 'agent/trace'
+  | 'tool/result'
+  | 'tool/call'
+  | 'system/resource-blocked'
 
 export type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }
 

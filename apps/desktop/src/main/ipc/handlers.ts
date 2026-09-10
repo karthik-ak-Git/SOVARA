@@ -43,6 +43,8 @@ function broadcastDownload(event: import('../services/modelDownloads').DownloadE
 
 export function registerIpcHandlers(): void {
   getBackend().chat.setEmit(broadcastChat)
+  // Orchestrator is the Chat execution surface — keep emit in sync
+  try { getBackend().orchestrator.setEmit(broadcastChat) } catch { /* tests */ }
   ipcMain.handle('app:getInfo', async () => {
     return getBackend().getInfo()
   })
@@ -140,15 +142,27 @@ export function registerIpcHandlers(): void {
     const sid = brand<'SessionId'>(parsed.data.sessionId)
     console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch} reasoning=${!!parsed.data.reasoning}`)
     try {
-      // Real local inference via ChatService → LlmPort → loopback runtime.
-      // Deltas stream back on `events:session`; the invoke resolves on
-      // completion with the durable seqs. Globe flag adds web context.
-      const res = await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+      // Agent orchestration surface: task → router → runtime → stream.
+      // Deltas stream back on `events:session`; invoke resolves when the
+      // durable assistant event is persisted. Keeps Chat thin.
+      const backend = getBackend()
+      // Prefer orchestrator when available (Phase 1+ seam). Falls back to
+      // legacy ChatService for tests that mock ChatService directly.
+      const target: { execute?: Function; send?: Function } = (backend as unknown as { orchestrator?: { execute: Function } }).orchestrator ?? backend.chat
+      const res = await (target.execute
+        ? (target as { execute: (sid: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+        : (target as { send: (sid: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).send(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning }))
       console.log(`[SOVARA][IPC] chat:send ok sid=${parsed.data.sessionId} userSeq=${res.userSeq} assistantSeq=${res.assistantSeq}`)
       return res
     } catch (e) {
       console.error(`[SOVARA][IPC][chat:send][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
-      throw new Error(e instanceof Error ? e.message : 'chat failed')
+      // Map orchestrator codes to user-facing strings the UI already handles
+      const raw = e instanceof Error ? e.message : 'chat failed'
+      const code = (e as { code?: string })?.code
+      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
+      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
+      if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error('runtime-unavailable: ' + raw)
+      throw new Error(raw)
     }
   })
 
@@ -157,7 +171,13 @@ export function registerIpcHandlers(): void {
     if (raw === undefined) return { ok: true, cancelled: false }
     const parsed = zChatCancel.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid cancel payload: ${parsed.error.message}`)
-    return getBackend().chat.cancel(brand<'SessionId'>(parsed.data.sessionId))
+    const sid = brand<'SessionId'>(parsed.data.sessionId)
+    // Cancel must propagate to the orchestrator (real stream abort), not just hide spinner
+    const backend = getBackend()
+    const orch = (backend as unknown as { orchestrator?: { cancel: (s: SessionId) => { cancelled: boolean } } }).orchestrator
+    const legacy = backend.chat.cancel(sid)
+    const viaOrch = orch ? orch.cancel(sid) : { cancelled: false }
+    return { cancelled: legacy.cancelled || viaOrch.cancelled }
   })
 
   ipcMain.handle('chat:regenerate', async (_e, raw: unknown) => {
@@ -169,12 +189,18 @@ export function registerIpcHandlers(): void {
     const sid = brand<'SessionId'>(parsed.data.sessionId)
     console.log(`[SOVARA][IPC] chat:regenerate sid=${parsed.data.sessionId} reasoning=${!!parsed.data.reasoning}`)
     try {
-      const res = await getBackend().chat.regenerate(sid, { reasoning: parsed.data.reasoning })
+      const backend = getBackend()
+      const target: { regenerate?: Function; execute?: Function } = (backend as unknown as { orchestrator?: unknown }).orchestrator ?? backend.chat
+      const res = await (target as { regenerate: (s: SessionId, o?: unknown) => Promise<{ assistantSeq: number }> }).regenerate(sid, { reasoning: parsed.data.reasoning })
       console.log(`[SOVARA][IPC] chat:regenerate ok sid=${parsed.data.sessionId} assistantSeq=${res.assistantSeq}`)
       return res
     } catch (e) {
       console.error(`[SOVARA][IPC][chat:regenerate][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
-      throw new Error(e instanceof Error ? e.message : 'regenerate failed')
+      const raw = e instanceof Error ? e.message : 'regenerate failed'
+      const code = (e as { code?: string })?.code
+      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
+      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
+      throw new Error(raw)
     }
   })
 
@@ -187,12 +213,23 @@ export function registerIpcHandlers(): void {
     const sid = brand<'SessionId'>(parsed.data.sessionId)
     console.log(`[SOVARA][IPC] chat:editResend sid=${parsed.data.sessionId} len=${parsed.data.content.length} reasoning=${!!parsed.data.reasoning}`)
     try {
-      const res = await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+      const backend = getBackend()
+      const target: { editAndResend?: Function; execute?: Function; editResend?: Function } =
+        (backend as unknown as { orchestrator?: unknown }).orchestrator ?? backend.chat
+      // orchestrator exposes editAndResend, chat exposes editAndResend
+      const fn = (target as { editAndResend?: Function; editResend?: Function }).editAndResend ?? (target as { editAndResend?: Function }).editAndResend
+      const res = fn
+        ? await (fn as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+        : await (target as unknown as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
       console.log(`[SOVARA][IPC] chat:editResend ok sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
       return res
     } catch (e) {
       console.error(`[SOVARA][IPC][chat:editResend][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
-      throw new Error(e instanceof Error ? e.message : 'editResend failed')
+      const raw = e instanceof Error ? e.message : 'editResend failed'
+      const code = (e as { code?: string })?.code
+      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
+      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
+      throw new Error(raw)
     }
   })
 

@@ -13,6 +13,7 @@ import { SystemResourceStub } from './ports/SystemResourceStub'
 import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
+import { AgentOrchestrator } from './AgentOrchestrator'
 import { ValidationRunner } from '../services/modelValidationRunner'
 import { ValidationStore } from '../services/validationStore'
 import { getFullHardwareProfile } from '../services/hardwareProfile'
@@ -50,6 +51,8 @@ export class AppBackend {
   public readonly workbench: ModelWorkbench
   /** Commit 7 — real local inference orchestration behind LlmPort. */
   public readonly chat: ChatService
+  /** Task→Router→Runtime→LLM execution seam — Chat observes this, Models owns runtime */
+  public readonly orchestrator: AgentOrchestrator
   /** Validation per MODEL_HARDWARE_VALIDATION spec — isolated-pool estimator + real load/infer */
   public readonly validation: ValidationRunner
   public readonly validationStore: ValidationStore
@@ -65,12 +68,14 @@ export class AppBackend {
     const llm = new LocalOpenAIChatAdapter()
     const models = new ModelRuntimeStub()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
+    const toolAdapter = new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig))
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
     this.ensureGlobalWorkspace()
     try { this.ensureMcpDir() } catch {}
     // Registry ↔ filesystem reconciliation on startup: registry rows for
     // vanished files are repaired, pre-registry sidecar downloads adopted.
     try { this.reconcileLibrary() } catch {}
+    const chatEmit = emit ?? ((): void => {})
     this.chat = new ChatService({
       persistence: this.persistenceAdapter,
       llm,
@@ -78,7 +83,50 @@ export class AppBackend {
       resources,
       models,
       baseDir,
-      emit: emit ?? ((): void => {}),
+      emit: chatEmit,
+      webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
+      getGlobalWorkspace: () => this.getGlobalWorkspace(),
+      getProjectWorkspace: (projectId: string | null) => {
+        if (!projectId) return null
+        try {
+          const p = (this.persistenceAdapter as unknown as { getProjectSync: (id: string) => { rootPath: string } | null }).getProjectSync(projectId)
+          return p?.rootPath ?? null
+        } catch {
+          return null
+        }
+      },
+      getMcpContext: () => {
+        try {
+          const servers = listMcpServers(this.runtimeConfig).filter((s) => s.enabled && s.status === 'connected')
+          if (servers.length === 0) return null
+          const tools = servers.map((s) => {
+            const tool = `mcp_${s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}`
+            return `${tool} → ${s.name} (${s.provider}, ${s.transport})`
+          }).join(', ')
+          return `MCP tools available (call via tools/call): ${tools}. Global workspace: ${this.getGlobalWorkspace()}.`
+        } catch {
+          return null
+        }
+      },
+      getSkillsContext: async () => {
+        try {
+          return await loadEnabledSkillsContent(this.runtimeConfig)
+        } catch {
+          return null
+        }
+      },
+    })
+    // Agent orchestrator — thin execution surface that owns task→router→runtime→stream
+    // Uses the SAME ports as ChatService so no duplicate loader or stub.
+    this.orchestrator = new AgentOrchestrator({
+      persistence: this.persistenceAdapter,
+      llm,
+      tools: toolAdapter,
+      workbench: this.workbench,
+      resources,
+      models,
+      baseDir,
+      emit: chatEmit,
       webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
       getGlobalWorkspace: () => this.getGlobalWorkspace(),
       getProjectWorkspace: (projectId: string | null) => {
@@ -114,7 +162,7 @@ export class AppBackend {
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,
-      tools: new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig)),
+      tools: toolAdapter,
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
       models,
