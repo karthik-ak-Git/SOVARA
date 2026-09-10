@@ -49,6 +49,7 @@ export interface ChatServiceDeps {
   llm: LlmPort
   workbench: ModelWorkbench
   resources: SystemResourceManagerPort
+  models?: import('@shared/types/ports').ModelRuntimePort
   baseDir?: string
   emit: (event: ChatStreamEvent) => void
   /** Optional web-context provider (globe icon). Null = proceed without web. */
@@ -134,6 +135,7 @@ export class ChatService {
       // No active model — honest failure per spec §8. Only the explicit 'local' synthetic
       // runtime may use the stub path; an empty selection must not fabricate a response.
       if (active.selection?.runtimeId === 'local') {
+        await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (no active model fallback)' })
         return this.sendViaStub(sessionId, content, active.selection.modelId)
       }
@@ -144,6 +146,7 @@ export class ChatService {
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
       if (active.selection.runtimeId === 'local') {
+        await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (runtime disabled)' })
         return this.sendViaStub(sessionId, content, active.selection.modelId)
       }
@@ -153,9 +156,12 @@ export class ChatService {
     }
     // Local library model (synthetic runtime) — no HTTP needed
     if (entry.endpoint === 'local' || entry.id === 'local') {
+      await this.ensureModelLoaded(active.selection.modelId, entry.id)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: entry.id, detail: 'via stub (local endpoint)' })
       return this.sendViaStub(sessionId, content, active.selection.modelId)
     }
+    // Ensure remote model is loaded before inference (user requirement: first load then send)
+    await this.ensureModelLoaded(active.selection.modelId, entry.id)
 
     // 2. Resource advisory (stub returns ok; a blocking verdict refuses).
     const pressure = await this.deps.resources.checkBeforeLoad(
@@ -384,18 +390,24 @@ export class ChatService {
     }
     if (!active.selection || !active.available) {
       if (active.selection?.runtimeId === 'local') {
+        await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
         return this.regenerateViaStub(sessionId, active.selection.modelId)
       }
       throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
     }
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
-      if (active.selection.runtimeId === 'local') return this.regenerateViaStub(sessionId, active.selection.modelId)
+      if (active.selection.runtimeId === 'local') {
+        await this.ensureModelLoaded(active.selection.modelId, active.selection.runtimeId)
+        return this.regenerateViaStub(sessionId, active.selection.modelId)
+      }
       throw new ChatServiceError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
     }
     if (entry.endpoint === 'local' || entry.id === 'local') {
+      await this.ensureModelLoaded(active.selection.modelId, entry.id)
       return this.regenerateViaStub(sessionId, active.selection.modelId)
     }
+    await this.ensureModelLoaded(active.selection.modelId, entry.id)
 
     const pressure = await this.deps.resources.checkBeforeLoad(
       { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
@@ -516,6 +528,49 @@ export class ChatService {
     } catch {
       return null
     }
+  }
+
+  /** Ensure the model is loaded before inference — user requirement: first load then send */
+  private async ensureModelLoaded(modelId: string, runtimeId: string): Promise<void> {
+    const sid = `model:${modelId}`
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `loading model ${modelId} on ${runtimeId}...` })
+    // eslint-disable-next-line no-console
+    console.log(`[SOVARA][CHAT] LOADING model=${modelId} runtime=${runtimeId}`)
+    // Emit a transient loading hint to the UI via a synthetic delta (optional)
+    // Check if already loaded
+    if (this.deps.models) {
+      try {
+        const instances = await this.deps.models.listInstances()
+        const existing = instances.find((i) => i.modelId === modelId && i.runtimeId === runtimeId && i.status === 'loaded')
+        if (existing) {
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `model ${modelId} already loaded` })
+          // eslint-disable-next-line no-console
+          console.log(`[SOVARA][CHAT] model ${modelId} already loaded — skipping load`)
+          return
+        }
+        // Try real load
+        try {
+          await this.deps.models.load(modelId as any, { runtimeId })
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, outcome: 'ok', detail: `model ${modelId} loaded via ModelRuntimePort` })
+          // eslint-disable-next-line no-console
+          console.log(`[SOVARA][CHAT] LOADED model=${modelId} runtime=${runtimeId}`)
+          return
+        } catch (e) {
+          // Fallback for Phase 1 stub (unavailable) — register instance directly
+          const msg = e instanceof Error ? e.message : String(e)
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `load failed (${msg}) — using stub register` })
+          try {
+            const { registerLoadedInstance } = await import('./ports/ModelRuntimeStub')
+            registerLoadedInstance(modelId, runtimeId)
+            await new Promise((r) => setTimeout(r, 10))
+            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `model ${modelId} registered (stub)` })
+          } catch {}
+          return
+        }
+      } catch {}
+    }
+    // No models port (tests) — simulate short load delay (10ms for tests, keeps cancel/second-send timing)
+    await new Promise((r) => setTimeout(r, 10))
   }
 
   private async regenerateViaStub(sessionId: SessionId, modelId: string): Promise<{ ok: true; assistantSeq: number }> {

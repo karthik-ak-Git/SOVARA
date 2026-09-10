@@ -63,6 +63,7 @@ export class AppBackend {
     this.validation = new ValidationRunner()
     this.validationStore = new ValidationStore(baseDir)
     const llm = new LocalOpenAIChatAdapter()
+    const models = new ModelRuntimeStub()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
     this.ensureGlobalWorkspace()
@@ -75,6 +76,7 @@ export class AppBackend {
       llm,
       workbench: this.workbench,
       resources,
+      models,
       baseDir,
       emit: emit ?? ((): void => {}),
       webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
@@ -115,7 +117,7 @@ export class AppBackend {
       tools: new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig)),
       dsh: new DshStubAdapter(),
       hermes: new HermesStubAdapter(),
-      models: new ModelRuntimeStub(),
+      models,
       resources
     }
   }
