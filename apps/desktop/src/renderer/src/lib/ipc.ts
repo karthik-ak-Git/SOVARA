@@ -381,6 +381,19 @@ export async function getUsageByModel(): Promise<ModelUsage[]> {
   return (await sovara().invoke('usage:getByModel')) as ModelUsage[]
 }
 
+export interface RecentUsageRow {
+  sessionId: string
+  model: string
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  timestamp: number
+}
+
+export async function getRecentUsage(limit = 20): Promise<RecentUsageRow[]> {
+  return (await sovara().invoke('usage:getRecent', { limit })) as RecentUsageRow[]
+}
+
 // ── Skills scanning ──
 export interface SkillsSource {
   name: string
@@ -768,6 +781,6 @@ export function onInstanceEvents(callback: (event: InstanceEvent) => void): () =
   })
 }
 
-export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app' = 'all'): Promise<Record<string,string[]>> {
+export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app' | 'chat' = 'all'): Promise<Record<string,string[]>> {
   return (await sovara().invoke('logs:getRecent', { kind })) as Record<string,string[]>
 }

@@ -48,6 +48,7 @@ export const IPC_CHANNELS = {
   // Usage stats
   'usage:getTotal': { type: 'invoke' as const },
   'usage:getByModel': { type: 'invoke' as const },
+  'usage:getRecent': { type: 'invoke' as const },
   // Window controls (frameless window)
   'window:minimize': { type: 'invoke' as const },
   'window:maximize': { type: 'invoke' as const },

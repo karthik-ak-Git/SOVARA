@@ -35,6 +35,20 @@ export function safeTarget(rawUrl: string): string {
 }
 
 export function appendRuntimeLog(baseDir: string | undefined, entry: RuntimeLogEntry): void {
+  // Terminal visibility (user requirement: errors/actions visible in terminal)
+  try {
+    const tag = entry.outcome === 'ok' ? '✓' : entry.outcome === 'cancelled' ? '⊘' : '✗'
+    // eslint-disable-next-line no-console
+    console.log(
+      `[SOVARA][RUNTIME] ${tag} ${entry.method} ${entry.target} → ${entry.outcome} ${entry.status ? `status=${entry.status} ` : ''}model=${entry.modelId ?? '—'} ${entry.streamed ? 'streamed' : 'non-stream'} latency=${entry.latencyMs}ms runtime=${entry.runtimeId}`
+    )
+    if (entry.outcome !== 'ok' && entry.outcome !== 'cancelled') {
+      // eslint-disable-next-line no-console
+      console.error(`[SOVARA][RUNTIME][ERROR] ${JSON.stringify(entry)}`)
+    }
+  } catch {
+    // console failure must not break flow
+  }
   try {
     const dir = path.join(getSovaraDataDir(baseDir), 'logs')
     ensureDir(dir)
@@ -57,4 +71,55 @@ export function appendRuntimeLog(baseDir: string | undefined, entry: RuntimeLogE
   } catch {
     // Logging must never break runtime flows.
   }
+}
+
+/** Chat-specific log (terminal + chat.log) — every chat action is durable. */
+export interface ChatLogEntry {
+  time: number
+  iso: string
+  sessionId: string
+  action: 'send' | 'regenerate' | 'editResend' | 'cancel' | 'error' | 'done'
+  modelId?: string
+  runtimeId?: string
+  outcome?: string
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  latencyMs?: number
+  error?: string
+  injected?: { workspace?: boolean; mcp?: boolean; skills?: boolean; webSearch?: boolean }
+  detail?: string
+}
+
+export function appendChatLog(baseDir: string | undefined, entry: Omit<ChatLogEntry, 'time' | 'iso'> & Partial<Pick<ChatLogEntry, 'time' | 'iso'>>): void {
+  const full: ChatLogEntry = {
+    time: Date.now(),
+    iso: new Date().toISOString(),
+    ...entry,
+  } as ChatLogEntry
+  // Terminal
+  try {
+    const icon = full.action === 'error' ? '✗' : full.action === 'done' ? '✓' : full.action === 'cancel' ? '⊘' : '→'
+    const tok = full.totalTokens !== undefined ? ` tokens=${full.totalTokens} (p=${full.promptTokens} c=${full.completionTokens})` : ''
+    const inj = full.injected ? ` injected=${Object.entries(full.injected).filter(([,v]) => v).map(([k]) => k).join(',') || 'none'}` : ''
+    // eslint-disable-next-line no-console
+    console.log(`[SOVARA][CHAT] ${icon} ${full.action} sid=${full.sessionId} model=${full.modelId ?? '—'} ${full.outcome ? `outcome=${full.outcome} ` : ''}${full.latencyMs ? `latency=${full.latencyMs}ms` : ''}${tok}${inj}${full.error ? ` error=${full.error}` : ''}`)
+    if (full.action === 'error' && full.error) {
+      // eslint-disable-next-line no-console
+      console.error(`[SOVARA][CHAT][ERROR] sid=${full.sessionId} ${full.error}`)
+    }
+  } catch {}
+  // File
+  try {
+    const dir = path.join(getSovaraDataDir(baseDir), 'logs')
+    ensureDir(dir)
+    const file = path.join(dir, 'chat.log')
+    try {
+      const st = fs.statSync(file)
+      if (st.size > MAX_LOG_BYTES) {
+        try { fs.renameSync(file, `${file}.1`) } catch {}
+      }
+    } catch {}
+    fs.appendFileSync(file, `${JSON.stringify(full)}\n`, 'utf8')
+  } catch {}
 }

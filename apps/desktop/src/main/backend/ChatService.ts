@@ -14,7 +14,7 @@ import type { SessionId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmChatMessage, LlmPort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
-import { appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
+import { appendRuntimeLog, appendChatLog, safeTarget } from '../logging/runtimeLog'
 import type { ModelWorkbench } from './ModelWorkbench'
 
 /** Minimal local system prompt. Main-only: never renderer-provided. */
@@ -111,8 +111,12 @@ export class ChatService {
 
   async send(sessionId: SessionId, content: string, opts?: ChatSendOptions): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
     const sid = String(sessionId)
+    // Terminal + file: every action visible (user requirement)
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `len=${content.length} webSearch=${!!opts?.webSearch}` })
     if (this.inFlight.has(sid)) {
-      throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
+      const err = 'already-generating: wait for the current reply to finish'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'already-generating', error: err })
+      throw new ChatServiceError('already-generating', err)
     }
 
     // 1. Resolve the active model — orchestrated chat per ARCHITECTURE_PHASE1 §4/6 (AppBackend→ChatService→Workbench→LlmPort).
@@ -130,17 +134,26 @@ export class ChatService {
       // No active model — honest failure per spec §8. Only the explicit 'local' synthetic
       // runtime may use the stub path; an empty selection must not fabricate a response.
       if (active.selection?.runtimeId === 'local') {
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (no active model fallback)' })
         return this.sendViaStub(sessionId, content, active.selection.modelId)
       }
-      throw new ChatServiceError('no-active-model', 'No active local model selected. Open Models and select a model first.')
+      const msg = 'No active local model selected. Open Models and select a model first.'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'no-active-model', error: msg })
+      throw new ChatServiceError('no-active-model', msg)
     }
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
-      if (active.selection.runtimeId === 'local') return this.sendViaStub(sessionId, content, active.selection.modelId)
-      throw new ChatServiceError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
+      if (active.selection.runtimeId === 'local') {
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: 'local', detail: 'via stub (runtime disabled)' })
+        return this.sendViaStub(sessionId, content, active.selection.modelId)
+      }
+      const msg = 'The selected runtime is unavailable. Open Models and test its connection.'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'runtime-unavailable', error: msg, modelId: active.selection.modelId, runtimeId: active.selection.runtimeId })
+      throw new ChatServiceError('runtime-unavailable', msg)
     }
     // Local library model (synthetic runtime) — no HTTP needed
     if (entry.endpoint === 'local' || entry.id === 'local') {
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: active.selection.modelId, runtimeId: entry.id, detail: 'via stub (local endpoint)' })
       return this.sendViaStub(sessionId, content, active.selection.modelId)
     }
 
@@ -150,7 +163,9 @@ export class ChatService {
       {}
     )
     if (pressure.blocking) {
-      throw new ChatServiceError('resource-pressure', `resource-pressure: ${pressure.reason ?? 'inference refused'}`)
+      const msg = `resource-pressure: ${pressure.reason ?? 'inference refused'}`
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg, modelId: active.selection.modelId, runtimeId: entry.id })
+      throw new ChatServiceError('resource-pressure', msg)
     }
 
     // 3. History + user persistence first (durable before any network).
@@ -201,11 +216,22 @@ export class ChatService {
       ...toRequestMessages(prior),
       { role: 'user', content },
     ]
+    // Log injected context for observability (skills/plugins/tools)
+    appendChatLog(this.deps.baseDir, {
+      sessionId: sid,
+      action: 'send',
+      modelId: active.selection.modelId,
+      runtimeId: entry.id,
+      injected: { workspace: !!workspaceContext, mcp: !!mcpContext, skills: !!skillsContext, webSearch: !!webContext },
+      detail: `history=${prior.length} events → ${messages.length} messages, userLen=${content.length}`,
+    })
     let userSeq = -1
     try {
       userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq
     } catch (e) {
-      throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'could not persist your message')
+      const msg = e instanceof Error ? e.message : 'could not persist your message'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'persistence-failed', error: msg, modelId: active.selection.modelId, runtimeId: entry.id })
+      throw new ChatServiceError('persistence-failed', msg)
     }
 
     // 4. Stream. Exactly one durable assistant event at the end.
@@ -240,6 +266,7 @@ export class ChatService {
       }
       const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, entry.endpoint, model, started, undefined, outcomeOf(e), streamed)
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
       throw new ChatServiceError('runtime-unavailable', safe)
     } finally {
@@ -249,6 +276,7 @@ export class ChatService {
     if (text === '') {
       const msg = 'invalid-response: the local model returned an empty reply'
       this.log(entry.id, entry.endpoint, model, started, undefined, 'invalid-response', streamed)
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
       throw new ChatServiceError('runtime-unavailable', msg)
     }
@@ -274,6 +302,18 @@ export class ChatService {
 
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.log(entry.id, entry.endpoint, model, started, 200, 'ok', streamed)
+    appendChatLog(this.deps.baseDir, {
+      sessionId: sid,
+      action: 'done',
+      modelId: model,
+      runtimeId: entry.id,
+      outcome: 'ok',
+      promptTokens: tokenUsage.promptTokens,
+      completionTokens: tokenUsage.completionTokens,
+      totalTokens: tokenUsage.totalTokens,
+      latencyMs: Date.now() - started,
+      injected: { workspace: !!workspaceContext, mcp: !!mcpContext, skills: !!skillsContext, webSearch: !!webContext },
+    })
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     return { ok: true, userSeq, assistantSeq }
   }
@@ -299,6 +339,7 @@ export class ChatService {
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', totalTokens: Math.ceil((content.length + text.length)/4), latencyMs: Date.now()-started })
     return { ok: true, userSeq, assistantSeq }
   }
 
@@ -308,8 +349,11 @@ export class ChatService {
    */
   async regenerate(sessionId: SessionId): Promise<{ ok: true; assistantSeq: number }> {
     const sid = String(sessionId)
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'regenerate', detail: 'regenerate last assistant' })
     if (this.inFlight.has(sid)) {
-      throw new ChatServiceError('already-generating', 'already-generating: wait for the current reply to finish')
+      const err = 'already-generating: wait for the current reply to finish'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'already-generating', error: err })
+      throw new ChatServiceError('already-generating', err)
     }
     const prior = await this.deps.persistence.getEvents(sessionId)
     const lastUser = [...prior].reverse().find((e) => e.type === 'user/message')
@@ -399,6 +443,7 @@ export class ChatService {
       }
       const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, entry.endpoint, model, started, undefined, outcomeOf(e), streamed)
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
       throw new ChatServiceError('runtime-unavailable', safe)
     } finally {
@@ -439,8 +484,14 @@ export class ChatService {
    * Preserves append-only invariant: never rewrites historical events.
    */
   async editAndResend(sessionId: SessionId, content: string, opts?: ChatSendOptions): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
+    const sid = String(sessionId)
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'editResend', detail: `len=${content.length} webSearch=${!!opts?.webSearch}` })
     const text = content.trim()
-    if (!text) throw new ChatServiceError('persistence-failed', 'cannot resend empty message')
+    if (!text) {
+      const err = 'cannot resend empty message'
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'persistence-failed', error: err })
+      throw new ChatServiceError('persistence-failed', err)
+    }
     // Delegates to send which already handles persistence + streaming correctly.
     return this.send(sessionId, text, opts)
   }
@@ -483,12 +534,16 @@ export class ChatService {
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now() - started, outcome: 'ok', modelId, streamed: true })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', totalTokens: Math.ceil((prompt.length + text.length)/4), latencyMs: Date.now() - started })
     return { ok: true, assistantSeq }
   }
 
   cancel(sessionId: SessionId): { cancelled: boolean } {
     const controller = this.inFlight.get(String(sessionId))
     if (!controller) return { cancelled: false }
+    appendChatLog(this.deps.baseDir, { sessionId: String(sessionId), action: 'cancel', outcome: 'cancelled' })
+    // eslint-disable-next-line no-console
+    console.log(`[SOVARA][CHAT] ⊘ cancel sid=${String(sessionId)}`)
     controller.abort(new Error('cancelled'))
     return { cancelled: true }
   }
@@ -504,6 +559,7 @@ export class ChatService {
   ): Promise<{ ok: true; userSeq: number; assistantSeq: number }> {
     const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
     this.log(runtimeId, endpoint, model, started, undefined, 'cancelled', streamed)
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'cancel', modelId: model, runtimeId, outcome: 'cancelled', latencyMs: Date.now() - started })
     this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
     // Append-only log: the user event is the immediately preceding row.
     return { ok: true, userSeq: ev.seq - 1, assistantSeq: ev.seq }

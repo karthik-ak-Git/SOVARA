@@ -5,7 +5,7 @@ import {
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft,
   Upload, Download, File, FolderOpen, Folder, ExternalLink, Sparkles, AlertTriangle
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
+import { getTotalUsage, getUsageByModel, getRecentUsage, getRecentLogs, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type RecentUsageRow, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '../../lib/ipc'
 import type { DiscoveredModel } from '@shared/types/models'
 import { LibraryPage } from '../library/LibraryPage'
 import { ExplorePage } from '../explore/ExplorePage'
@@ -278,7 +278,11 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   // Token utilization
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([])
+  const [recentUsage, setRecentUsage] = useState<RecentUsageRow[]>([])
   const [usageLoaded, setUsageLoaded] = useState(false)
+  // Local Model API — every chat request visible (user requirement)
+  const [apiRecentLogs, setApiRecentLogs] = useState<Record<string, string[]>>({})
+  const [apiLogsLoaded, setApiLogsLoaded] = useState(false)
 
   // Sessions — renameAfterFork is persisted via appSettings, not local state
   // ponytail: no local mirror, single source is appSettings + applyPatch (consumer reads via getAppSettings when fork lands)
@@ -385,9 +389,10 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   useEffect(() => {
     const loadUsage = async (): Promise<void> => {
       try {
-        const [total, byModel] = await Promise.all([getTotalUsage(), getUsageByModel()])
+        const [total, byModel, recent] = await Promise.all([getTotalUsage(), getUsageByModel(), getRecentUsage(20).catch(() => [])])
         setTotalUsage(total)
         setModelUsage(byModel)
+        setRecentUsage(recent as RecentUsageRow[])
       } catch {
         // Usage not available yet
       } finally {
@@ -395,7 +400,23 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       }
     }
     loadUsage()
+    const id = setInterval(loadUsage, 4000)
+    return () => clearInterval(id)
   }, [])
+
+  // Refresh recent usage when billing tab is opened or every 4s while on billing
+  useEffect(() => {
+    if (activeSection !== 'billing') return
+    const refresh = async (): Promise<void> => {
+      try {
+        const [total, byModel, recent] = await Promise.all([getTotalUsage(), getUsageByModel(), getRecentUsage(20).catch(() => [])])
+        setTotalUsage(total)
+        setModelUsage(byModel)
+        setRecentUsage(recent as RecentUsageRow[])
+      } catch {}
+    }
+    void refresh()
+  }, [activeSection])
 
   // Load archived sessions when sessions tab is active
   useEffect(() => {
@@ -411,6 +432,52 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
       }
     }
     loadArchived()
+  }, [activeSection])
+
+  // Local Model API — every request + injected context (user requirement)
+  useEffect(() => {
+    if (activeSection !== 'local-model-api') return
+    const loadLogs = async (): Promise<void> => {
+      try {
+        const [logs, recent] = await Promise.all([
+          getRecentLogs('all').catch(() => ({} as Record<string, string[]>)),
+          getRecentUsage(20).catch(() => []),
+        ])
+        setApiRecentLogs(logs)
+        setRecentUsage(recent as RecentUsageRow[])
+        setApiLogsLoaded(true)
+        // also refresh usage totals for the header
+        try {
+          const [total, byModel] = await Promise.all([getTotalUsage(), getUsageByModel()])
+          setTotalUsage(total)
+          setModelUsage(byModel)
+        } catch {}
+        // ensure skills / mcp / tools are available for the API definitions (user asked to define them)
+        try {
+          const [sources, bionic, detailed, mcp, tools] = await Promise.all([
+            scanSkills().catch(() => [] as SkillsSource[]),
+            listBionicSkills().catch(() => [] as BionicSkillView[]),
+            listDetailedSkills().catch(() => [] as Array<{ name: string; path: string; skills: BionicSkillView[] }>),
+            listMcpServers().catch(() => [] as McpServerView[]),
+            listTools().catch(() => [] as ToolDefinitionView[]),
+          ])
+          setSkillsSources(sources)
+          setSkillsLoaded(true)
+          setBionicSkills(bionic)
+          setBionicLoaded(true)
+          setDetailedSkills(detailed)
+          setMcpServers(mcp)
+          setMcpLoaded(true)
+          setAgentTools(tools)
+          setAgentMetaLoaded(true)
+        } catch {}
+      } catch {
+        setApiLogsLoaded(true)
+      }
+    }
+    void loadLogs()
+    const id = setInterval(loadLogs, 3000)
+    return () => clearInterval(id)
   }, [activeSection])
 
   // Load skills sources + Bionic + detailed per-source when skills tab is active — real fetch, not mock
@@ -1044,6 +1111,45 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 )}
               </div>
             </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Recent Requests — every chat action</div>
+              <div className="settings-card">
+                {!usageLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : recentUsage.length === 0 ? (
+                  <div className="settings-row"><span className="muted">No requests yet — send a chat message to see tokens per request here and in Settings → Local Model API.</span></div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="settings-table" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+                          <th style={{ padding: '6px 8px' }}>Time</th>
+                          <th style={{ padding: '6px 8px' }}>Model</th>
+                          <th style={{ padding: '6px 8px' }}>Session</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Prompt</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Completion</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recentUsage.map((r) => (
+                          <tr key={`${r.timestamp}-${r.sessionId}-${r.model}`} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                            <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{new Date(r.timestamp).toLocaleTimeString()}</td>
+                            <td style={{ padding: '6px 8px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.model}>{r.model}</td>
+                            <td style={{ padding: '6px 8px', fontFamily: 'monospace', fontSize: 11 }}>{r.sessionId.slice(0, 8)}…</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right' }}>{r.promptTokens.toLocaleString()}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right' }}>{r.completionTokens.toLocaleString()}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600 }}>{r.totalTokens.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="small muted" style={{ marginTop: 8 }}>Tokens are calculated per request (prompt + completion) via 4-chars≈1-token estimator or runtime usage field. Each request is logged to terminal as <code>[SOVARA][CHAT] done tokens=…</code> and to <code>logs/chat.log</code> + <code>logs/runtime.log</code>. Visible also in Local Model API.</p>
+              </div>
+            </div>
           </div>
         )
       }
@@ -1615,6 +1721,182 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
         return (
           <LoadedInstancesSection onBack={() => setActiveSection('general')} />
         )
+
+      case 'local-model-api': {
+        const chatLines: string[] = (apiRecentLogs.chat ?? []) as string[]
+        const runtimeLines: string[] = (apiRecentLogs.runtime ?? []) as string[]
+        const hasChat = chatLines.length > 0
+        const hasRuntime = runtimeLines.length > 0
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Local Model API</h2>
+            <p className="usage-subtitle">OpenAI-compatible, sovereign by default. Every chat request is logged here and in the terminal (<code>[SOVARA][CHAT]</code> / <code>[SOVARA][RUNTIME]</code>). No cloud, no telemetry.</p>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Endpoint &amp; Model</div>
+              <div className="settings-card">
+                <InfoRow label="Base URL" value="http://127.0.0.1:<port>/v1" badge="OpenAI-compatible" />
+                <InfoRow label="Chat completions" value="POST /v1/chat/completions" />
+                <InfoRow label="Models" value="GET /v1/models" />
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Active model</div>
+                    <div className="settings-row-desc">
+                      {agentModels.length === 0 ? 'No model discovered yet — add a runtime in Models → Connected runtimes and probe it.' : `${agentModels.filter((m) => m.available).length} available • ${agentModels.length} discovered`}
+                      {appSettings?.rootModel && appSettings.rootModel !== 'no-default' ? ` • default: ${appSettings.rootModel}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">Example (local, no key)</div>
+                    <div className="settings-row-desc" style={{ fontFamily: 'monospace', fontSize: 11, background: 'var(--panel-2)', padding: '8px', borderRadius: 6, marginTop: 6, wordBreak: 'break-all' }}>
+                      {'curl http://127.0.0.1:1234/v1/chat/completions -H "Content-Type: application/json" -d \'{"model":"phi-4","messages":[{"role":"user","content":"hi"}],"stream":true}\''}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Recent Requests — every chat action (tokens)</div>
+              <div className="settings-card">
+                {!apiLogsLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : recentUsage.length === 0 ? (
+                  <div className="settings-row"><span className="muted">No requests yet — send a chat message to see prompt/completion tokens per request here, in Usage, and in the terminal.</span></div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="settings-table" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+                          <th style={{ padding: '6px 8px' }}>Time</th>
+                          <th style={{ padding: '6px 8px' }}>Model</th>
+                          <th style={{ padding: '6px 8px' }}>Session</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Prompt</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Completion</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recentUsage.slice(0, 12).map((r) => (
+                          <tr key={`${r.timestamp}-${r.sessionId}-${r.model}`} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                            <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{new Date(r.timestamp).toLocaleTimeString()}</td>
+                            <td style={{ padding: '6px 8px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.model}>{r.model}</td>
+                            <td style={{ padding: '6px 8px', fontFamily: 'monospace', fontSize: 11 }}>{r.sessionId.slice(0, 8)}…</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right' }}>{r.promptTokens.toLocaleString()}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right' }}>{r.completionTokens.toLocaleString()}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600 }}>{r.totalTokens.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="small muted" style={{ marginTop: 8 }}>Tokens = prompt + completion. Calculated from runtime <code>usage</code> field when present, otherwise estimated 4 chars ≈ 1 token. Stored in <code>token_usage</code> SQLite, shown in Usage and here. Terminal: <code>[SOVARA][CHAT] done tokens=…</code></p>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Skills — injected as system context</div>
+              <div className="settings-card">
+                {(!skillsLoaded && !bionicLoaded) ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : (bionicSkills.length === 0 && detailedSkills.flatMap((d) => d.skills).length === 0) ? (
+                  <div className="settings-row"><span className="muted">No skills installed — add one in Skills or drop a folder with SKILL.md into {`{userData}/skills`}. Enabled skills are concatenated (≤6000 chars) and injected as system messages for every chat request (see ChatService workspace/mcp/skills context).</span></div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {bionicSkills.slice(0, 6).map((sk) => (
+                      <div key={sk.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border-soft)' }}>
+                        <Puzzle size={14} style={{ color: 'var(--muted-2)', flexShrink: 0 }} />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>{sk.name}</div>
+                          <div className="small muted" style={{ fontSize: 11 }}>{sk.description || sk.path}</div>
+                        </div>
+                        <span className="settings-badge">Bionic</span>
+                      </div>
+                    ))}
+                    {skillsSources.filter((s) => s.enabled).slice(0, 3).map((src) => (
+                      <div key={src.name} style={{ fontSize: 12 }}>
+                        <span style={{ fontWeight: 600 }}>{src.name}</span> — {src.skillCount} skills at <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{src.path}</span> {src.enabled ? '(enabled)' : '(disabled)'}
+                      </div>
+                    ))}
+                    <p className="small muted">Skills are defined as SKILL.md frontmatter (name/description) + body. They are not separate chat models — they are system-prompt injections visible to the local model via LlmPort (ChatService → ModelWorkbench → LlmPort).</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Plugins — MCP (Connected Apps)</div>
+              <div className="settings-card">
+                {!mcpLoaded ? (
+                  <div className="settings-row"><span className="muted">Loading…</span></div>
+                ) : mcpServers.length === 0 ? (
+                  <div className="settings-row"><span className="muted">No MCP servers connected — add one in Connected Apps (stdio command or http endpoint). Enabled, connected servers are exposed as <code>mcp_&#123;name&#125;</code> tools and injected as MCP context for chat.</span></div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {mcpServers.slice(0, 8).map((s) => (
+                      <div key={s.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border-soft)' }}>
+                        <Server size={14} style={{ flexShrink: 0 }} />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>{s.name} <span className="small muted">({s.provider}, {s.transport}{s.transport === 'http' ? ` ${s.endpoint}` : ` ${s.command}`})</span></div>
+                          <div className="small muted" style={{ fontSize: 11 }}>Tool: <code>mcp_{s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}</code> • {s.enabled ? (s.status === 'connected' ? 'connected' : s.status) : 'disabled'}{s.lastError ? ` • ${s.lastError}` : ''}</div>
+                        </div>
+                        <span className={`settings-badge ${s.status === 'connected' ? 'settings-badge--success' : ''}`}>{s.enabled ? s.status ?? '—' : 'off'}</span>
+                      </div>
+                    ))}
+                    <p className="small muted">Plugins = MCP servers. They are not hard-coded — any MCP server added via Connected Apps becomes a tool (ToolPort) and is advertised in chat system context (getMcpContext → LlmChatMessage).</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Agent Tools — ToolPort definitions (chat can render future tool calls)</div>
+              <div className="settings-card">
+                {agentTools.length === 0 ? (
+                  <div className="settings-row"><span className="muted">No tools registered — web_search / web_fetch + MCP tools are registered via ToolPort. Chat UI renders tool calls when LlmPort returns ToolCallChunk.</span></div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {agentTools.map((t) => (
+                      <div key={t.name} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-soft)' }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}><code>{t.name}</code> <span className="small muted">({t.toolset})</span></div>
+                        <div className="small muted" style={{ fontSize: 11, marginTop: 2 }}>{t.description}</div>
+                        <details style={{ marginTop: 4 }}>
+                          <summary style={{ fontSize: 11, cursor: 'pointer' }}>parameters</summary>
+                          <pre style={{ fontSize: 11, background: 'var(--panel-2)', padding: 8, borderRadius: 6, overflowX: 'auto', marginTop: 4 }}>{JSON.stringify(t.parameters, null, 2)}</pre>
+                        </details>
+                      </div>
+                    ))}
+                    <p className="small muted">Tools are defined as ToolDefinition (name/toolset/description/parameters) behind ToolPort. Future LlmPort tool-aware generation will emit <code>assistant:delta</code> + <code>ToolCallChunk</code> → Chat renders tool execution inline. See ToolStubAdapter for web_search/web_fetch + MCP dispatch.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-group-header">Terminal Logs — tail (chat + runtime) • visible in terminal</div>
+              <div className="settings-card">
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <button type="button" className="settings-action-btn" onClick={async () => { try { const logs = await getRecentLogs('all'); setApiRecentLogs(logs) } catch {}}}>Refresh logs</button>
+                  <span className="small muted">Terminal shows same lines as files: <code>logs/chat.log</code> ([SOVARA][CHAT]) and <code>logs/runtime.log</code> ([SOVARA][RUNTIME]) — every error is also <code>console.error</code> in the main process.</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>chat.log (last 20)</div>
+                    <pre style={{ fontSize: 11, background: 'var(--panel-2)', padding: 10, borderRadius: 8, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid var(--border-soft)' }}>{hasChat ? chatLines.slice(-20).join('\n') : 'No chat entries yet — send a message or trigger an error to see [SOVARA][CHAT] lines.'}</pre>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>runtime.log (last 20)</div>
+                    <pre style={{ fontSize: 11, background: 'var(--panel-2)', padding: 10, borderRadius: 8, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', border: '1px solid var(--border-soft)' }}>{hasRuntime ? runtimeLines.slice(-20).join('\n') : 'No runtime entries yet.'}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      }
 
       default:
         return (

@@ -49,6 +49,7 @@ export class SovaraDb {
   private stmtGetUsageBySession!: ReturnType<DatabaseSync['prepare']>
   private stmtGetTotalUsage!: ReturnType<DatabaseSync['prepare']>
   private stmtGetUsageByModel!: ReturnType<DatabaseSync['prepare']>
+  private stmtGetRecentUsage!: ReturnType<DatabaseSync['prepare']>
 
   constructor(baseDir?: string) {
     const dataDir = getSovaraDataDir(baseDir)
@@ -183,6 +184,7 @@ export class SovaraDb {
     this.stmtGetUsageBySession = this.db.prepare('SELECT SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens FROM token_usage WHERE sessionId = ?')
     this.stmtGetTotalUsage = this.db.prepare('SELECT SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens FROM token_usage')
     this.stmtGetUsageByModel = this.db.prepare('SELECT model, SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens, COUNT(*) as requestCount FROM token_usage GROUP BY model')
+    this.stmtGetRecentUsage = this.db.prepare('SELECT sessionId, model, promptTokens, completionTokens, totalTokens, timestamp FROM token_usage ORDER BY timestamp DESC LIMIT ?')
   }
 
   insertSession(row: DbSessionRow): void {
@@ -305,6 +307,10 @@ export class SovaraDb {
 
   getUsageByModel(): Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }> {
     return this.stmtGetUsageByModel.all() as Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }>
+  }
+
+  getRecentUsage(limit = 50): Array<{ sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number; timestamp: number }> {
+    return this.stmtGetRecentUsage.all(limit) as Array<{ sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number; timestamp: number }>
   }
 
   get raw(): DatabaseSync {

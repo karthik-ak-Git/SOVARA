@@ -278,3 +278,5 @@ export const zValidationStart = z
 export const zValidationGet = z.object({ jobId: z.string().min(1).max(64) }).strict()
 
 export const zInstanceId = z.object({ instanceId: z.string().min(1).max(128) }).strict()
+
+export const zUsageGetRecent = z.object({ limit: z.number().int().min(1).max(200).optional() }).strict().default({})

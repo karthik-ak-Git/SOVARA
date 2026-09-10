@@ -4,7 +4,7 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent } from '@shared/ipc/schemas'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -133,14 +133,21 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('chat:send', async (_e, raw: unknown) => {
     const parsed = zChatSend.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid chat payload: ${parsed.error.message}`)
+    if (!parsed.success) {
+      console.error(`[SOVARA][IPC][chat:send] invalid payload: ${parsed.error.message}`, raw)
+      throw new Error(`invalid chat payload: ${parsed.error.message}`)
+    }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
+    console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch}`)
     try {
       // Real local inference via ChatService → LlmPort → loopback runtime.
       // Deltas stream back on `events:session`; the invoke resolves on
       // completion with the durable seqs. Globe flag adds web context.
-      return await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      const res = await getBackend().chat.send(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      console.log(`[SOVARA][IPC] chat:send ok sid=${parsed.data.sessionId} userSeq=${res.userSeq} assistantSeq=${res.assistantSeq}`)
+      return res
     } catch (e) {
+      console.error(`[SOVARA][IPC][chat:send][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       throw new Error(e instanceof Error ? e.message : 'chat failed')
     }
   })
@@ -155,22 +162,36 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('chat:regenerate', async (_e, raw: unknown) => {
     const parsed = zChatRegenerate.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid regenerate payload: ${parsed.error.message}`)
+    if (!parsed.success) {
+      console.error(`[SOVARA][IPC][chat:regenerate] invalid payload: ${parsed.error.message}`, raw)
+      throw new Error(`invalid regenerate payload: ${parsed.error.message}`)
+    }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
+    console.log(`[SOVARA][IPC] chat:regenerate sid=${parsed.data.sessionId}`)
     try {
-      return await getBackend().chat.regenerate(sid)
+      const res = await getBackend().chat.regenerate(sid)
+      console.log(`[SOVARA][IPC] chat:regenerate ok sid=${parsed.data.sessionId} assistantSeq=${res.assistantSeq}`)
+      return res
     } catch (e) {
+      console.error(`[SOVARA][IPC][chat:regenerate][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       throw new Error(e instanceof Error ? e.message : 'regenerate failed')
     }
   })
 
   ipcMain.handle('chat:editResend', async (_e, raw: unknown) => {
     const parsed = zChatEditResend.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid editResend payload: ${parsed.error.message}`)
+    if (!parsed.success) {
+      console.error(`[SOVARA][IPC][chat:editResend] invalid payload: ${parsed.error.message}`, raw)
+      throw new Error(`invalid editResend payload: ${parsed.error.message}`)
+    }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
+    console.log(`[SOVARA][IPC] chat:editResend sid=${parsed.data.sessionId} len=${parsed.data.content.length}`)
     try {
-      return await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      const res = await getBackend().chat.editAndResend(sid, parsed.data.content, { webSearch: parsed.data.webSearch })
+      console.log(`[SOVARA][IPC] chat:editResend ok sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+      return res
     } catch (e) {
+      console.error(`[SOVARA][IPC][chat:editResend][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       throw new Error(e instanceof Error ? e.message : 'editResend failed')
     }
   })
@@ -334,11 +355,24 @@ export function registerIpcHandlers(): void {
 
   // ── Usage stats ──
   ipcMain.handle('usage:getTotal', async () => {
-    return getBackend().ports.persistence.getTotalUsage()
+    const res = getBackend().ports.persistence.getTotalUsage()
+    console.log(`[SOVARA][IPC] usage:getTotal → ${res.totalTokens} tokens`)
+    return res
   })
 
   ipcMain.handle('usage:getByModel', async () => {
-    return getBackend().ports.persistence.getUsageByModel()
+    const res = getBackend().ports.persistence.getUsageByModel()
+    console.log(`[SOVARA][IPC] usage:getByModel → ${res.length} models`)
+    return res
+  })
+
+  ipcMain.handle('usage:getRecent', async (_e, raw: unknown) => {
+    const parsed = zUsageGetRecent.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid usage:getRecent payload: ${parsed.error.message}`)
+    const limit = parsed.data.limit ?? 20
+    const rows = getBackend().ports.persistence.getRecentUsage?.(limit) ?? []
+    console.log(`[SOVARA][IPC] usage:getRecent limit=${limit} → ${rows.length} rows`)
+    return rows
   })
 
   // ── Window controls (frameless window) ──
@@ -712,6 +746,11 @@ export function registerIpcHandlers(): void {
     if (kind==='all' || kind==='detection') out.detection = tail(path.join(dir,'detection.log'), 30)
     if (kind==='all' || kind==='runtime') out.runtime = tail(path.join(dir,'runtime.log'), 30)
     if (kind==='all' || kind==='app') out.app = tail(path.join(dir,'app.log'), 30)
+    if (kind==='all' || kind==='chat') out.chat = tail(path.join(dir,'chat.log'), 50)
+    if (kind==='all' || kind==='chat') {
+      // also include terminal-visible chat errors as parsed JSON lines
+      try { console.log(`[SOVARA][IPC] logs:getRecent kind=${kind} chat=${out.chat?.length ?? 0} entries`) } catch {}
+    }
     return out
   })
 

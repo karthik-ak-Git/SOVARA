@@ -164,6 +164,10 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     return this.db.getUsageByModel()
   }
 
+  getRecentUsage(limit = 50): Array<{ sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number; timestamp: number }> {
+    return this.db.getRecentUsage(limit)
+  }
+
   /** For tests: verify invariants, expose close */
   async close(): Promise<void> {
     this.db.close()

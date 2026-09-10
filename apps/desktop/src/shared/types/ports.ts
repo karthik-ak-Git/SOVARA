@@ -135,6 +135,7 @@ export interface PersistencePort {
   insertTokenUsage(row: { sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number }): void
   getTotalUsage(): { promptTokens: number; completionTokens: number; totalTokens: number }
   getUsageByModel(): Array<{ model: string; promptTokens: number; completionTokens: number; totalTokens: number; requestCount: number }>
+  getRecentUsage?(limit?: number): Array<{ sessionId: string; model: string; promptTokens: number; completionTokens: number; totalTokens: number; timestamp: number }>
 }
 
 // ── System resources (Phase 1: contract + stub) ──
