@@ -20,7 +20,7 @@ function model(files: ExploreModelFile[]): ExploreModel {
   return {
     id: 'qwen/qwen3.8-27b', name: 'qwen3.8-27b', slug: 'qwen/qwen3.8-27b', author: 'qwen',
     description: 'd', longDescription: 'd', downloads: 1, likes: 1, staffPick: false,
-    updatedAt: new Date().toISOString(), parameters: '27B', architecture: 'qwen3',
+    updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(), parameters: '27B', architecture: 'qwen3',
     capabilities: ['Vision', 'Tools', 'Reasoning'], files, tags: [], iconType: 'qwen',
   }
 }

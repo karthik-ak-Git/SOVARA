@@ -413,7 +413,7 @@ export async function importSkillFromUrl(url: string): Promise<BionicSkillView> 
 
 // ── Explore (HuggingFace catalog) ──
 import type { ExploreModelFile, ExploreModel, CompatibilityResult } from '@shared/types/explore'
-export type { ExploreModelFile, ExploreModel, CompatibilityResult, ExploreRepoFile, ModelFormat, ExploreFormatFilter } from '@shared/types/explore'
+export type { ExploreModelFile, ExploreModel, CompatibilityResult, ExploreRepoFile, ModelFormat, ExploreFormatFilter, ExplorerFitTier, HardwareInfo } from '@shared/types/explore'
 
 export interface ExploreListOpts {
   sortBy?: string
@@ -422,6 +422,33 @@ export interface ExploreListOpts {
   tag?: string
   limit?: number
   format?: 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
+  quants?: string[]
+  params?: 'all' | 'lt3' | 'b3to7' | 'b7to14' | 'b14to32' | 'b32to70' | 'gt70'
+  licenses?: string[]
+  capabilities?: string[]
+  gated?: 'all' | 'accessible' | 'gated'
+  downloaded?: 'all' | 'downloaded' | 'available'
+  compat?: 'all' | 'likely' | 'possible' | 'unlikely' | 'unknown'
+  cursor?: string
+}
+
+export interface ExploreListPage {
+  models: ExploreModel[]
+  nextCursor: string | null
+}
+
+function normalizeListPage(raw: unknown): ExploreListPage {
+  // Back-compat: older main builds return a bare array.
+  if (Array.isArray(raw)) return { models: raw as ExploreModel[], nextCursor: null }
+  const p = raw as { models?: unknown; nextCursor?: unknown }
+  return {
+    models: Array.isArray(p.models) ? (p.models as ExploreModel[]) : [],
+    nextCursor: typeof p.nextCursor === 'string' ? p.nextCursor : null,
+  }
+}
+
+export async function listExploreModelsPage(opts: ExploreListOpts): Promise<ExploreListPage> {
+  return normalizeListPage(await sovara().invoke('explore:listModels', opts))
 }
 
 export async function listExploreModels(
@@ -429,9 +456,9 @@ export async function listExploreModels(
   query?: string
 ): Promise<ExploreModel[]> {
   if (typeof sortBy === 'object' && sortBy !== null) {
-    return (await sovara().invoke('explore:listModels', sortBy)) as ExploreModel[]
+    return (await listExploreModelsPage(sortBy)).models
   }
-  return (await sovara().invoke('explore:listModels', { sortBy, query })) as ExploreModel[]
+  return (await listExploreModelsPage({ sortBy, query })).models
 }
 
 export async function getExploreModel(modelId: string): Promise<ExploreModel> {

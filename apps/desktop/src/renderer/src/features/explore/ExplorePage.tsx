@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import {
   ArrowLeft, BadgeCheck, Brain, Check, ChevronDown, ChevronsUpDown, Download,
   ExternalLink, Eye, FileCode, FolderOpen, Loader2, MessageSquare, RefreshCw, Search, Star,
   Wrench, X, Pause, Play,
 } from 'lucide-react'
 import {
-  listExploreModels, getExploreModel, getModelCompatibility, getFileRecommendations,
+  listExploreModelsPage, getExploreModel, getModelCompatibility, getFileRecommendations,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, getModelFileStatus, reconcileLibrary, openModelFolder,
-  getActiveDownloads, openExternal,
-  type ExploreModel, type CompatibilityResult, type DownloadEventView, type FileRecommendationView,
-  type ModelFileStatus, type ExploreFormatFilter,
+  getActiveDownloads, getHardwareProfile, openExternal,
+  type ExploreListOpts, type ExploreModel, type CompatibilityResult, type DownloadEventView,
+  type FileRecommendationView, type ModelFileStatus, type ExploreFormatFilter,
+  type HardwareInfo,
 } from '../../lib/ipc'
+import type { ExplorerFitTier } from '@shared/types/explore'
 
 // ── Format-aware repo view (files are the source of truth) ──────────
 // Present formats from the repo inventory (+ GGUF download rows): a
@@ -40,6 +42,153 @@ const FORMAT_FILTERS: Array<{ value: ExploreFormatFilter; label: string }> = [
   { value: 'mixed', label: 'Mixed' },
   { value: 'other', label: 'Other' },
 ]
+
+// ── Extended list filters (all enforced together in main; see matchesAllFilters) ──
+const QUANT_FILTERS = ['all', 'Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q4_0', 'Q4_K_S', 'Q4_K_M', 'Q5_0', 'Q5_K_S', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16', 'F32', 'Other'] as const
+const PARAM_FILTERS: Array<{ value: string; label: string }> = [
+  { value: 'all', label: 'Any size' },
+  { value: 'lt3', label: '< 3B' },
+  { value: 'b3to7', label: '3B–7B' },
+  { value: 'b7to14', label: '7B–14B' },
+  { value: 'b14to32', label: '14B–32B' },
+  { value: 'b32to70', label: '32B–70B' },
+  { value: 'gt70', label: '70B+' },
+]
+const LICENSE_FILTERS = ['all', 'Apache-2.0', 'MIT', 'Llama', 'Other', 'Unknown'] as const
+const CAP_FILTERS = ['all', 'Vision', 'Tools', 'Reasoning', 'Code', 'Text', 'Chat', 'Embeddings'] as const
+const GATED_FILTERS: Array<{ value: string; label: string }> = [
+  { value: 'all', label: 'Any access' },
+  { value: 'accessible', label: 'Accessible' },
+  { value: 'gated', label: 'Gated' },
+]
+const DOWNLOADED_FILTERS: Array<{ value: string; label: string }> = [
+  { value: 'all', label: 'Any status' },
+  { value: 'downloaded', label: 'Downloaded' },
+  { value: 'available', label: 'Available' },
+]
+const COMPAT_FILTERS: Array<{ value: string; label: string }> = [
+  { value: 'all', label: 'Any fit' },
+  { value: 'likely', label: '✓ Likely compatible' },
+  { value: 'possible', label: '◐ Possibly compatible' },
+  { value: 'unlikely', label: '✕ Unlikely' },
+  { value: 'unknown', label: '? Unknown fit' },
+]
+
+interface PersistedExplorerFilters {
+  query: string
+  sortBy: string
+  format: ExploreFormatFilter
+  quant: string
+  params: string
+  license: string
+  capability: string
+  gated: string
+  downloaded: string
+  compat: string
+}
+const DEFAULT_FILTERS: PersistedExplorerFilters = {
+  query: '', sortBy: 'Recommended', format: 'all', quant: 'all', params: 'all',
+  license: 'all', capability: 'all', gated: 'all', downloaded: 'all', compat: 'all',
+}
+// Module-level so filter state survives navigation away and back (the page
+// unmounts on section switch; this is page-UI state, not a new store).
+const persistedExplorerFilters: PersistedExplorerFilters = { ...DEFAULT_FILTERS }
+
+interface FilterOption { value: string; label: string; count?: number; disabled?: boolean }
+
+/** Self-closing dropdown menu reusing the explorer sort-menu styles. */
+function FilterMenu({ label, ariaLabel, value, options, onChange }: {
+  label: string
+  ariaLabel: string
+  value: string
+  options: FilterOption[]
+  onChange: (value: string) => void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open ])
+  return (
+    <div className="explorer-sort" ref={ref}>
+      <button
+        type="button" className="explorer-sort-btn"
+        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+        <ChevronsUpDown size={13} className={`explorer-sort-chev ${open ? 'open' : ''}`} />
+      </button>
+      {open ? (
+        <div className="explorer-sort-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((o) => (
+            <button
+              key={o.value} type="button" role="option" aria-selected={value === o.value}
+              className={`explorer-sort-item ${value === o.value ? 'active' : ''}`}
+              disabled={o.disabled}
+              onClick={() => { onChange(o.value); setOpen(false) }}
+            >
+              {o.label}
+              {typeof o.count === 'number' ? <span className="explorer-filter-count">{o.count}</span> : null}
+              {value === o.value ? <Check size={12} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+const FIT_DOT: Record<ExplorerFitTier, { label: string; cls: string }> = {
+  likely: { label: 'Estimated fit: likely compatible', cls: 'explorer-fitdot--likely' },
+  possible: { label: 'Estimated fit: possibly compatible', cls: 'explorer-fitdot--possible' },
+  unlikely: { label: 'Estimated fit: unlikely to fit', cls: 'explorer-fitdot--unlikely' },
+  unknown: { label: 'Fit unknown', cls: 'explorer-fitdot--unknown' },
+}
+
+/** Memoized list row: selection/download events must not rerender every row. */
+const ModelRow = memo(function ModelRow({ model, isActive, index, onSelect }: {
+  model: ExploreModel
+  isActive: boolean
+  index: number
+  onSelect: (id: string) => void
+}): ReactElement {
+  // Row shows distinctive caps only; Text is the implied baseline
+  // and is shown only when a model has no distinctive capability.
+  const distinctive = sortCaps(model.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c)))
+  const caps = (distinctive.length > 0 ? distinctive : sortCaps(model.capabilities.filter((c) => c === 'Text' || c === 'Chat')).slice(0, 1)).slice(0, 3)
+  const fit = model.fitTier ? FIT_DOT[model.fitTier] : null
+  return (
+    <button
+      type="button" role="option" aria-selected={isActive}
+      className={`explorer-row ${isActive ? 'active' : ''}`}
+      style={{ ['--i' as string]: Math.min(index, 10) }}
+      onClick={() => onSelect(model.id)}
+    >
+      <ModelMark model={model} />
+      <span className="explorer-row-main">
+        <span className="explorer-row-titlerow">
+          <span className="explorer-row-title">{shortName(model.name, 30)}</span>
+          {fit ? <span className={`explorer-fitdot ${fit.cls}`} title={fit.label} aria-label={fit.label} /> : null}
+        </span>
+        <span className="explorer-row-desc">{shortName(model.longDescription || model.description, 52)}</span>
+        <span className="explorer-row-time">{fmtAgo(model.updatedAt)}</span>
+      </span>
+      <span className="explorer-row-caps">
+        {caps.length > 0 ? caps.map((c) => <span key={c} className="explorer-row-cap" title={CAP_HINT[c] ?? c}><CapIcon cap={c} /></span>) : null}
+      </span>
+    </button>
+  )
+})
 
 // ── Formatting (fresh, LM Studio labels) ─────────────────────────────
 function fmtSize(bytes: number): string {
@@ -533,25 +682,35 @@ function RepoFileList({ files }: { files: NonNullable<ExploreModel['repoFiles']>
   )
 }
 
-// ── Sort options (LM Studio order) ───────────────────────────────────
+// ── Sort options (LM Studio order + recency) ──────────────────────────
 const SORTS = [
   { value: 'Recommended', label: 'Recommended' },
   { value: 'trending', label: 'Trending' },
   { value: 'downloads', label: 'Most downloaded' },
   { value: 'likes', label: 'Most liked' },
   { value: 'lastModified', label: 'Recently updated' },
+  { value: 'created', label: 'Recently created' },
 ]
 
 interface Props { onBack: () => void }
 
 export function ExplorePage({ onBack }: Props): ReactElement {
-  const [query, setQuery] = useState('')
-  const [debounced, setDebounced] = useState('')
-  const [sortBy, setSortBy] = useState('Recommended')
+  const [query, setQuery] = useState(persistedExplorerFilters.query)
+  const [debounced, setDebounced] = useState(persistedExplorerFilters.query)
+  const [sortBy, setSortBy] = useState(persistedExplorerFilters.sortBy)
   const [sortOpen, setSortOpen] = useState(false)
-  const [formatFilter, setFormatFilter] = useState<ExploreFormatFilter>('all')
+  const [formatFilter, setFormatFilter] = useState<ExploreFormatFilter>(persistedExplorerFilters.format)
   const [formatOpen, setFormatOpen] = useState(false)
+  const [quantFilter, setQuantFilter] = useState(persistedExplorerFilters.quant)
+  const [paramsFilter, setParamsFilter] = useState(persistedExplorerFilters.params)
+  const [licenseFilter, setLicenseFilter] = useState(persistedExplorerFilters.license)
+  const [capabilityFilter, setCapabilityFilter] = useState(persistedExplorerFilters.capability)
+  const [gatedFilter, setGatedFilter] = useState(persistedExplorerFilters.gated)
+  const [downloadedFilter, setDownloadedFilter] = useState(persistedExplorerFilters.downloaded)
+  const [compatFilter, setCompatFilter] = useState(persistedExplorerFilters.compat)
   const [models, setModels] = useState<ExploreModel[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ExploreModel | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -560,18 +719,26 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const [fileIdx, setFileIdx] = useState(0)
   const [fileOpen, setFileOpen] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [spinning, setSpinning] = useState(false)
   const [downloads, setDownloads] = useState<Record<string, DownloadEventView>>({})
   const [downloadsOpen, setDownloadsOpen] = useState(false)
   // Persistent per-variant file states (registry + filesystem, restart-safe).
   // Keyed by model + file — two repos may ship the same basename.
   const [fileStates, setFileStates] = useState<Record<string, ModelFileStatus>>({})
+  const [hw, setHw] = useState<HardwareInfo | null>(null)
   const [downloadTo, setDownloadTo] = useState('This device')
   const timer = useRef<number | null>(null)
   const sortRef = useRef<HTMLDivElement>(null)
   const formatRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLDivElement>(null)
+  // Generation guard: overlapping sweeps resolve out of order (typing +
+  // filter taps); only the latest generation may commit results.
+  const genRef = useRef(0)
+  const modelsRef = useRef<ExploreModel[]>([])
+  modelsRef.current = models
 
   const selected = useMemo(
     () => models.find((m) => m.id === selectedId) ?? null,
@@ -579,28 +746,92 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   )
   const active = detail ?? selected
 
-  // Debounce search like LM Studio (350ms)
+  // Persist filter UI state across navigation (page unmounts on switch).
+  useEffect(() => {
+    persistedExplorerFilters.query = query
+    persistedExplorerFilters.sortBy = sortBy
+    persistedExplorerFilters.format = formatFilter
+    persistedExplorerFilters.quant = quantFilter
+    persistedExplorerFilters.params = paramsFilter
+    persistedExplorerFilters.license = licenseFilter
+    persistedExplorerFilters.capability = capabilityFilter
+    persistedExplorerFilters.gated = gatedFilter
+    persistedExplorerFilters.downloaded = downloadedFilter
+    persistedExplorerFilters.compat = compatFilter
+  }, [query, sortBy, formatFilter, quantFilter, paramsFilter, licenseFilter, capabilityFilter, gatedFilter, downloadedFilter, compatFilter])
+
+  // One hardware read per mount for row fit dots + the Recommended header.
+  useEffect(() => {
+    let dead = false
+    void getHardwareProfile().then((h) => { if (!dead) setHw(h) }).catch(() => {})
+    return () => { dead = true }
+  }, [])
+
+  // Debounce NETWORK searches only (350ms); local typing stays instant.
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => setDebounced(query), 350)
     return () => { if (timer.current) window.clearTimeout(timer.current) }
   }, [query])
 
-  const reload = useCallback(async (q: string, s: string, f: ExploreFormatFilter): Promise<void> => {
-    setLoading(true); setError(null)
+  interface ReloadSnapshot {
+    q: string; s: string; f: ExploreFormatFilter; qu: string; p: string
+    li: string; c: string; g: string; d: string; k: string
+  }
+  const reload = useCallback(async (snap: ReloadSnapshot, opts?: { append?: boolean; cursor?: string }): Promise<void> => {
+    const gen = ++genRef.current
+    if (opts?.append) setLoadingMore(true)
+    else if (modelsRef.current.length === 0) setLoading(true)
+    else setRefreshing(true)
+    if (!opts?.append) setError(null)
+    setNotice(null)
     try {
-      const rows = await listExploreModels({ sortBy: s, query: q, limit: 30, format: f })
-      setModels(rows)
-      if (rows.length > 0) setSelectedId((prev) => (prev && rows.some((r) => r.id === prev) ? prev : rows[0].id))
-      else setSelectedId(null)
+      const page = await listExploreModelsPage({
+        sortBy: snap.s, query: snap.q, limit: 30, format: snap.f,
+        quants: snap.qu === 'all' ? [] : [snap.qu],
+        params: snap.p as ExploreListOpts['params'],
+        licenses: snap.li === 'all' ? [] : [snap.li],
+        capabilities: snap.c === 'all' ? [] : [snap.c],
+        gated: snap.g as ExploreListOpts['gated'],
+        downloaded: snap.d as ExploreListOpts['downloaded'],
+        compat: snap.k as ExploreListOpts['compat'],
+        ...(opts?.cursor ? { cursor: opts.cursor } : {}),
+      })
+      if (gen !== genRef.current) return // stale sweep — a newer one owns the list
+      setModels((prev) => {
+        if (!opts?.append) return page.models
+        const seen = new Set(prev.map((m) => m.id))
+        return [...prev, ...page.models.filter((m) => !seen.has(m.id))]
+      })
+      setNextCursor(page.nextCursor)
+      if (!opts?.append) {
+        setSelectedId((prev) => {
+          const rows = page.models
+          if (rows.length > 0) return (prev && rows.some((r) => r.id === prev) ? prev : rows[0].id)
+          return null
+        })
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load models.')
+      if (gen !== genRef.current) return
+      if (opts?.append) {
+        setNotice(e instanceof Error ? e.message : 'Could not load more models.')
+      } else if (modelsRef.current.length === 0) {
+        setError(e instanceof Error ? e.message : 'Could not load models.')
+      } else {
+        // Degraded mode: stale list stays, error is a banner, Retry reuses it.
+        setNotice(`Couldn't refresh — showing previous results. (${e instanceof Error ? e.message : 'network error'})`)
+      }
     } finally {
-      setLoading(false); setSpinning(false)
+      if (gen !== genRef.current) return
+      setLoading(false); setRefreshing(false); setLoadingMore(false); setSpinning(false)
     }
   }, [])
 
-  useEffect(() => { void reload(debounced, sortBy, formatFilter) }, [debounced, sortBy, formatFilter, reload])
+  useEffect(() => {
+    void reload({ q: debounced, s: sortBy, f: formatFilter, qu: quantFilter, p: paramsFilter, li: licenseFilter, c: capabilityFilter, g: gatedFilter, d: downloadedFilter, k: compatFilter })
+    // snap fields enumerated above (reload itself is stable).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced, sortBy, formatFilter, quantFilter, paramsFilter, licenseFilter, capabilityFilter, gatedFilter, downloadedFilter, compatFilter, reload])
 
   // Detail + fit (LM Studio: per-file estimate, recommended preselected)
   useEffect(() => {
@@ -762,8 +993,40 @@ export function ExplorePage({ onBack }: Props): ReactElement {
 
   const refresh = useCallback((): void => {
     setSpinning(true)
-    void reload(debounced, sortBy, formatFilter)
-  }, [debounced, sortBy, formatFilter, reload])
+    void reload({ q: debounced, s: sortBy, f: formatFilter, qu: quantFilter, p: paramsFilter, li: licenseFilter, c: capabilityFilter, g: gatedFilter, d: downloadedFilter, k: compatFilter })
+  }, [debounced, sortBy, formatFilter, quantFilter, paramsFilter, licenseFilter, capabilityFilter, gatedFilter, downloadedFilter, compatFilter, reload])
+
+  const loadMore = useCallback((): void => {
+    if (!nextCursor || loadingMore || loading) return
+    void reload({ q: debounced, s: sortBy, f: formatFilter, qu: quantFilter, p: paramsFilter, li: licenseFilter, c: capabilityFilter, g: gatedFilter, d: downloadedFilter, k: compatFilter }, { append: true, cursor: nextCursor })
+  }, [nextCursor, loadingMore, loading, debounced, sortBy, formatFilter, quantFilter, paramsFilter, licenseFilter, capabilityFilter, gatedFilter, downloadedFilter, compatFilter, reload])
+
+  const clearFilters = useCallback((): void => {
+    setQuantFilter('all'); setParamsFilter('all'); setLicenseFilter('all')
+    setCapabilityFilter('all'); setGatedFilter('all'); setDownloadedFilter('all')
+    setCompatFilter('all'); setFormatFilter('all')
+  }, [])
+
+  const hasActiveFilters = formatFilter !== 'all' || quantFilter !== 'all' || paramsFilter !== 'all' ||
+    licenseFilter !== 'all' || capabilityFilter !== 'all' || gatedFilter !== 'all' ||
+    downloadedFilter !== 'all' || compatFilter !== 'all' || debounced.trim() !== ''
+
+  // Quant options carry live counts from the current page; zero-count quants
+  // disable (not hide) so the menu stays stable while signaling relevance.
+  const quantOptions: FilterOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const m of models) {
+      for (const f of m.files) {
+        if (f.runnable === false) continue
+        const q = (f.quantization ?? '').toUpperCase()
+        counts.set(q === '' ? 'Other' : q, (counts.get(q === '' ? 'Other' : q) ?? 0) + 1)
+      }
+    }
+    return [{ value: 'all', label: 'Any quant' }, ...QUANT_FILTERS.filter((q) => q !== 'all').map((q) => {
+      const n = counts.get(q) ?? 0
+      return { value: q, label: n > 0 ? `${q} (${n})` : q, count: undefined, disabled: n === 0 && models.length > 0 }
+    })]
+  }, [models])
 
   return (
     <div className="explorer">
@@ -900,46 +1163,64 @@ export function ExplorePage({ onBack }: Props): ReactElement {
             </div>
           </div>
 
+          {/* Second filter row: every filter ANDs with the rest in main. */}
+          <div className="explorer-filters" role="group" aria-label="Model filters">
+            <FilterMenu label={quantFilter === 'all' ? 'Quant' : quantFilter} ariaLabel="Filter by quantization" value={quantFilter} options={quantOptions} onChange={setQuantFilter} />
+            <FilterMenu label={PARAM_FILTERS.find((o) => o.value === paramsFilter)?.label ?? 'Size'} ariaLabel="Filter by parameter count" value={paramsFilter} options={PARAM_FILTERS} onChange={setParamsFilter} />
+            <FilterMenu label={capabilityFilter === 'all' ? 'Task' : capabilityFilter} ariaLabel="Filter by capability" value={capabilityFilter} options={CAP_FILTERS.map((c) => ({ value: c, label: c === 'all' ? 'Any task' : c }))} onChange={setCapabilityFilter} />
+            <FilterMenu label={licenseFilter === 'all' ? 'License' : licenseFilter} ariaLabel="Filter by license" value={licenseFilter} options={LICENSE_FILTERS.map((l) => ({ value: l, label: l === 'all' ? 'Any license' : l }))} onChange={setLicenseFilter} />
+            <FilterMenu label={COMPAT_FILTERS.find((o) => o.value === compatFilter)?.label ?? 'Fit'} ariaLabel="Filter by hardware fit" value={compatFilter} options={COMPAT_FILTERS} onChange={setCompatFilter} />
+            <FilterMenu label={GATED_FILTERS.find((o) => o.value === gatedFilter)?.label ?? 'Access'} ariaLabel="Filter by repository access" value={gatedFilter} options={GATED_FILTERS} onChange={setGatedFilter} />
+            <FilterMenu label={DOWNLOADED_FILTERS.find((o) => o.value === downloadedFilter)?.label ?? 'Saved'} ariaLabel="Filter by download state" value={downloadedFilter} options={DOWNLOADED_FILTERS} onChange={setDownloadedFilter} />
+            {hasActiveFilters ? (
+              <button type="button" className="explorer-filters-clear" onClick={clearFilters}>Clear</button>
+            ) : null}
+          </div>
+          {sortBy === 'Recommended' && debounced.trim() === '' ? (
+            <div className="explorer-recommended-note" role="note">
+              Recommended for your PC{hw ? ` (${hw.gpuAvailable && hw.totalVramMB ? `${Math.round(hw.totalVramMB / 1024)} GB VRAM` : 'CPU'} · ${Math.round(hw.totalRamMB / 1024)} GB RAM)` : ''} — likely fits first, then may-fit. Larger models stay browsable via other sorts.
+            </div>
+          ) : null}
+          {notice ? (
+            <div className="explorer-notice" role="status">{notice}<button type="button" className="explorer-retry" onClick={refresh}>Retry</button></div>
+          ) : null}
+
           <div className="explorer-list" role="listbox" aria-label="Models">
-            {loading ? (
+            {loading && models.length === 0 ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="explorer-skel" style={{ ['--i' as string]: i }}>
                   <div className="explorer-skel-icon" />
                   <div className="explorer-skel-lines"><span /><span className="short" /></div>
                 </div>
               ))
-            ) : error ? (
+            ) : error && models.length === 0 ? (
               <div className="explorer-empty">{error}<button type="button" className="explorer-retry" onClick={refresh}>Retry</button></div>
             ) : models.length === 0 ? (
-              <div className="explorer-empty">No text, vision, tools, code or thinking models found.</div>
+              <div className="explorer-empty">
+                <strong>{error ?? 'No models match your filters.'}</strong>
+                {hasActiveFilters ? (
+                  <span className="explorer-empty-hints">
+                    Try:
+                    {quantFilter !== 'all' ? <button type="button" className="explorer-retry" onClick={() => setQuantFilter('all')}>removing {quantFilter}</button> : null}
+                    {paramsFilter !== 'all' ? <button type="button" className="explorer-retry" onClick={() => setParamsFilter('all')}>widening size</button> : null}
+                    {compatFilter !== 'all' ? <button type="button" className="explorer-retry" onClick={() => setCompatFilter('all')}>clearing fit</button> : null}
+                    {downloadedFilter !== 'all' ? <button type="button" className="explorer-retry" onClick={() => setDownloadedFilter('all')}>clearing saved</button> : null}
+                    <button type="button" className="explorer-retry" onClick={clearFilters}>clear all filters</button>
+                  </span>
+                ) : <span>No text, vision, tools, code or thinking models found.</span>}
+              </div>
             ) : (
-              models.map((m, i) => {
-                const isActive = m.id === selectedId
-                // Row shows distinctive caps only; Text is the implied baseline
-                // and is shown only when a model has no distinctive capability.
-                const distinctive = sortCaps(m.capabilities.filter((c) => ['Vision', 'Tools', 'Reasoning', 'Code'].includes(c)))
-                const caps = (distinctive.length > 0 ? distinctive : sortCaps(m.capabilities.filter((c) => c === 'Text' || c === 'Chat')).slice(0, 1)).slice(0, 3)
-                return (
-                  <button
-                    key={m.id} type="button" role="option" aria-selected={isActive}
-                    className={`explorer-row ${isActive ? 'active' : ''}`}
-                    style={{ ['--i' as string]: Math.min(i, 10) }}
-                    onClick={() => setSelectedId(m.id)}
-                  >
-                    <ModelMark model={m} />
-                    <span className="explorer-row-main">
-                      <span className="explorer-row-titlerow">
-                        <span className="explorer-row-title">{shortName(m.name, 30)}</span>
-                      </span>
-                      <span className="explorer-row-desc">{shortName(m.longDescription || m.description, 52)}</span>
-                      <span className="explorer-row-time">{fmtAgo(m.updatedAt)}</span>
-                    </span>
-                    <span className="explorer-row-caps">
-                      {caps.length > 0 ? caps.map((c) => <span key={c} className="explorer-row-cap" title={CAP_HINT[c] ?? c}><CapIcon cap={c} /></span>) : null}
-                    </span>
+              <>
+                {refreshing ? <div className="explorer-refreshing" role="status">Refreshing…</div> : null}
+                {models.map((m, i) => (
+                  <ModelRow key={m.id} model={m} index={i} isActive={m.id === selectedId} onSelect={setSelectedId} />
+                ))}
+                {nextCursor ? (
+                  <button type="button" className="explorer-loadmore" disabled={loadingMore} onClick={loadMore}>
+                    {loadingMore ? 'Loading…' : 'Load more'}
                   </button>
-                )
-              })
+                ) : null}
+              </>
             )}
           </div>
         </aside>

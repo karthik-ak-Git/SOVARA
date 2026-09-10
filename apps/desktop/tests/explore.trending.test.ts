@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { listExplorerModels, usageScore } from '../src/main/services/explorerCatalog'
+import { listExplorerModels, rankUsageRows, usageScore, clearExplorerModelCache } from '../src/main/services/explorerCatalog'
 
 function row(id: string, downloads: number, likes: number, trendingScore: number): Record<string, unknown> {
   return {
@@ -37,12 +37,22 @@ describe('trending = what developers actually use', () => {
   })
 
   it('ranks the million-download workhorse above the flash newcomer', async () => {
+    clearExplorerModelCache()
     const models = await listExplorerModels({ query: '', sortBy: 'trending', limit: 10 })
     expect(models.map((m) => m.id)).toEqual(['org/workhorse-8b', 'org/flash-8b'])
   })
 
-  it('dedupes across the three sweeps', async () => {
-    const models = await listExplorerModels({ query: '', sortBy: 'trending', limit: 10 })
-    expect(new Set(models.map((m) => m.id)).size).toBe(models.length)
+  it('costs a single list sweep (no fan-out)', async () => {
+    clearExplorerModelCache()
+    await listExplorerModels({ query: '', sortBy: 'trending', limit: 10 })
+    const sweeps = (vi.mocked(fetch).mock.calls as unknown[][]).filter(
+      (args) => typeof args[0] === 'string' && (args[0] as string).startsWith('https://huggingface.co/api/models?'),
+    )
+    expect(sweeps).toHaveLength(1)
+  })
+
+  it('dedupes repeated ids within the sweep', () => {
+    const dupes = rankUsageRows([WORKHORSE as never, FLASH as never, WORKHORSE as never])
+    expect(dupes.map((r) => r.id)).toEqual(['org/workhorse-8b', 'org/flash-8b'])
   })
 })

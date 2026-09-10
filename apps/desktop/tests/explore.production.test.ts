@@ -21,6 +21,7 @@ function mkModel(over: Partial<ExploreModel>): ExploreModel {
     likes: 0,
     staffPick: false,
     updatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     parameters: '7B',
     architecture: 'llama',
     capabilities: ['Reasoning'],

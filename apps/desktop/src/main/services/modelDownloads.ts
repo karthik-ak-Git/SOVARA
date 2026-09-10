@@ -13,7 +13,9 @@ import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
-import { downloadRowId, type DownloadRowStatus } from '../config/RuntimeConfigStore'
+import { downloadRowId, type DownloadRowStatus, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
+
+export type LibrarySource = 'registry' | 'filesystem'
 
 export interface LibraryEntry {
   name: string
@@ -21,6 +23,10 @@ export interface LibraryEntry {
   sizeBytes: number
   path: string
   modifiedAt: number
+  source: LibrarySource
+  installStatus?: RegistryInstallStatus
+  downloadStatus?: DownloadRowStatus
+  runtimeId?: string | null
 }
 
 export type DownloadState = 'queued' | 'started' | 'progress' | 'paused' | 'done' | 'error' | 'cancelled'
@@ -118,7 +124,7 @@ export function repoFolder(modelId: string): string {
   return modelId.replace(/\//g, '__').slice(0, 128)
 }
 
-export function scanLibrary(root: string): LibraryEntry[] {
+export function scanLibraryFiles(root: string): LibraryEntry[] {
   const out: LibraryEntry[] = []
   const walk = (dir: string): void => {
     let entries: ReturnType<typeof readdirSync>
@@ -146,6 +152,8 @@ export function scanLibrary(root: string): LibraryEntry[] {
             sizeBytes: st.size,
             path: full,
             modifiedAt: st.mtimeMs,
+            // Filesystem walk origin (registry enrichment happens downstream).
+            source: 'filesystem',
           })
         } catch {
           // raced deletion — skip
@@ -154,6 +162,41 @@ export function scanLibrary(root: string): LibraryEntry[] {
     }
   }
   if (existsSync(root)) walk(root)
+  return out.sort((a, b) => b.modifiedAt - a.modifiedAt)
+}
+
+export function scanLibrary(root: string, rows?: readonly ModelRegistryRow[]): LibraryEntry[] {
+  const files = scanLibraryFiles(root)
+  if (!rows || rows.length === 0) return files
+
+  const byDisk = new Map(files.map((e) => [resolve(e.path), e] as const))
+  const out: LibraryEntry[] = []
+  const seen = new Set<string>()
+
+  for (const row of rows) {
+    if (!row.localPath || !isUnder(root, row.localPath)) continue
+    const key = resolve(row.localPath)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const disk = byDisk.get(key)
+    out.push({
+      name: row.displayName,
+      file: row.rfilename,
+      sizeBytes: disk?.sizeBytes ?? row.fileSizeBytes ?? 0,
+      path: row.localPath,
+      modifiedAt: disk?.modifiedAt ?? row.updatedAt,
+      source: 'registry',
+      installStatus: disk ? row.installStatus : 'missing',
+      downloadStatus: row.downloadStatus,
+      runtimeId: row.runtimeId,
+    })
+  }
+
+  for (const file of files) {
+    if (seen.has(resolve(file.path))) continue
+    out.push(file)
+  }
+
   return out.sort((a, b) => b.modifiedAt - a.modifiedAt)
 }
 

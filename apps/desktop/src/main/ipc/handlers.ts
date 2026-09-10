@@ -11,9 +11,8 @@ import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
-import { listExplorerModels, getExplorerModel } from '../services/explorerCatalog'
+import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
-import { getHardwareProfile } from '../services/hardwareProfile'
 import type { HardwareInfo } from '@shared/types/explore'
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
@@ -402,12 +401,24 @@ export function registerIpcHandlers(): void {
     // Legacy pipelineTag/tag filters are folded into the query scope — text families only.
     const scopeQuery = [parsed.data.query ?? '', parsed.data.pipelineTag ?? '', parsed.data.tag ?? '']
       .map((s) => s.trim()).filter(Boolean).join(' ')
-    return listExplorerModels({
+    // Env is built ONCE per listing (one cached hardware read, one registry
+    // read) so local filters stay synchronous and N+1-free in the catalog.
+    const backend = getBackend()
+    const hw = getCachedHardwareProfile()
+    return listExplorerModelsPage({
       sortBy: parsed.data.sortBy ?? 'Recommended',
       query: scopeQuery,
       limit: parsed.data.limit ?? 30,
       format: parsed.data.format ?? 'all',
-    })
+      quants: parsed.data.quants ?? [],
+      params: parsed.data.params ?? 'all',
+      licenses: parsed.data.licenses ?? [],
+      capabilities: parsed.data.capabilities ?? [],
+      gated: parsed.data.gated ?? 'all',
+      downloaded: parsed.data.downloaded ?? 'all',
+      compat: parsed.data.compat ?? 'all',
+      cursor: parsed.data.cursor,
+    }, undefined, { hw, installedByRepo: backend.listInstalledWeightKeys() })
   })
 
   ipcMain.handle('explore:getModel', async (_e, raw: unknown) => {
@@ -420,7 +431,8 @@ export function registerIpcHandlers(): void {
     const parsed = zExploreGetCompatibility.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getCompatibility payload: ${parsed.error.message}`)
     const model = await getExplorerModel(parsed.data.modelId)
-    const hw: HardwareInfo = getHardwareProfile()
+    // Cached profile: the three IPCs fired per detail click share one read.
+    const hw: HardwareInfo = getCachedHardwareProfile()
     // Default badge = the TOP RECOMMENDED file (LM Studio preselects the
     // recommended quant), not files[0] — per-file state then follows selection.
     const fits = fitExplorerFiles(model, hw)
@@ -433,7 +445,7 @@ export function registerIpcHandlers(): void {
     const parsed = zExploreGetRecommendations.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid explore:getRecommendations payload: ${parsed.error.message}`)
     const model = await getExplorerModel(parsed.data.modelId)
-    const hw: HardwareInfo = getHardwareProfile()
+    const hw: HardwareInfo = getCachedHardwareProfile()
     // New fit rows mapped to the legacy FileRecommendationView shape the renderer expects.
     return fitExplorerFiles(model, hw).map((r, rank) => ({
       file: model.files[r.index],
@@ -446,7 +458,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('explore:getHardwareProfile', async () => {
-    return getHardwareProfile()
+    // Shared 30s cache: the renderer's mount-time read warms the same
+    // profile every listing/detail IPC reuses (one probe burst, not N).
+    return getCachedHardwareProfile()
   })
 
   ipcMain.handle('validation:getFullProfile', async () => {

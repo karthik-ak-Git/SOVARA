@@ -184,6 +184,7 @@ function mapHfModelToExplore(hf: HfModelResponse): ExploreModel {
     likes: typeof hf.likes === 'number' ? hf.likes : 0,
     staffPick: false,
     updatedAt,
+    createdAt: normalizeDate(hf.createdAt ?? hf.lastModified),
     parameters: formatParams(hf.safetensors?.total, hf.tags, hf.id),
     architecture: extractArchitecture(hf.tags, hf.id),
     capabilities: detectCapabilities(hf.tags, hf.pipeline_tag, hf.id),

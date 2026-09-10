@@ -126,6 +126,19 @@ export const zExploreListModels = z
     limit: z.number().int().min(1).max(100).optional(),
     /** Format filter the backend supports (HF file-list based). */
     format: z.enum(['all', 'gguf', 'safetensors', 'mixed', 'other']).optional(),
+    /** GGUF quant tokens; a model matches when ANY runnable file carries one. */
+    quants: z.array(z.string().min(1).max(16)).max(20).optional(),
+    /** Parameter-count bucket (param count, never file size). */
+    params: z.enum(['all', 'lt3', 'b3to7', 'b7to14', 'b14to32', 'b32to70', 'gt70']).optional(),
+    /** License families derived from card metadata. */
+    licenses: z.array(z.string().min(1).max(32)).max(8).optional(),
+    /** UI capability names. */
+    capabilities: z.array(z.string().min(1).max(32)).max(8).optional(),
+    gated: z.enum(['all', 'accessible', 'gated']).optional(),
+    downloaded: z.enum(['all', 'downloaded', 'available']).optional(),
+    compat: z.enum(['all', 'likely', 'possible', 'unlikely', 'unknown']).optional(),
+    /** Opaque HF cursor for the next page. */
+    cursor: z.string().min(1).max(512).optional(),
   })
   .strict()
   .default({})

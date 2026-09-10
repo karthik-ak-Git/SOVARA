@@ -32,6 +32,7 @@ function mkModel(files: ExploreModel['files']): ExploreModel {
     likes: 0,
     staffPick: false,
     updatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     parameters: 'Unknown',
     architecture: 'transformers',
     capabilities: [],

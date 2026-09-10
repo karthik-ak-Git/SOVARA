@@ -85,12 +85,69 @@ interface HfRow {
 
 export type ExplorerFormatFilter = 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
 
+/** Canonical quant tokens the quant filter accepts ('Other' = unparsed/ novel). */
+export const EXPLORER_QUANTS = [
+  'Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q4_0', 'Q4_K_S', 'Q4_K_M',
+  'Q5_0', 'Q5_K_S', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16', 'F32', 'Other',
+] as const
+export type ExplorerQuantFilter = (typeof EXPLORER_QUANTS)[number]
+
+/** Parameter-count buckets. 'Unknown' param labels never match a bucket. */
+export type ExplorerParamsFilter = 'all' | 'lt3' | 'b3to7' | 'b7to14' | 'b14to32' | 'b32to70' | 'gt70'
+export const EXPLORER_PARAM_RANGES: Array<{ value: Exclude<ExplorerParamsFilter, 'all'>; label: string; min: number; max: number }> = [
+  { value: 'lt3', label: '< 3B', min: 0, max: 3 },
+  { value: 'b3to7', label: '3B–7B', min: 3, max: 7 },
+  { value: 'b7to14', label: '7B–14B', min: 7, max: 14 },
+  { value: 'b14to32', label: '14B–32B', min: 14, max: 32 },
+  { value: 'b32to70', label: '32B–70B', min: 32, max: 70 },
+  { value: 'gt70', label: '70B+', min: 70, max: Number.POSITIVE_INFINITY },
+]
+
+/** License families derived from the card license string (never invented). */
+export type ExplorerLicenseFilter = 'Apache-2.0' | 'MIT' | 'Llama' | 'Other' | 'Unknown'
+export const EXPLORER_LICENSES: ExplorerLicenseFilter[] = ['Apache-2.0', 'MIT', 'Llama', 'Other', 'Unknown']
+
+/** UI capability names (mapped from the internal families). */
+export const EXPLORER_CAPABILITIES = ['Vision', 'Tools', 'Reasoning', 'Code', 'Text', 'Chat', 'Embeddings'] as const
+
+export type ExplorerGatedFilter = 'all' | 'accessible' | 'gated'
+export type ExplorerDownloadedFilter = 'all' | 'downloaded' | 'available'
+/** Compat tiers mirror the fit engine; 'unknown' = no size signal at all. */
+export type ExplorerCompatFilter = 'all' | 'likely' | 'possible' | 'unlikely' | 'unknown'
+
 export interface ExplorerListOpts {
-  sortBy?: string // Recommended | trending | downloads | likes | lastModified
+  sortBy?: string // Recommended | trending | downloads | likes | lastModified | created
   query?: string // keyword, user/model, or full HF URL
   limit?: number // default 60, max 100
   /** File-list based format filter (default 'all'). */
   format?: ExplorerFormatFilter
+  /** GGUF quant tokens; matches when ANY runnable file carries one (default [] = all). */
+  quants?: string[]
+  /** Parameter-count bucket (default 'all'). */
+  params?: ExplorerParamsFilter
+  /** License families (default [] = all). */
+  licenses?: string[]
+  /** UI capability names (default [] = all). */
+  capabilities?: string[]
+  /** Gated/accessible (default 'all'). */
+  gated?: ExplorerGatedFilter
+  /** Registry-backed installed state (default 'all'). */
+  downloaded?: ExplorerDownloadedFilter
+  /** Hardware-fit tier (default 'all'). */
+  compat?: ExplorerCompatFilter
+  /** HF cursor for the next page (opaque to callers). */
+  cursor?: string
+}
+
+/**
+ * Local-only inputs the catalog cannot fetch itself. The IPC handler builds
+ * this once per listing (one hardware read, one registry read) so per-model
+ * filtering stays synchronous and N+1-free.
+ */
+export interface ExplorerListEnv {
+  hw?: HardwareInfo
+  /** repoId (lowercased) → installed rfilenames (lowercased). */
+  installedByRepo?: Map<string, Set<string>>
 }
 
 /**
@@ -104,6 +161,80 @@ export function matchesFormatFilter(format: ModelFormat | undefined, filter: Exp
   if (filter === 'gguf') return format === 'gguf' || format === 'mixed'
   if (filter === 'safetensors') return format === 'safetensors' || format === 'mixed'
   return format === filter
+}
+
+/**
+ * Quant filter over a model's RUNNABLE files (list rows carry quant labels
+ * parsed from sibling names — no HEAD/file fetch needed). 'Other' matches
+ * runnable files whose quant could not be parsed. Empty selection = all.
+ */
+export function matchesQuantFilter(files: ExploreModelFile[], quants: string[] | undefined): boolean {
+  const want = (quants ?? []).map((q) => q.trim()).filter(Boolean)
+  if (want.length === 0) return true
+  const runnable = files.filter((f) => f.runnable !== false)
+  if (runnable.length === 0) return false
+  return runnable.some((f) => {
+    const q = (f.quantization ?? '').toUpperCase()
+    return want.some((w) => {
+      const wu = w.toUpperCase()
+      if (wu === 'OTHER') return q === ''
+      return q === wu
+    })
+  })
+}
+
+/** Billions of params from a resolved label ("27B" → 27, "Unknown" → 0). */
+export function parseParamsB(label: string): number {
+  const m = (label ?? '').match(/([\d.]+)\s*B/i)
+  return m ? parseFloat(m[1]) : 0
+}
+
+/**
+ * Parameter bucket from the resolved label — param COUNT, never file size.
+ * 'Unknown' labels never match a bucket (no fabrication); 'all' keeps them.
+ */
+export function matchesParamsFilter(parameters: string, filter: ExplorerParamsFilter | undefined): boolean {
+  if (!filter || filter === 'all') return true
+  const range = EXPLORER_PARAM_RANGES.find((r) => r.value === filter)
+  if (!range) return true
+  const pb = parseParamsB(parameters)
+  if (!(pb > 0)) return false
+  return pb >= range.min && (range.max === Number.POSITIVE_INFINITY ? true : pb < range.max || (filter === 'gt70' && pb >= range.min))
+}
+
+/**
+ * License family from the raw card string. Community/vendor strings that
+ * name Llama stay 'Llama'; anything unrecognized (but present) is 'Other';
+ * missing/blank is 'Unknown'. Never relabels models "open source".
+ */
+export function normalizeLicenseFamily(license: string | undefined): ExplorerLicenseFilter {
+  const l = (license ?? '').trim().toLowerCase()
+  if (!l) return 'Unknown'
+  if (l.includes('apache-2.0') || l === 'apache 2.0' || l === 'apache2.0' || l === 'apache') return 'Apache-2.0'
+  if (l === 'mit' || l.includes(' mit') || l.startsWith('mit ')) return 'MIT'
+  if (l.includes('llama')) return 'Llama'
+  if (['unknown', 'none', 'null', 'n/a', 'other'].includes(l)) return l === 'other' ? 'Other' : 'Unknown'
+  return 'Other'
+}
+
+export function matchesLicenseFilter(license: string | undefined, licenses: string[] | undefined): boolean {
+  const want = (licenses ?? []).map((l) => l.trim()).filter(Boolean)
+  if (want.length === 0) return true
+  const fam = normalizeLicenseFamily(license)
+  return want.some((w) => w.toLowerCase() === fam.toLowerCase())
+}
+
+/** Capability filter over the model's classified UI capabilities. */
+export function matchesCapabilityFilter(capabilities: string[], wanted: string[] | undefined): boolean {
+  const want = (wanted ?? []).map((c) => c.trim().toLowerCase()).filter(Boolean)
+  if (want.length === 0) return true
+  const have = new Set(capabilities.map((c) => c.toLowerCase()))
+  return want.some((w) => have.has(w))
+}
+
+export function matchesGatedFilter(gated: boolean | undefined, filter: ExplorerGatedFilter | undefined): boolean {
+  if (!filter || filter === 'all') return true
+  return filter === 'gated' ? gated === true : gated !== true
 }
 
 function authHeader(): Record<string, string> {
@@ -407,6 +538,7 @@ function toExplore(hf: HfRow): ExploreModel | null {
   const uiCaps = caps.map((c) => (c === 'Thinking' ? 'Reasoning' : c))
   const languages = Array.isArray(card.language) ? card.language : typeof card.language === 'string' ? [card.language] : undefined
   const baseModel = Array.isArray(card.base_model) ? card.base_model[0] : card.base_model
+  const updatedAt = iso(hf.lastModified ?? hf.createdAt)
   return {
     id: hf.id,
     name,
@@ -416,10 +548,12 @@ function toExplore(hf: HfRow): ExploreModel | null {
     longDescription: `${name} is a ${caps.join('/').toLowerCase()} model by ${author} on Hugging Face.`,
     downloads: typeof hf.downloads === 'number' ? hf.downloads : 0,
     likes: typeof hf.likes === 'number' ? hf.likes : 0,
+    createdAt: iso(hf.createdAt ?? hf.lastModified),
+    ...(typeof hf.trendingScore === 'number' ? { trendingScore: hf.trendingScore } : {}),
     // No curated picks: the Recommended view is hardware-computed instead.
     staffPick: false,
     format: repoFormat,
-    updatedAt: iso(hf.lastModified ?? hf.createdAt),
+    updatedAt,
     parameters: paramsLabel(hf.safetensors?.total, tags, hf.id),
     architecture: archLabel(tags, hf.id, hf.gguf?.architecture, hf.config?.model_type),
     capabilities: uiCaps,
@@ -451,18 +585,40 @@ function sortParam(sortBy?: string): string {
     case 'downloads': return 'downloads'
     case 'likes': return 'likes'
     case 'lastmodified': return 'lastModified'
+    // 'created' has no reliable server sort — fetched as a relevance pool and
+    // sorted locally by createdAt (page-scoped, documented in listExplorerModelsPage).
+    case 'created': return 'trendingScore'
     default: return 'trendingScore'
   }
 }
 
-/** Raw HF rows for one server sort — keyword / sort, broad sweeps up to 100 rows. */
-async function fetchHfRows(query: string, serverSort: string, limit: number): Promise<HfRow[]> {
+interface HfPage {
+  rows: HfRow[]
+  /** Opaque HF cursor for the next page (null = last page). */
+  nextCursor: string | null
+}
+
+/** Extract the `cursor` of the `rel="next"` Link header (null when absent). */
+export function parseNextCursor(linkHeader: string | null): string | null {
+  if (!linkHeader) return null
+  const m = linkHeader.match(/<([^>]+)>;\s*rel="next"/)
+  if (!m) return null
+  try {
+    return new URL(m[1]).searchParams.get('cursor')
+  } catch {
+    return null
+  }
+}
+
+/** Raw HF page for one server sort — keyword / sort / cursor, up to 100 rows. */
+async function fetchHfPage(query: string, serverSort: string, limit: number, cursor?: string): Promise<HfPage> {
   const params = new URLSearchParams()
   params.set('sort', serverSort)
   params.set('direction', '-1')
   params.set('limit', String(Math.min(Math.max(limit, 1), 100)))
   const q = query.trim()
   if (q) params.set('search', q)
+  if (cursor) params.set('cursor', cursor)
   // Ask HF for the fields the Explorer needs (siblings keep GGUF file rows).
   // NOTE: `expand` (repeated param) with only server-valid keys — `usedStorage`
   // and `expand[]` bracket form with invalid keys return 400.
@@ -474,22 +630,39 @@ async function fetchHfRows(query: string, serverSort: string, limit: number): Pr
   })
   if (!res.ok) throw new Error(`Hugging Face error ${res.status}`)
   const rows = (await res.json()) as HfRow[]
-  return Array.isArray(rows) ? rows : []
+  return { rows: Array.isArray(rows) ? rows : [], nextCursor: parseNextCursor(res.headers.get('link')) }
 }
 
-function toExploreMany(rows: HfRow[], limit: number, format: ExplorerFormatFilter = 'all'): ExploreModel[] {
+function toExploreMany(
+  rows: HfRow[],
+  limit: number,
+  opts: Pick<ExplorerListOpts, 'format' | 'quants' | 'params' | 'licenses' | 'capabilities' | 'gated' | 'downloaded' | 'compat'> = {},
+  env: ExplorerListEnv = {},
+): ExploreModel[] {
   const out: ExploreModel[] = []
   for (const r of rows) {
     if (out.length >= limit) break
     const m = toExplore(r)
-    if (m && matchesFormatFilter(m.format, format)) out.push(m)
+    if (m && matchesAllFilters(m, opts, env)) out.push(m)
   }
   return out
 }
 
-/** Core HF search — keyword / sort, broad sweeps up to 100 rows. */
-async function searchHf(query: string, sortBy: string | undefined, limit: number, format: ExplorerFormatFilter = 'all'): Promise<ExploreModel[]> {
-  return toExploreMany(await fetchHfRows(query, sortParam(sortBy), limit), limit, format)
+/** Core HF search — one page, keyword / sort, local filters ANDed. */
+async function searchHfPage(
+  query: string,
+  sortBy: string | undefined,
+  limit: number,
+  opts: ExplorerListOpts,
+  env: ExplorerListEnv,
+): Promise<{ models: ExploreModel[]; nextCursor: string | null }> {
+  const page = await fetchHfPage(query, sortParam(sortBy), limit, opts.cursor)
+  let models = toExploreMany(page.rows, limit, opts, env)
+  // 'created' is page-scoped by design (no trustworthy server sort).
+  if ((sortBy ?? '').toLowerCase() === 'created') {
+    models = [...models].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+  }
+  return { models, nextCursor: page.nextCursor }
 }
 
 /**
@@ -514,20 +687,154 @@ function rankByUsage(rows: HfRow[]): HfRow[] {
   )
 }
 
+// ── Hardware-fit tiers + recommendation scoring ────────────────
+// One engine (explorerFit) drives badges, filters, and ranking — no second
+// estimator. Tiers are ESTIMATES ("Likely"), never guarantees.
+
+export type CompatTier = 'likely' | 'possible' | 'unlikely' | 'unknown'
+
+const TIER_RANK: Record<CompatTier, number> = { likely: 0, possible: 1, unlikely: 2, unknown: 3 }
+
 /**
- * Trending = top models developers actually use: merge the momentum,
- * downloads, and likes sweeps, then rank by developer-usage score.
+ * Best fit tier across a model's runnable files. List rows carry no HEAD
+ * sizes, so unknown sizes fall back to the params×bytes/B probe (GGUF 0.62,
+ * else 2.2 — same factor as the fit engine). 'unknown' only when there is
+ * no size signal at all (no sizes AND unparseable params).
  */
-async function searchTrending(query: string, limit: number, format: ExplorerFormatFilter = 'all'): Promise<ExploreModel[]> {
+export function bestModelFit(m: ExploreModel, hw: HardwareInfo): { tier: CompatTier; needGB: number } {
+  const runnable = m.files.filter((f) => f.runnable !== false)
+  if (runnable.length === 0) return { tier: 'unknown', needGB: 0 }
+  const pb = parseParamsB(m.parameters)
+  let best: CompatTier = 'unknown'
+  let bestNeed = 0
+  for (const f of runnable) {
+    const known = ((f.sizeBytes ?? 0) > 0) || f.sizeGB > 0
+    let file = f
+    if (!known) {
+      if (!(pb > 0)) continue // no signal from this file
+      const gguf = (f.format ?? '').toUpperCase() === 'GGUF'
+      file = { ...f, sizeGB: pb * (gguf ? 0.62 : 2.2), sizeBytes: 0 }
+    }
+    const r = estimateExplorerFit(file, m, hw)
+    const t: CompatTier =
+      r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU' ? 'likely'
+      : r.fit === 'partialGPUOffload' ? 'possible' : 'unlikely'
+    if (TIER_RANK[t] < TIER_RANK[best]) { best = t; bestNeed = r.needGB }
+  }
+  return { tier: best, needGB: bestNeed }
+}
+
+export function modelCompatTier(m: ExploreModel, hw: HardwareInfo): CompatTier {
+  return bestModelFit(m, hw).tier
+}
+
+export function matchesCompatFilter(m: ExploreModel, hw: HardwareInfo | undefined, filter: ExplorerCompatFilter | undefined): boolean {
+  if (!filter || filter === 'all') return true
+  // Without hardware there is nothing to verify against — only 'unknown' matches.
+  if (!hw) return filter === 'unknown'
+  return modelCompatTier(m, hw) === filter
+}
+
+/**
+ * Registry-backed installed check: ANY runnable file of this repo installed
+ * counts the MODEL as downloaded (per-variant state stays in the detail
+ * view via getFileStatus — this is list-level only).
+ */
+export function modelIsDownloaded(m: ExploreModel, installedByRepo: Map<string, Set<string>> | undefined): boolean {
+  if (!installedByRepo) return false
+  const set = installedByRepo.get(m.id.toLowerCase())
+  if (!set || set.size === 0) return false
+  return m.files.some((f) => f.rfilename && set.has(f.rfilename.toLowerCase()))
+}
+
+export function matchesDownloadedFilter(
+  m: ExploreModel,
+  installedByRepo: Map<string, Set<string>> | undefined,
+  filter: ExplorerDownloadedFilter | undefined,
+): boolean {
+  if (!filter || filter === 'all') return true
+  // Registry unavailable → do NOT hide anything (verified in handler/tests).
+  if (!installedByRepo) return true
+  const dl = modelIsDownloaded(m, installedByRepo)
+  return filter === 'downloaded' ? dl : !dl
+}
+
+/** Every list-level filter ANDed. Pure + synchronous (env prebuilt by caller). */
+export function matchesAllFilters(
+  m: ExploreModel,
+  opts: Pick<ExplorerListOpts, 'format' | 'quants' | 'params' | 'licenses' | 'capabilities' | 'gated' | 'downloaded' | 'compat'>,
+  env: ExplorerListEnv = {},
+): boolean {
+  return (
+    matchesFormatFilter(m.format, opts.format ?? 'all') &&
+    matchesQuantFilter(m.files, opts.quants) &&
+    matchesParamsFilter(m.parameters, opts.params) &&
+    matchesLicenseFilter(m.license, opts.licenses) &&
+    matchesCapabilityFilter(m.capabilities, opts.capabilities) &&
+    matchesGatedFilter(m.gated, opts.gated) &&
+    matchesDownloadedFilter(m, env.installedByRepo, opts.downloaded) &&
+    matchesCompatFilter(m, env.hw, opts.compat)
+  )
+}
+
+export interface ExplorerScore {
+  /** 0 likely, 1 possible — Recommended only ever ranks these two. */
+  tier: number
+  score: number
+}
+
+/**
+ * Real relevance score from AVAILABLE signals only (no invented quality):
+ *   hardware tier (primary) > capability match > usage (downloads/likes/
+ *   momentum) > size efficiency > recency, with a gated penalty.
+ */
+export function scoreExplorerModel(
+  m: ExploreModel,
+  hw: HardwareInfo,
+  opts: { capabilities?: string[] } = {},
+): ExplorerScore {
+  const { tier, needGB } = bestModelFit(m, hw)
+  const tierNum = TIER_RANK[tier]
+  let score = usageScore(m.downloads, m.likes, m.trendingScore ?? 0)
+  // Requested-capability match: +0.5 each, capped at +1.
+  const want = (opts.capabilities ?? []).map((c) => c.toLowerCase())
+  if (want.length > 0) {
+    const have = new Set(m.capabilities.map((c) => c.toLowerCase()))
+    const hits = want.filter((w) => have.has(w)).length
+    score += Math.min(1, hits * 0.5)
+  }
+  // Size efficiency within a tier: smaller footprint wins (≤ +0.5).
+  if (needGB > 0) score += 0.5 / (1 + needGB / 8)
+  // Recency: fresh releases get a small momentum-independent nudge (≤ +0.5).
+  const ageDays = (Date.now() - Date.parse(m.updatedAt)) / 86400000
+  if (Number.isFinite(ageDays) && ageDays >= 0) score += 0.5 * Math.max(0, 1 - ageDays / 365)
+  // Gated repos sort below equal open ones (accessibility is a signal too).
+  if (m.gated) score -= 1
+  return { tier: tierNum, score }
+}
+
+/**
+ * Trending = top models developers actually use: ONE momentum sweep, then
+ * rank locally by the developer-usage blend (downloads/likes/momentum).
+ * Previously three parallel 100-row sweeps; a single sweep already carries
+ * every ranking input, so this thirds the request cost with identical rank
+ * inputs. rankByUsage still dedupes (server pages can repeat ids).
+ */
+export function rankUsageRows(rows: HfRow[]): HfRow[] {
+  return rankByUsage(rows)
+}
+
+async function searchTrending(
+  query: string,
+  limit: number,
+  opts: ExplorerListOpts,
+  env: ExplorerListEnv,
+): Promise<{ models: ExploreModel[]; nextCursor: string | null }> {
   const q = query.trim()
-  const lists: HfRow[][] = q
-    ? [await fetchHfRows(q, 'trendingScore', limit)]
-    : await Promise.all([
-      fetchHfRows('', 'trendingScore', 100),
-      fetchHfRows('', 'downloads', 100),
-      fetchHfRows('', 'likes', 100),
-    ])
-  return toExploreMany(rankByUsage(lists.flat()), limit, format)
+  // Broad pool for an empty query so usage-ranking has room; keyword
+  // searches stay page-sized (server relevance already applies).
+  const page = await fetchHfPage(q, 'trendingScore', q ? limit : Math.max(limit, 100), opts.cursor)
+  return { models: toExploreMany(rankByUsage(page.rows), limit, opts, env), nextCursor: page.nextCursor }
 }
 
 async function fetchOne(modelId: string): Promise<ExploreModel | null> {
@@ -537,85 +844,182 @@ async function fetchOne(modelId: string): Promise<ExploreModel | null> {
   return toExplore(row)
 }
 
-/** Billions of params from a resolved label ("27B" → 27, "Unknown" → 0). */
-function parseParamsB(label: string): number {
-  const m = (label ?? '').match(/([\d.]+)\s*B/i)
-  return m ? parseFloat(m[1]) : 0
+/** Cached hardware profile: one subprocess burst per 30 s, not per click. */
+const HW_TTL_MS = 30_000
+let hwCache: { at: number; hw: HardwareInfo } | null = null
+
+export function getCachedHardwareProfile(): HardwareInfo {
+  if (hwCache && Date.now() - hwCache.at < HW_TTL_MS) return hwCache.hw
+  let hw: HardwareInfo
+  try {
+    hw = getHardwareProfile()
+  } catch {
+    hw = { totalRamMB: 16 * 1024, freeRamMB: 8 * 1024, gpuAvailable: false }
+  }
+  hwCache = { at: Date.now(), hw }
+  return hw
+}
+
+// ── List-result cache + in-flight dedup ───────────────────────────
+// Same normalized query in flight twice (mount + refresh, filter taps)
+// costs ONE HF sweep; repeat visits within the TTL cost zero fetches.
+// The registry-backed `downloaded` filter bypasses the cache: install
+// state changes outside any TTL and must never read stale.
+const LIST_TTL_MS = 120_000
+interface ListPage { models: ExploreModel[]; nextCursor: string | null }
+const listCache = new Map<string, { at: number; page: ListPage }>()
+const listInflight = new Map<string, Promise<ListPage>>()
+
+function normalizeListKey(opts: ExplorerListOpts, hw: HardwareInfo | undefined): string {
+  const canon = (v: string[] | undefined): string[] => [...(v ?? [])].map((s) => s.trim()).filter(Boolean).sort()
+  return JSON.stringify({
+    q: (opts.query ?? '').trim(),
+    s: (opts.sortBy ?? 'Recommended').toLowerCase(),
+    l: Math.min(Math.max(opts.limit ?? 60, 1), 100),
+    f: opts.format ?? 'all',
+    qu: canon(opts.quants),
+    p: opts.params ?? 'all',
+    li: canon(opts.licenses),
+    c: canon(opts.capabilities),
+    g: opts.gated ?? 'all',
+    d: opts.downloaded ?? 'all',
+    k: opts.compat ?? 'all',
+    cur: opts.cursor ?? '',
+    hw: hw ? [hw.totalRamMB, hw.freeRamMB, hw.totalVramMB ?? -1, hw.freeVramMB ?? -1, hw.gpuAvailable ? 1 : 0].join(',') : 'live',
+  })
 }
 
 /**
- * Hardware-aware Recommended: sweep trending, estimate each model's typical
- * Q4-GGUF footprint from its params (same 0.62 GB/B factor as the fit
- * engine), run it through the real fit estimator, and keep FULL fits first,
- * PARTIAL fits next, most-downloaded first inside each tier. Models that
- * won't fit — or whose size can't be verified — are left out instead of
- * guessed. `hwOverride` exists for tests; production uses the live profile.
+ * Hardware-aware Recommended: sweep trending, score every runnable-GGUF
+ * model (tier > capability match > usage > size > recency, gated penalty),
+ * keep FULL then PARTIAL fits. Models that won't fit — or whose size can't
+ * be verified — are left out instead of guessed. `hwOverride` exists for
+ * tests; production uses the cached live profile.
  */
-async function recommendForHardware(limit: number, hwOverride?: HardwareInfo): Promise<ExploreModel[]> {
-  const sweep = await searchHf('', 'trending', 100)
-  let hw: HardwareInfo
-  if (hwOverride) {
-    hw = hwOverride
-  } else {
-    try {
-      hw = getHardwareProfile()
-    } catch {
-      hw = { totalRamMB: 16 * 1024, freeRamMB: 8 * 1024, gpuAvailable: false }
-    }
-  }
-  const ranked: Array<{ m: ExploreModel; tier: number }> = []
-  for (const m of sweep) {
+async function recommendForHardware(
+  limit: number,
+  hw: HardwareInfo,
+  opts: ExplorerListOpts,
+  env: ExplorerListEnv,
+): Promise<ExploreModel[]> {
+  const page = await fetchHfPage('', 'trendingScore', 100)
+  const ranked: Array<{ m: ExploreModel; tier: number; score: number }> = []
+  for (const r of page.rows) {
+    const m = toExplore(r)
     // Recommended is the local-inference view: only repos with runnable
     // GGUF options qualify (safetensors-only can never load locally).
-    if (m.files.length === 0) continue
-    const pb = parseParamsB(m.parameters)
-    if (!(pb > 0)) continue // size unverifiable — exclude, never guess
-    const probe: ExploreModelFile = { format: 'GGUF', sizeGB: pb * 0.62, sizeBytes: 0, downloadUrl: '', runnable: true }
-    const r = estimateExplorerFit(probe, m, hw)
-    const tier = r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU' ? 0 : r.fit === 'partialGPUOffload' ? 1 : -1
-    if (tier < 0) continue
-    ranked.push({ m, tier })
+    if (!m || m.files.length === 0) continue
+    const { tier } = bestModelFit(m, hw)
+    if (tier !== 'likely' && tier !== 'possible') continue // unverifiable/too-large: exclude, never guess
+    if (!matchesAllFilters(m, opts, { ...env, hw })) continue // active filters bind recommendations too
+    const s = scoreExplorerModel(m, hw, { capabilities: opts.capabilities })
+    ranked.push({ m, tier: s.tier, score: s.score })
   }
-  ranked.sort((a, b) => a.tier - b.tier || b.m.downloads - a.m.downloads)
+  ranked.sort((a, b) => a.tier - b.tier || b.score - a.score)
   return ranked.slice(0, limit).map((x) => x.m)
 }
 
+export interface ExplorerListPage {
+  models: ExploreModel[]
+  /** Cursor for the next page (null = exhausted or N/A for exact lookups). */
+  nextCursor: string | null
+}
+
+/** Append a page without duplicates (server pages may repeat ids). */
+export function mergeExplorerPages(prev: ExploreModel[], next: ExploreModel[]): ExploreModel[] {
+  const seen = new Set(prev.map((m) => m.id))
+  return [...prev, ...next.filter((m) => !seen.has(m.id))]
+}
+
 /**
- * Public listing — Hugging Face primary:
+ * Public listing — Hugging Face primary (ONE page):
  * 1. Full HF URL or org/name paste → exact model (single row).
- * 2. Empty query + Recommended → models that FULLY or PARTIALLY fit this
- *    machine (computed live from RAM/VRAM, most-downloaded first per tier).
- * 3. Else broad keyword/trending sweep (default 60, max 100), 5 families only.
+ * 2. Empty query + Recommended → hardware-scored fits (FULL, then PARTIAL).
+ * 3. Else broad keyword/trending sweep (default 60/page, max 100/page).
+ * Local filters (format/quant/params/license/capability/gated/downloaded/
+ * compat) AND across every path; the recommendation path included.
  */
-export async function listExplorerModels(opts: ExplorerListOpts = {}, hwOverride?: HardwareInfo): Promise<ExploreModel[]> {
+export async function listExplorerModelsPage(
+  opts: ExplorerListOpts = {},
+  hwOverride?: HardwareInfo,
+  env: ExplorerListEnv = {},
+): Promise<ExplorerListPage> {
   const sortBy = opts.sortBy ?? 'Recommended'
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
-  const format: ExplorerFormatFilter = opts.format ?? 'all'
   const parsed = parseExplorerSearch(opts.query ?? '')
+  const hw = hwOverride ?? env.hw ?? getCachedHardwareProfile()
+  const fullEnv: ExplorerListEnv = { ...env, hw }
+
+  // List rows carry a precomputed fit tier (same engine as the detail
+  // badges) so cards can show an honest "Estimated fit" dot without any
+  // per-row IPC or a second estimator in the renderer.
+  const withTiers = (models: ExploreModel[]): ExploreModel[] =>
+    models.map((m) => ({ ...m, fitTier: modelCompatTier(m, hw) }))
 
   if (parsed.kind === 'url' || parsed.kind === 'id') {
-    // Exact lookup bypasses the format filter — the detail view shows the
-    // repo's true format (even safetensors-only) instead of hiding it.
+    // Exact lookup bypasses the list filters — the detail view shows the
+    // repo's true state (even safetensors-only) instead of hiding it.
     const one = await fetchOne(parsed.modelId as string).catch(() => null)
-    if (one) return [one]
+    if (one) return { models: withTiers([one]), nextCursor: null }
     // Fall through to keyword search when the id does not resolve
-    return searchHf(parsed.modelId as string, sortBy, limit, format)
+    const page = await searchHfPage(parsed.modelId as string, sortBy, limit, opts, fullEnv)
+    return { models: withTiers(page.models), nextCursor: page.nextCursor }
   }
 
   if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
-    // Recommended is inherently GGUF (local inference); a non-GGUF format
-    // filter yields the honest empty set rather than a fake list.
-    const recs = await recommendForHardware(limit, hwOverride)
-    return recs.filter((m) => matchesFormatFilter(m.format, format))
+    const recs = await recommendForHardware(limit, hw, opts, fullEnv)
+    return { models: withTiers(recs), nextCursor: null }
   }
 
   // Trending = what developers actually use (usage-blended rank), not the raw
   // server trend score. Recommended stays hardware-aware (fits this machine).
   if (sortBy.toLowerCase() === 'trending') {
-    return searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit, format)
+    const page = await searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit, opts, fullEnv)
+    return { models: withTiers(page.models), nextCursor: page.nextCursor }
   }
 
-  return searchHf(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit, format)
+  const page = await searchHfPage(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit, opts, fullEnv)
+  return { models: withTiers(page.models), nextCursor: page.nextCursor }
+}
+
+/** Cached + deduped listing. Same contract as the page call. */
+export async function listExplorerModelsCached(
+  opts: ExplorerListOpts = {},
+  hwOverride?: HardwareInfo,
+  env: ExplorerListEnv = {},
+): Promise<ExplorerListPage> {
+  const skipCache = (opts.downloaded ?? 'all') !== 'all'
+  const hw = hwOverride ?? env.hw
+  const key = normalizeListKey(opts, hw)
+  if (!skipCache) {
+    const hit = listCache.get(key)
+    if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.page
+    const inflight = listInflight.get(key)
+    if (inflight) return inflight
+  }
+  // Resolve live hardware once so the key and the ranking agree.
+  const resolvedHw = hw ?? getCachedHardwareProfile()
+  const keyLive = normalizeListKey(opts, hw ?? resolvedHw)
+  if (!skipCache) {
+    const inflight = listInflight.get(keyLive)
+    if (inflight) return inflight
+  }
+  const p = listExplorerModelsPage(opts, hwOverride, { ...env, hw: resolvedHw })
+    .then((page) => {
+      if (!skipCache) listCache.set(keyLive, { at: Date.now(), page })
+      return page
+    })
+    .finally(() => { listInflight.delete(keyLive) })
+  if (!skipCache) listInflight.set(keyLive, p)
+  return p
+}
+
+export async function listExplorerModels(
+  opts: ExplorerListOpts = {},
+  hwOverride?: HardwareInfo,
+  env: ExplorerListEnv = {},
+): Promise<ExploreModel[]> {
+  return (await listExplorerModelsCached(opts, hwOverride, env)).models
 }
 
 // ── HF weight-file backend caches ────────────────────────────────────
@@ -942,6 +1346,9 @@ export function clearExplorerModelCache(): void {
   modelInflight.clear()
   sibCache.clear()
   headCache.clear()
+  listCache.clear()
+  listInflight.clear()
+  hwCache = null
 }
 
 /** Detail: full row + GGUF quant options + exact HEAD sizes + README. */

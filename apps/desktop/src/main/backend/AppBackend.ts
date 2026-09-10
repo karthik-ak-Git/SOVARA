@@ -222,6 +222,29 @@ export class AppBackend {
     return deleteLibraryEntry(this.getLibraryDir(), entryPath, this.runtimeConfig)
   }
 
+  /**
+   * Installed weight files grouped by repo for Explorer list filtering:
+   * repoId (lowercased) → installed rfilenames (lowercased). One registry
+   * read per listing — the catalog never does per-model lookups (N+1-free).
+   * `undefined` when the registry can't be read (the catalog then refuses
+   * to hide anything on downloaded-state grounds — never "none installed").
+   */
+  listInstalledWeightKeys(): Map<string, Set<string>> | undefined {
+    try {
+      const out = new Map<string, Set<string>>()
+      for (const row of this.runtimeConfig.listRegistryRows()) {
+        if (row.installStatus !== 'installed' || !row.repository || !row.rfilename) continue
+        const repo = row.repository.toLowerCase()
+        let set = out.get(repo)
+        if (!set) { set = new Set<string>(); out.set(repo, set) }
+        set.add(row.rfilename.toLowerCase())
+      }
+      return out
+    } catch {
+      return undefined
+    }
+  }
+
   // ── Validation per MODEL_HARDWARE_VALIDATION (DETECT→PROFILE→ESTIMATE→PRE→LOAD→INFER→MEASURE→VALIDATE) ──
   getFullHardwareProfile(): import('@shared/types/validation').HardwareProfileFull {
     return getFullHardwareProfile()

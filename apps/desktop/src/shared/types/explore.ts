@@ -81,6 +81,10 @@ export interface ExploreModel {
   likes: number
   staffPick: boolean
   updatedAt: string        // ISO date
+  /** ISO creation date (falls back to updatedAt when the API omits it). */
+  createdAt: string
+  /** Raw HF trendingScore when the listing provided it (ranking input only). */
+  trendingScore?: number
   parameters: string       // "7B", "27B", "70B"
   architecture: string     // "llama", "qwen3", "gemma", "mistral"
   capabilities: string[]   // Vision, Tools, Reasoning, Code
@@ -103,6 +107,8 @@ export interface ExploreModel {
   /** Full weight-file inventory (detail only, all formats, read-only). */
   repoFiles?: ExploreRepoFile[]
   readme?: string
+  /** List-row fit tier from the backend fit engine (estimate only). */
+  fitTier?: ExplorerFitTier
 }
 
 export interface HardwareInfo {
@@ -123,6 +129,9 @@ export interface CompatibilityResult {
 }
 
 export type ExploreSortBy = 'recommended' | 'trending' | 'likes' | 'downloads' | 'lastModified'
+
+/** Precomputed list-row fit tier (estimate — detail badges stay authoritative). */
+export type ExplorerFitTier = 'likely' | 'possible' | 'unlikely' | 'unknown'
 
 /** Format filter the backend actually supports (HF file-list based). */
 export type ExploreFormatFilter = 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
