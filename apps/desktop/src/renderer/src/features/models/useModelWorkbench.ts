@@ -35,7 +35,7 @@ export function useModelWorkbench() {
       modelId: m.name.replace(/\.gguf$/i, '').replace(/__/g, '/') || m.file.replace(/\.gguf$/i, ''),
       displayName: m.file,
       runtimeId: rt[0]?.id ?? 'local',
-      source: 'sovara' as const,
+      source: 'custom' as const,
       capabilities: [],
       available: true,
     }))

@@ -5,15 +5,8 @@ const instances = new Map<string, ModelInstance>()
 
 export class ModelRuntimeStub implements ModelRuntimePort {
   async listLocalModels(): Promise<LocalModel[]> { return [] }
-  async load(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance> {
-    const id = `inst_${Date.now()}` as InstanceId
-    const inst: ModelInstance = {
-      id, modelId, runtimeId: opts?.runtimeId ?? 'local', status: 'loaded', ctxLen: opts?.ctxLen ?? 4096,
-      startedAt: Date.now(),
-      metrics: { vramUsedMB: 0, ramUsedMB: 0, cpuUsage: 0, gpuUtilization: 0, tokensPerSec: 0, lastUpdatedAt: Date.now() },
-    }
-    instances.set(id as string, inst)
-    return inst
+  async load(_modelId: ModelId, _opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance> {
+    throw new Error('unavailable in Phase 1')
   }
   async unload(instanceId: InstanceId): Promise<void> {
     if (!instances.has(instanceId as string)) throw new Error('unknown instance')
@@ -71,7 +64,7 @@ function appendLoadLog(level: string, event: string, extra: Record<string, unkno
   try {
     const { join } = require('node:path') as typeof import('node:path')
     const { appendFileSync } = require('node:fs') as typeof import('node:fs')
-    const { getSovaraDataDir, ensureDir } = require('../storage/paths') as typeof import('../storage/paths')
+    const { getSovaraDataDir, ensureDir } = require('../../storage/paths') as typeof import('../../storage/paths')
     let dir: string; try { dir = join(getSovaraDataDir(undefined), 'logs') } catch { dir = join(require('node:os').tmpdir(), 'sovara-logs') }
     ensureDir(dir)
     const line = JSON.stringify({ time: Date.now(), iso: new Date().toISOString(), level, event, ...extra })+'\n'
