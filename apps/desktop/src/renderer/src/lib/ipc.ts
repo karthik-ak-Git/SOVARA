@@ -493,6 +493,10 @@ export interface LibraryModel {
   sizeBytes: number
   path: string
   modifiedAt: number
+  source?: 'registry' | 'filesystem'
+  installStatus?: RegistryInstallStatus
+  downloadStatus?: DownloadRowStatus
+  runtimeId?: string | null
 }
 
 export async function listLibraryModels(): Promise<LibraryModel[]> {

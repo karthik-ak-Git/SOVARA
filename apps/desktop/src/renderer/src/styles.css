@@ -2859,6 +2859,20 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   color: var(--muted);
   font-weight: 500;
 }
+.library-model-chip--installed {
+  color: var(--success, #4ade80);
+  border-color: var(--success, #4ade80);
+  background: color-mix(in srgb, var(--success, #4ade80) 10%, transparent);
+}
+.library-model-chip--missing {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.library-model-chip--unregistered {
+  color: var(--muted);
+  border-color: var(--border);
+}
 .library-model-icons {
   display: flex;
   align-items: center;

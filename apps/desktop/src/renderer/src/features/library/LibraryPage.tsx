@@ -19,6 +19,16 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`
 }
 
+function InstallStatusChip({ status }: { status: NonNullable<LibraryModel['installStatus']> }): ReactElement | null {
+  if (status === 'installed') {
+    return <span className="library-model-chip library-model-chip--installed">Installed</span>
+  }
+  if (status === 'missing') {
+    return <span className="library-model-chip library-model-chip--missing">Missing</span>
+  }
+  return <span className="library-model-chip library-model-chip--unregistered">Unregistered</span>
+}
+
 function LibraryModelIcon(): ReactElement {
   return (
     <div className="library-model-icon">
@@ -180,6 +190,7 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
                   <div className="library-model-meta">
                     <span className="library-model-chip">{formatBytes(model.sizeBytes)}</span>
                     <span className="library-model-chip">{model.name}</span>
+                    {model.installStatus ? <InstallStatusChip status={model.installStatus} /> : null}
                   </div>
                   <div className="library-model-sub">
                     {new Date(model.modifiedAt).toLocaleDateString()}

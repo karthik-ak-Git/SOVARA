@@ -149,7 +149,7 @@ export class AppBackend {
   }
 
   scanLibrary(): LibraryEntry[] {
-    return scanLibrary(this.getLibraryDir())
+    return scanLibrary(this.getLibraryDir(), this.runtimeConfig.listRegistryRows())
   }
 
   startModelDownload(
@@ -257,7 +257,7 @@ export class AppBackend {
     if (!resolvedPath) {
       // Try to locate downloaded file first
       const lib = this.scanLibrary()
-      const hit = lib.find((e) => e.name === modelId.replace(/\//g, '__') || e.path.includes(modelId.split('/').pop() ?? ''))
+      const hit = lib.find((e) => e.installStatus !== 'missing' && (e.name === modelId.replace(/\//g, '__') || e.path.includes(modelId.split('/').pop() ?? '')))
       if (hit) resolvedPath = hit.path
     }
     // For cache check we could short-circuit, but spec says background job, so always run

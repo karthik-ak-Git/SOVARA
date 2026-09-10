@@ -12,6 +12,7 @@ import {
   scanLibrary,
 } from '../src/main/services/modelDownloads'
 import type { ExploreModel } from '../src/shared/types/explore'
+import type { ModelRegistryRow } from '../src/main/config/RuntimeConfigStore'
 
 function mkModel(over: Partial<ExploreModel>): ExploreModel {
   return {
@@ -117,5 +118,142 @@ describe('modelDownloads filesystem helpers', () => {
 
   it('cancelDownload returns false when nothing is active', () => {
     expect(cancelDownload('nope', 'nope.gguf')).toBe(false)
+  })
+})
+
+function mkRegistryRow(over: Partial<ModelRegistryRow> & { localPath: string }): ModelRegistryRow {
+  return {
+    id: 'hf|org/m|main|m.gguf',
+    sourceProvider: 'huggingface',
+    repository: 'org/m',
+    revision: 'main',
+    rfilename: 'm.gguf',
+    format: 'gguf',
+    quantization: 'Q4_K_M',
+    architecture: 'llama',
+    parameterCount: '7B',
+    contextLength: null,
+    license: 'apache-2.0',
+    fileSizeBytes: 100,
+    checksum: null,
+    downloadStatus: 'completed',
+    installStatus: 'installed',
+    runtimeId: 'rt-1',
+    displayName: 'org/m · 7B',
+    discoveredAt: 1,
+    updatedAt: 1,
+    extraJson: null,
+    ...over,
+  }
+}
+
+describe('scanLibrary registry merge', () => {
+  it('registry row with file on disk resolves to installed with disk sizes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const repo = path.join(dir, 'Org__M')
+      fs.mkdirSync(repo, { recursive: true })
+      const file = path.join(repo, 'm.gguf')
+      fs.writeFileSync(file, Buffer.alloc(10))
+      const rows = [mkRegistryRow({ localPath: file, fileSizeBytes: 9999, updatedAt: 2 })]
+      const found = scanLibrary(dir, rows)
+      expect(found).toHaveLength(1)
+      expect(found[0]).toMatchObject({
+        source: 'registry',
+        installStatus: 'installed',
+        name: 'org/m · 7B',
+        file: 'm.gguf',
+        sizeBytes: 10,
+        downloadStatus: 'completed',
+        runtimeId: 'rt-1',
+      })
+      expect(found[0].modifiedAt).toBeGreaterThan(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('registry row with missing file stays listed and marked missing', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const repo = path.join(dir, 'Org__M')
+      fs.mkdirSync(repo, { recursive: true })
+      const file = path.join(repo, 'm.gguf')
+      const rows = [mkRegistryRow({ localPath: file })]
+      const found = scanLibrary(dir, rows)
+      expect(found).toHaveLength(1)
+      expect(found[0]).toMatchObject({
+        source: 'registry',
+        installStatus: 'missing',
+        sizeBytes: 100,
+        modifiedAt: 1,
+      })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('registry row escaping the library root is excluded', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const outside = path.join(dir, '..', 'outside-m.gguf')
+      const rows = [mkRegistryRow({ localPath: outside })]
+      expect(scanLibrary(dir, rows)).toHaveLength(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('filesystem-only files keep source filesystem and no install status', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const repo = path.join(dir, 'Qwen__Qwen3')
+      fs.mkdirSync(repo, { recursive: true })
+      fs.writeFileSync(path.join(repo, 'q.gguf'), Buffer.alloc(4))
+      const found = scanLibrary(dir, [])
+      expect(found).toHaveLength(1)
+      expect(found[0].source).toBe('filesystem')
+      expect(found[0].installStatus).toBeUndefined()
+      expect(found[0].downloadStatus).toBeUndefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('dedupes a registry row and fs entry sharing the same path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const repo = path.join(dir, 'Org__M')
+      fs.mkdirSync(repo, { recursive: true })
+      const file = path.join(repo, 'm.gguf')
+      fs.writeFileSync(file, Buffer.alloc(7))
+      const rows = [mkRegistryRow({ localPath: file })]
+      const found = scanLibrary(dir, rows)
+      expect(found).toHaveLength(1)
+      expect(found[0].source).toBe('registry')
+      expect(found[0].sizeBytes).toBe(7)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('sorts merged entries by modifiedAt descending', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-reg-'))
+    try {
+      const repoA = path.join(dir, 'Org__A')
+      fs.mkdirSync(repoA, { recursive: true })
+      const fileA = path.join(repoA, 'a.gguf')
+      fs.writeFileSync(fileA, Buffer.alloc(3))
+      const older = Date.now() - 100000
+      fs.utimesSync(fileA, new Date(older), new Date(older))
+      const fileB = path.join(dir, 'Org__B', 'b.gguf')
+      const rows = [mkRegistryRow({ localPath: fileB, rfilename: 'b.gguf', updatedAt: Date.now() })]
+      const found = scanLibrary(dir, rows)
+      expect(found).toHaveLength(2)
+      expect(found[0].file).toBe('b.gguf')
+      expect(found[1].file).toBe('a.gguf')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

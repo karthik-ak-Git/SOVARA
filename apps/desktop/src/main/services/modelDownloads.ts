@@ -1258,7 +1258,7 @@ export function reconcileLibrary(config: RuntimeConfigStore, userData: string): 
   // 2. Adopt complete files that predate the registry (provenance sidecar) or
   //    list the rest as unregistered — never blindly verified.
   interface SidecarMeta { modelId?: string; rfilename?: string; downloadUrl?: string; sizeBytes?: number }
-  for (const entry of scanLibrary(root)) {
+  for (const entry of scanLibraryFiles(root)) {
     if (byDest.has(resolve(entry.path))) continue
     const sidecar = `${entry.path}.json`
     let meta: SidecarMeta | null = null

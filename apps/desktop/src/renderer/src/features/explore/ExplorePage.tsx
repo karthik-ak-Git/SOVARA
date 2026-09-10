@@ -739,6 +739,10 @@ export function ExplorePage({ onBack }: Props): ReactElement {
   const genRef = useRef(0)
   const modelsRef = useRef<ExploreModel[]>([])
   modelsRef.current = models
+  // Ref mirrors for the stable download-event subscription below.
+  const refreshRef = useRef<() => void>(() => {})
+  const downloadedFilterRef = useRef(downloadedFilter)
+  downloadedFilterRef.current = downloadedFilter
 
   const selected = useMemo(
     () => models.find((m) => m.id === selectedId) ?? null,
@@ -897,9 +901,13 @@ export function ExplorePage({ onBack }: Props): ReactElement {
         return next
       })
       if (ev.state === 'done' || ev.state === 'error') refreshFileState(ev.modelId, ev.rfilename)
+      // A completion can change downloaded-filtered listings; refresh those.
+      if (ev.state === 'done' && downloadedFilterRef.current === 'downloaded') refreshRef.current()
     })
     void getActiveDownloads().catch(() => {})
     return dispose
+    // refresh + downloadedFilter read via refs (stable subscription).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshFileState])
 
   // Real file URL for pause/resume/retry actions (backend rejects '' safely).
@@ -995,6 +1003,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
     setSpinning(true)
     void reload({ q: debounced, s: sortBy, f: formatFilter, qu: quantFilter, p: paramsFilter, li: licenseFilter, c: capabilityFilter, g: gatedFilter, d: downloadedFilter, k: compatFilter })
   }, [debounced, sortBy, formatFilter, quantFilter, paramsFilter, licenseFilter, capabilityFilter, gatedFilter, downloadedFilter, compatFilter, reload])
+
+  refreshRef.current = refresh
 
   const loadMore = useCallback((): void => {
     if (!nextCursor || loadingMore || loading) return
