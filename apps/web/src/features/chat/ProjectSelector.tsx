@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useRef, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import { FolderOpen, ChevronDown, Plus } from 'lucide-react'
 import { Popover } from './Popover'

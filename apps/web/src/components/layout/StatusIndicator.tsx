@@ -1,3 +1,5 @@
+'use client'
+
 import { ShieldCheck, WifiOff } from 'lucide-react'
 
 interface Props {

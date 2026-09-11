@@ -1,3 +1,5 @@
+'use client'
+
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { listMcpServers, getMcpDir, openMcpFolder, installMcpFromUrl, toggleMcpServer, probeMcpServer, removeMcpServer, type McpServerView } from '@/lib/client/api'
 import {

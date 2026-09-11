@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactElement } from 'react'
 import { Sparkles, ChevronDown } from 'lucide-react'
 

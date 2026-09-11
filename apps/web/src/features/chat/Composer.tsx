@@ -1,3 +1,5 @@
+'use client'
+
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import {
   Plus,

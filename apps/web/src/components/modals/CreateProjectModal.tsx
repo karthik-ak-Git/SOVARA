@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useRef, useEffect, type ReactElement } from 'react'
 import { FolderOpen, Shield, X } from 'lucide-react'
 import { pickFolder } from '@/lib/client/api'

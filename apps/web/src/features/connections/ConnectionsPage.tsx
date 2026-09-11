@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useEffect, useCallback, type ReactElement } from 'react'
 import {
   Link2,

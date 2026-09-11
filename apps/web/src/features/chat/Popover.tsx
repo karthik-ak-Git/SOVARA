@@ -1,3 +1,5 @@
+'use client'
+
 import { useEffect, useRef, type ReactElement } from 'react'
 
 interface PopoverProps {

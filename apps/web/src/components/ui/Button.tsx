@@ -1,3 +1,5 @@
+'use client'
+
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 type Variant = 'default' | 'primary' | 'ghost'

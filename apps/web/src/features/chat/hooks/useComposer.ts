@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * useComposer — composer state helper per spec.
  * Manages multiline input, maxLength, send guards, focus.

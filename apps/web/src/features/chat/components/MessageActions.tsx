@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactElement } from 'react'
 import { Copy, RefreshCw, Pencil } from 'lucide-react'
 

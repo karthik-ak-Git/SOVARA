@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useMemo, type ReactElement } from 'react'
 import { PersonStanding, Sparkles, Copy, Check } from 'lucide-react'
 import { MessageActions } from './components/MessageActions'

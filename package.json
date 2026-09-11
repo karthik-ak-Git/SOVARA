@@ -8,9 +8,14 @@
   },
   "scripts": {
     "dev": "pnpm --filter @sovara/desktop dev",
+    "dev:web": "pnpm --filter @sovara/web dev",
     "build": "pnpm --filter @sovara/desktop build",
+    "build:web": "pnpm --filter @sovara/web build",
+    "start:web": "pnpm --filter @sovara/web start",
     "build:win": "pnpm --filter @sovara/desktop build:win",
-    "typecheck": "pnpm --filter @sovara/desktop typecheck"
+    "typecheck": "pnpm --filter @sovara/desktop typecheck",
+    "typecheck:web": "pnpm --filter @sovara/web typecheck",
+    "typecheck:all": "pnpm typecheck && pnpm typecheck:web"
   },
   "pnpm": {}
 }

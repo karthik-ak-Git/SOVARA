@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactNode, ReactElement } from 'react'
 
 export function TypingIndicator(): ReactElement {

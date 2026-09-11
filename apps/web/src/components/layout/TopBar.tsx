@@ -1,3 +1,5 @@
+'use client'
+
 import {
   PanelLeftOpen,
   PanelLeftClose,
@@ -192,6 +194,7 @@ export function TopBar({
         ) : null}
       </div>
 
+      {HAS_NATIVE_WINDOW ? (
       <div className="topbar-window-controls">
         <button
           type="button"
@@ -221,6 +224,7 @@ export function TopBar({
           <X size={14} aria-hidden />
         </button>
       </div>
+      ) : null}
     </header>
   )
 }

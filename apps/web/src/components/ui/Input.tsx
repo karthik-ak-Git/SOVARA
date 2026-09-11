@@ -1,3 +1,5 @@
+'use client'
+
 import type { InputHTMLAttributes, ReactNode } from 'react'
 
 interface Props extends InputHTMLAttributes<HTMLInputElement> {

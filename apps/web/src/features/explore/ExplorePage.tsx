@@ -1,3 +1,5 @@
+'use client'
+
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import {
   ArrowLeft, BadgeCheck, Brain, Check, ChevronDown, ChevronsUpDown, Download,

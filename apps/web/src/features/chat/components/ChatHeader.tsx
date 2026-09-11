@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactElement } from 'react'
 import type { ActiveModelState } from '@shared/types/models'
 import { Cpu } from 'lucide-react'

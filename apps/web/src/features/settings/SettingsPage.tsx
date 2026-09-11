@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useCallback, useEffect, type ReactElement } from 'react'
 import {
   Settings, User, Cpu, CreditCard, Palette, MessageSquare,

@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * useChatStream — streaming helper. Currently the stream is owned by
  * useChatSession / chatStore via `events:session` pushes. This hook

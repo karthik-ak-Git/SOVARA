@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactNode } from 'react'
 
 type Variant = 'neutral' | 'success' | 'warn' | 'info'

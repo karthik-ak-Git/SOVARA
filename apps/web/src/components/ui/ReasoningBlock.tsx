@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactElement } from 'react'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 

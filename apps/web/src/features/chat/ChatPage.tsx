@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * ChatPage — thin alias for ChatView.
  * Keeps spec file-structure (chat/ChatPage.tsx) while preserving existing ChatView.

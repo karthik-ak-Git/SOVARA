@@ -1,3 +1,5 @@
+'use client'
+
 import type { ReactElement } from 'react'
 import { Shield } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'

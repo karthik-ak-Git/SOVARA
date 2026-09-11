@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, type ReactElement } from 'react'
 import { Database, Plug, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'

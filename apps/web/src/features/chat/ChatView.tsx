@@ -1,3 +1,5 @@
+'use client'
+
 import { useEffect, useState, useMemo, useCallback, useRef, type ReactElement } from 'react'
 import { MessageList } from './MessageList'
 import { Composer, type FileAttachment } from './Composer'

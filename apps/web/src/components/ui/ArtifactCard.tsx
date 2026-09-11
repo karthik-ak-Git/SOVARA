@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, type ReactElement } from 'react'
 import { Code2, Copy, Check, ExternalLink } from 'lucide-react'
 

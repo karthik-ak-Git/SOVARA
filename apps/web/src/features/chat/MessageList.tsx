@@ -1,3 +1,5 @@
+'use client'
+
 import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
 import { MessageBubble, type ArtifactInfo } from './MessageBubble'
 import { deriveMessages, type SessionEventLike } from './conversation'

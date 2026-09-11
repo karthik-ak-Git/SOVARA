@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { Sidebar, type NavId } from './Sidebar'

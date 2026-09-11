@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ArrowLeft, Cpu, Activity, Zap, Trash2, RefreshCw, AlertTriangle } from 'lucide-react'
 import { listInstances, unloadInstance, getInstanceMetrics, onInstanceEvents, type ModelInstance, type InstanceMetrics, type InstanceEvent } from '@/lib/client/api'
