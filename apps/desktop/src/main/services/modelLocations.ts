@@ -23,7 +23,7 @@ const MAX_WEIGHT_FILES = 500
 
 export function detectModelLocations(opts: ModelLocationsOptions): DetectedModelLocation[] {
   const t0 = Date.now()
-  const env = opts.env ?? {}
+  const env = opts.env ?? ({} as NodeJS.ProcessEnv)
   const candidates = buildCandidates(opts.homeDir, opts.platform, env)
   const seen = new Set<string>()
   const locations: DetectedModelLocation[] = []

@@ -17,7 +17,7 @@ import { minimizeWindow, maximizeWindow, closeWindow } from '@/lib/client/api'
 
 /** Frameless-window controls only exist inside the Electron shell. */
 const HAS_NATIVE_WINDOW =
-  typeof window !== 'undefined' && 'sovara' in (window as Record<string, unknown>)
+  typeof window !== 'undefined' && 'sovara' in (window as unknown as Record<string, unknown>)
 
 interface ChatTab {
   id: string

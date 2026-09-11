@@ -28,11 +28,7 @@ const nextConfig = {
     return config
   },
   // Server-only packages with native/Node built-ins must stay external.
-  serverExternalPackages: [],
-  experimental: {
-    // Keep server bundling predictable for node:sqlite / child_process usage.
-    serverComponentsExternalPackages: [],
-  },
+  // (node:sqlite / child_process are externalized automatically.)
 }
 
 export default nextConfig

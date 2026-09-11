@@ -16,16 +16,23 @@ import { getBackend } from './backend'
 import { mapChatError } from './http'
 
 interface OrchestratorLike {
-  execute?: (sid: SessionId, content: string, opts?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
-  regenerate?: (sid: SessionId, opts?: unknown) => Promise<{ assistantSeq: number }>
-  editAndResend?: (sid: SessionId, content: string, opts?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
-  cancel?: (sid: SessionId) => { cancelled: boolean }
+  execute: (sid: SessionId, content: string, opts?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
+  regenerate: (sid: SessionId, opts?: unknown) => Promise<{ assistantSeq: number }>
+  editAndResend: (sid: SessionId, content: string, opts?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
+  cancel: (sid: SessionId) => { cancelled: boolean }
 }
 
-async function target(): Promise<OrchestratorLike> {
+type ChatFallback = {
+  send: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
+  regenerate: (s: SessionId, o?: unknown) => Promise<{ assistantSeq: number }>
+  editAndResend: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
+  cancel: (s: SessionId) => { cancelled: boolean }
+}
+
+async function target(): Promise<OrchestratorLike | ChatFallback> {
   const backend = await getBackend()
   const orch = (backend as unknown as { orchestrator?: OrchestratorLike }).orchestrator
-  return orch ?? backend.chat
+  return orch ?? (backend.chat as unknown as ChatFallback)
 }
 
 export async function sendChat(raw: unknown) {
@@ -33,12 +40,10 @@ export async function sendChat(raw: unknown) {
   const sid = brand<'SessionId'>(data.sessionId)
   try {
     const t = await target()
-    if (t.execute) {
+    if ('execute' in t) {
       return await t.execute(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
     }
-    return await (t as unknown as {
-      send: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>
-    }).send(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
+    return await t.send(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
   } catch (e) {
     throw new Error(mapChatError(e, 'chat failed'))
   }
@@ -52,7 +57,7 @@ export async function cancelChat(raw: unknown) {
   const backend = await getBackend()
   const legacy = backend.chat.cancel(sid)
   const orch = (backend as unknown as { orchestrator?: OrchestratorLike }).orchestrator
-  const viaOrch = orch?.cancel ? orch.cancel(sid) : { cancelled: false }
+  const viaOrch = orch ? orch.cancel(sid) : { cancelled: false }
   return { cancelled: legacy.cancelled || viaOrch.cancelled }
 }
 
@@ -61,7 +66,6 @@ export async function regenerateChat(raw: unknown) {
   const sid = brand<'SessionId'>(data.sessionId)
   try {
     const t = await target()
-    if (!t.regenerate) throw new Error('regenerate not supported')
     return await t.regenerate(sid, { reasoning: data.reasoning })
   } catch (e) {
     throw new Error(mapChatError(e, 'regenerate failed'))
@@ -72,12 +76,9 @@ export async function editResendChat(raw: unknown) {
   const data = zChatEditResend.parse(raw)
   const sid = brand<'SessionId'>(data.sessionId)
   try {
+    // Both the orchestrator and the legacy ChatService expose editAndResend.
     const t = await target()
-    if (t.editAndResend) {
-      return await t.editAndResend(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
-    }
-    if (!t.execute) throw new Error('editResend not supported')
-    return await t.execute(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
+    return await t.editAndResend(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
   } catch (e) {
     throw new Error(mapChatError(e, 'editResend failed'))
   }

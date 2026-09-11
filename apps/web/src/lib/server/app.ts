@@ -25,6 +25,10 @@ export async function getInfo() {
   }
 }
 
+export async function getAppSystem() {
+  return (await getBackend()).getSystem()
+}
+
 export async function getPythonStatus() {
   const { getPythonStatus } = await import('@sovara-main/services/pythonEnv')
   return getPythonStatus()
