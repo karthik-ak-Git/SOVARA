@@ -181,11 +181,85 @@ export function parseParamsB(filename: string): number | null {
  * KV ≈ 0.42GB per 1k ctx @7B, scaled by params (hardwareCheck.ts basis).
  */
 export function estimateVramMB(fileSizeBytes: number, ctxLen: number, filename: string): number {
+  return planMemory(fileSizeBytes, ctxLen, filename).estimatedMB
+}
+
+/**
+ * Memory plan (spec §6): weights + activation/workspace + KV cache +
+ * context length + parallel slots + runtime overhead.
+ * KV scales with BOTH ctxLen and nParallel — never assume one sequence.
+ * This is a PREFLIGHT ESTIMATE only; the adapter records observed
+ * allocation separately after load (freeBefore − freeAfter).
+ */
+export function planMemory(
+  fileSizeBytes: number,
+  ctxLen: number,
+  filename: string,
+  opts?: { nParallel?: number; overheadMB?: number; workspaceMB?: number }
+): { estimatedMB: number; weightsMB: number; kvCacheMB: number; workspaceMB: number; overheadMB: number; ctxLen: number; nParallel: number } {
+  const nParallel = Math.max(1, Math.floor(opts?.nParallel ?? 1))
   const weightsMB = Math.max(64, Math.round(fileSizeBytes / (1024 * 1024)))
   const paramsB = parseParamsB(path.basename(filename)) ?? 7
   const scale = Math.min(2.2, Math.max(0.35, paramsB / 7))
-  const kvMB = Math.round(((ctxLen || 4096) / 1024) * 430 * scale)
-  return Math.round(weightsMB * 1.15) + kvMB
+  // KV per sequence, then × parallel slots (spec §6: never assume one request).
+  const kvPerSeqMB = Math.round(((ctxLen || 4096) / 1024) * 430 * scale)
+  const kvCacheMB = kvPerSeqMB * nParallel
+  const workspaceMB = opts?.workspaceMB ?? Math.round(weightsMB * 0.05)
+  const overheadMB = opts?.overheadMB ?? 256
+  const estimatedMB = Math.round(weightsMB * 1.1) + kvCacheMB + workspaceMB + overheadMB
+  return { estimatedMB, weightsMB, kvCacheMB, workspaceMB, overheadMB, ctxLen: ctxLen || 4096, nParallel }
+}
+
+/**
+ * Classify a load/runner failure deliberately (spec §7).
+ * Only port-conflicts are recoverable-by-retry; OOM/invalid-model/
+ * backend failures must surface with actionable messages instead of
+ * blind `-ngl` reduction loops.
+ */
+export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'runner-missing' | 'startup-failure' | 'readiness-timeout' | 'oom' | 'backend-failure' | 'runner-crash' | 'cancelled' | 'unknown'; recoverable: boolean; message: string } {
+  const msg = String(raw ?? '')
+  const lower = msg.toLowerCase()
+  if (/cancelled/.test(lower)) return { kind: 'cancelled', recoverable: false, message: msg }
+  if (/model-not-found|invalid model|no gguf|empty model id|not in the sovara library/i.test(msg)) return { kind: 'invalid-model', recoverable: false, message: msg }
+  if (/not installed|local runtime not installed|runner.*missing|llama-server.*not found/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
+  if (/did not become ready|readiness|timed out waiting/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
+  if (/cuda.*out of memory|out of memory|oom|insufficient.*vram|memory.*exhausted|alloc.*fail/i.test(msg)) return { kind: 'oom', recoverable: false, message: msg }
+  if (/eaddrinuse|address already in use|port.*in use|no free port/i.test(msg)) return { kind: 'startup-failure', recoverable: true, message: msg }
+  if (/cuda.*error|nvrtc|cublas|backend.*fail|failed to initialize|no compatible gpu|driver/i.test(msg)) return { kind: 'backend-failure', recoverable: false, message: msg }
+  if (/exit|crash|signal|died|killed/i.test(msg)) return { kind: 'runner-crash', recoverable: false, message: msg }
+  if (/could not start|spawn|enoent/i.test(msg)) return { kind: 'startup-failure', recoverable: false, message: msg }
+  return { kind: 'unknown', recoverable: false, message: msg }
+}
+
+/**
+ * Runtime selection (spec §5): GGUF → project's llama.cpp path.
+ * Considers format + OS + CPU arch + GPU/backend. Structured result keeps
+ * runtime-specific logic behind this seam instead of scattered call sites.
+ */
+export function selectRuntimeForModel(args: {
+  format: string
+  exePath: string | null
+  modelPath: string
+  port: number
+  ctxLen: number
+  alias: string
+  gpuAvailable: boolean
+  mmprojPath?: string
+}): { runtime: 'llama.cpp'; backend: 'cuda' | 'cpu'; executable: string; args: string[]; device: string } {
+  if (args.format !== 'gguf') throw new Error(`unsupported model format "${args.format}" — this runtime serves GGUF via llama.cpp only`)
+  if (!args.exePath) throw new Error('local runtime not installed — open Models and choose "Install local runtime" (one-time download), then try again')
+  if (process.platform !== 'win32') throw new Error(`unsupported OS "${process.platform}" — pinned llama.cpp build targets Windows x64`)
+  if (process.arch !== 'x64') throw new Error(`unsupported CPU arch "${process.arch}" — pinned llama.cpp build targets x64`)
+  const backend = args.gpuAvailable ? 'cuda' : 'cpu'
+  const serverArgs = buildServerArgs({
+    modelPath: args.modelPath,
+    port: args.port,
+    ctxLen: args.ctxLen,
+    nGpuLayers: backend === 'cuda' ? 999 : 0,
+    alias: args.alias,
+    ...(args.mmprojPath ? { mmprojPath: args.mmprojPath } : {}),
+  })
+  return { runtime: 'llama.cpp', backend, executable: args.exePath, args: serverArgs, device: backend === 'cuda' ? 'cuda:0' : 'cpu' }
 }
 
 // ── Server args (pure, unit-tested) ─────────────────────────────────────

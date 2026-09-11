@@ -12,7 +12,7 @@
  */
 import type { SessionId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import type { LlmChatMessage, LlmPort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
+import type { LlmChatMessage, LlmPort, ModelRuntimePort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendRuntimeLog, appendChatLog, safeTarget } from '../logging/runtimeLog'
 import type { ModelWorkbench } from './ModelWorkbench'
@@ -150,10 +150,12 @@ export class ChatService {
     const isLocal = entry.endpoint === 'local' || entry.id === 'local' || active.selection.runtimeId === 'local'
     let endpoint: string
     let model: string
+    let ownedInstanceId: string | null = null
     if (isLocal) {
       const ready = await this.ensureLocalReady(active.selection.modelId, active.selection.runtimeId)
       endpoint = ready.endpoint
       model = ready.model
+      ownedInstanceId = ready.instanceId
     } else {
       // 2. Resource advisory (must be before inference — respect VRAM/limits)
       const pressure = await this.deps.resources.checkBeforeLoad(
@@ -247,7 +249,9 @@ export class ChatService {
     const timeoutMs = Math.max(entry.timeoutMs, CHAT_TIMEOUT_FLOOR_MS)
     let text = ''
     let streamed = true
+    let firstTokenAt: number | null = null
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+    if (ownedInstanceId) this.noteStart(ownedInstanceId)
     try {
       let reasoningBuffer = ''
       let inReasoning = !!opts?.reasoning
@@ -287,6 +291,7 @@ export class ChatService {
             }
           }
           text += delta
+          if (firstTokenAt === null) firstTokenAt = Date.now()
           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
@@ -295,8 +300,10 @@ export class ChatService {
       }
     } catch (e) {
       if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
+        if (ownedInstanceId) this.noteEnd(ownedInstanceId)
         return this.finishCancelled(sessionId, sid, started, entry.id, endpoint, model, streamed)
       }
+      if (ownedInstanceId) this.noteEnd(ownedInstanceId)
       const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, endpoint, model, started, undefined, outcomeOf(e), streamed)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
@@ -334,6 +341,13 @@ export class ChatService {
     }
 
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    if (ownedInstanceId) {
+      const elapsedS = Math.max(0.1, (Date.now() - started) / 1000)
+      this.noteEnd(ownedInstanceId, {
+        ...(firstTokenAt !== null ? { ttftMs: firstTokenAt - started } : {}),
+        tokensPerSec: tokenUsage.completionTokens / elapsedS,
+      })
+    }
     this.log(entry.id, endpoint, model, started, 200, 'ok', streamed)
     appendChatLog(this.deps.baseDir, {
       sessionId: sid,
@@ -395,10 +409,12 @@ export class ChatService {
     const regenIsLocal = entry.endpoint === 'local' || entry.id === 'local' || active.selection.runtimeId === 'local'
     let regenEndpoint: string
     let regenModel: string
+    let regenInstanceId: string | null = null
     if (regenIsLocal) {
       const ready = await this.ensureLocalReady(active.selection.modelId, active.selection.runtimeId)
       regenEndpoint = ready.endpoint
       regenModel = ready.model
+      regenInstanceId = ready.instanceId
     } else {
       await this.ensureModelLoaded(active.selection.modelId, entry.id)
 
@@ -436,7 +452,9 @@ export class ChatService {
     const timeoutMs = Math.max(entry.timeoutMs, CHAT_TIMEOUT_FLOOR_MS)
     let text = ''
     let streamed = true
+    let regenFirstTokenAt: number | null = null
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+    if (regenInstanceId) this.noteStart(regenInstanceId)
     try {
       for await (const chunk of this.deps.llm.streamChat({
         endpoint,
@@ -448,6 +466,7 @@ export class ChatService {
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
           text += chunk.text
+          if (regenFirstTokenAt === null) regenFirstTokenAt = Date.now()
           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
@@ -456,8 +475,10 @@ export class ChatService {
       }
     } catch (e) {
       if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
+        if (regenInstanceId) this.noteEnd(regenInstanceId)
         return this.finishCancelled(sessionId, sid, started, entry.id, endpoint, model, streamed)
       }
+      if (regenInstanceId) this.noteEnd(regenInstanceId)
       const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, endpoint, model, started, undefined, outcomeOf(e), streamed)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
@@ -534,7 +555,7 @@ export class ChatService {
    * Switching models evicts the previous resident inside the adapter.
    * Throws honest ChatServiceError (no fake responses, ever).
    */
-  private async ensureLocalReady(modelId: string, runtimeId: string): Promise<{ endpoint: string; model: string }> {
+  private async ensureLocalReady(modelId: string, runtimeId: string): Promise<{ endpoint: string; model: string; instanceId: string }> {
     const sid = `model:${modelId}`
     if (!this.deps.models) {
       throw new ChatServiceError('runtime-unavailable', 'Local runtime unavailable in this context. Open Models and install the Sovara local runtime.')
@@ -552,21 +573,37 @@ export class ChatService {
     // eslint-disable-next-line no-console
     console.log(`[SOVARA][CHAT] LOADING model=${modelId} runtime=${runtimeId}`)
     try {
-      const inst = await this.deps.models.load(modelId as never, { runtimeId })
+      const models = this.deps.models as ModelRuntimePort & {
+        ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
+      }
+      // Routing seam: prefer the verified-healthy path; plain load() also
+      // guarantees readiness via the per-model coordinator (spec §10).
+      const inst = models.ensureHealthy
+        ? await models.ensureHealthy(modelId as never, { runtimeId })
+        : await this.deps.models.load(modelId as never, { runtimeId })
+      // Never route to a merely-existing process — verify health first.
+      const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
+      if (!h.ok) throw new Error(`instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
       const endpoint = this.deps.models.baseUrl(inst.id)
       // eslint-disable-next-line no-console
       console.log(`[SOVARA][CHAT] LOADED model=${modelId} endpoint=${endpoint}`)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, outcome: 'ok', detail: `VRAM-resident at ${endpoint}` })
-      return { endpoint, model: remoteModelId(String(inst.modelId)) }
+      return { endpoint, model: remoteModelId(String(inst.modelId)), instanceId: String(inst.id) }
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'model-load-failed', error: raw, modelId, runtimeId })
       // eslint-disable-next-line no-console
       console.error(`[SOVARA][CHAT][ERROR] load failed model=${modelId}: ${raw}`)
-      if (/resource-pressure|insufficient VRAM|max concurrent/i.test(raw)) {
+      if (/resource-pressure|insufficient VRAM|max concurrent|eligible for eviction/i.test(raw)) {
         throw new ChatServiceError('resource-pressure', raw)
       }
-      if (/model-not-found/i.test(raw)) {
+      if (/readiness-timeout/i.test(raw)) {
+        throw new ChatServiceError('runtime-unavailable', raw)
+      }
+      if (/\boom\b|exhausted GPU memory/i.test(raw)) {
+        throw new ChatServiceError('resource-pressure', raw)
+      }
+      if (/model-not-found|invalid-model/i.test(raw)) {
         throw new ChatServiceError('runtime-unavailable', `${raw}. Add a GGUF in Library first.`)
       }
       throw new ChatServiceError('runtime-unavailable', raw)

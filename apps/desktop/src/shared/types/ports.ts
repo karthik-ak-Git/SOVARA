@@ -12,7 +12,24 @@ export interface LocalModel {
   discoveredAt?: number
 }
 
-export type InstanceStatus = 'loaded' | 'loading' | 'generating' | 'idle' | 'unloading' | 'unloaded' | 'error' | 'failed' | 'crashed'
+export type InstanceStatus = 'loaded' | 'loading' | 'generating' | 'idle' | 'unloading' | 'unloaded' | 'error' | 'failed' | 'crashed' | 'active' | 'busy' | 'evicting'
+
+/**
+ * Canonical runtime state machine (model lifecycle spec):
+ *   OFFLINE → LOADING → ACTIVE → BUSY_DECODE → ACTIVE → EVICTING → OFFLINE
+ *   LOADING/ACTIVE/BUSY → FAILED → OFFLINE
+ * `OFFLINE` = no RunningModelInstance registered (absent from the map).
+ * `status` above stays as the IPC-compat projection; `state` is canonical.
+ */
+export type RuntimeInstanceState = 'OFFLINE' | 'LOADING' | 'ACTIVE' | 'BUSY_DECODE' | 'EVICTING' | 'FAILED'
+
+export interface InstanceRunnerConfig {
+  ctxLen: number
+  nGpuLayers: number
+  nParallel: number
+  alias?: string
+  mmprojPath?: string
+}
 
 export interface ModelInstance {
   id: InstanceId
@@ -25,25 +42,92 @@ export interface ModelInstance {
   startedAt?: number
   /** Live resource metrics — undefined when unavailable (e.g. macOS Metal). */
   metrics?: InstanceMetrics
+  /** Canonical lifecycle state (spec §3). Absent = legacy caller, map from status. */
+  state?: RuntimeInstanceState
+  /** Exact loopback endpoint serving THIS instance (never guessed). */
+  endpoint?: string
+  /** Health of the runner (last verified). */
+  health?: 'unknown' | 'healthy' | 'degraded' | 'unhealthy'
+  /** Device/backend the runner bound to, e.g. 'cuda:0', 'cpu'. */
+  hardwareDevice?: string
+  /** Effective runner configuration (recorded at spawn, not estimated later). */
+  configuration?: InstanceRunnerConfig
+  /** Preflight estimate (weights+KV+workspace+overhead) — never presented as measured. */
+  estimatedVramMB?: number
+  /** Observed allocation (freeBefore-freeAfter or backend report) — undefined when unmeasurable. */
+  observedVramMB?: number
+  /** True when metrics.vramUsedMB is still the estimate (no observed reading yet). */
+  vramEstimated?: boolean
+  /** Observed RAM (undefined when unmeasurable — never fabricated). */
+  observedRamMB?: number
+  offloadedLayers?: number
+  lastActiveAt?: number
+  activeRequests?: number
+  loadTimeMs?: number
+  ttftMs?: number
+  lastError?: string
+  failureReason?: string
 }
 
 export interface InstanceMetrics {
-  gpuUtilization?: number   // 0–100 percent
-  vramUsedMB?: number       // megabytes
-  cpuUsage?: number         // 0–100 percent
-  ramUsedMB?: number        // megabytes
-  tokensPerSec?: number     // throughput
+  gpuUtilization?: number   // 0–100 percent, measured only
+  vramUsedMB?: number       // megabytes (observed when known, else estimate — see vramEstimated)
+  vramEstimated?: boolean   // true = estimate, false/undefined = observed
+  cpuUsage?: number         // 0–100 percent, measured only
+  ramUsedMB?: number        // megabytes, measured only
+  tokensPerSec?: number     // measured generation throughput
   lastUpdatedAt?: number    // Date.now() timestamp
+}
+
+/** Structured runtime selection (spec §5) — no vendor branching outside the adapter. */
+export interface RuntimeSelection {
+  runtime: 'llama.cpp'
+  backend: 'cuda' | 'cpu'
+  executable: string
+  args: string[]
+  device: string
+}
+
+export interface MemoryPlan {
+  estimatedMB: number
+  weightsMB: number
+  kvCacheMB: number
+  workspaceMB: number
+  overheadMB: number
+  ctxLen: number
+  nParallel: number
+}
+
+export type LoadFailureKind =
+  | 'invalid-model'
+  | 'runner-missing'
+  | 'startup-failure'
+  | 'readiness-timeout'
+  | 'oom'
+  | 'backend-failure'
+  | 'runner-crash'
+  | 'cancelled'
+  | 'unknown'
+
+export interface ClassifiedLoadFailure {
+  kind: LoadFailureKind
+  recoverable: boolean
+  message: string
 }
 
 export interface ModelRuntimePort {
   listLocalModels(): Promise<LocalModel[]>
   load(modelId: ModelId, opts: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance>
   unload(instanceId: InstanceId): Promise<void>
-  health(instanceId: InstanceId): Promise<{ ok: boolean; vramUsedMB?: number; error?: string }>
+  health(instanceId: InstanceId): Promise<{ ok: boolean; vramUsedMB?: number; error?: string; state?: RuntimeInstanceState; activeRequests?: number }>
   baseUrl(instanceId: InstanceId): string
   listInstances(): Promise<ModelInstance[]>
   probeRuntime(runtimeId: string): Promise<{ available: boolean; version?: string; path?: string }>
+  /** Resolve-or-load the verified healthy instance for a model (routing seam, spec §10). */
+  ensureHealthy?(modelId: ModelId, opts?: { ctxLen?: number; runtimeId?: string }): Promise<ModelInstance>
+  /** Streaming activity accounting (spec §11–12). No-ops when unsupported. */
+  noteRequestStart?(instanceId: InstanceId): void
+  noteRequestEnd?(instanceId: InstanceId, info?: { ttftMs?: number; tokensPerSec?: number }): void
 }
 
 // ── LLM (Commit 7: real local inference behind the same boundary) ──
