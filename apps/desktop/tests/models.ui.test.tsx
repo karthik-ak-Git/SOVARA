@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { ModelsPage } from '../src/renderer/src/features/models/ModelsPage'
+import { ModelsPage } from '../web/src/features/models/ModelsPage'
 
 const baseBridge = {
   'models:listRuntimes': [],

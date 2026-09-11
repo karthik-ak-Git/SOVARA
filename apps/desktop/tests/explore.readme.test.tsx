@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { restoreHtmlTags, escHtml, renderReadmeDoc } from '../src/renderer/src/features/explore/ExplorePage'
+import { restoreHtmlTags, escHtml, renderReadmeDoc } from '../web/src/features/explore/ExplorePage'
 
 const SLUG = 'google/gemma-4-12b'
 

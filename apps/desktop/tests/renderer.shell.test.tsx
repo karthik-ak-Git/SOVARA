@@ -4,12 +4,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Sidebar } from '../src/renderer/src/components/layout/Sidebar'
-import { TopBar } from '../src/renderer/src/components/layout/TopBar'
-import { AppShell } from '../src/renderer/src/components/layout/AppShell'
-import { Button } from '../src/renderer/src/components/ui/Button'
-import { Card } from '../src/renderer/src/components/ui/Card'
-import { EmptyState } from '../src/renderer/src/components/ui/EmptyState'
+import { Sidebar } from '../web/src/components/layout/Sidebar'
+import { TopBar } from '../web/src/components/layout/TopBar'
+import { AppShell } from '../web/src/components/layout/AppShell'
+import { Button } from '../web/src/components/ui/Button'
+import { Card } from '../web/src/components/ui/Card'
+import { EmptyState } from '../web/src/components/ui/EmptyState'
 
 // Mock window.sovara for AppShell tests that may invoke it indirectly
 beforeEach(() => {

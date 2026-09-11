@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AgentsPage } from '../src/renderer/src/features/agents/AgentsPage'
+import { AgentsPage } from '../web/src/features/agents/AgentsPage'
 
 beforeEach(() => {
   ;(window as unknown as { sovara: unknown }).sovara = {

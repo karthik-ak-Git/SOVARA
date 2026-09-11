@@ -14,81 +14,50 @@ export interface MockStream {
   onerror: (() => void) | null
   closed: boolean
   emit: (data: unknown) => void
-  close: () => void
 }
 
 export const streamInstances: MockStream[] = []
 
 export class MockEventSource {
-  onmessage: ((msg: { data: string }) => void) | null = null
-  onerror: (() => void) | null = null
-  closed = false
-  url: string
+  readonly url: string
+  private stream: MockStream
 
   constructor(url: string) {
     this.url = url
-    const self: MockStream = {
-      url,
-      get onmessage() {
-        return selfRef.onmessage
-      },
-      set onmessage(fn) {
-        selfRef.onmessage = fn
-      },
-      get onerror() {
-        return selfRef.onerror
-      },
-      set onerror(fn) {
-        selfRef.onerror = fn
-      },
-      get closed() {
-        return selfRef.closed
-      },
-      emit: (data: unknown) => {
-        selfRef.onmessage?.({ data: JSON.stringify(data) })
-      },
-      close: () => {
-        selfRef.closed = true
-      },
-    }
-    const selfRef = this
-    // Rebind getters to the instance (defined above before selfRef init —
-    // re-create plainly to keep it simple and correct):
-    const stream: MockStream = {
+    this.stream = {
       url,
       onmessage: null,
       onerror: null,
       closed: false,
       emit: (data: unknown) => {
-        stream.onmessage?.({ data: JSON.stringify(data) })
-      },
-      close: () => {
-        stream.closed = true
+        this.stream.onmessage?.({ data: JSON.stringify(data) })
       },
     }
-    void self
-    streamInstances.push(stream)
-    // Proxy property sets onto the registered stream record.
-    Object.defineProperty(this, 'onmessage', {
-      get: () => stream.onmessage,
-      set: (fn) => {
-        stream.onmessage = fn
-      },
-    })
-    Object.defineProperty(this, 'onerror', {
-      get: () => stream.onerror,
-      set: (fn) => {
-        stream.onerror = fn
-      },
-    })
-    Object.defineProperty(this, 'closed', {
-      get: () => stream.closed,
-    })
+    streamInstances.push(this.stream)
+  }
+
+  get onmessage(): ((msg: { data: string }) => void) | null {
+    return this.stream.onmessage
+  }
+
+  set onmessage(fn: ((msg: { data: string }) => void) | null) {
+    this.stream.onmessage = fn
+  }
+
+  get onerror(): (() => void) | null {
+    return this.stream.onerror
+  }
+
+  set onerror(fn: (() => void) | null) {
+    this.stream.onerror = fn
+  }
+
+  get closed(): boolean {
+    return this.stream.closed
   }
 
   close(): void {
-    const s = streamInstances.find((x) => x.url === this.url && !x.closed)
-    if (s) s.closed = true
+    this.stream.closed = true
   }
 }
 
