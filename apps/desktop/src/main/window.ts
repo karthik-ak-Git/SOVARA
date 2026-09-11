@@ -1,7 +1,8 @@
 import { BrowserWindow, shell, app } from 'electron'
 import { join } from 'node:path'
+import { ensureWebServer } from './nextServer'
 
-export function createMainWindow(): BrowserWindow {
+export async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -39,13 +40,16 @@ export function createMainWindow(): BrowserWindow {
   })
 
   // ── CSP (sovereign default: no external connects except loopback + Hugging Face Hub for Explore/downloads) ──
+  // script-src keeps 'unsafe-inline': Next.js ships inline bootstrap/flight
+  // data with its loopback-served pages. All page content still comes only
+  // from our own loopback server (see navigation allowlist below).
   const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com https://cdn.simpleicons.org"
   const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co https://cdn.simpleicons.org data: https:"
-  const isDev = Boolean(process.env['ELECTRON_RENDERER_URL'])
+  const isDev = process.env['NODE_ENV'] === 'development' || Boolean(process.env['SOVARA_WEB_URL'])
   const devCsp =
     `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`
   const prodCsp =
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ${HF_CONNECT}`
+    `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ${HF_CONNECT}`
   const activeCsp = isDev ? devCsp : prodCsp
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
@@ -59,12 +63,22 @@ export function createMainWindow(): BrowserWindow {
     })
   })
 
-  // HMR dev server vs built file — electron-vite injects ELECTRON_RENDERER_URL in dev
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
-  if (devUrl) {
-    void win.loadURL(devUrl)
-  } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+  // Shell loads the internal Next.js server (UI + /api) on loopback.
+  // The legacy Vite renderer bundle is gone — see src/main/nextServer.ts.
+  try {
+    const webUrl = await ensureWebServer()
+    console.log(`[shell] loading web UI: ${webUrl}`)
+    await win.loadURL(webUrl)
+  } catch (e) {
+    console.error('[shell] web server unavailable:', e instanceof Error ? e.message : String(e))
+    await win.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<body style="background:#0b0d12;color:#e8eaf0;font-family:sans-serif;padding:48px">' +
+            '<h1>Sovara could not start its interface server</h1>' +
+            '<p>Run <code>scripts/stage-web-runtime.ps1</code> then rebuild, or start <code>pnpm dev:web</code> alongside the app.</p></body>'
+        )
+    )
   }
 
   // ── Permission handler — allow mic, deny everything else ──

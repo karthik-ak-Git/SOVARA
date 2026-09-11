@@ -1,7 +1,8 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { resolve } from 'node:path'
-import react from '@vitejs/plugin-react'
 
+// NOTE: no `renderer` target — the window loads the internal Next.js server
+// (UI + /api) on loopback. See src/main/nextServer.ts and apps/web.
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -34,23 +35,6 @@ export default defineConfig({
           format: 'cjs',
           entryFileNames: '[name].cjs'
         }
-      }
-    }
-  },
-  renderer: {
-    root: resolve(__dirname, 'src/renderer'),
-    plugins: [react()],
-    build: {
-      rollupOptions: {
-        input: {
-          index: resolve(__dirname, 'src/renderer/index.html')
-        }
-      }
-    },
-    resolve: {
-      alias: {
-        '@shared': resolve(__dirname, 'src/shared'),
-        '@renderer': resolve(__dirname, 'src/renderer/src')
       }
     }
   }

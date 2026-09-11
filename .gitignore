@@ -43,6 +43,8 @@ data/
 out/
 apps/desktop/out/
 apps/desktop/dist/
+apps/desktop/web-runtime/
+apps/web/.next/
 *.log
 
 # Screenshots & visual test traces / images

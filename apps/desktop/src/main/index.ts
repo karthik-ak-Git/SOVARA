@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { createMainWindow } from './window'
 import { registerIpcHandlers } from './ipc/handlers'
 import { disposeBackend } from './backendComposition'
+import { stopWebServer } from './nextServer'
 import { initPythonEnv } from './services/pythonEnv'
 import { initVoiceServer } from './services/voiceServer'
 import { initCrawlServer } from './services/crawlServer'
@@ -20,16 +21,22 @@ function onSecondInstance(): void {
 }
 app.on('second-instance', onSecondInstance)
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIpcHandlers()
   // Python env first (sidecars resolve their interpreter through it).
   initPythonEnv()
   initVoiceServer()
   initCrawlServer()
-  mainWindow = createMainWindow()
+  // The window loads the internal Next.js server; createMainWindow waits
+  // for it (spawning the staged runtime when needed).
+  mainWindow = await createMainWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      void createMainWindow().then((w) => {
+        mainWindow = w
+      })
+    }
   })
 })
 
@@ -41,6 +48,7 @@ app.on('before-quit', async (event) => {
   // Allow async dispose before quit — prevent half-flushed state
   event.preventDefault()
   try {
+    stopWebServer()
     await disposeBackend()
   } finally {
     app.exit(0)

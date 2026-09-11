@@ -9,10 +9,10 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "build:win": "electron-vite build && electron-builder --win --x64",
-    "build:win:dir": "electron-vite build && electron-builder --win --x64 --dir",
+    "stage:web": "powershell -ExecutionPolicy Bypass -File ../../scripts/stage-web-runtime.ps1",
+    "build:win": "pnpm stage:web && electron-vite build && electron-builder --win --x64",
+    "build:win:dir": "pnpm stage:web && electron-vite build && electron-builder --win --x64 --dir",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
@@ -29,7 +29,6 @@
     "@types/node": "^22.10.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
     "electron": "^35.1.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^3.0.0",
