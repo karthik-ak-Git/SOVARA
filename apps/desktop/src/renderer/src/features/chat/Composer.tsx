@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, ArrowUp, Square, Paperclip, X, Loader2 } from 'lucide-react'
+import {
+  Plus,
+  Globe,
+  Mic,
+  ArrowUp,
+  Square,
+  Paperclip,
+  X,
+  Loader2,
+  FileText,
+} from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
+import { TokenMeter } from '../../components/ui/TokenMeter'
 import { transcribeAudio } from '../../lib/ipc'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
@@ -35,7 +46,13 @@ export interface FileAttachment {
 }
 
 const MAX_LENGTH = 32_000
-const MAX_HEIGHT_PX = 160
+const MAX_HEIGHT_PX = 180
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}KB`
+  return `${bytes}B`
+}
 
 export function Composer({
   value,
@@ -70,6 +87,10 @@ export function Composer({
   const streaming = busy && (phase === 'streaming' || phase === 'planning' || phase === 'loading' || phase === 'tool')
   const showStop = streaming && onCancel
 
+  // Rough token estimate (4 chars per token)
+  const estimatedTokens = value.trim() ? Math.round(value.trim().length / 4) : 0
+  const contextMaxTokens = 8192
+
   useEffect(() => {
     const el = areaRef.current
     if (!el) return
@@ -89,7 +110,7 @@ export function Composer({
     return () => {
       processorRef.current?.disconnect()
       if (audioCtxRef.current?.state !== 'closed') void audioCtxRef.current?.close()
-      streamRef.current?.getTracks().forEach(t => t.stop())
+      streamRef.current?.getTracks().forEach((t) => t.stop())
     }
   }, [])
 
@@ -101,22 +122,23 @@ export function Composer({
       setMicActive(false)
       setMicLoading(true)
 
-      // Stop capture and collect PCM
       const chunks = pcmChunksRef.current
       pcmChunksRef.current = []
       processorRef.current?.disconnect()
       processorRef.current = null
       const ctx = audioCtxRef.current
       const stream = streamRef.current
-      // Close context after grabbing data
       if (ctx) {
-        try { await ctx.close() } catch { /* ignore */ }
+        try {
+          await ctx.close()
+        } catch {
+          /* ignore */
+        }
         audioCtxRef.current = null
       }
-      stream?.getTracks().forEach(t => t.stop())
+      stream?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
 
-      // Concatenate float32 chunks (native rate) then resample to 16kHz — Handy FrameResampler
       const totalLen = chunks.reduce((s, c) => s + c.length, 0)
       if (totalLen < 800) {
         setMicLoading(false)
@@ -124,17 +146,20 @@ export function Composer({
       }
       const nativePcm = new Float32Array(totalLen)
       let off = 0
-      for (const c of chunks) { nativePcm.set(c, off); off += c.length }
+      for (const c of chunks) {
+        nativePcm.set(c, off)
+        off += c.length
+      }
 
       const inRate = ctx?.sampleRate ?? 48000
       let pcm16k: Float32Array
       if (inRate === 16000) {
         pcm16k = nativePcm
       } else {
-        const targetLen = Math.round(nativePcm.length * 16000 / inRate)
+        const targetLen = Math.round((nativePcm.length * 16000) / inRate)
         pcm16k = new Float32Array(targetLen)
         for (let i = 0; i < targetLen; i++) {
-          const srcIdx = i * (nativePcm.length - 1) / (targetLen - 1)
+          const srcIdx = (i * (nativePcm.length - 1)) / (targetLen - 1)
           const lo = Math.floor(srcIdx)
           const hi = Math.ceil(srcIdx)
           const frac = srcIdx - lo
@@ -169,8 +194,6 @@ export function Composer({
       return
     }
 
-    // Start recording — Handy-style: native rate capture + resample to 16kHz
-    // (Handy: cpal default rate + FrameResampler rubato; here Web Audio native + linear)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -183,7 +206,7 @@ export function Composer({
       streamRef.current = stream
       pcmChunksRef.current = []
 
-      const audioCtx = new AudioContext() // native rate (avoids forcing hardware — Handy get_preferred_config)
+      const audioCtx = new AudioContext()
       audioCtxRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
       const processor = audioCtx.createScriptProcessor(4096, 1, 1)
@@ -205,7 +228,6 @@ export function Composer({
   }, [micActive, micLoading, value, onChange])
 
   const submit = (): void => {
-    // While streaming the send button morphs into Stop — Enter also stops.
     if (showStop) {
       onCancel?.()
       return
@@ -227,7 +249,6 @@ export function Composer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key !== 'Enter') return
-    // During streaming Enter (without Shift) stops instead of queueing.
     if (showStop && !e.shiftKey) {
       e.preventDefault()
       onCancel?.()
@@ -254,14 +275,24 @@ export function Composer({
     const files = e.target.files
     if (!files) return
     const maxSize = 10 * 1024 * 1024
-    const allowed = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/plain', 'text/markdown']
+    const allowed = [
+      'application/pdf',
+      'image/png',
+      'image/jpeg',
+      'image/gif',
+      'image/webp',
+      'text/plain',
+      'text/markdown',
+      'text/csv',
+      'application/json',
+    ]
     for (const file of Array.from(files)) {
       if (file.size > maxSize) continue
-      if (!allowed.includes(file.type)) continue
+      if (!allowed.includes(file.type) && !file.name.endsWith('.md') && !file.name.endsWith('.txt')) continue
       const reader = new FileReader()
       reader.onload = (): void => {
         const data = reader.result as string
-        setAttachments((prev) => [...prev, { name: file.name, type: file.type, size: file.size, data }])
+        setAttachments((prev) => [...prev, { name: file.name, type: file.type || 'text/plain', size: file.size, data }])
       }
       reader.readAsDataURL(file)
     }
@@ -274,21 +305,50 @@ export function Composer({
 
   return (
     <div className="composer-bionic" aria-label="Composer workspace">
+      {/* Attached Files Ribbon */}
+      <div className="composer-attached-ribbon">
+        {attachments.map((a, i) => (
+          <div key={`${a.name}-${i}`} className="composer-attached-pill">
+            <FileText size={13} className="text-primary" />
+            <span className="composer-attached-name">{a.name}</span>
+            <span className="composer-attached-size">{formatFileSize(a.size)}</span>
+            <button
+              type="button"
+              className="composer-attached-remove"
+              onClick={() => removeAttachment(i)}
+              aria-label={`Remove ${a.name}`}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="composer-attach-context-btn"
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach context file"
+        >
+          <Plus size={13} />
+          <span>Attach Context</span>
+        </button>
+      </div>
+
       <div className="composer-bionic-row">
         <div className="composer-bionic-left">
           <button
             type="button"
             className="composer-icon-btn"
             aria-label="Attach file"
+            title="Attach file"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Plus size={16} aria-hidden />
+            <Paperclip size={16} aria-hidden />
           </button>
           <input
             ref={fileInputRef}
             type="file"
             className="sr-only"
-            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md"
+            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json,.csv"
             multiple
             onChange={handleFileSelect}
             aria-label="Select files to attach"
@@ -297,9 +357,11 @@ export function Composer({
             type="button"
             className={`composer-icon-btn ${webSearch ? 'active' : ''}`}
             aria-label={webSearch ? 'Web search on' : 'Web search off'}
+            title={webSearch ? 'Web search enabled' : 'Toggle web search'}
             onClick={() => setWebSearch((v) => !v)}
           >
             <Globe size={16} aria-hidden />
+            <span className="composer-search-label">Web</span>
           </button>
         </div>
 
@@ -308,10 +370,10 @@ export function Composer({
           className="composer-bionic-input"
           placeholder={
             streaming
-              ? 'Streaming response…'
+              ? 'Generating local model response… (Esc to stop)'
               : disabled
-                ? 'Waiting for model…'
-                : 'Ask anything'
+                ? 'Waiting for local model to become ready…'
+                : 'Reply to Sovora or attach files… (Press Shift+Enter for new line)'
           }
           value={value}
           onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
@@ -328,26 +390,35 @@ export function Composer({
             type="button"
             className={`composer-icon-btn mic-btn ${micActive ? 'recording' : ''} ${micLoading ? 'loading' : ''}`}
             aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
+            title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Dictate with local Whisper'}
             onClick={handleMicClick}
             disabled={micLoading}
           >
             {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
           </button>
+
           <ModelSelector
             active={active}
             models={models}
             runtimes={runtimes}
-            onSelect={(rid,mid)=>{ console.info('[select-model]', rid, mid); onSelectModel?.(rid,mid)}}
+            onSelect={(rid, mid) => {
+              onSelectModel?.(rid, mid)
+            }}
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={onReasoningToggle}
             onOpenSettings={onOpenSettings}
           />
+
+          {/* Token meter chip — same estimate, Stitch visuals */}
+          <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
+
           {showStop ? (
             <button
               type="button"
               className="composer-send-btn active"
               onClick={() => onCancel?.()}
               aria-label="Stop generating"
+              title="Stop generating (Esc)"
               data-testid="stop-button"
             >
               <Square size={14} aria-hidden />
@@ -359,39 +430,30 @@ export function Composer({
               onClick={submit}
               disabled={!canSend}
               aria-label="Send message"
+              title="Send message (Enter)"
               data-testid="send-button"
             >
               <ArrowUp size={16} aria-hidden />
+              <span className="composer-send-key">↵</span>
             </button>
           )}
         </div>
       </div>
 
-      {attachments.length > 0 ? (
-        <div className="composer-attachments">
-          {attachments.map((a, i) => (
-            <div key={`${a.name}-${i}`} className="composer-attachment">
-              <Paperclip size={12} aria-hidden />
-              <span className="composer-attachment-name">{a.name}</span>
-              <button type="button" className="composer-attachment-remove" onClick={() => removeAttachment(i)} aria-label={`Remove ${a.name}`}>
-                <X size={10} aria-hidden />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
       <div className="composer-bionic-footer">
         <PermissionControl mode={execMode} onChange={onExecModeChange} />
         {execMode === 'off' ? (
-          <span className="composer-exec-hint muted small">Commands disabled</span>
+          <span className="composer-exec-hint muted small">Command execution disabled</span>
         ) : execMode === 'ask' ? (
-          <span className="composer-exec-hint muted small">Commands will ask first</span>
+          <span className="composer-exec-hint muted small">Agent commands prompt for approval</span>
         ) : execMode === 'review' ? (
           <span className="composer-exec-hint muted small">Safe commands auto-run</span>
         ) : (
-          <span className="composer-exec-hint composer-exec-hint--allow small">Full access — commands run without prompting</span>
+          <span className="composer-exec-hint composer-exec-hint--allow small">Full access — commands run directly</span>
         )}
+        <span className="composer-footer-note muted small">
+          Sovora runs sovereign &amp; local • ⌘K new chat
+        </span>
       </div>
     </div>
   )

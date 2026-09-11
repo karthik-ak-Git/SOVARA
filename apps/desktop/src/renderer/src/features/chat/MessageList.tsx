@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
-import { MessageBubble } from './MessageBubble'
+import { MessageBubble, type ArtifactInfo } from './MessageBubble'
 import { deriveMessages, type SessionEventLike } from './conversation'
 
 interface MessageListProps {
@@ -13,11 +13,23 @@ interface MessageListProps {
   onRegenerate?: () => void
   onEditAndResend?: (content: string) => void
   busy?: boolean
+  onOpenArtifact?: (artifact: ArtifactInfo) => void
 }
 
 const STICK_THRESHOLD_PX = 80
 
-export function MessageList({ events, thinking = false, streamingText = '', streamingReasoning = '', onRemove, onCopy, onRegenerate, onEditAndResend, busy = false }: MessageListProps): ReactElement {
+export function MessageList({
+  events,
+  thinking = false,
+  streamingText = '',
+  streamingReasoning = '',
+  onRemove: _onRemove,
+  onCopy,
+  onRegenerate,
+  onEditAndResend,
+  busy = false,
+  onOpenArtifact,
+}: MessageListProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const messages = deriveMessages(events)
@@ -60,7 +72,7 @@ export function MessageList({ events, thinking = false, streamingText = '', stre
   const lastAssistantIdx = [...messages].reverse().findIndex((m) => m.role === 'assistant' && !m.cancelled)
   const lastAssistantSeq = lastAssistantIdx >= 0 ? messages[messages.length - 1 - lastAssistantIdx]?.seq : null
 
-  let content: ReactNode = (
+  const content: ReactNode = (
     <>
       {messages.map((m) => (
         <MessageBubble
@@ -76,6 +88,7 @@ export function MessageList({ events, thinking = false, streamingText = '', stre
           canRegenerate={m.role === 'assistant' && m.seq === lastAssistantSeq}
           onEditAndResend={m.role === 'user' ? onEditAndResend : undefined}
           busy={busy}
+          onOpenArtifact={onOpenArtifact}
         />
       ))}
       {streamingReasoning !== '' || streamingText !== '' ? (
@@ -87,12 +100,14 @@ export function MessageList({ events, thinking = false, streamingText = '', stre
           reasoningStreaming={streamingReasoning !== '' && streamingText === ''}
           streaming={streamingText !== '' || streamingReasoning !== ''}
           busy={busy}
+          onOpenArtifact={onOpenArtifact}
         />
       ) : thinking ? (
         <MessageBubble id="thinking" role="assistant" content="" thinking />
       ) : null}
     </>
   )
+
   return (
     <div
       ref={scrollRef}

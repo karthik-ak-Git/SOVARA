@@ -1,5 +1,13 @@
-import { useState, type ReactElement } from 'react'
+import { useState, useMemo, type ReactElement } from 'react'
 import { MessageActions } from './components/MessageActions'
+import { ArtifactCard } from '../../components/ui/ArtifactCard'
+import { ReasoningBlock } from '../../components/ui/ReasoningBlock'
+
+export interface ArtifactInfo {
+  title: string
+  language: string
+  code: string
+}
 
 interface MessageBubbleProps {
   id: string
@@ -24,6 +32,70 @@ interface MessageBubbleProps {
   canRegenerate?: boolean
   /** Disable actions while streaming/sending */
   busy?: boolean
+  /** Triggered when user opens a code block into the artifact panel */
+  onOpenArtifact?: (artifact: ArtifactInfo) => void
+}
+
+interface CodeBlockItem {
+  type: 'code'
+  language: string
+  code: string
+  title: string
+}
+
+interface TextItem {
+  type: 'text'
+  text: string
+}
+
+type ParsedPart = CodeBlockItem | TextItem
+
+function parseMessageContent(raw: string): ParsedPart[] {
+  if (!raw.includes('```')) {
+    return [{ type: 'text', text: raw }]
+  }
+
+  const parts: ParsedPart[] = []
+  const fenceRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = fenceRegex.exec(raw)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', text: raw.slice(lastIndex, match.index) })
+    }
+    const lang = match[1]?.trim() || 'code'
+    const code = match[2]?.trimEnd() ?? ''
+    const title = lang.toLowerCase().includes('tsx')
+      ? 'Component.tsx'
+      : lang.toLowerCase().includes('ts')
+        ? 'script.ts'
+        : lang.toLowerCase().includes('py')
+          ? 'script.py'
+          : lang.toLowerCase().includes('html')
+            ? 'index.html'
+            : lang.toLowerCase().includes('json')
+              ? 'data.json'
+              : `${lang}-output`
+    parts.push({ type: 'code', language: lang, code, title })
+    lastIndex = match.index + match[0].length
+  }
+
+  if (lastIndex < raw.length) {
+    parts.push({ type: 'text', text: raw.slice(lastIndex) })
+  }
+  return parts.length > 0 ? parts : [{ type: 'text', text: raw }]
+}
+
+function InlineArtifactCard({
+  item,
+  onOpenSplit,
+}: {
+  item: CodeBlockItem
+  onOpenSplit?: () => void
+}): ReactElement {
+  // Thin alias over the global Stitch ArtifactCard — same props, no new logic.
+  return <ArtifactCard title={item.title} language={item.language} code={item.code} onOpenSplit={onOpenSplit} />
 }
 
 export function MessageBubble({
@@ -42,12 +114,18 @@ export function MessageBubble({
   onEditAndResend,
   canRegenerate = false,
   busy = false,
+  onOpenArtifact,
 }: MessageBubbleProps): ReactElement {
   const isUser = role === 'user'
   const bubbles = isUser ? 'user-bubble' : 'assistant-bubble'
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(content)
   const [showReasoning, setShowReasoning] = useState(true)
+
+  const parsedParts = useMemo(() => {
+    if (isUser || !content) return [{ type: 'text' as const, text: content }]
+    return parseMessageContent(content)
+  }, [content, isUser])
 
   if (loading) {
     return (
@@ -96,7 +174,7 @@ export function MessageBubble({
     )
   }
 
-  // Edit mode for user messages — inline resend without destroying history (append-only)
+  // Edit mode for user messages
   if (isEditing && isUser && onEditAndResend) {
     return (
       <article
@@ -158,29 +236,33 @@ export function MessageBubble({
       aria-live={streaming ? 'polite' : undefined}
     >
       {hasReasoning ? (
-        <div className="bubble-reasoning" data-testid="message-reasoning">
-          <button
-            type="button"
-            className="bubble-reasoning-toggle"
-            onClick={() => setShowReasoning((v) => !v)}
-            aria-expanded={showReasoning}
-            aria-label={showReasoning ? 'Hide reasoning' : 'Show reasoning'}
-          >
-            <span className="bubble-reasoning-label">{reasoningStreaming ? 'Thinking…' : 'Reasoning'}</span>
-            <span className="bubble-reasoning-chevron" aria-hidden>{showReasoning ? '▾' : '▸'}</span>
-          </button>
-          {showReasoning ? (
-            <div className={`bubble-reasoning-content ${reasoningStreaming ? 'bubble-reasoning-content--streaming' : ''}`}>
-              {reasoning}
-              {reasoningStreaming ? <span className="stream-caret" aria-hidden="true" /> : null}
-            </div>
-          ) : null}
-        </div>
+        <ReasoningBlock
+          reasoning={reasoning ?? ''}
+          streaming={reasoningStreaming}
+          open={showReasoning}
+          onToggle={setShowReasoning}
+        />
       ) : null}
-      <p className="bubble-text">
-        {content}
-        {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
-      </p>
+
+      {/* Render message body with artifact detection for code blocks */}
+      {parsedParts.map((part, index) => {
+        if (part.type === 'code') {
+          return (
+            <InlineArtifactCard
+              key={`${id}-code-${index}`}
+              item={part}
+              onOpenSplit={onOpenArtifact ? () => onOpenArtifact({ title: part.title, language: part.language, code: part.code }) : undefined}
+            />
+          )
+        }
+        return (
+          <p key={`${id}-text-${index}`} className="bubble-text">
+            {part.text}
+            {streaming && index === parsedParts.length - 1 ? <span className="stream-caret" aria-hidden="true" /> : null}
+          </p>
+        )
+      })}
+
       {cancelled ? <span className="bubble-meta muted small">Stopped — no reply was generated.</span> : null}
       <span className="bubble-meta muted small">
         {typeof timestamp === 'number' && Number.isFinite(timestamp) ? (
@@ -191,6 +273,7 @@ export function MessageBubble({
           ''
         )}
       </span>
+
       {!streaming && !thinking && !loading ? (
         <MessageActions
           role={role}
