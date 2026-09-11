@@ -30,6 +30,9 @@ export function useModelWorkbench() {
   const [probes, setProbes] = useState<Record<string, RuntimeProbeResult>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Last explicitly selected model — powers the "Retry with Fit mode" path
+  // after a resource-pressure refusal (explicit opt-in, never automatic).
+  const [lastSelect, setLastSelect] = useState<{ runtimeId: string; modelId: string } | null>(null)
   // Owned runtime (Sovara's own llama.cpp sidecar — no Ollama/LM Studio needed)
   const [localRuntime, setLocalRuntime] = useState<LocalRuntimeStatus | null>(null)
   const [runtimeProgress, setRuntimeProgress] = useState<{ phase: string; receivedBytes: number; totalBytes: number | null } | null>(null)
@@ -148,6 +151,7 @@ export function useModelWorkbench() {
       // op (probe/install) holds the shared `busy` guard — select owns
       // its lifecycle and surfaces errors directly.
       setError(null)
+      setLastSelect({ runtimeId, modelId })
       try {
         const state = await selectModel(runtimeId, modelId)
         setActive(state)
@@ -157,6 +161,20 @@ export function useModelWorkbench() {
     },
     []
   )
+
+  const handleSelectFit = useCallback(async (): Promise<void> => {
+    // Explicit partial-GPU-offload retry for the last refused model.
+    // Only ever fires from a user click — the adapter never falls back
+    // to Fit mode on its own.
+    if (!lastSelect) return
+    setError(null)
+    try {
+      const state = await selectModel(lastSelect.runtimeId, lastSelect.modelId, { fit: true })
+      setActive(state)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [lastSelect])
 
   const handleEnsureRuntime = useCallback(
     () =>
@@ -176,5 +194,5 @@ export function useModelWorkbench() {
 
   const dismissError = useCallback(() => setError(null), [])
 
-  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
+  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
 }

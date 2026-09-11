@@ -44,8 +44,11 @@ import {
   getLlamaServerPath,
   getLlamaVersion,
   killServer,
+  kvCacheMBFromInfo,
   planMemory,
+  planPartialFit,
   queryGpuVram,
+  readGgufModelInfo,
   selectRuntimeForModel,
   spawnLlamaServer,
   waitForServerReady,
@@ -92,6 +95,16 @@ function parseQuant(filename: string): string | undefined {
 function parseParams(filename: string): string | undefined {
   const m = filename.match(/(\d+(?:\.\d+)?)\s*B\b/i)
   return m ? `${m[1]}B` : undefined
+}
+
+/**
+ * Vision projector shard (llama.cpp `--mmproj`), not a runnable language
+ * model. Small files, so they sail through VRAM size gates — they must be
+ * excluded from loadable-model logic explicitly.
+ */
+function isMmprojFile(basename: string): boolean {
+  const lower = basename.toLowerCase()
+  return lower === 'mmproj.gguf' || lower.startsWith('mmproj-')
 }
 
 function statusFor(state: RuntimeInstanceState): ModelInstance['status'] {
@@ -195,7 +208,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     for (const file of this.scanGgufFiles()) {
       if (candidates.has(path.basename(file).toLowerCase())) return file
     }
-    throw new Error(`model-not-found: "${clean}" is not in the Sovara library (Library → download a GGUF first)`)
+    throw new Error(`model-not-found: "${clean}" is not in the Sovara library (Library -> download a GGUF first)`)
   }
 
   async listLocalModels(): Promise<LocalModel[]> {
@@ -221,7 +234,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    * promise and receive the SAME verified instance. Failures propagate to
    * all waiters; no LOADING state sticks forever (map entry removed).
    */
-  async load(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance> {
+  async load(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance> {
     const key = String(instanceIdFor(String(modelId)))
     const pending = this.pendingLoads.get(key)
     if (pending) return this.publicView(await pending)
@@ -281,6 +294,27 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     cur.lastActiveAt = Date.now()
   }
 
+  /**
+   * Library models whose preflight estimate fits this GPU (spec: actionable
+   * refusal). Largest-first, excludes the refused model. Estimate only.
+   */
+  private fittingAlternatives(excludeBase: string, totalMB: number, limit = 3): string[] {
+    const out: Array<{ base: string; est: number }> = []
+    try {
+      for (const file of this.scanGgufFiles()) {
+        const base = path.basename(file)
+        if (base === excludeBase) continue
+        if (isMmprojFile(base)) continue // projector shard, not loadable
+        let size = 0
+        try { size = fs.statSync(file).size } catch { continue }
+        if (size <= 0) continue
+        const est = planMemory(size, 4096, file, { nParallel: 1, overheadMB: 256 }).estimatedMB
+        if (est <= totalMB) out.push({ base, est })
+      }
+    } catch { return [] }
+    return out.sort((a, b) => b.est - a.est).slice(0, limit).map((e) => e.base)
+  }
+
   private async withGlobalMutex<T>(fn: () => Promise<T>): Promise<T> {
     const prev = this.globalMutex
     let release!: () => void
@@ -293,7 +327,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     }
   }
 
-  private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<TrackedInstance> {
+  private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<TrackedInstance> {
     const t0 = Date.now()
     const runtimeId = opts?.runtimeId ?? 'local'
     const ctxLen = opts?.ctxLen ?? 4096
@@ -321,18 +355,75 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     }
 
     const modelPath = this.resolveModelPath(modelId)
+    if (isMmprojFile(path.basename(modelPath))) {
+      throw new Error(`invalid-model: "${path.basename(modelPath)}" is a vision projector shard (--mmproj), not a runnable language model -- load its companion LLM GGUF instead`)
+    }
     let fileSize = 0
     try { fileSize = fs.statSync(modelPath).size } catch { /* resolved above, race-proof anyway */ }
+
+    // GPU placement mode (explicit only — never silent reduction):
+    // 'auto' = full offload, refuse when it does not fit (default).
+    // 'cpu'  = no GPU layers, VRAM gate skipped (RAM load, slower).
+    // 'fit'  = partial offload sized to this GPU, refused when even the
+    //          minimum useful offload does not fit.
+    // number = explicit -ngl layer count, estimate-gated like 'fit'.
+    const gpuMode = opts?.gpu ?? 'auto'
+    let explicitNgl: number | null = null
+    if (typeof gpuMode === 'number') {
+      if (!Number.isFinite(gpuMode) || gpuMode < 0) throw new Error(`invalid-model: GPU layer count must be a non-negative number (got ${String(gpuMode)})`)
+      explicitNgl = Math.floor(gpuMode)
+    }
+    const forceCpu = gpuMode === 'cpu'
+
     // Preflight is an ESTIMATE (weights + KV×parallel + workspace + overhead).
     const plan = planMemory(fileSize, ctxLen, modelPath, { nParallel: 1, overheadMB: 256 })
-    const estimatedVramMB = plan.estimatedMB
+    let estimatedVramMB = plan.estimatedMB
+    let ngl = 999 // full offload unless a mode says otherwise
+    let partialOffload = false
 
     // Evict + capacity decision under the global mutex (spec §14).
     const gpu = await this.deps.queryVram().catch(() => null)
+    if (forceCpu) {
+      ngl = 0
+      appendLlamaLog(this.baseDir, 'load-cpu-mode', { modelId, detail: 'explicit CPU placement, VRAM gate skipped' })
+    } else if (gpuMode === 'fit' || explicitNgl !== null) {
+      if (!gpu?.totalMB) throw new Error('resource-pressure: Fit mode needs a detectable GPU (nvidia-smi unreadable) -- cannot size a partial offload')
+      if (explicitNgl !== null) {
+        const info = readGgufModelInfo(modelPath)
+        if (!info) throw new Error(`resource-pressure: explicit ${explicitNgl} GPU layers need a readable GGUF header to verify the fit ("${path.basename(modelPath)}" header unreadable)`)
+        ngl = Math.min(explicitNgl, info.blockCount)
+        const kv = kvCacheMBFromInfo(info, ctxLen, 1) ?? plan.kvCacheMB
+        const weightsMB = Math.max(64, Math.round(fileSize / (1024 * 1024)))
+        estimatedVramMB = Math.round(ngl * (weightsMB / info.blockCount)) + kv + Math.round(weightsMB * 0.05) + 256
+        partialOffload = ngl < info.blockCount
+        if (estimatedVramMB > gpu.totalMB) {
+          throw new Error(`resource-pressure: "${path.basename(modelPath)}" with ${ngl}/${info.blockCount} GPU layers needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''}`)
+        }
+      } else {
+        const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 })
+        if (!fit) {
+          throw new Error(`resource-pressure: "${path.basename(modelPath)}" cannot fit this GPU even with minimum partial offload (GPU ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''}) -- pick a smaller quant`)
+        }
+        ngl = fit.fitLayers
+        estimatedVramMB = fit.estimatedMB
+        partialOffload = true
+        appendLlamaLog(this.baseDir, 'load-fit-plan', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
+      }
+    }
     await this.withGlobalMutex(async () => {
       // Honest capacity gate against REAL total VRAM (not a simulated 8GB).
-      if (gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
-        const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} — pick a smaller quant`
+      // Skipped for explicit CPU placement (no VRAM claimed).
+      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+        const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
+        const altHint = alternatives.length > 0
+          ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
+          : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
+        let fitHint = ''
+        try {
+          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 })
+          if (fit) fitHint = ` Fit mode could offload ${fit.fitLayers}/${fit.totalLayers} layers (~${fit.estimatedMB}MB) -- retry with Fit mode for partial GPU offload.`
+        } catch { /* hint is best-effort only */ }
+        const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} -- pick a smaller quant.${altHint}${fitHint}`
         appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB, vramTotalMB: gpu.totalMB }, 'error')
         throw new Error(msg)
       }
@@ -340,7 +431,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       while (this.liveCount() >= this.maxConcurrentModels) {
         const victim = this.pickEvictionVictim(key)
         if (!victim) {
-          throw new Error(`resource-pressure: ${this.maxConcurrentModels} model(s) already resident and none is eligible for eviction (all busy/loading/evicting) — wait or unload one first`)
+          throw new Error(`resource-pressure: ${this.maxConcurrentModels} model(s) already resident and none is eligible for eviction (all busy/loading/evicting) -- wait or unload one first`)
         }
         appendLlamaLog(this.baseDir, 'lru-evict', { evicting: victim.modelId, for: modelId })
         await this.unloadInner(victim.id).catch(() => {})
@@ -349,6 +440,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     // Structured runtime selection (spec §5) — GGUF → llama.cpp only.
     const exe = this.exePath()
+    const useCuda = !forceCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0)
     const selection = selectRuntimeForModel({
       format: 'gguf',
       exePath: exe,
@@ -356,24 +448,26 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       port: 0, // placeholder; real port bound below
       ctxLen,
       alias: path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64),
-      gpuAvailable: Boolean(gpu?.totalMB && gpu.totalMB > 0),
+      gpuAvailable: useCuda,
     })
+    if (!useCuda) ngl = 0
 
     const vramBefore = (await this.deps.queryVram().catch(() => null))?.freeMB
     appendLlamaLog(this.baseDir, 'load-start', {
       modelId, modelPath, fileSizeMB: Math.round(fileSize / (1024 * 1024)),
-      estimatedVramMB, plan, ctxLen, vramFreeBeforeMB: vramBefore ?? 'unknown',
+      estimatedVramMB, plan, ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
+      offloadedLayers: ngl, partialOffload, vramFreeBeforeMB: vramBefore ?? 'unknown',
     })
 
     const port = await this.deps.findPort()
     const alias = path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64)
-    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: selection.backend === 'cuda' ? 999 : 0, alias })
+    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias })
     const endpoint = `http://127.0.0.1:${port}/v1`
     const tracked: TrackedInstance = {
       id, modelId: modelId as ModelId, runtimeId, status: statusFor('LOADING'), state: 'LOADING', ctxLen, port,
       endpoint, health: 'unknown', hardwareDevice: selection.device,
-      configuration: { ctxLen, nGpuLayers: selection.backend === 'cuda' ? 999 : 0, nParallel: 1, alias },
-      estimatedVramMB, vramEstimated: true, offloadedLayers: selection.backend === 'cuda' ? 999 : 0,
+      configuration: { ctxLen, nGpuLayers: ngl, nParallel: 1, alias },
+      estimatedVramMB, vramEstimated: true, offloadedLayers: ngl, partialOffload,
       startedAt: Date.now(), lastActiveAt: Date.now(), activeRequests: 0,
       metrics: { vramUsedMB: estimatedVramMB, vramEstimated: true, lastUpdatedAt: Date.now() },
       proc: undefined as unknown as ChildPort, modelPath, fileSizeBytes: fileSize,
@@ -384,7 +478,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     let proc: ChildProcess
     try {
       const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
-      proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: selection.backend === 'cuda' ? 999 : 0, alias, logDir })
+      proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: ngl, alias, logDir })
     } catch (e) {
       this.instances.delete(key)
       const raw = e instanceof Error ? e.message : String(e)
@@ -413,7 +507,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       const c = classifyLoadFailure(raw)
       appendLlamaLog(this.baseDir, 'load-failed', { modelId, port, kind: c.kind, error: raw.slice(0, 300) }, 'error')
       if (c.kind === 'readiness-timeout') {
-        throw new Error(`readiness-timeout: "${path.basename(modelPath)}" started but never confirmed model loaded within 240s — runner terminated, no state kept`)
+        throw new Error(`readiness-timeout: "${path.basename(modelPath)}" started but never confirmed model loaded within 240s -- runner terminated, no state kept`)
       }
       // Recoverable ONCE (port conflict): retry with a fresh port, same config.
       if (c.recoverable) {
@@ -423,7 +517,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
         let proc2: ChildProcess
         try {
-          proc2 = this.deps.spawn({ exePath: selection.executable, modelPath, port: retryPort, ctxLen, nGpuLayers: selection.backend === 'cuda' ? 999 : 0, alias, logDir })
+          proc2 = this.deps.spawn({ exePath: selection.executable, modelPath, port: retryPort, ctxLen, nGpuLayers: ngl, alias, logDir })
         } catch (e2) {
           throw new Error(`model-load-failed: retry spawn failed (${e2 instanceof Error ? e2.message : String(e2)})`)
         }
@@ -445,7 +539,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         }
         return this.finishLoad(t2, { modelId, modelPath, fileSize, estimatedVramMB, plan, ctxLen, vramBefore, t0 })
       }
-      if (c.kind === 'oom') throw new Error(`oom: "${path.basename(modelPath)}" exhausted GPU memory during load — pick a smaller quant or lower context (no automatic -ngl reduction applied)`)
+      if (c.kind === 'oom') throw new Error(`oom: "${path.basename(modelPath)}" exhausted GPU memory during load -- pick a smaller quant or lower context (no automatic -ngl reduction applied)`)
       throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready (${raw.slice(0, 200)})`)
     }
 
@@ -578,7 +672,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     if (!cur) throw new Error('instance not found (OFFLINE — load the model first)')
     if (cur.state === 'LOADING') throw new Error('model is still loading into VRAM')
     if (cur.state === 'EVICTING') throw new Error('instance is unloading — wait and retry')
-    if (cur.state === 'FAILED') throw new Error(`instance failed (${cur.lastError ?? cur.failureReason ?? 'runner error'}) — unload and load again`)
+    if (cur.state === 'FAILED') throw new Error(`instance failed (${cur.lastError ?? cur.failureReason ?? 'runner error'}) -- unload and load again`)
     if (cur.state !== 'ACTIVE' && cur.state !== 'BUSY_DECODE') {
       throw new Error(`instance not serving (state=${cur.state})`)
     }

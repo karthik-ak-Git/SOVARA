@@ -90,6 +90,32 @@ function makeAdapter(lib: string, baseDir: string, d: ReturnType<typeof makeDeps
   return new LlamaCppServerAdapter(baseDir, null, lib, d)
 }
 
+/** Minimal valid GGUF: header + shape metadata, zero padded to `bytes`. */
+function writeMiniGguf(
+  lib: string,
+  name: string,
+  shape: { arch?: string; blocks: number; embd?: number; heads?: number; kvHeads?: number },
+  bytes = 4096
+): string {
+  const arch = shape.arch ?? 'testarch'
+  const u32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b }
+  const u64 = (v: number): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return b }
+  const str = (s: string): Buffer => Buffer.concat([u64(Buffer.byteLength(s)), Buffer.from(s, 'utf8')])
+  const kvStr = (k: string, v: string): Buffer => Buffer.concat([str(k), u32(8), str(v)])
+  const kvU32 = (k: string, v: number): Buffer => Buffer.concat([str(k), u32(4), u32(v)])
+  const entries = [
+    kvStr('general.architecture', arch),
+    kvU32(`${arch}.block_count`, shape.blocks),
+    kvU32(`${arch}.embedding_length`, shape.embd ?? 4096),
+    kvU32(`${arch}.attention.head_count`, shape.heads ?? 32),
+    kvU32(`${arch}.attention.head_count_kv`, shape.kvHeads ?? 8),
+  ]
+  const head = Buffer.concat([Buffer.from('GGUF', 'binary'), u32(3), u64(0), u64(entries.length), ...entries])
+  const p = path.join(lib, name)
+  fs.writeFileSync(p, Buffer.concat([head, Buffer.alloc(Math.max(0, bytes - head.length))]))
+  return p
+}
+
 describe('lifecycle — loading', () => {
   let dir = ''
   let lib = ''
@@ -295,6 +321,160 @@ describe('lifecycle — unload', () => {
     expect(second.state).toBe('ACTIVE')
     // The evicted first model is OFFLINE now.
     expect(await a.health(first.id)).toMatchObject({ ok: false })
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('lifecycle — refusal quality', () => {
+  it('oversized model refusal is ASCII-only, single-prefixed, and names fitting alternatives', async () => {
+    const dir = mkTmp()
+    const lib = path.join(dir, 'models')
+    fs.mkdirSync(lib, { recursive: true })
+    writeGguf(lib, 'huge-27B-Q4_K_M.gguf', 100 * 1024) // size irrelevant: mocked VRAM forces refusal
+    writeGguf(lib, 'tiny-0.6B-Q4_K_M.gguf', 1024)
+    const { deps } = makeDeps({
+      vramSeq: [{ totalMB: 1500, freeMB: 1400, name: 'Tiny GPU' }],
+    })
+    const a = makeAdapter(lib, dir, deps)
+    let err: Error | null = null
+    try {
+      await a.load('huge-27B-Q4_K_M' as never, { runtimeId: 'local' })
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).toBeInstanceOf(Error)
+    const message = (err as unknown as Error).message
+    expect(message).toMatch(/^resource-pressure: (?!resource-pressure)/)
+    expect(message).not.toMatch(/[^\x00-\x7F]/)
+    expect(message).toMatch(/tiny-0\.6B-Q4_K_M\.gguf/)
+    expect(await a.listInstances()).toEqual([])
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('mmproj projector shards are never named as fitting alternatives', async () => {
+    const dir = mkTmp()
+    const lib = path.join(dir, 'models')
+    fs.mkdirSync(lib, { recursive: true })
+    writeGguf(lib, 'huge-27B-Q4_K_M.gguf', 100 * 1024) // refused via mocked VRAM
+    writeGguf(lib, 'mmproj-huge-27B-BF16.gguf', 1024) // small: would pass the size gate
+    writeGguf(lib, 'tiny-0.6B-Q4_K_M.gguf', 1024)
+    const { deps } = makeDeps({
+      vramSeq: [{ totalMB: 1500, freeMB: 1400, name: 'Tiny GPU' }],
+    })
+    const a = makeAdapter(lib, dir, deps)
+    let err: Error | null = null
+    try {
+      await a.load('huge-27B-Q4_K_M' as never, { runtimeId: 'local' })
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).toBeInstanceOf(Error)
+    const message = (err as unknown as Error).message
+    expect(message).not.toMatch(/mmproj/i)
+    expect(message).toMatch(/tiny-0\.6B-Q4_K_M\.gguf/)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('direct mmproj load is refused as invalid-model, never spawned', async () => {
+    const dir = mkTmp()
+    const lib = path.join(dir, 'models')
+    fs.mkdirSync(lib, { recursive: true })
+    writeGguf(lib, 'mmproj-huge-27B-BF16.gguf', 1024)
+    const { deps, spawnLog } = makeDeps()
+    const a = makeAdapter(lib, dir, deps)
+    await expect(a.load('mmproj-huge-27B-BF16' as never, { runtimeId: 'local' })).rejects.toThrow(/^invalid-model: .*vision projector/)
+    expect(spawnLog.count).toBe(0)
+    expect(await a.listInstances()).toEqual([])
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('lifecycle — GPU placement modes', () => {
+  // 100MB file, 40 layers (2.5MB/layer), GQA KV 40MB @ctx1024, full = 411MB.
+  function setupFitLib(): { dir: string; lib: string } {
+    const dir = mkTmp()
+    const lib = path.join(dir, 'models')
+    fs.mkdirSync(lib, { recursive: true })
+    writeMiniGguf(lib, 'gqa-40-Q4_K_M.gguf', { blocks: 40, embd: 4096, heads: 32, kvHeads: 2 }, 100 * 1024 * 1024)
+    return { dir, lib }
+  }
+
+  function captureNgl(deps: ReturnType<typeof makeDeps>['deps']): { seen: number[] } {
+    const seen: number[] = []
+    const inner = deps.spawn
+    deps.spawn = ((o: { nGpuLayers?: number }) => {
+      seen.push(o?.nGpuLayers ?? -1)
+      return (inner as (x: unknown) => ChildProcess)(o)
+    }) as never
+    return { seen }
+  }
+
+  it('fit mode partially offloads an otherwise-too-big model, recorded honestly', async () => {
+    const { dir, lib } = setupFitLib()
+    const { deps, spawnLog } = makeDeps({ vramSeq: [{ totalMB: 400, freeMB: 390, name: 'Small GPU' }] })
+    const { seen } = captureNgl(deps)
+    const a = makeAdapter(lib, dir, deps)
+    const inst = await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', gpu: 'fit', ctxLen: 1024 })
+    expect(inst.state).toBe('ACTIVE')
+    expect(spawnLog.count).toBe(1)
+    expect(seen[0]).toBeGreaterThanOrEqual(8)
+    expect(seen[0]).toBeLessThan(40)
+    expect(inst.partialOffload).toBe(true)
+    expect(inst.offloadedLayers).toBe(seen[0])
+    expect(inst.configuration?.nGpuLayers).toBe(seen[0])
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('fit mode refuses honestly when even minimum offload cannot fit', async () => {
+    const { dir, lib } = setupFitLib()
+    const { deps, spawnLog } = makeDeps({ vramSeq: [{ totalMB: 300, freeMB: 290, name: 'Tiny GPU' }] })
+    const a = makeAdapter(lib, dir, deps)
+    await expect(a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', gpu: 'fit' })).rejects.toThrow(/resource-pressure: .*minimum partial offload/)
+    expect(spawnLog.count).toBe(0)
+    expect(await a.listInstances()).toEqual([])
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('cpu mode skips the VRAM gate and spawns with zero GPU layers', async () => {
+    const { dir, lib } = setupFitLib()
+    const { deps, spawnLog } = makeDeps({ vramSeq: [{ totalMB: 300, freeMB: 290, name: 'Tiny GPU' }] })
+    const { seen } = captureNgl(deps)
+    const a = makeAdapter(lib, dir, deps)
+    const inst = await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', gpu: 'cpu' })
+    expect(inst.state).toBe('ACTIVE')
+    expect(spawnLog.count).toBe(1)
+    expect(seen[0]).toBe(0)
+    expect(inst.hardwareDevice).toBe('cpu')
+    expect(inst.partialOffload).toBe(false)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('explicit layer count is estimate-gated and recorded', async () => {
+    const { dir, lib } = setupFitLib()
+    const { deps, spawnLog } = makeDeps({ vramSeq: [{ totalMB: 400, freeMB: 390, name: 'Small GPU' }] })
+    const { seen } = captureNgl(deps)
+    const a = makeAdapter(lib, dir, deps)
+    const inst = await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', gpu: 10, ctxLen: 1024 })
+    expect(inst.state).toBe('ACTIVE')
+    expect(seen[0]).toBe(10)
+    expect(inst.partialOffload).toBe(true)
+    expect(inst.offloadedLayers).toBe(10)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('auto refusal names Fit mode when a partial offload would fit', async () => {
+    const { dir, lib } = setupFitLib()
+    const { deps } = makeDeps({ vramSeq: [{ totalMB: 400, freeMB: 390, name: 'Small GPU' }] })
+    const a = makeAdapter(lib, dir, deps)
+    let err: Error | null = null
+    try {
+      await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', ctxLen: 1024 })
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).toBeInstanceOf(Error)
+    // Full needs 411MB > 400MB; fit (~39/40 layers) is offered explicitly.
+    expect((err as unknown as Error).message).toMatch(/Fit mode could offload \d+\/40 layers/)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })

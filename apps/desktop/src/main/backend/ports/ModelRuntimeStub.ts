@@ -9,7 +9,7 @@ export function clearAllInstances(): void {
 
 export class ModelRuntimeStub implements ModelRuntimePort {
   async listLocalModels(): Promise<LocalModel[]> { return [] }
-  async load(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance> {
+  async load(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance> {
     const id = `inst_${String(modelId).replace(/[^a-z0-9]/gi,'_')}` as InstanceId
     const existing = instances.get(id as string)
     // If already loaded → return immediately (honest "model already loaded" state)

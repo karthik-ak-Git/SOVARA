@@ -268,7 +268,7 @@ export class ModelWorkbench {
     } catch {}
   }
 
-  async selectModel(runtimeId: string, modelId: string): Promise<ActiveModelState> {
+  async selectModel(runtimeId: string, modelId: string, opts?: { fit?: boolean }): Promise<ActiveModelState> {
     const snap = this.config.getRuntime(runtimeId)
     if (!snap) throw new ModelWorkbenchError('unknown runtime')
     if (!snap.entry.enabled) throw new ModelWorkbenchError('runtime is disabled')
@@ -287,9 +287,9 @@ export class ModelWorkbench {
     // (evicting the previous resident inside the adapter). Remote runtimes
     // own their lifecycle — selection alone is enough for them.
     if ((snap.entry.endpoint === 'local' || snap.entry.id === 'local') && this.models) {
-      appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'loading into VRAM (switch evicts previous)' })
+      appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'loading into VRAM (switch evicts previous)', fit: opts?.fit === true })
       try {
-        await this.models.load(modelId as never, { runtimeId })
+        await this.models.load(modelId as never, { runtimeId, ...(opts?.fit === true ? { gpu: 'fit' as const } : {}) })
         appendLlamaLog(this.baseDir, 'select-ready', { modelId, runtimeId })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)

@@ -161,8 +161,8 @@ export async function listDiscoveredModels(runtimeId?: string): Promise<Discover
   return (await sovara().invoke('models:listModels', runtimeId ? { runtimeId } : {})) as DiscoveredModel[]
 }
 
-export async function selectModel(runtimeId: string, modelId: string): Promise<ActiveModelState> {
-  return (await sovara().invoke('models:selectModel', { runtimeId, modelId })) as ActiveModelState
+export async function selectModel(runtimeId: string, modelId: string, opts?: { fit?: boolean }): Promise<ActiveModelState> {
+  return (await sovara().invoke('models:selectModel', { runtimeId, modelId, ...(opts?.fit === true ? { fit: true } : {}) })) as ActiveModelState
 }
 
 export async function getActiveModel(): Promise<ActiveModelState> {

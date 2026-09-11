@@ -12,7 +12,7 @@ function formatCtx(n?: number): string {
 }
 
 export function ModelsPage(): ReactElement {
-  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
+  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
     useModelWorkbench()
   const [name, setName] = useState('')
   const [endpoint, setEndpoint] = useState('http://127.0.0.1:1234/v1')
@@ -99,6 +99,11 @@ export function ModelsPage(): ReactElement {
       {error ? (
         <div className="chat-error" role="alert" aria-label="Models error">
           <span>{error}</span>
+          {/fit mode/i.test(error) && lastSelect ? (
+            <button type="button" className="btn btn-sm" onClick={() => void handleSelectFit()} aria-label="Retry with Fit mode (partial GPU offload)">
+              Retry with Fit mode
+            </button>
+          ) : null}
           <button type="button" className="btn btn-sm" onClick={dismissError} aria-label="Dismiss error">
             Dismiss
           </button>

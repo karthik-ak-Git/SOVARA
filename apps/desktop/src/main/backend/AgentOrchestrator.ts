@@ -218,7 +218,7 @@ export class AgentOrchestrator {
               runtimeId: routing.runtimeId,
             })
           const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
-          if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
+          if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
           ownedEndpoint = this.deps.models.baseUrl(inst.id)
           try {
             (this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(inst.id)
@@ -365,9 +365,13 @@ export class AgentOrchestrator {
               }
               if (delta.includes('</thinking>') || delta.includes('</think>')) {
                 const parts = delta.split(/<\/thinking>|<\/think>/)
-                reasoningBuffer += parts[0]
+                const tail = parts[0] ?? ''
+                reasoningBuffer += tail
+                // Exactly-once streaming: earlier chunks were already
+                // emitted incrementally — emit only the not-yet-streamed
+                // tail. The full buffer is persisted once below.
+                if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
                 if (reasoningBuffer) {
-                  this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: reasoningBuffer })
                   try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
                   reasoningBuffer = ''
                 }
@@ -406,6 +410,14 @@ export class AgentOrchestrator {
       }
 
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars streamed=${streamed}` })
+
+      // Unclosed <thinking> block (model never emitted the close tag):
+      // deltas already streamed incrementally — persist the full text so a
+      // later refresh reconstructs the same reasoning instead of losing it.
+      if (reasoningBuffer) {
+        try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+        reasoningBuffer = ''
+      }
 
       // ── Optional second step: tool use (honest multi-step) ──
       if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
@@ -638,7 +650,7 @@ export class AgentOrchestrator {
           ? await models.ensureHealthy(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
           : await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
         const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
-        if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
+        if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
         regenOwnedEndpoint = this.deps.models.baseUrl(inst.id)
       } else if (controller.signal.aborted) {
         throw new AgentOrchestratorError('cancelled', 'cancelled')
@@ -688,8 +700,11 @@ export class AgentOrchestrator {
               if (delta.includes('<thinking>') || delta.includes('<think>')) { inReasoning = true; delta = delta.replace(/<thinking>|<think>/g, '') }
               if (delta.includes('</thinking>') || delta.includes('</think>')) {
                 const parts = delta.split(/<\/thinking>|<\/think>/)
-                reasoningBuffer += parts[0]
-                if (reasoningBuffer) { this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: reasoningBuffer }); try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
+                const tail = parts[0] ?? ''
+                reasoningBuffer += tail
+                // Exactly-once streaming (see execute()): emit the tail only.
+                if (tail) { this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail }) }
+                if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
                 inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
               }
               if (inReasoning) { reasoningBuffer += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
@@ -716,6 +731,12 @@ export class AgentOrchestrator {
         throw new AgentOrchestratorError('llm-failed', safe)
       }
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars` })
+      // Unclosed <thinking> block: deltas already streamed — persist the
+      // full text so a later refresh reconstructs it instead of losing it.
+      if (reasoningBuffer) {
+        try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+        reasoningBuffer = ''
+      }
       if (text.trim() === '') {
         const msg = 'invalid-response: the local model returned an empty reply'
         this.log(routing.runtimeId, endpoint, model, startedAll, undefined, 'invalid-response', streamed)

@@ -28,6 +28,11 @@ function broadcastChat(event: ChatStreamEvent): void {
   }
 }
 
+/** Prefix a user-facing error code exactly once (inner layers may pre-prefix). */
+function prefixed(raw: string, prefix: string): string {
+  return raw.toLowerCase().startsWith(prefix.toLowerCase()) ? raw : `${prefix}${raw}`
+}
+
 /** Push channel for model download progress (throttled at the source). */
 function broadcastDownload(event: import('../services/modelDownloads').DownloadEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -156,12 +161,13 @@ export function registerIpcHandlers(): void {
       return res
     } catch (e) {
       console.error(`[SOVARA][IPC][chat:send][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
-      // Map orchestrator codes to user-facing strings the UI already handles
+      // Map orchestrator codes to user-facing strings the UI already handles.
+      // Single-prefix: inner messages may already carry the code prefix.
       const raw = e instanceof Error ? e.message : 'chat failed'
       const code = (e as { code?: string })?.code
-      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
-      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
-      if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error('runtime-unavailable: ' + raw)
+      if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
+      if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
+      if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       throw new Error(raw)
     }
   })
@@ -198,8 +204,8 @@ export function registerIpcHandlers(): void {
       console.error(`[SOVARA][IPC][chat:regenerate][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       const raw = e instanceof Error ? e.message : 'regenerate failed'
       const code = (e as { code?: string })?.code
-      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
-      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
+      if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
+      if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
       throw new Error(raw)
     }
   })
@@ -217,7 +223,7 @@ export function registerIpcHandlers(): void {
       const target: { editAndResend?: Function; execute?: Function; editResend?: Function } =
         (backend as unknown as { orchestrator?: unknown }).orchestrator ?? backend.chat
       // orchestrator exposes editAndResend, chat exposes editAndResend
-      const fn = (target as { editAndResend?: Function; editResend?: Function }).editAndResend ?? (target as { editAndResend?: Function }).editAndResend
+      const fn = (target as { editAndResend?: Function; editResend?: Function }).editAndResend ?? (target as { editResend?: Function }).editResend
       const res = fn
         ? await (fn as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
         : await (target as unknown as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
@@ -227,8 +233,8 @@ export function registerIpcHandlers(): void {
       console.error(`[SOVARA][IPC][chat:editResend][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       const raw = e instanceof Error ? e.message : 'editResend failed'
       const code = (e as { code?: string })?.code
-      if (code === 'no-model-available') throw new Error('no-active-model: ' + raw)
-      if (code === 'resource-blocked') throw new Error('resource-pressure: ' + raw)
+      if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
+      if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
       throw new Error(raw)
     }
   })
@@ -245,7 +251,7 @@ export function registerIpcHandlers(): void {
     const parsed = zModelsLoad.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid load payload: ${parsed.error.message}`)
     // @ts-expect-error — branded string compat in stub
-    return getBackend().ports.models.load(parsed.data.modelId, {})
+    return getBackend().ports.models.load(parsed.data.modelId, parsed.data.fit ? { gpu: 'fit' } : {})
   })
 
   // ── Owned runtime install (one-time pinned llama.cpp CUDA build) ──
@@ -313,7 +319,7 @@ export function registerIpcHandlers(): void {
     const parsed = zModelsSelect.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid selection: ${parsed.error.message}`)
     try {
-      return await getBackend().workbench.selectModel(parsed.data.runtimeId, parsed.data.modelId)
+      return await getBackend().workbench.selectModel(parsed.data.runtimeId, parsed.data.modelId, { fit: parsed.data.fit })
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'selection failed')
     }

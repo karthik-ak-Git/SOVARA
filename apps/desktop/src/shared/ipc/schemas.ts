@@ -84,11 +84,11 @@ export const zModelsListModels = z
   .default({})
 
 export const zModelsSelect = z
-  .object({ runtimeId: zRuntimeId, modelId: z.string().min(1).max(256) })
+  .object({ runtimeId: zRuntimeId, modelId: z.string().min(1).max(256), fit: z.boolean().optional() })
   .strict()
 
 export const zModelsLoad = z
-  .object({ modelId: z.string().min(1).max(128) })
+  .object({ modelId: z.string().min(1).max(128), fit: z.boolean().optional() })
   .strict()
 
 export const zModelsRegistryList = z

@@ -166,6 +166,142 @@ export function queryGpuVram(timeoutMs = 5000): Promise<GpuVram | null> {
   })
 }
 
+// ── GGUF header probing (architecture-aware memory math) ────────────────
+
+export interface GgufModelInfo {
+  arch: string
+  blockCount: number
+  embeddingLength: number
+  headCount: number
+  kvHeadCount: number
+  /** Per-head KV dim override (attention.key_length), else embd/heads. */
+  keyLength?: number
+}
+
+const GGUF_SCALAR_SIZES: Record<number, number> = {
+  0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8,
+}
+
+/** Read one GGUF metadata value from a cursor. Throws on short reads. */
+function readGgufValue(buf: Buffer, cursor: { off: number }, type: number): unknown {
+  const take = (n: number): Buffer => {
+    if (cursor.off + n > buf.length) throw new Error('short read')
+    const slice = buf.subarray(cursor.off, cursor.off + n)
+    cursor.off += n
+    return slice
+  }
+  if (type === 8) {
+    const len = Number(take(8).readBigUInt64LE())
+    if (len > 1 << 20) throw new Error('string too long')
+    return take(len).toString('utf8')
+  }
+  if (type === 9) {
+    const itemType = take(4).readUInt32LE()
+    const len = Number(take(8).readBigUInt64LE())
+    if (len > 1 << 16) throw new Error('array too long')
+    const out: unknown[] = []
+    for (let i = 0; i < len; i++) out.push(readGgufValue(buf, cursor, itemType))
+    return out
+  }
+  const size = GGUF_SCALAR_SIZES[type]
+  if (!size) throw new Error(`unknown GGUF type ${type}`)
+  const raw = take(size)
+  switch (type) {
+    case 0: return raw.readUInt8()
+    case 1: return raw.readInt8()
+    case 2: return raw.readUInt16LE()
+    case 3: return raw.readInt16LE()
+    case 4: return raw.readUInt32LE()
+    case 5: return raw.readInt32LE()
+    case 6: return raw.readFloatLE()
+    case 7: return raw.readUInt8() !== 0
+    case 10: return Number(raw.readBigUInt64LE())
+    case 11: return Number(raw.readBigInt64LE())
+    case 12: return raw.readDoubleLE()
+    default: throw new Error(`unknown GGUF type ${type}`)
+  }
+}
+
+/**
+ * Read transformer shape from a GGUF header (first 1MB is plenty —
+ * metadata lives up front). Null when unreadable/missing (never throws).
+ * Pure sync; used for honest KV-cache sizing instead of one-size-fits-all.
+ */
+export function readGgufModelInfo(modelPath: string): GgufModelInfo | null {
+  try {
+    if (!modelPath.toLowerCase().endsWith('.gguf')) return null
+    const fd = fs.openSync(modelPath, 'r')
+    try {
+      const stat = fs.fstatSync(fd)
+      if (stat.size < 32) return null
+      const buf = Buffer.alloc(Math.min(1 << 20, stat.size))
+      fs.readSync(fd, buf, 0, buf.length, 0)
+      const cursor = { off: 0 }
+      const take = (n: number): Buffer => {
+        if (cursor.off + n > buf.length) throw new Error('short read')
+        const s = buf.subarray(cursor.off, cursor.off + n)
+        cursor.off += n
+        return s
+      }
+      if (take(4).toString('binary') !== 'GGUF') return null
+      take(4) // version
+      take(8) // tensor count
+      const kvCount = Number(take(8).readBigUInt64LE())
+      if (!Number.isFinite(kvCount) || kvCount > 1 << 16) return null
+      const meta = new Map<string, unknown>()
+      for (let i = 0; i < kvCount; i++) {
+        const keyLen = Number(take(8).readBigUInt64LE())
+        if (keyLen > 1 << 16) return null
+        const key = take(keyLen).toString('utf8')
+        const type = take(4).readUInt32LE()
+        meta.set(key, readGgufValue(buf, cursor, type))
+        if (meta.size > kvCount + 8) return null
+      }
+      const arch = meta.get('general.architecture')
+      if (typeof arch !== 'string' || !arch) return null
+      const num = (k: string): number | null => {
+        const v = meta.get(`${arch}.${k}`)
+        return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+      }
+      const blockCount = num('block_count')
+      const embeddingLength = num('embedding_length')
+      const headCount = num('attention.head_count')
+      const kvHeadCount = num('attention.head_count_kv')
+      if (!blockCount || !embeddingLength || !headCount || !kvHeadCount) return null
+      const keyLength = num('attention.key_length') ?? undefined
+      return {
+        arch,
+        blockCount: Math.floor(blockCount),
+        embeddingLength: Math.floor(embeddingLength),
+        headCount: Math.floor(headCount),
+        kvHeadCount: Math.floor(kvHeadCount),
+        ...(keyLength ? { keyLength: Math.floor(keyLength) } : {}),
+      }
+    } finally {
+      try { fs.closeSync(fd) } catch { /* ignore */ }
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Exact KV-cache sizing from GGUF shape: 2 (k+v) × layers × kvHeads ×
+ * headDim × 2 bytes (fp16 cache, conservative — v-cache may quantize
+ * smaller). Null when the header is unreadable (caller falls back).
+ */
+export function kvCacheMBFromInfo(info: GgufModelInfo, ctxLen: number, nParallel: number): number | null {
+  try {
+    const headDim = info.keyLength ?? info.embeddingLength / info.headCount
+    if (!Number.isFinite(headDim) || headDim <= 0) return null
+    const bytesPerToken = 2 * info.blockCount * info.kvHeadCount * headDim * 2
+    const total = bytesPerToken * Math.max(1, ctxLen || 4096) * Math.max(1, nParallel)
+    return Math.max(1, Math.ceil(total / (1024 * 1024)))
+  } catch {
+    return null
+  }
+}
+
 // ── VRAM estimation (local-llm-expert sizing, honest ranges) ────────────
 
 /** Parse `0.6B` / `27B` from a GGUF filename. Null when unknown. */
@@ -196,18 +332,92 @@ export function planMemory(
   ctxLen: number,
   filename: string,
   opts?: { nParallel?: number; overheadMB?: number; workspaceMB?: number }
-): { estimatedMB: number; weightsMB: number; kvCacheMB: number; workspaceMB: number; overheadMB: number; ctxLen: number; nParallel: number } {
+): { estimatedMB: number; weightsMB: number; kvCacheMB: number; workspaceMB: number; overheadMB: number; ctxLen: number; nParallel: number; archAware: boolean } {
   const nParallel = Math.max(1, Math.floor(opts?.nParallel ?? 1))
   const weightsMB = Math.max(64, Math.round(fileSizeBytes / (1024 * 1024)))
-  const paramsB = parseParamsB(path.basename(filename)) ?? 7
-  const scale = Math.min(2.2, Math.max(0.35, paramsB / 7))
-  // KV per sequence, then × parallel slots (spec §6: never assume one request).
-  const kvPerSeqMB = Math.round(((ctxLen || 4096) / 1024) * 430 * scale)
-  const kvCacheMB = kvPerSeqMB * nParallel
+  const resolvedCtx = ctxLen || 4096
+  // Prefer exact KV sizing from the GGUF header (GQA models carry a
+  // fraction of the legacy heuristic). Unreadable header → legacy path.
+  let kvCacheMB: number | null = null
+  let archAware = false
+  try {
+    if (typeof filename === 'string' && fs.existsSync(filename)) {
+      const info = readGgufModelInfo(filename)
+      if (info) {
+        const exact = kvCacheMBFromInfo(info, resolvedCtx, nParallel)
+        if (exact !== null) {
+          kvCacheMB = exact
+          archAware = true
+        }
+      }
+    }
+  } catch { /* fall through to legacy heuristic */ }
+  if (kvCacheMB === null) {
+    const paramsB = parseParamsB(path.basename(filename)) ?? 7
+    const scale = Math.min(2.2, Math.max(0.35, paramsB / 7))
+    // KV per sequence, then × parallel slots (spec §6: never assume one request).
+    const kvPerSeqMB = Math.round((resolvedCtx / 1024) * 430 * scale)
+    kvCacheMB = kvPerSeqMB * nParallel
+  }
   const workspaceMB = opts?.workspaceMB ?? Math.round(weightsMB * 0.05)
   const overheadMB = opts?.overheadMB ?? 256
   const estimatedMB = Math.round(weightsMB * 1.1) + kvCacheMB + workspaceMB + overheadMB
-  return { estimatedMB, weightsMB, kvCacheMB, workspaceMB, overheadMB, ctxLen: ctxLen || 4096, nParallel }
+  return { estimatedMB, weightsMB, kvCacheMB, workspaceMB, overheadMB, ctxLen: resolvedCtx, nParallel, archAware }
+}
+
+export interface PartialFitPlan {
+  /** GPU layers that fit (passed as -ngl). */
+  fitLayers: number
+  totalLayers: number
+  estimatedMB: number
+  kvCacheMB: number
+  perLayerMB: number
+  archAware: boolean
+}
+
+/**
+ * Explicit partial-offload planner ("Fit mode"): how many transformer
+ * layers fit in totalMB alongside the KV cache. Returns null when even
+ * the minimum useful offload (20% of layers, at least 4) does not fit,
+ * or when the GGUF header is unreadable (no per-layer math possible).
+ * Never silently applied — callers surface fitLayers/totalLayers and
+ * require an explicit user opt-in.
+ */
+export function planPartialFit(args: {
+  modelPath: string
+  fileSizeBytes: number
+  ctxLen: number
+  totalMB: number
+  nParallel?: number
+  overheadMB?: number
+}): PartialFitPlan | null {
+  try {
+    const nParallel = Math.max(1, Math.floor(args.nParallel ?? 1))
+    const info = readGgufModelInfo(args.modelPath)
+    if (!info || info.blockCount < 1) return null
+    const resolvedCtx = args.ctxLen || 4096
+    const kvCacheMB = kvCacheMBFromInfo(info, resolvedCtx, nParallel)
+      ?? planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
+    const weightsMB = Math.max(64, Math.round(args.fileSizeBytes / (1024 * 1024)))
+    const workspaceMB = Math.round(weightsMB * 0.05)
+    const overheadMB = args.overheadMB ?? 256
+    const perLayerMB = weightsMB / info.blockCount
+    if (!(perLayerMB > 0)) return null
+    const budgetMB = args.totalMB - overheadMB - kvCacheMB - workspaceMB
+    const fitLayers = Math.min(info.blockCount, Math.floor(budgetMB / perLayerMB))
+    const minLayers = Math.max(4, Math.ceil(info.blockCount * 0.2))
+    if (fitLayers < minLayers) return null
+    return {
+      fitLayers,
+      totalLayers: info.blockCount,
+      estimatedMB: Math.round(fitLayers * perLayerMB) + kvCacheMB + workspaceMB + overheadMB,
+      kvCacheMB,
+      perLayerMB,
+      archAware: true,
+    }
+  } catch {
+    return null
+  }
 }
 
 /**

@@ -142,8 +142,7 @@ describe('Commit 7 — delta subscription flow', () => {
     expect(invoke).toHaveBeenCalledWith('chat:send', { sessionId: 's1', content: 'hello' })
   })
 
-  it('routes cancel to chat:cancel for the selected session', async () => {
-    const { useChatSession } = await import('../src/renderer/src/features/chat/useChatSession')
+  it('routes cancel to chat:cancel for the selected session', async () => {    const { useChatSession } = await import('../src/renderer/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
@@ -165,5 +164,53 @@ describe('Commit 7 — delta subscription flow', () => {
       await result.current.handleCancel()
     })
     expect(invoke).toHaveBeenCalledWith('chat:cancel', { sessionId: 's1' })
+  })
+
+  it('never renders another session events after switching mid-send', async () => {
+    let resolveSend!: (v: unknown) => void
+    invoke.mockImplementation(async (ch: string, payload: unknown) => {
+      if (ch === 'sessions:list') {
+        return [
+          { id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 },
+          { id: 's2', title: 'S2', createdAt: 2, updatedAt: 2 },
+        ]
+      }
+      if (ch === 'sessions:getEvents') {
+        return payload === 's2'
+          ? [{ seq: 0, time: 1, type: 'user/message', data: { content: 's2 question' } }]
+          : [{ seq: 0, time: 1, type: 'user/message', data: { content: 's1 question' } }]
+      }
+      if (ch === 'models:getActiveModel') return { selection: null, available: false }
+      if (ch === 'chat:send') {
+        await new Promise((resolve) => {
+          resolveSend = resolve
+        })
+        return { ok: true, userSeq: 0, assistantSeq: 1 }
+      }
+      return null
+    })
+    const { useChatSession } = await import('../src/renderer/src/features/chat/useChatSession')
+    const { renderHook } = await import('@testing-library/react')
+    const { result } = renderHook(() => useChatSession())
+    await waitFor(() => expect(result.current.selectedId).toBe('s1'))
+    // Start a send on s1, then switch to s2 before it resolves.
+    let sendPromise!: Promise<void>
+    await act(async () => {
+      sendPromise = result.current.handleSend('s1 hello')
+    })
+    await waitFor(() => expect(result.current.busy).toBe(true))
+    await act(async () => {
+      await result.current.switchSession('s2')
+    })
+    expect(result.current.events).toHaveLength(1)
+    expect((result.current.events[0]?.data as { content: string }).content).toBe('s2 question')
+    await act(async () => {
+      resolveSend({ ok: true, userSeq: 0, assistantSeq: 1 })
+      await sendPromise
+    })
+    // s1's post-send refresh must not overwrite the s2 view.
+    expect(result.current.selectedId).toBe('s2')
+    expect(result.current.events).toHaveLength(1)
+    expect((result.current.events[0]?.data as { content: string }).content).toBe('s2 question')
   })
 })

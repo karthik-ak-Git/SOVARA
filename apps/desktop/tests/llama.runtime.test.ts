@@ -10,14 +10,47 @@ import {
   findFreePort,
   getLlamaRuntimeDir,
   getLlamaServerPath,
+  kvCacheMBFromInfo,
   parseNvidiaSmiCsv,
   parseParamsB,
+  planMemory,
+  planPartialFit,
+  readGgufModelInfo,
 } from '../src/main/services/llamaRuntime'
 import { LlamaCppServerAdapter } from '../src/main/backend/ports/LlamaCppServerAdapter'
 import { SystemResourceStub } from '../src/main/backend/ports/SystemResourceStub'
 
 function mkTmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sovara-llama-'))
+}
+
+/** Minimal valid GGUF: header + shape metadata, zero padded to `bytes`. */
+function writeMiniGguf(
+  dir: string,
+  name: string,
+  shape: { arch?: string; blocks: number; embd?: number; heads?: number; kvHeads?: number; keyLen?: number },
+  bytes = 4096
+): string {
+  const arch = shape.arch ?? 'testarch'
+  const parts: Buffer[] = []
+  const u32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b }
+  const u64 = (v: number): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return b }
+  const str = (s: string): Buffer => Buffer.concat([u64(Buffer.byteLength(s)), Buffer.from(s, 'utf8')])
+  const kvStr = (k: string, v: string): Buffer => Buffer.concat([str(k), u32(8), str(v)])
+  const kvU32 = (k: string, v: number): Buffer => Buffer.concat([str(k), u32(4), u32(v)])
+  const entries = [
+    kvStr('general.architecture', arch),
+    kvU32(`${arch}.block_count`, shape.blocks),
+    kvU32(`${arch}.embedding_length`, shape.embd ?? 4096),
+    kvU32(`${arch}.attention.head_count`, shape.heads ?? 32),
+    kvU32(`${arch}.attention.head_count_kv`, shape.kvHeads ?? 8),
+    ...(shape.keyLen ? [kvU32(`${arch}.attention.key_length`, shape.keyLen)] : []),
+  ]
+  const head = Buffer.concat([Buffer.from('GGUF', 'binary'), u32(3), u64(0), u64(entries.length), ...entries])
+  const p = path.join(dir, name)
+  const body = Buffer.alloc(Math.max(0, bytes - head.length))
+  fs.writeFileSync(p, Buffer.concat([head, body]))
+  return p
 }
 
 describe('llamaRuntime — pure helpers', () => {
@@ -72,6 +105,71 @@ describe('llamaRuntime — pure helpers', () => {
   it('scopes the runtime dir under the data dir + pinned build', () => {
     const dir = mkTmp()
     expect(getLlamaRuntimeDir(dir)).toBe(path.join(dir, 'runtime', 'llama.cpp', LLAMA_BUILD))
+  })
+})
+
+describe('llamaRuntime — GGUF header probing', () => {
+  it('reads transformer shape from a GGUF header', () => {
+    const dir = mkTmp()
+    const p = writeMiniGguf(dir, 'glm-like.gguf', { arch: 'glm4', blocks: 40, embd: 4096, heads: 32, kvHeads: 2 })
+    expect(readGgufModelInfo(p)).toEqual({ arch: 'glm4', blockCount: 40, embeddingLength: 4096, headCount: 32, kvHeadCount: 2 })
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('returns null (never throws) for missing, non-GGUF, and truncated files', () => {
+    const dir = mkTmp()
+    expect(readGgufModelInfo(path.join(dir, 'ghost.gguf'))).toBeNull()
+    const txt = path.join(dir, 'notes.gguf')
+    fs.writeFileSync(txt, 'definitely not a gguf file ............')
+    expect(readGgufModelInfo(txt)).toBeNull()
+    const tiny = path.join(dir, 'tiny.gguf')
+    fs.writeFileSync(tiny, Buffer.alloc(8))
+    expect(readGgufModelInfo(tiny)).toBeNull()
+    const noext = path.join(dir, 'model.bin')
+    fs.writeFileSync(noext, Buffer.alloc(64))
+    expect(readGgufModelInfo(noext)).toBeNull()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('sizes GQA KV caches exactly (2 KV heads << legacy dense heuristic)', () => {
+    // GLM-4.6V-like: 2 (k+v) × 40 layers × 2 kv heads × 128 dim × fp16
+    const kv = kvCacheMBFromInfo({ arch: 'glm4', blockCount: 40, embeddingLength: 4096, headCount: 32, kvHeadCount: 2 }, 4096, 1)
+    expect(kv).toBe(160) // 40960 B/token × 4096
+    const dense = kvCacheMBFromInfo({ arch: 'llama', blockCount: 32, embeddingLength: 4096, headCount: 32, kvHeadCount: 32 }, 4096, 1)
+    expect(dense).not.toBeNull()
+    expect(dense as number).toBeGreaterThan(kv as number)
+  })
+
+  it('planMemory prefers header math, falls back to legacy for unknown files', () => {
+    const dir = mkTmp()
+    const gqa = writeMiniGguf(dir, 'gqa-40.gguf', { blocks: 40, embd: 4096, heads: 32, kvHeads: 2 })
+    const size = 6 * 1024 * 1024 * 1024
+    const exact = planMemory(size, 4096, gqa, { nParallel: 1 })
+    expect(exact.archAware).toBe(true)
+    expect(exact.kvCacheMB).toBe(160)
+    const legacy = planMemory(size, 4096, 'unknown-40B-Q4_K_M.gguf', { nParallel: 1 })
+    expect(legacy.archAware).toBe(false)
+    expect(legacy.kvCacheMB).toBeGreaterThan(exact.kvCacheMB)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('planPartialFit sizes layers-to-fit, refuses impossible fits', () => {
+    const dir = mkTmp()
+    // 100MB file, 40 layers → 2.5MB/layer; KV 40MB at ctx 1024; full = 411MB
+    const gqa = writeMiniGguf(dir, 'gqa-40.gguf', { blocks: 40, embd: 4096, heads: 32, kvHeads: 2 }, 100 * 1024 * 1024)
+    const fit = planPartialFit({ modelPath: gqa, fileSizeBytes: 100 * 1024 * 1024, ctxLen: 1024, totalMB: 400 })
+    expect(fit).not.toBeNull()
+    expect(fit!.totalLayers).toBe(40)
+    expect(fit!.fitLayers).toBeGreaterThanOrEqual(8) // ≥20% minimum useful offload
+    expect(fit!.fitLayers).toBeLessThan(40)
+    expect(fit!.estimatedMB).toBeLessThanOrEqual(400)
+    // Hopelessly small GPU → null (honest refusal, not ngl 0 masquerading as GPU)
+    expect(planPartialFit({ modelPath: gqa, fileSizeBytes: 100 * 1024 * 1024, ctxLen: 1024, totalMB: 300 })).toBeNull()
+    // Unreadable header → null
+    const zeros = path.join(dir, 'zeros.gguf')
+    fs.writeFileSync(zeros, Buffer.alloc(1024))
+    expect(planPartialFit({ modelPath: zeros, fileSizeBytes: 100 * 1024 * 1024, ctxLen: 1024, totalMB: 4000 })).toBeNull()
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 

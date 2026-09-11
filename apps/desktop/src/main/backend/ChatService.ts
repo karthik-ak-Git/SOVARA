@@ -590,7 +590,7 @@ export class ChatService {
         : await this.deps.models.load(modelId as never, { runtimeId })
       // Never route to a merely-existing process — verify health first.
       const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
-      if (!h.ok) throw new Error(`instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
+      if (!h.ok) throw new Error(`instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
       const endpoint = this.deps.models.baseUrl(inst.id)
       // eslint-disable-next-line no-console
       console.log(`[SOVARA][CHAT] LOADED model=${modelId} endpoint=${endpoint}`)

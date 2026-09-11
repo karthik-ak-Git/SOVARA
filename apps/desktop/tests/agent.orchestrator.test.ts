@@ -248,8 +248,7 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('honestly reports model:failed when runtime unavailable', async () => {
-    const dir = mkTmp()
+  it('honestly reports model:failed when runtime unavailable', async () => {    const dir = mkTmp()
     const persistence = makePersistence()
     const emitted: ChatStreamEvent[] = []
     // Workbench with no models → routing will fail
@@ -349,6 +348,69 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     const ready = emitted.find((e) => e.kind === 'model:ready')
     expect(ready).toBeDefined()
     expect(ready?.modelId).toBe('rt-1:phi-4')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('AgentOrchestrator — reasoning streams exactly once', () => {
+  function reasoningHarness(script: string[]) {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const emitted: ChatStreamEvent[] = []
+    const workbench = makeWorkbench([{ modelId: 'local:phi-4', displayName: 'phi-4', runtimeId: 'local', available: true }], { runtimeId: 'local', modelId: 'local:phi-4' })
+    const loaded: Array<{ id: string; modelId: string }> = []
+    const mockModels = {
+      load: async (modelId: string) => {
+        const inst = { id: `inst_${String(modelId).replace(/[^a-z0-9]/gi, '_')}`, modelId }
+        loaded.push(inst)
+        return inst
+      },
+      baseUrl: () => 'http://127.0.0.1:9/v1',
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => [],
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: scriptLlm(script),
+      tools: { list: () => [], dispatch: async () => '' } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      emit: (e) => emitted.push(e),
+    })
+    return { dir, persistence, emitted, orchestrator }
+  }
+
+  it('split <thinking> close emits the tail only (no double count), persists full text', async () => {
+    const { dir, persistence, emitted, orchestrator } = reasoningHarness(['<thinking>ab', 'cd</thinking>', 'Hi'])
+    const res = await orchestrator.execute('sess-1' as SessionId, 'Analyze this project and tell me what is wrong.', {})
+    expect(res.ok).toBe(true)
+    const deltas = emitted.filter((e) => e.kind === 'reasoning-delta').map((e) => (e as { text?: string }).text ?? '')
+    expect(deltas.join('')).toBe('abcd') // 'ab' + 'cd' — never 'ab' + 'abcd'
+    const evts = await persistence.getEvents('sess-1' as SessionId)
+    const persisted = evts.filter((e) => e.type === 'assistant/reasoning').map((e) => (e.data as { content: string }).content)
+    expect(persisted).toEqual(['abcd'])
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe('Hi')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('unclosed <thinking> block still persists streamed reasoning', async () => {
+    // No close tag: everything stays reasoning, so the run ends as
+    // invalid-response — but the streamed reasoning must be persisted,
+    // not silently dropped.
+    const { dir, persistence, emitted, orchestrator } = reasoningHarness(['<thinking>ab', 'cd'])
+    await expect(
+      orchestrator.execute('sess-1' as SessionId, 'Analyze this project and tell me what is wrong.', {})
+    ).rejects.toThrow(/invalid-response/)
+    const deltas = emitted.filter((e) => e.kind === 'reasoning-delta').map((e) => (e as { text?: string }).text ?? '')
+    expect(deltas.join('')).toBe('abcd')
+    const evts = await persistence.getEvents('sess-1' as SessionId)
+    const persisted = evts.filter((e) => e.type === 'assistant/reasoning').map((e) => (e.data as { content: string }).content)
+    expect(persisted).toEqual(['abcd']) // flushed at end of stream, not lost
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })

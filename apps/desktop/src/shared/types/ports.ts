@@ -61,6 +61,8 @@ export interface ModelInstance {
   /** Observed RAM (undefined when unmeasurable — never fabricated). */
   observedRamMB?: number
   offloadedLayers?: number
+  /** True when fewer than all layers sit on GPU (explicit Fit mode / -ngl). */
+  partialOffload?: boolean
   lastActiveAt?: number
   activeRequests?: number
   loadTimeMs?: number
@@ -117,7 +119,7 @@ export interface ClassifiedLoadFailure {
 
 export interface ModelRuntimePort {
   listLocalModels(): Promise<LocalModel[]>
-  load(modelId: ModelId, opts: { ctxLen?: number; gpu?: 'auto' | 'cpu' | number; runtimeId?: string }): Promise<ModelInstance>
+  load(modelId: ModelId, opts: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance>
   unload(instanceId: InstanceId): Promise<void>
   health(instanceId: InstanceId): Promise<{ ok: boolean; vramUsedMB?: number; error?: string; state?: RuntimeInstanceState; activeRequests?: number }>
   baseUrl(instanceId: InstanceId): string

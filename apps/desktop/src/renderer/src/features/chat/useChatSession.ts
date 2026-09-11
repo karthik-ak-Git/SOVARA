@@ -345,6 +345,7 @@ export function useChatSession() {
           targetId = h.id
           const seq = ++loadSeq.current
           setSelectedId(h.id)
+          selectedRef.current = h.id
           setEvents([])
           await refreshEvents(h.id, seq)
         } catch (e) {
@@ -364,8 +365,13 @@ export function useChatSession() {
       try {
         await sendChatMessage(targetId, text, opts)
         setDraft('')
-        const seq = ++loadSeq.current
-        await refreshEvents(targetId, seq)
+        // The user may have switched sessions while the long-lived invoke
+        // was in flight — never render another session's events here.
+        // (The event subscription refreshes the right view on completion.)
+        if (selectedRef.current === targetId) {
+          const seq = ++loadSeq.current
+          await refreshEvents(targetId, seq)
+        }
         await refreshSessions()
       } catch (e) {
         // Keep the draft so nothing successfully-persisted is faked.
@@ -400,8 +406,10 @@ export function useChatSession() {
     setError(null)
     try {
       await regenerateChatMessage(selectedId, opts)
-      const seq = ++loadSeq.current
-      await refreshEvents(selectedId, seq)
+      if (selectedRef.current === selectedId) {
+        const seq = ++loadSeq.current
+        await refreshEvents(selectedId, seq)
+      }
       await refreshSessions()
     } catch (e) {
       setStreamingText('')
@@ -426,8 +434,10 @@ export function useChatSession() {
       setError(null)
       try {
         await editAndResendChatMessage(selectedId, text, opts)
-        const seq = ++loadSeq.current
-        await refreshEvents(selectedId, seq)
+        if (selectedRef.current === selectedId) {
+          const seq = ++loadSeq.current
+          await refreshEvents(selectedId, seq)
+        }
         await refreshSessions()
       } catch (e) {
         setStreamingText('')
