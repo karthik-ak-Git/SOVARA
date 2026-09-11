@@ -193,6 +193,7 @@ export function ChatView({
               value={draft}
               onChange={setDraft}
               onSend={onSend}
+              onCancel={onCancel}
               disabled={busy}
               busy={busy}
               phase={phase}
@@ -207,6 +208,7 @@ export function ChatView({
               reasoningEnabled={reasoningEnabled}
               onReasoningToggle={onReasoningToggle}
               onSelectModel={onSelectModel}
+              onOpenSettings={onOpenModels}
             />
           </div>
 
@@ -321,6 +323,7 @@ export function ChatView({
                 value={draft}
                 onChange={setDraft}
                 onSend={onSend}
+                onCancel={onCancel}
                 disabled={busy}
                 busy={busy}
                 phase={phase}
@@ -335,13 +338,9 @@ export function ChatView({
                 reasoningEnabled={reasoningEnabled}
                 onReasoningToggle={onReasoningToggle}
                 onSelectModel={onSelectModel}
+                onOpenSettings={onOpenModels}
               />
             </div>
-            {streaming ? (
-              <button type="button" className="btn" onClick={onCancel} aria-label="Stop generating">
-                Stop
-              </button>
-            ) : null}
           </div>
         </>
       )}

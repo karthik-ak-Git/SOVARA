@@ -143,12 +143,19 @@ export function useModelWorkbench() {
   )
 
   const handleSelect = useCallback(
-    (runtimeId: string, modelId: string) =>
-      runGuarded(`select:${modelId}`, async () => {
+    async (runtimeId: string, modelId: string): Promise<void> => {
+      // Model switching must never appear dead because another workbench
+      // op (probe/install) holds the shared `busy` guard — select owns
+      // its lifecycle and surfaces errors directly.
+      setError(null)
+      try {
         const state = await selectModel(runtimeId, modelId)
         setActive(state)
-      }),
-    [runGuarded]
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    []
   )
 
   const handleEnsureRuntime = useCallback(

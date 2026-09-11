@@ -10,9 +10,10 @@ interface ModelSelectorProps {
   onSelect: (runtimeId: string, modelId: string) => void
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
+  onOpenSettings?: () => void
 }
 
-export function ModelSelector({ active, models, runtimes, onSelect, reasoningEnabled = false, onReasoningToggle }: ModelSelectorProps): ReactElement {
+export function ModelSelector({ active, models, runtimes, onSelect, reasoningEnabled = false, onReasoningToggle, onOpenSettings }: ModelSelectorProps): ReactElement {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -178,6 +179,7 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
               setOpen(false)
               setFilter('')
               triggerRef.current?.focus()
+              onOpenSettings?.()
             }}
           >
             <Wrench size={14} aria-hidden />

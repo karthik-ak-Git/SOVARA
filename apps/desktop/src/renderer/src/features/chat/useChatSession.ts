@@ -328,18 +328,44 @@ export function useChatSession() {
   const handleSend = useCallback(
     async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean }): Promise<void> => {
       const text = content.trim()
-      if (!selectedId || text.length === 0 || busy) return
-      setBusy(true)
-      setPhase('planning')
-      setExecution({ taskKind: null, phase: 'planning', detail: 'classifying task' })
-      setStreamingText('')
-      setStreamingReasoning('')
-      setError(null)
+      if (text.length === 0 || busy) return
+      // Empty-state send (screenshot case: "hi" typed with no conversation
+      // selected) must auto-create a session instead of silently no-op'ing.
+      let targetId = selectedId
+      if (!targetId) {
+        setBusy(true)
+        setPhase('planning')
+        setExecution({ taskKind: null, phase: 'planning', detail: 'classifying task' })
+        setStreamingText('')
+        setStreamingReasoning('')
+        setError(null)
+        try {
+          const h = await createSession(`Session ${sessions.length + 1}`, null)
+          await refreshSessions()
+          targetId = h.id
+          const seq = ++loadSeq.current
+          setSelectedId(h.id)
+          setEvents([])
+          await refreshEvents(h.id, seq)
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e))
+          setBusy(false)
+          setPhase('idle')
+          return
+        }
+      } else {
+        setBusy(true)
+        setPhase('planning')
+        setExecution({ taskKind: null, phase: 'planning', detail: 'classifying task' })
+        setStreamingText('')
+        setStreamingReasoning('')
+        setError(null)
+      }
       try {
-        await sendChatMessage(selectedId, text, opts)
+        await sendChatMessage(targetId, text, opts)
         setDraft('')
         const seq = ++loadSeq.current
-        await refreshEvents(selectedId, seq)
+        await refreshEvents(targetId, seq)
         await refreshSessions()
       } catch (e) {
         // Keep the draft so nothing successfully-persisted is faked.
@@ -352,7 +378,7 @@ export function useChatSession() {
         setPhase('idle')
       }
     },
-    [selectedId, busy, refreshEvents, refreshSessions]
+    [selectedId, busy, sessions.length, refreshEvents, refreshSessions]
   )
 
   const handleCancel = useCallback(async (): Promise<void> => {

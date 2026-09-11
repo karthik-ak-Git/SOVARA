@@ -153,7 +153,7 @@ export function App(): React.JSX.Element {
     }
     const sendOpts: { webSearch?: boolean; reasoning?: boolean } = { ...opts }
     if (reasoningEnabled) sendOpts.reasoning = true
-    chat.handleSend(enrichedContent, sendOpts)
+    void chat.handleSend(enrichedContent, sendOpts)
   }, [chat, reasoningEnabled])
 
   const handleRegenerate = useCallback((): void => {

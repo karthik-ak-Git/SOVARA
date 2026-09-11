@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Plus, Globe, Mic, ArrowUp, Paperclip, X, Loader2 } from 'lucide-react'
+import { Plus, Globe, Mic, ArrowUp, Square, Paperclip, X, Loader2 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import { transcribeAudio } from '../../lib/ipc'
@@ -24,6 +24,7 @@ interface ComposerProps {
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
   onSelectModel?: (runtimeId: string, modelId: string) => void
+  onOpenSettings?: () => void
 }
 
 export interface FileAttachment {
@@ -53,6 +54,7 @@ export function Composer({
   reasoningEnabled = false,
   onReasoningToggle,
   onSelectModel,
+  onOpenSettings,
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -65,7 +67,8 @@ export function Composer({
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const pcmChunksRef = useRef<Float32Array[]>([])
   const canSend = value.trim().length > 0 && !disabled
-  const streaming = busy && phase === 'streaming'
+  const streaming = busy && (phase === 'streaming' || phase === 'planning' || phase === 'loading' || phase === 'tool')
+  const showStop = streaming && onCancel
 
   useEffect(() => {
     const el = areaRef.current
@@ -202,6 +205,11 @@ export function Composer({
   }, [micActive, micLoading, value, onChange])
 
   const submit = (): void => {
+    // While streaming the send button morphs into Stop — Enter also stops.
+    if (showStop) {
+      onCancel?.()
+      return
+    }
     const content = value.trim()
     if (content.length === 0 || disabled) return
     const atts = attachments.length > 0 ? attachments : undefined
@@ -219,6 +227,12 @@ export function Composer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key !== 'Enter') return
+    // During streaming Enter (without Shift) stops instead of queueing.
+    if (showStop && !e.shiftKey) {
+      e.preventDefault()
+      onCancel?.()
+      return
+    }
     if (e.shiftKey) {
       e.preventDefault()
       const el = e.currentTarget
@@ -326,17 +340,30 @@ export function Composer({
             onSelect={(rid,mid)=>{ console.info('[select-model]', rid, mid); onSelectModel?.(rid,mid)}}
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={onReasoningToggle}
+            onOpenSettings={onOpenSettings}
           />
-          <button
-            type="button"
-            className={`composer-send-btn ${canSend ? 'active' : ''}`}
-            onClick={submit}
-            disabled={!canSend}
-            aria-label="Send message"
-            data-testid="send-button"
-          >
-            <ArrowUp size={16} aria-hidden />
-          </button>
+          {showStop ? (
+            <button
+              type="button"
+              className="composer-send-btn active"
+              onClick={() => onCancel?.()}
+              aria-label="Stop generating"
+              data-testid="stop-button"
+            >
+              <Square size={14} aria-hidden />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`composer-send-btn ${canSend ? 'active' : ''}`}
+              onClick={submit}
+              disabled={!canSend}
+              aria-label="Send message"
+              data-testid="send-button"
+            >
+              <ArrowUp size={16} aria-hidden />
+            </button>
+          )}
         </div>
       </div>
 
