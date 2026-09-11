@@ -1,4 +1,5 @@
 import { useState, useMemo, type ReactElement } from 'react'
+import { PersonStanding, Sparkles, Copy, Check } from 'lucide-react'
 import { MessageActions } from './components/MessageActions'
 import { ArtifactCard } from '../../components/ui/ArtifactCard'
 import { ReasoningBlock } from '../../components/ui/ReasoningBlock'
@@ -16,23 +17,17 @@ interface MessageBubbleProps {
   timestamp?: number
   loading?: boolean
   thinking?: boolean
-  /** Live in-progress reply (transient, not yet persisted). */
   streaming?: boolean
-  /** Stopped generation marker (durable `assistant/cancelled` event). */
   cancelled?: boolean
-  /** Reasoning content (when reasoning enabled) */
   reasoning?: string
-  /** Whether reasoning is currently streaming */
   reasoningStreaming?: boolean
-  /** Action handlers — provided by MessageList/ChatView */
+  modelBadge?: string
+  thoughtLabel?: string
   onCopy?: (content: string) => void
   onRegenerate?: () => void
   onEditAndResend?: (newContent: string) => void
-  /** Whether regenerate is allowed (only latest assistant) */
   canRegenerate?: boolean
-  /** Disable actions while streaming/sending */
   busy?: boolean
-  /** Triggered when user opens a code block into the artifact panel */
   onOpenArtifact?: (artifact: ArtifactInfo) => void
 }
 
@@ -54,12 +49,10 @@ function parseMessageContent(raw: string): ParsedPart[] {
   if (!raw.includes('```')) {
     return [{ type: 'text', text: raw }]
   }
-
   const parts: ParsedPart[] = []
   const fenceRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
-
   while ((match = fenceRegex.exec(raw)) !== null) {
     if (match.index > lastIndex) {
       parts.push({ type: 'text', text: raw.slice(lastIndex, match.index) })
@@ -80,24 +73,23 @@ function parseMessageContent(raw: string): ParsedPart[] {
     parts.push({ type: 'code', language: lang, code, title })
     lastIndex = match.index + match[0].length
   }
-
   if (lastIndex < raw.length) {
     parts.push({ type: 'text', text: raw.slice(lastIndex) })
   }
   return parts.length > 0 ? parts : [{ type: 'text', text: raw }]
 }
 
-function InlineArtifactCard({
-  item,
-  onOpenSplit,
-}: {
-  item: CodeBlockItem
-  onOpenSplit?: () => void
-}): ReactElement {
-  // Thin alias over the global Stitch ArtifactCard — same props, no new logic.
-  return <ArtifactCard title={item.title} language={item.language} code={item.code} onOpenSplit={onOpenSplit} />
+function formatTime(ts?: number): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return ''
+  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+/**
+ * MessageBubble — full Stitch replica row.
+ * User: avatar + name/time + white rounded-2xl bubble.
+ * Assistant: terracotta avatar + Claude header + ReasoningBlock + Newsreader prose + ArtifactCards.
+ * All handlers/testids preserved; purely presentational rewrite.
+ */
 export function MessageBubble({
   id,
   role,
@@ -109,6 +101,8 @@ export function MessageBubble({
   cancelled = false,
   reasoning,
   reasoningStreaming = false,
+  modelBadge,
+  thoughtLabel,
   onCopy,
   onRegenerate,
   onEditAndResend,
@@ -117,10 +111,10 @@ export function MessageBubble({
   onOpenArtifact,
 }: MessageBubbleProps): ReactElement {
   const isUser = role === 'user'
-  const bubbles = isUser ? 'user-bubble' : 'assistant-bubble'
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(content)
   const [showReasoning, setShowReasoning] = useState(true)
+  const [copied, setCopied] = useState(false)
 
   const parsedParts = useMemo(() => {
     if (isUser || !content) return [{ type: 'text' as const, text: content }]
@@ -129,162 +123,199 @@ export function MessageBubble({
 
   if (loading) {
     return (
-      <div
-        key={id}
-        data-testid="assistant-typing"
-        data-role="assistant"
-        className={`bubble ${bubbles} bubble--loading`}
-        aria-live="polite"
-        aria-label="Assistant is typing"
-      >
-        <div className="pill" aria-hidden>{'◆'}</div>
-        <div className="empty empty--loading" aria-hidden />
+      <div key={id} data-testid="assistant-typing" data-role="assistant" className="stitch-turn" aria-live="polite" aria-label="Assistant is typing">
+        <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
+          <Sparkles size={18} />
+        </div>
+        <div className="stitch-thinking-dots" aria-hidden>
+          <span /> <span /> <span />
+        </div>
       </div>
     )
   }
 
   if (thinking) {
     return (
-      <div
-        key={id}
-        data-testid="assistant-thinking"
-        data-role="assistant"
-        className={`bubble ${bubbles} bubble--thinking`}
-        aria-live="polite"
-        aria-label="Assistant is thinking"
-      >
-        <div className="pill" aria-hidden>{'◆'}</div>
-        <svg
-          className="thinking-svg"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth={2}>
-            <animateTransform
-              attributeName="transform"
-              type="rotate"
-              from="0 12 12"
-              to="360 12 12"
-              dur="1.5s"
-              repeatCount="indefinite"
-            />
-          </circle>
-        </svg>
+      <div key={id} data-testid="assistant-thinking" data-role="assistant" className="stitch-turn" aria-live="polite" aria-label="Assistant is thinking">
+        <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
+          <Sparkles size={18} />
+        </div>
+        <div className="stitch-thinking-dots" aria-hidden>
+          <span /> <span /> <span />
+        </div>
       </div>
     )
   }
 
-  // Edit mode for user messages
   if (isEditing && isUser && onEditAndResend) {
     return (
-      <article
-        key={id}
-        data-testid="message-user-editing"
-        data-role={role}
-        className={`bubble ${bubbles} bubble--editing`}
-        aria-label="Edit your message"
-      >
-        <textarea
-          className="bubble-edit-input"
-          value={editDraft}
-          onChange={(e) => setEditDraft(e.target.value.slice(0, 32_000))}
-          rows={3}
-          autoFocus
-          aria-label="Edit message"
-          data-testid="edit-input"
-        />
-        <div className="bubble-edit-actions">
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => {
-              const next = editDraft.trim()
-              if (!next) return
-              onEditAndResend(next)
-              setIsEditing(false)
-            }}
-            disabled={!editDraft.trim() || busy}
-            aria-label="Send edited message"
-          >
-            Send
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost"
-            onClick={() => {
-              setEditDraft(content)
-              setIsEditing(false)
-            }}
-            aria-label="Cancel edit"
-          >
-            Cancel
-          </button>
+      <article key={id} data-testid="message-user-editing" data-role={role} className="stitch-turn" aria-label="Edit your message">
+        <div className="stitch-avatar stitch-avatar--user" aria-hidden>
+          <PersonStanding size={18} />
+        </div>
+        <div className="stitch-turn-body">
+          <textarea
+            className="bubble-edit-input"
+            value={editDraft}
+            onChange={(e) => setEditDraft(e.target.value.slice(0, 32_000))}
+            rows={3}
+            autoFocus
+            aria-label="Edit message"
+            data-testid="edit-input"
+          />
+          <div className="bubble-edit-actions">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                const next = editDraft.trim()
+                if (!next) return
+                onEditAndResend(next)
+                setIsEditing(false)
+              }}
+              disabled={!editDraft.trim() || busy}
+              aria-label="Send edited message"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => {
+                setEditDraft(content)
+                setIsEditing(false)
+              }}
+              aria-label="Cancel edit"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       </article>
     )
   }
 
   const hasReasoning = typeof reasoning === 'string' && reasoning.length > 0
+  const timeLabel = formatTime(timestamp)
+
+  if (isUser) {
+    return (
+      <article
+        key={id}
+        data-testid={streaming ? 'message-streaming' : 'message-user'}
+        data-role="user"
+        className="stitch-turn"
+        aria-label="Your message"
+      >
+        <div className="stitch-avatar stitch-avatar--user" aria-hidden>
+          <PersonStanding size={18} />
+        </div>
+        <div className="stitch-turn-body">
+          <div className="stitch-turn-meta">
+            <span className="stitch-turn-name">You</span>
+            {timeLabel ? <span className="stitch-turn-time">{timeLabel}</span> : null}
+          </div>
+          <div className="stitch-user-bubble">
+            {parsedParts.map((part, index) =>
+              part.type === 'text' ? (
+                <p key={`${id}-text-${index}`} className="bubble-text">
+                  {part.text}
+                </p>
+              ) : null,
+            )}
+          </div>
+          <span className="bubble-meta muted small" />
+          {!streaming ? (
+            <MessageActions
+              role={role}
+              content={content}
+              onCopy={(c) => {
+                onCopy?.(c)
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1500)
+              }}
+              onRegenerate={onRegenerate}
+              onEdit={onEditAndResend ? () => setIsEditing(true) : undefined}
+              canRegenerate={canRegenerate}
+              busy={busy}
+            />
+          ) : null}
+          {copied ? <span className="stitch-copied-hint"><Check size={12} /> Copied</span> : null}
+        </div>
+      </article>
+    )
+  }
 
   return (
     <article
       key={id}
-      data-testid={streaming ? 'message-streaming' : isUser ? 'message-user' : 'message-assistant'}
-      data-role={role}
-      className={`bubble ${bubbles}${streaming ? ' bubble--streaming' : ''}${cancelled ? ' bubble--cancelled' : ''}${hasReasoning ? ' bubble--with-reasoning' : ''}`}
-      aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : isUser ? 'Your message' : 'Assistant response'}
+      data-testid={streaming ? 'message-streaming' : 'message-assistant'}
+      data-role="assistant"
+      className="stitch-turn"
+      aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : 'Assistant response'}
       aria-live={streaming ? 'polite' : undefined}
     >
-      {hasReasoning ? (
-        <ReasoningBlock
-          reasoning={reasoning ?? ''}
-          streaming={reasoningStreaming}
-          open={showReasoning}
-          onToggle={setShowReasoning}
-        />
-      ) : null}
+      <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
+        <Sparkles size={18} />
+      </div>
+      <div className="stitch-turn-body stitch-assistant-body">
+        <div className="stitch-turn-meta stitch-assistant-meta">
+          <span className="stitch-turn-name">Claude</span>
+          {modelBadge ? <span className="stitch-model-badge">{modelBadge}</span> : null}
+          {thoughtLabel ? <span className="stitch-turn-time">{thoughtLabel}</span> : null}
+        </div>
 
-      {/* Render message body with artifact detection for code blocks */}
-      {parsedParts.map((part, index) => {
-        if (part.type === 'code') {
-          return (
-            <InlineArtifactCard
-              key={`${id}-code-${index}`}
-              item={part}
-              onOpenSplit={onOpenArtifact ? () => onOpenArtifact({ title: part.title, language: part.language, code: part.code }) : undefined}
-            />
-          )
-        }
-        return (
-          <p key={`${id}-text-${index}`} className="bubble-text">
-            {part.text}
-            {streaming && index === parsedParts.length - 1 ? <span className="stream-caret" aria-hidden="true" /> : null}
-          </p>
-        )
-      })}
+        {hasReasoning ? (
+          <ReasoningBlock
+            reasoning={reasoning ?? ''}
+            streaming={reasoningStreaming}
+            open={showReasoning}
+            onToggle={setShowReasoning}
+          />
+        ) : null}
 
-      {cancelled ? <span className="bubble-meta muted small">Stopped — no reply was generated.</span> : null}
-      <span className="bubble-meta muted small">
-        {typeof timestamp === 'number' && Number.isFinite(timestamp) ? (
-          <time dateTime={new Date(timestamp).toISOString()}>
-            {new Date(timestamp).toLocaleTimeString()}
-          </time>
-        ) : (
-          ''
-        )}
-      </span>
+        {parsedParts.map((part, index) => {
+          if (part.type === 'code') {
+            return (
+              <ArtifactCard
+                key={`${id}-code-${index}`}
+                title={part.title}
+                language={part.language}
+                code={part.code}
+                onOpenSplit={onOpenArtifact ? () => onOpenArtifact({ title: part.title, language: part.language, code: part.code }) : undefined}
+              />
+            )
+          }
+          return part.text.trim() ? (
+            <div key={`${id}-text-${index}`} className="stitch-prose">
+              <p className="bubble-text">
+                {part.text}
+                {streaming && index === parsedParts.length - 1 ? <span className="stream-caret" aria-hidden="true" /> : null}
+              </p>
+            </div>
+          ) : null
+        })}
 
-      {!streaming && !thinking && !loading ? (
-        <MessageActions
-          role={role}
-          content={hasReasoning && reasoning ? `${reasoning}\n\n${content}` : content}
-          onCopy={onCopy}
-          onRegenerate={onRegenerate}
-          onEdit={isUser && onEditAndResend ? () => setIsEditing(true) : undefined}
-          canRegenerate={canRegenerate}
-          busy={busy}
-        />
-      ) : null}
+        {cancelled ? <span className="bubble-meta muted small">Stopped — no reply was generated.</span> : null}
+        {timeLabel ? (
+          <span className="bubble-meta muted small">
+            <time dateTime={timestamp ? new Date(timestamp).toISOString() : undefined}>{timeLabel}</time>
+          </span>
+        ) : null}
+
+        {!streaming && !thinking && !loading ? (
+          <MessageActions
+            role={role}
+            content={hasReasoning && reasoning ? `${reasoning}\n\n${content}` : content}
+            onCopy={onCopy}
+            onRegenerate={onRegenerate}
+            onEdit={undefined}
+            canRegenerate={canRegenerate}
+            busy={busy}
+          />
+        ) : null}
+        {copied ? <span className="stitch-copied-hint"><Copy size={12} /> Copied</span> : null}
+      </div>
     </article>
   )
 }

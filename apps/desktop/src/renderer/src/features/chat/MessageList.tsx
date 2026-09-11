@@ -5,9 +5,10 @@ import { deriveMessages, type SessionEventLike } from './conversation'
 interface MessageListProps {
   events: SessionEventLike[]
   thinking?: boolean
-  /** Transient in-progress assistant text (never persisted). */
   streamingText?: string
   streamingReasoning?: string
+  streamingModelBadge?: string
+  streamingThoughtLabel?: string
   onRemove?: (eventSeq: number) => void
   onCopy?: (content: string) => void
   onRegenerate?: () => void
@@ -18,11 +19,17 @@ interface MessageListProps {
 
 const STICK_THRESHOLD_PX = 80
 
+/**
+ * MessageList — Stitch chat stream.
+ * Centered 54rem column, gap-8 turns. Auto-stick to bottom while streaming.
+ */
 export function MessageList({
   events,
   thinking = false,
   streamingText = '',
   streamingReasoning = '',
+  streamingModelBadge,
+  streamingThoughtLabel,
   onRemove: _onRemove,
   onCopy,
   onRegenerate,
@@ -47,7 +54,6 @@ export function MessageList({
     if (stickRef.current) el.scrollTop = el.scrollHeight
   }, [messages.length, thinking, streamingText, streamingReasoning])
 
-  // First paint: start pinned to the latest message.
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -58,7 +64,7 @@ export function MessageList({
     return (
       <div
         ref={scrollRef}
-        className="message-list"
+        className="stitch-stream"
         role="log"
         aria-label="Conversation messages"
         aria-live="polite"
@@ -68,7 +74,6 @@ export function MessageList({
     )
   }
 
-  // Latest assistant eligible for regenerate (not cancelled, not streaming)
   const lastAssistantIdx = [...messages].reverse().findIndex((m) => m.role === 'assistant' && !m.cancelled)
   const lastAssistantSeq = lastAssistantIdx >= 0 ? messages[messages.length - 1 - lastAssistantIdx]?.seq : null
 
@@ -99,6 +104,8 @@ export function MessageList({
           reasoning={streamingReasoning || undefined}
           reasoningStreaming={streamingReasoning !== '' && streamingText === ''}
           streaming={streamingText !== '' || streamingReasoning !== ''}
+          modelBadge={streamingModelBadge}
+          thoughtLabel={streamingThoughtLabel}
           busy={busy}
           onOpenArtifact={onOpenArtifact}
         />
@@ -111,7 +118,7 @@ export function MessageList({
   return (
     <div
       ref={scrollRef}
-      className="message-list"
+      className="stitch-stream"
       role="log"
       aria-label="Conversation messages"
       aria-live="polite"

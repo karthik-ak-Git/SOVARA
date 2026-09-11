@@ -291,16 +291,6 @@ export function ChatView({
   const showVramBar = exec.phase === 'loading' && typeof exec.vramTotalMB === 'number'
   const taskKindBadge = exec.taskKind ? exec.taskKind : null
 
-  const modelHeader = model.available && model.displayName ? (
-    <span className="status-badge" aria-label={`Model header ${model.displayName}`}>
-      <span className="status-dot" aria-hidden>●</span> {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''} — Ready
-    </span>
-  ) : (
-    <span className="status-badge status-badge--unavailable" aria-label="Model header unavailable">
-      <Cpu size={12} aria-hidden /> No model available
-    </span>
-  )
-
   const activeModelDisplay = activeModel.selection
     ? discoveredModels.find(
         (m) =>
@@ -317,23 +307,11 @@ export function ChatView({
   }, [discoveredModels, modelFilter])
 
   return (
-    <section className="chat-view" aria-label="Chat">
-      {/* Retain chat-header for accessibility and existing test contract */}
-      <div className="chat-header" role="banner" aria-label="Chat header">
-        <div className="chat-header-model">
-          <span className="chat-header-label muted small">Model</span>
-          {modelHeader}
-        </div>
-        {!model.available ? (
-          <div className="chat-header-unavailable" role="status" aria-label="Model unavailable">
-            <span className="muted small">No model runtime is currently available.</span>
-            <button type="button" className="btn btn-sm" onClick={onOpenModels} aria-label="Open Models">
-              Open Models
-            </button>
-          </div>
-        ) : null}
+    <section className="chat-view stitch-workspace" aria-label="Chat">
+      <div className="stitch-ambient" aria-hidden>
+        <span className="stitch-ambient-glow stitch-ambient-glow--a" />
+        <span className="stitch-ambient-glow stitch-ambient-glow--b" />
       </div>
-
       {/* Workspace Sub-bar — Stitch layout with dynamic Sovora model controls */}
       <header className="workspace-subbar" aria-label="Workspace controls">
         <div className="workspace-subbar-left">
@@ -533,17 +511,17 @@ export function ChatView({
         </div>
       </header>
 
-      {/* Main chat layout: Chat stream + optional Artifact Split Canvas */}
-      <div className={`chat-layout-split ${artifactsPanelOpen ? 'has-split' : ''}`}>
-        <div className="chat-main-column">
+      {/* Main chat layout: Stitch stream + optional Artifact Split Canvas + floating dock */}
+      <div className={`stitch-layout-split${artifactsPanelOpen ? ' has-split' : ''}`}>
+        <div className="stitch-main-column">
           {showEmpty ? (
-            <div className="chat-empty-state" role="status" aria-label="Start a conversation">
-              <div className="chat-empty-hero">
-                <div className="chat-empty-icon" aria-hidden>
-                  <MessageSquare size={40} strokeWidth={1.5} />
+            <div className="stitch-empty-state" role="status" aria-label="Start a conversation">
+              <div className="stitch-empty-hero">
+                <div className="stitch-empty-icon" aria-hidden>
+                  <MessageSquare size={28} strokeWidth={1.5} />
                 </div>
-                <h1 className="chat-empty-title">What can I help with?</h1>
-                <p className="chat-empty-subtitle muted">
+                <h1 className="stitch-empty-title">What can I help with?</h1>
+                <p className="stitch-empty-subtitle">
                   {model.available
                     ? 'Ask anything — replies stream from your local model directly on your hardware.'
                     : 'No model runtime available — connect or load a local model from Models to start chatting.'}
@@ -555,7 +533,7 @@ export function ChatView({
                 ) : null}
               </div>
 
-              <div className="chat-empty-composer">
+              <div className="stitch-empty-composer">
                 <Composer
                   value={draft}
                   onChange={setDraft}
@@ -579,16 +557,16 @@ export function ChatView({
                 />
               </div>
 
-              <div className="chat-empty-hints">
-                <span className="chat-empty-hint">Shift+Enter for newline • Enter to send • Esc to stop</span>
-                <span className="chat-empty-dot" aria-hidden>·</span>
-                <span className="chat-empty-hint">Sovereign &amp; Private • No cloud telemetry</span>
+              <div className="stitch-empty-hints">
+                <span>Shift+Enter for newline • Enter to send • Esc to stop</span>
+                <span className="stitch-empty-dot" aria-hidden>·</span>
+                <span>Sovereign &amp; Private • No cloud telemetry</span>
               </div>
             </div>
           ) : (
-            <>
+            <div className="stitch-active-wrap">
               {/* Session Context Header — Stitch centered badge, same text */}
-              <div className="chat-session-badge-row">
+              <div className="stitch-stream-pad">
                 <SessionBadge
                   label={`TODAY • ${projectName ? `Project ${projectName}` : 'Sovora Sovereign Workspace'}`}
                 />
@@ -671,6 +649,8 @@ export function ChatView({
                 thinking={busy && streamingText === '' && streamingReasoning === '' && exec.phase === 'streaming'}
                 streamingText={streamingText}
                 streamingReasoning={streamingReasoning}
+                streamingModelBadge={activeModel.displayName ?? undefined}
+                streamingThoughtLabel={streaming ? 'Thinking…' : undefined}
                 onCopy={onCopy}
                 onRegenerate={onRegenerate}
                 onEditAndResend={onEditAndResend}
@@ -678,7 +658,7 @@ export function ChatView({
                 onOpenArtifact={handleOpenArtifactInPanel}
               />
 
-              <div className="chat-status-row">
+              <div className="stitch-status-row">
                 {model.available && model.displayName ? (
                   <span
                     className="status-badge"
@@ -703,8 +683,8 @@ export function ChatView({
                 {exec.phase === 'tool' ? <span className="streaming-indicator" aria-live="polite">● Tool running…</span> : null}
               </div>
 
-              <div className="composer-row">
-                <div className="composer-main">
+              <div className="stitch-dock-row">
+                <div className="stitch-dock-inner">
                   <Composer
                     value={draft}
                     onChange={setDraft}
@@ -728,7 +708,7 @@ export function ChatView({
                   />
                 </div>
               </div>
-            </>
+            </div>
           )}
         </div>
 
