@@ -27,13 +27,14 @@ export function useModelWorkbench() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const toPretty = (raw: string): string => raw.replace(/\.gguf$/i, '').trim()
   const refresh = useCallback(async (): Promise<void> => {
     const [rt, md, ac, libRaw] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
     const lib = Array.isArray(libRaw) ? libRaw : []
     // Merge library files as local-discovered models so chat selector is library-driven (dynamic, not hardcoded)
     const libModels: DiscoveredModel[] = lib.map((m) => ({
       modelId: m.name.replace(/\.gguf$/i, '').replace(/__/g, '/') || m.file.replace(/\.gguf$/i, ''),
-      displayName: m.file,
+      displayName: toPretty(m.file),
       runtimeId: rt[0]?.id ?? 'local',
       source: 'custom' as const,
       capabilities: [],

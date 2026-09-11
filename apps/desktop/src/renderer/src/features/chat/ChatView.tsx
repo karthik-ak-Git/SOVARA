@@ -74,7 +74,10 @@ export function ChatView({
 }: ChatViewProps): ReactElement {
   const streaming = busy && phase === 'streaming'
   const hasConversation = !!selectedId
-  const hasMessages = events.length > 0
+  // Show conversation as soon as a send starts (busy/streaming) so streamingText/thinking
+  // is visible even before events are refreshed with the new user message. Without this
+  // the first message from the empty hero state never shows the AI response.
+  const hasMessages = events.length > 0 || streaming || streamingText !== ''
   const showEmpty = !hasConversation || !hasMessages
 
   // Escape to cancel generation — accessibility requirement

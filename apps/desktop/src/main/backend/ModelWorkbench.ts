@@ -148,7 +148,7 @@ export class ModelWorkbench {
       for (const m of snap.lastModels) {
         out.push({
           modelId: m.modelId,
-          displayName: m.displayName,
+          displayName: this.toPretty(m.displayName),
           runtimeId: entry.id,
           source: entry.type,
           capabilities: [],
@@ -180,11 +180,12 @@ export class ModelWorkbench {
     } catch { /* never block */ }
   }
 
+  private toPretty(raw: string): string { return raw.replace(/\.gguf$/i, '').trim() }
   private loadLocalLibrarySnapshot(): Array<{ modelId: string; displayName: string }> {
     try {
       // Avoid importing modelDownloads (circular) — scan via RuntimeConfigStore registry + filesystem heuristic
       const rows = this.config.listRegistryRows()
-      if (rows.length > 0) return rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: r.displayName || r.rfilename }))
+      if (rows.length > 0) return rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: this.toPretty(r.displayName || r.rfilename) }))
       // Fallback: check AppBackend library dir via config's library path setting, or default data dir
       let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
       if (!libDir) {
@@ -203,7 +204,7 @@ export class ModelWorkbench {
       }
       const ggufs: string[] = []
       scan(libDir, ggufs)
-      return ggufs.slice(0, 20).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: f }))
+      return ggufs.slice(0, 20).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: this.toPretty(f) }))
     } catch { return [] }
   }
 
@@ -281,7 +282,7 @@ export class ModelWorkbench {
     return {
       selection: sel,
       available: true,
-      displayName: found.displayName,
+      displayName: this.toPretty(found.displayName),
       runtimeDisplayName: snap.entry.displayName,
     }
   }
@@ -302,7 +303,7 @@ export class ModelWorkbench {
         return {
           selection: { runtimeId: entry.id, modelId: found.modelId },
           available: true,
-          displayName: found.displayName,
+          displayName: this.toPretty(found.displayName),
           runtimeDisplayName: entry.displayName,
         }
       }
