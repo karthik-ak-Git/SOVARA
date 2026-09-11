@@ -1,22 +1,21 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Sidebar } from '../web/src/components/layout/Sidebar'
-import { TopBar } from '../web/src/components/layout/TopBar'
-import { AppShell } from '../web/src/components/layout/AppShell'
-import { Button } from '../web/src/components/ui/Button'
-import { Card } from '../web/src/components/ui/Card'
-import { EmptyState } from '../web/src/components/ui/EmptyState'
+import { Sidebar } from '../../web/src/components/layout/Sidebar'
+import { TopBar } from '../../web/src/components/layout/TopBar'
+import { AppShell } from '../../web/src/components/layout/AppShell'
+import { Button } from '../../web/src/components/ui/Button'
+import { Card } from '../../web/src/components/ui/Card'
+import { EmptyState } from '../../web/src/components/ui/EmptyState'
+import { mockApi } from './helpers/http'
 
-// Mock window.sovara for AppShell tests that may invoke it indirectly
+// Shell components are prop-driven; stub the internal API so any incidental
+// mount-time call resolves instead of hitting the network.
 beforeEach(() => {
-  ;(window as unknown as { sovara: unknown }).sovara = {
-    invoke: vi.fn().mockResolvedValue(null),
-    on: vi.fn().mockReturnValue(() => {}),
-  } as unknown as Window['sovara']
+  mockApi({})
 })
 afterEach(() => cleanup())
 

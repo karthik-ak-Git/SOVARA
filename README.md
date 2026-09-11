@@ -21,7 +21,8 @@ the repo root:
 
 ```sh
 pnpm install
-pnpm dev            # Electron + Vite dev window
+pnpm dev            # Electron shell + internal Next.js server (UI + /api)
+pnpm dev:web        # Next.js browser dev server only (port 51840)
 pnpm typecheck      # tsc --noEmit
 pnpm --filter @sovara/desktop test    # vitest suite (101 tests)
 pnpm build          # electron-vite production build
@@ -36,9 +37,10 @@ SOVARA
 │   ├── src/main/            # Main process: window, IPC handlers, AppBackend,
 │   │                        # ports/adapters, storage, network, config, logging
 │   ├── src/preload/         # contextBridge whitelist (window.sovara) only
-│   ├── src/renderer/src/    # React 18 UI: chat, models workbench, shell
 │   ├── src/shared/          # types + IPC channels/schemas (no runtime code)
 │   └── tests/               # vitest: contracts, persistence, IPC, UI, sovereignty
+├── apps/web/                # Next.js UI + internal API (the only UI; legacy
+│                            # Vite renderer src/renderer was deleted)
 ├── docs/ARCHITECTURE_PHASE1.md
 └── test/                    # read-only reference checkouts (never shipped)
 ```
@@ -46,11 +48,11 @@ SOVARA
 ## Architecture at a glance
 
 ```text
-Renderer → Preload → IPC → AppBackend → Ports → Adapters → local runtime
+Next.js UI → /api → server services → AppBackend → Ports → Adapters → local runtime
 ```
 
-- Renderer has **no** `fs` / `child_process` / `electron` / database / network
-  access — everything goes through whitelisted IPC validated with Zod.
+- Web UI has **no** `fs` / `child_process` / `electron` / database
+  access — everything goes through same-origin `/api` validated with Zod.
 - `PersistencePort` is real (SQLite metadata + `events.v1.jsonl` source of
   truth, seq-contiguous). Chat is derived from session events; no messages table.
 - `ModelWorkbench` (Commit 6) owns the runtime registry, probing, and active
@@ -66,7 +68,7 @@ Default offline. No external network, telemetry, cloud, downloads, or model
 execution. CI-equivalent local gates: `sovereignty.test.ts` (no Cordis, no
 Python spawn, fetch only inside `HttpClient`), `security.test.ts` (sandbox,
 CSP, IPC validation), plus workbench proofs (loopback allow/reject, no cloud
-endpoints, renderer isolation, VRAM reported UNKNOWN never fabricated).
+endpoints, web UI isolation, VRAM reported UNKNOWN never fabricated).
 
 ## License
 

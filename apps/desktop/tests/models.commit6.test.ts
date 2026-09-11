@@ -327,11 +327,11 @@ describe('Commit 6 — sovereignty proofs', () => {
     }
   })
 
-  it('renderer workbench files have no network/filesystem access', () => {
+  it('web workbench files have no network/filesystem access outside the API client', () => {
+    // Legacy Vite renderer (src/renderer) is deleted — check the Next.js UI.
     const files = [
-      'src/renderer/src/features/models/ModelsPage.tsx',
-      'src/renderer/src/features/models/useModelWorkbench.ts',
-      'src/renderer/src/lib/ipc.ts',
+      '../web/src/features/models/ModelsPage.tsx',
+      '../web/src/features/models/useModelWorkbench.ts',
     ]
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')

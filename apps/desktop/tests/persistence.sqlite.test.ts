@@ -183,9 +183,10 @@ describe('Commit 3 — SQLite + JSONL persistence', () => {
     await p2.close()
   })
 
-  it('renderer remains isolated from filesystem/database APIs', () => {
-    const rendererFiles = ['src/renderer/src/App.tsx', 'src/renderer/src/main.tsx']
-    for (const f of rendererFiles) {
+  it('web UI remains isolated from filesystem/database APIs', () => {
+    // Legacy Vite renderer (src/renderer) is deleted — check the Next.js UI.
+    const webFiles = ['../web/src/App.tsx', '../web/app/page.tsx']
+    for (const f of webFiles) {
       const txt = fs.readFileSync(f, 'utf8')
       expect(txt, `fs in ${f}`).not.toMatch(/from 'node:fs'|from "node:fs"|better-sqlite3|node:sqlite/)
       expect(txt, `better-sqlite3 in ${f}`).not.toMatch(/better-sqlite3/)

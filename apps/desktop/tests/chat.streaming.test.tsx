@@ -4,10 +4,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MessageList } from '../web/src/features/chat/MessageList'
-import { MessageBubble } from '../web/src/features/chat/MessageBubble'
-import { ChatView } from '../web/src/features/chat/ChatView'
-import { deriveMessages } from '../web/src/features/chat/conversation'
+import { MessageList } from '../../web/src/features/chat/MessageList'
+import { MessageBubble } from '../../web/src/features/chat/MessageBubble'
+import { ChatView } from '../../web/src/features/chat/ChatView'
+import { deriveMessages } from '../../web/src/features/chat/conversation'
 import type { ChatStreamEvent } from '../src/shared/types/chat'
 
 afterEach(() => cleanup())
@@ -128,7 +128,7 @@ describe('Commit 7 — delta subscription flow', () => {
   })
 
   it('accumulates deltas transiently and reloads on done', async () => {
-    const { useChatSession } = await import('../web/src/features/chat/useChatSession')
+    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
@@ -142,7 +142,7 @@ describe('Commit 7 — delta subscription flow', () => {
     expect(invoke).toHaveBeenCalledWith('chat:send', { sessionId: 's1', content: 'hello' })
   })
 
-  it('routes cancel to chat:cancel for the selected session', async () => {    const { useChatSession } = await import('../web/src/features/chat/useChatSession')
+  it('routes cancel to chat:cancel for the selected session', async () => {    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
@@ -189,7 +189,7 @@ describe('Commit 7 — delta subscription flow', () => {
       }
       return null
     })
-    const { useChatSession } = await import('../web/src/features/chat/useChatSession')
+    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))

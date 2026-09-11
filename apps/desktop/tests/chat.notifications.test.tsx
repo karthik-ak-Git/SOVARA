@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, waitFor } from '@testing-library/react'
-import { useChatSession } from '../web/src/features/chat/useChatSession'
+import { useChatSession } from '../../web/src/features/chat/useChatSession'
 import type { ChatStreamEvent } from '../src/shared/types/chat'
 
 type EventsCallback = (event: ChatStreamEvent) => void

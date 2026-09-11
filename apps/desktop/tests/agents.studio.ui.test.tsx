@@ -4,19 +4,21 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AgentsPage } from '../web/src/features/agents/AgentsPage'
+import { AgentsPage } from '../../web/src/features/agents/AgentsPage'
+import { mockApi } from './helpers/http'
 
 beforeEach(() => {
-  ;(window as unknown as { sovara: unknown }).sovara = {
-    invoke: async (channel: string) => {
-      if (channel === 'mcp:list') return []
-      if (channel === 'mcp:getDir') return { path: 'C:\\\\Users\\\\Test\\\\mcp', exists: true }
-      if (channel === 'mcp:openFolder') return { ok: true, path: 'C:\\\\Users\\\\Test\\\\mcp' }
-      if (channel === 'mcp:installFromUrl') return { server: { id: 'test', name: 'test', provider: 'Test', transport: 'stdio', command: 'npx -y test', enabled: true, createdAt: Date.now(), status: 'connected' }, steps: [], detectedCommand: 'npx -y test', localPath: 'C:\\\\mcp\\\\test' }
-      return null
+  mockApi({
+    'GET /api/connections': [],
+    'GET /api/connections/dir': { path: 'C:\\Users\\Test\\mcp', exists: true },
+    'POST /api/connections/open-folder': { ok: true, path: 'C:\\Users\\Test\\mcp' },
+    'POST /api/connections/install': {
+      server: { id: 'test', name: 'test', provider: 'Test', transport: 'stdio', command: 'npx -y test', enabled: true, createdAt: Date.now(), status: 'connected' },
+      steps: [],
+      detectedCommand: 'npx -y test',
+      localPath: 'C:\\mcp\\test',
     },
-    on: () => () => {},
-  } as unknown as Window['sovara']
+  })
 })
 afterEach(() => cleanup())
 

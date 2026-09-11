@@ -16,8 +16,7 @@
     "jsxImportSource": "react",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
-      "@shared/*": ["./src/shared/*"],
-      "@renderer/*": ["./src/renderer/src/*"]
+      "@shared/*": ["./src/shared/*"]
     },
     "outDir": "out",
     "rootDir": ".",

@@ -121,23 +121,30 @@ describe('Commit 5 — durable conversation flow', () => {
     expect(chatBlock).not.toMatch(/axios|XMLHttpRequest|net\.request/)
   })
 
-  it('renderer chat layer has no fs/electron/database/network access', () => {
-    const files = [
-      'src/renderer/src/features/chat/ChatView.tsx',
-      'src/renderer/src/features/chat/MessageList.tsx',
-      'src/renderer/src/features/chat/MessageBubble.tsx',
-      'src/renderer/src/features/chat/Composer.tsx',
-      'src/renderer/src/features/chat/ConversationHeader.tsx',
-      'src/renderer/src/features/chat/conversation.ts',
-      'src/renderer/src/features/chat/useChatSession.ts',
-      'src/renderer/src/lib/ipc.ts',
+  it('web chat layer has no fs/electron/database/subprocess access', () => {
+    // Legacy Vite renderer (src/renderer) is deleted — check the Next.js UI
+    // in apps/web. Same-origin fetch is allowed only inside the centralized
+    // client (lib/client/api.ts); feature components must not call fetch.
+    const featureFiles = [
+      '../web/src/features/chat/ChatView.tsx',
+      '../web/src/features/chat/MessageList.tsx',
+      '../web/src/features/chat/MessageBubble.tsx',
+      '../web/src/features/chat/Composer.tsx',
+      '../web/src/features/chat/ConversationHeader.tsx',
+      '../web/src/features/chat/conversation.ts',
+      '../web/src/features/chat/useChatSession.ts',
     ]
-    for (const f of files) {
+    for (const f of featureFiles) {
       const txt = fs.readFileSync(f, 'utf8')
       expect(txt, `fs in ${f}`).not.toMatch(/from 'node:fs'|from "node:fs"|better-sqlite3/)
       expect(txt, `electron in ${f}`).not.toMatch(/from 'electron'|require\('electron'\)/)
       expect(txt, `fetch in ${f}`).not.toMatch(/\bfetch\s*\(/)
       expect(txt, `subprocess in ${f}`).not.toMatch(/from 'node:child_process'|require\(['"]child_process['"]\)/)
     }
+    // Centralized client may fetch, but only same-origin /api routes.
+    const clientSrc = fs.readFileSync('../web/src/lib/client/api.ts', 'utf8')
+    expect(clientSrc).not.toMatch(/from 'electron'|require\('electron'\)/)
+    expect(clientSrc).not.toMatch(/better-sqlite3|node:sqlite/)
+    expect(clientSrc).not.toMatch(/fetch\(\s*['"`]https?:\/\//)
   })
 })
