@@ -4,7 +4,7 @@
  * only the final assistant message becomes a durable session event.
  */
 
-export type ChatStreamKind = 'assistant-delta' | 'assistant-done' | 'assistant-error' | 'assistant-cancelled'
+export type ChatStreamKind = 'assistant-delta' | 'assistant-done' | 'assistant-error' | 'assistant-cancelled' | 'model-loading'
 
 export interface ChatStreamEvent {
   sessionId: string
@@ -15,4 +15,10 @@ export interface ChatStreamEvent {
   error?: string
   /** Durable seq of the persisted assistant/cancelled event on done. */
   seq?: number
+  /** Loading progress (0-100) for model-loading events */
+  progress?: number
+  /** Stage label for loading: 'mmap'|'gpu-offload'|'context'|'prompt'|'streaming' */
+  stage?: string
+  /** Human detail for progress bar */
+  detail?: string
 }

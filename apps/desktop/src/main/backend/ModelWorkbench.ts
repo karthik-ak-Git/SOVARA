@@ -270,14 +270,9 @@ export class ModelWorkbench {
         }
       } catch {}
       registerLoadedInstance(modelId, runtimeId, 4096, bytes)
-      // Kick off native 4-step load in background — no Allow gate, no external app.
-      if (runtimeId === 'local' && ggufPath) {
-        void import('../services/llamaCppRunner').then(m => {
-          let libDir = this.config.getAppSetting('model_library_dir') || ''
-          if (!libDir) { try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch {}}
-          return m.ensureLlamaModelLoaded(modelId, libDir, 4096)
-        }).catch(()=>{})
-      }
+      // NOTE: actual GPU/CPU load is lazy — on first prompt send, not on selection.
+      // Selection only registers the intent; ChatService triggers the 4-step
+      // llama.cpp load with progress events when the user hits Send.
     } catch { /* ignore */ }
     return this.getActiveModel()
   }

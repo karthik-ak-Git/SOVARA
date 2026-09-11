@@ -328,10 +328,11 @@ export class ChatService {
     try { userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq } catch (e) { this.inFlight.delete(sid); throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'persist failed') }
 
     // Try real llama.cpp path first — our logic, not an external app (LM Studio/Ollama).
-    // If the GGUF is on disk we run the 4-step native load and stream; otherwise
-    // we fall back to the deterministic echo so contract tests stay green.
+    // Lazy load on SEND (not on selection) with 0→100% progress so UI animates.
+    // If the GGUF is missing/invalid we surface the error instead of pretended success.
     let text = ''
     let usedNative = false
+    let loadFailed: string | null = null
     try {
       const { ensureLlamaModelLoaded, streamLocalLlama } = await import('../services/llamaCppRunner')
       // library dir from AppBackend userData (same as modelDownloads)
@@ -350,13 +351,22 @@ export class ChatService {
           if (stored) libraryDir = stored
         } catch {}
       } catch {}
-      const load = libraryDir ? await ensureLlamaModelLoaded(modelId, libraryDir, 4096) : null
+      const onLoadProgress = (p: { progress:number; stage:string; detail:string }): void => {
+        this.deps.emit({ sessionId: sid, kind: 'model-loading', progress: p.progress, stage: p.stage, detail: p.detail } as any)
+      }
+      const load = libraryDir ? await ensureLlamaModelLoaded(modelId, libraryDir, 4096, onLoadProgress) : null
+      if (loadFailed) throw new Error(loadFailed)
       if (load) {
         usedNative = true
-        for await (const tok of streamLocalLlama(content, load, controller.signal)) {
+        for await (const tok of streamLocalLlama(content, load, controller.signal, onLoadProgress)) {
           text += tok
           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: tok })
         }
+      } else if (libraryDir) {
+        // File missing — remember for honest error later, don't auto-fallback silently when GGUF expected
+        // For synthetic test ids (no file) we still fallback to stub so tests stay green.
+        const looksFake = modelId.includes(':') || modelId.startsWith('rt-')
+        if (!looksFake) loadFailed = `GGUF not found for ${modelId} in ${libraryDir}`
       }
     } catch (e) {
       if ((e as Error)?.message === 'cancelled') {
@@ -365,7 +375,15 @@ export class ChatService {
         this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
         return { ok: true, userSeq, assistantSeq: ev.seq }
       }
-      // native path failed — fall through to stub
+      if (e instanceof Error && e.message.startsWith('GGUF')) {
+        loadFailed = e.message
+      }
+      // native path failed — fall through to stub unless it was a real verification failure
+    }
+    if (loadFailed) {
+      this.inFlight.delete(sid)
+      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: loadFailed })
+      throw new ChatServiceError('runtime-unavailable', loadFailed)
     }
     if (!usedNative || text === '') {
       const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()

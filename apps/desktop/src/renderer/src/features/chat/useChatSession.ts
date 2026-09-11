@@ -50,7 +50,8 @@ async function maybeNotifyCompletion(sessionTitle: string, sessionFocused: boole
  * - Model status is fetched on mount + on demand (no polling, no keystroke
  *   probing). Duplicate submission is blocked while a send is in flight.
  */
-export type ChatPhase = 'idle' | 'streaming'
+export type ChatPhase = 'idle' | 'loading' | 'streaming'
+export interface ModelLoadingState { progress: number; stage: string; detail: string }
 
 export function useChatSession() {
   const [sessions, setSessions] = useState<SessionHeaderView[]>([])
@@ -60,6 +61,7 @@ export function useChatSession() {
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState<ChatPhase>('idle')
   const [streamingText, setStreamingText] = useState('')
+  const [loadingProgress, setLoadingProgress] = useState<ModelLoadingState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [model, setModel] = useState<ActiveModelState>({ selection: null, available: false })
   const loadSeq = useRef(0)
@@ -115,16 +117,24 @@ export function useChatSession() {
   // finish while another project is focused — the notify setting's case).
   useEffect(() => {
     if (!window.sovara) return
-    const dispose = onSessionEvents((ev) => {
+    const dispose = onSessionEvents((ev: any) => {
       if (!ev) return
       const isSelected = ev.sessionId === selectedRef.current
+      if (ev.kind === 'model-loading') {
+        if (!isSelected) return
+        setPhase('loading')
+        setLoadingProgress({ progress: typeof ev.progress === 'number' ? ev.progress : 0, stage: ev.stage ?? 'loading', detail: ev.detail ?? '' })
+        return
+      }
       if (ev.kind === 'assistant-delta' && ev.text) {
         if (!isSelected) return
         setPhase('streaming')
+        setLoadingProgress(null)
         setStreamingText((t) => t + (ev.text ?? ''))
       } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
         if (isSelected) {
           setStreamingText('')
+          setLoadingProgress(null)
           setPhase('idle')
           const seq = ++loadSeq.current
           void refreshEvents(ev.sessionId, seq).then(() => refreshSessions()).then((list) => {
@@ -146,6 +156,7 @@ export function useChatSession() {
       } else if (ev.kind === 'assistant-error') {
         if (!isSelected) return
         setStreamingText('')
+        setLoadingProgress(null)
         setPhase('idle')
         setError(ev.error ?? 'The local model interrupted the reply.')
       }
@@ -162,6 +173,7 @@ export function useChatSession() {
       setError(null)
       setEvents([])
       setStreamingText('')
+      setLoadingProgress(null)
       setPhase('idle')
       try {
         await refreshEvents(id, seq)
@@ -232,8 +244,9 @@ export function useChatSession() {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
-      setPhase('streaming')
+      setPhase('loading')
       setStreamingText('')
+      setLoadingProgress({ progress: 2, stage: 'mmap', detail: 'Preparing to load model...' })
       setError(null)
       try {
         await sendChatMessage(selectedId, text, opts)
@@ -244,10 +257,12 @@ export function useChatSession() {
       } catch (e) {
         // Keep the draft so nothing successfully-persisted is faked.
         setStreamingText('')
+        setLoadingProgress(null)
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusy(false)
         setPhase('idle')
+        setLoadingProgress(null)
       }
     },
     [selectedId, busy, refreshEvents, refreshSessions]
@@ -265,7 +280,8 @@ export function useChatSession() {
   const handleRegenerate = useCallback(async (): Promise<void> => {
     if (!selectedId || busy) return
     setBusy(true)
-    setPhase('streaming')
+    setPhase('loading')
+    setLoadingProgress({ progress: 2, stage: 'mmap', detail: 'Reloading model...' })
     setStreamingText('')
     setError(null)
     try {
@@ -275,10 +291,12 @@ export function useChatSession() {
       await refreshSessions()
     } catch (e) {
       setStreamingText('')
+      setLoadingProgress(null)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
       setPhase('idle')
+      setLoadingProgress(null)
     }
   }, [selectedId, busy, refreshEvents, refreshSessions])
 
@@ -287,7 +305,8 @@ export function useChatSession() {
       const text = content.trim()
       if (!selectedId || text.length === 0 || busy) return
       setBusy(true)
-      setPhase('streaming')
+      setPhase('loading')
+      setLoadingProgress({ progress: 2, stage: 'mmap', detail: 'Preparing to load...' })
       setStreamingText('')
       setError(null)
       try {
@@ -297,10 +316,12 @@ export function useChatSession() {
         await refreshSessions()
       } catch (e) {
         setStreamingText('')
+        setLoadingProgress(null)
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setBusy(false)
         setPhase('idle')
+        setLoadingProgress(null)
       }
     },
     [selectedId, busy, refreshEvents, refreshSessions]
@@ -314,6 +335,7 @@ export function useChatSession() {
     setSelectedId(null)
     setEvents([])
     setStreamingText('')
+    setLoadingProgress(null)
     setPhase('idle')
     setError(null)
   }, [])
