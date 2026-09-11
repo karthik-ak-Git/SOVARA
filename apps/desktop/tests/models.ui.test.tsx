@@ -48,7 +48,7 @@ describe('Commit 6 — Models page', () => {
     expect(await screen.findByText('No model selected. Add a local runtime below, test the connection, then select a model.')).toBeInTheDocument()
     expect(screen.getByText('No local runtimes yet')).toBeInTheDocument()
     expect(screen.getByText('No models discovered')).toBeInTheDocument()
-    expect(await screen.findByTestId('resource-strip')).toHaveTextContent('UNKNOWN - not measured in this build')
+    expect(await screen.findByTestId('resource-strip')).toHaveTextContent('UNKNOWN')
     expect(screen.getByRole('button', { name: 'Add runtime' })).toBeInTheDocument()
   })
 

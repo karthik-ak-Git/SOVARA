@@ -26,6 +26,8 @@ export const IPC_CHANNELS = {
   'models:listLocal': { type: 'invoke' as const },
   'models:load': { type: 'invoke' as const },
   'models:probeRuntime': { type: 'invoke' as const },
+  /** One-time owned-runtime install (pinned llama.cpp CUDA build). */
+  'models:ensureRuntime': { type: 'invoke' as const },
   // Commit 6 — workbench facet (registry/probe/select; legacy trio above untouched)
   'models:listRuntimes': { type: 'invoke' as const },
   'models:addRuntime': { type: 'invoke' as const },

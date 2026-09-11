@@ -10,7 +10,7 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
 import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -246,6 +246,27 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid load payload: ${parsed.error.message}`)
     // @ts-expect-error — branded string compat in stub
     return getBackend().ports.models.load(parsed.data.modelId, {})
+  })
+
+  // ── Owned runtime install (one-time pinned llama.cpp CUDA build) ──
+  // Progress streams on `events:download` under modelId `__sovara_runtime__`;
+  // the invoke resolves with the verified binary path + version.
+  ipcMain.handle('models:ensureRuntime', async (_e, raw: unknown) => {
+    const parsed = zModelsEnsureRuntime.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid ensureRuntime payload: ${parsed.error.message}`)
+    try {
+      return await getBackend().ensureLocalRuntime((p) => {
+        broadcastDownload({
+          modelId: '__sovara_runtime__',
+          rfilename: 'llama-server (CUDA)',
+          state: p.phase === 'ready' ? 'done' : p.phase === 'downloading' ? 'progress' : 'started',
+          receivedBytes: p.receivedBytes,
+          totalBytes: p.totalBytes,
+        })
+      })
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'runtime install failed')
+    }
   })
 
   // ── Commit 6 workbench facet — explicit channels, strict schemas ──

@@ -10,9 +10,10 @@
  */
 import { isLoopbackUrl } from '../network/HttpClient'
 import { appendRuntimeLog } from '../logging/runtimeLog'
+import { appendLlamaLog } from '../services/llamaRuntime'
 import { RuntimeConfigStore, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
 import { CustomOpenAICompatibleAdapter, type HttpGet } from './ports/CustomOpenAICompatibleAdapter'
-import type { SystemResourceManagerPort } from '@shared/types/ports'
+import type { ModelRuntimePort, SystemResourceManagerPort } from '@shared/types/ports'
 import type {
   ActiveModelState,
   DiscoveredModel,
@@ -56,7 +57,8 @@ export class ModelWorkbench {
     private readonly config: RuntimeConfigStore,
     private readonly resources: SystemResourceManagerPort,
     private readonly baseDir?: string,
-    httpGet?: HttpGet
+    httpGet?: HttpGet,
+    private readonly models?: ModelRuntimePort
   ) {
     this.adapter = new CustomOpenAICompatibleAdapter(httpGet)
   }
@@ -121,6 +123,10 @@ export class ModelWorkbench {
   async probeRuntime(runtimeId: string): Promise<RuntimeProbeResult> {
     const snap = this.config.getRuntime(runtimeId)
     if (!snap) throw new ModelWorkbenchError('unknown runtime')
+    // Owned runtime: probe the real binary + library, no HTTP involved.
+    if (snap.entry.endpoint === 'local' || snap.entry.id === 'local') {
+      return this.probeLocalRuntime(snap.entry)
+    }
     const started = Date.now()
     const { result, snapshot } = await this.adapter.probe(snap.entry)
     this.config.saveProbeSnapshot(runtimeId, snapshot, result.reachable ? null : (result.error ?? 'error'))
@@ -134,6 +140,46 @@ export class ModelWorkbench {
       outcome: result.reachable ? 'ok' : classifyOutcome(result.error ?? ''),
     })
     return result
+  }
+
+  /** Owned-runtime probe: binary present + GGUF library scan (no network). */
+  private async probeLocalRuntime(entry: ModelRuntimeEntry): Promise<RuntimeProbeResult> {
+    const started = Date.now()
+    try {
+      if (!this.models) {
+        const err = 'local runtime port unavailable in this context'
+        this.config.saveProbeSnapshot(entry.id, [], err)
+        return { reachable: false, runtimeId: entry.id, latencyMs: Date.now() - started, models: [], error: err }
+      }
+      const probe = await this.models.probeRuntime('local')
+      if (!probe.available) {
+        const err = 'local runtime not installed yet — install it from Models to load GGUFs into VRAM'
+        this.config.saveProbeSnapshot(entry.id, [], err)
+        appendLlamaLog(this.baseDir, 'probe', { runtimeId: entry.id, reachable: false, detail: 'binary missing' })
+        return { reachable: false, runtimeId: entry.id, latencyMs: Date.now() - started, models: [], error: err }
+      }
+      const localModels = await this.models.listLocalModels()
+      const snapshot = localModels.map((m) => ({ modelId: String(m.id), displayName: m.displayName }))
+      this.config.saveProbeSnapshot(entry.id, snapshot, snapshot.length > 0 ? null : 'no GGUF models in the Sovara library')
+      const discovered: DiscoveredModel[] = localModels.map((m) => ({
+        modelId: String(m.id),
+        displayName: m.displayName,
+        runtimeId: entry.id,
+        source: 'llama.cpp' as const,
+        capabilities: [],
+        available: true,
+      }))
+      appendRuntimeLog(this.baseDir, {
+        time: Date.now(), runtimeId: entry.id, method: 'GET', target: 'local/llama.cpp',
+        latencyMs: Date.now() - started, status: 200, outcome: 'ok',
+      })
+      appendLlamaLog(this.baseDir, 'probe', { runtimeId: entry.id, reachable: true, models: discovered.length, version: probe.version ?? 'unknown' })
+      return { reachable: true, runtimeId: entry.id, latencyMs: Date.now() - started, models: discovered }
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      this.config.saveProbeSnapshot(entry.id, [], err.slice(0, 200))
+      return { reachable: false, runtimeId: entry.id, latencyMs: Date.now() - started, models: [], error: err.slice(0, 200) }
+    }
   }
 
   /** Snapshot reads — no network. Probe first via probeRuntime. */
@@ -167,13 +213,13 @@ export class ModelWorkbench {
       // Only create if there is at least one file in library
       const lib = this.loadLocalLibrarySnapshot()
       if (lib.length === 0) return
-      const entry: ModelRuntimeEntry = { id: 'local', displayName: 'Local Library', type: 'openai-compatible', endpoint: 'local', enabled: true, timeoutMs: 8000 }
+      const entry: ModelRuntimeEntry = { id: 'local', displayName: 'Sovara Local (llama.cpp)', type: 'llama.cpp', endpoint: 'local', enabled: true, timeoutMs: 8000 }
       this.config.upsertRuntime(entry)
       this.config.saveProbeSnapshot('local', lib, null)
-      // Auto-select first if nothing selected (so Pill shows Ready)
+      // Auto-select first if nothing selected (selection only — VRAM load
+      // happens on select/send, never silently here).
       if (!this.config.getActiveSelection()) {
         this.config.setActiveSelection({ runtimeId: 'local', modelId: lib[0].modelId })
-        try { const { registerLoadedInstance } = require('./ports/ModelRuntimeStub') as typeof import('./ports/ModelRuntimeStub'); registerLoadedInstance(lib[0].modelId, 'local', 4096) } catch {}
       }
       // Log: connected models discovered
       try { this.logLocalDiscovery(lib) } catch {}
@@ -228,8 +274,7 @@ export class ModelWorkbench {
     if (!snap.entry.enabled) throw new ModelWorkbenchError('runtime is disabled')
     const known = snap.lastModels.some((m) => m.modelId === modelId)
     if (!known) throw new ModelWorkbenchError('unknown model: probe the runtime first')
-    // Resource boundary is advisory in this build (stub returns ok) but the
-    // call path is real — a future blocking verdict refuses the select.
+    // Resource boundary is real: a blocking verdict refuses the select.
     const pressure = await this.resources.checkBeforeLoad(
       { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' },
       {}
@@ -238,36 +283,20 @@ export class ModelWorkbench {
       throw new ModelWorkbenchError(`resource-pressure: ${pressure.reason ?? 'load refused'}`)
     }
     this.config.setActiveSelection({ runtimeId, modelId })
-    try {
-      const { registerLoadedInstance } = await import('./ports/ModelRuntimeStub')
-      // try library size for accurate VRAM target
-      let bytes: number | undefined
+    // Owned runtime: switching models loads the new GGUF into VRAM NOW
+    // (evicting the previous resident inside the adapter). Remote runtimes
+    // own their lifecycle — selection alone is enough for them.
+    if ((snap.entry.endpoint === 'local' || snap.entry.id === 'local') && this.models) {
+      appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'loading into VRAM (switch evicts previous)' })
       try {
-        const rows = this.config.listRegistryRows().find(r => r.rfilename === modelId || r.rfilename.replace(/\.gguf$/i,'')===modelId || r.displayName===modelId)
-        if (rows?.fileSizeBytes) bytes = rows.fileSizeBytes
-        else {
-          const { join } = require('node:path') as typeof import('node:path')
-          const { statSync } = require('node:fs') as typeof import('node:fs')
-          let libDir = this.config.getAppSetting('model_library_dir') || ''
-          if (!libDir) { try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); libDir = join(getSovaraDataDir(undefined), 'models') } catch {}}
-          // search for file matching modelId
-          const { readdirSync } = require('node:fs') as typeof import('node:fs')
-          const scan = (dir: string): string | undefined => {
-            try {
-              for (const e of readdirSync(dir, { withFileTypes: true })) {
-                const p = join(dir, e.name)
-                if (e.isDirectory()) { const f = scan(p); if (f) return f }
-                else if (e.name.replace(/\.gguf$/i,'')===modelId || e.name===modelId) return p
-              }
-            } catch {}
-            return undefined
-          }
-          const fp = libDir ? scan(libDir) : undefined
-          if (fp) { try { bytes = statSync(fp).size } catch {} }
-        }
-      } catch {}
-      registerLoadedInstance(modelId, runtimeId, 4096, bytes)
-    } catch { /* ignore */ }
+        await this.models.load(modelId as never, { runtimeId })
+        appendLlamaLog(this.baseDir, 'select-ready', { modelId, runtimeId })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        // Selection stays (retry possible); availability reflects the failure.
+        throw new ModelWorkbenchError(msg)
+      }
+    }
     return this.getActiveModel()
   }
 

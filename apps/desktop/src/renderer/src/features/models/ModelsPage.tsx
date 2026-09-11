@@ -12,7 +12,7 @@ function formatCtx(n?: number): string {
 }
 
 export function ModelsPage(): ReactElement {
-  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect } =
+  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
     useModelWorkbench()
   const [name, setName] = useState('')
   const [endpoint, setEndpoint] = useState('http://127.0.0.1:1234/v1')
@@ -28,7 +28,7 @@ export function ModelsPage(): ReactElement {
             <Database size={16} aria-hidden />
             <span>Active model</span>
           </div>
-          <div className="panel-hint muted small">Local only | mock chat unchanged</div>
+          <div className="panel-hint muted small">Local only · served from your GPU</div>
         </div>
         {active.selection ? (
           <div
@@ -52,6 +52,47 @@ export function ModelsPage(): ReactElement {
           <p className="muted small" role="status">
             No model selected. Add a local runtime below, test the connection, then select a model.
           </p>
+        )}
+      </Card>
+
+      {/* Sovara owned runtime — our own llama.cpp sidecar, no third party */}
+      <Card>
+        <div className="panel-head">
+          <div className="panel-title">
+            <Database size={16} aria-hidden />
+            <span>Sovara Local Runtime</span>
+          </div>
+          <div className="panel-hint muted small">llama.cpp sidecar · CUDA · owned by Sovara</div>
+        </div>
+        {localRuntime === null ? (
+          <p className="muted small" role="status">Checking local runtime…</p>
+        ) : localRuntime.available ? (
+          <div className="active-model" role="status" data-testid="local-runtime-ready">
+            <span className="badge badge--success">Installed</span>
+            <span className="muted small">
+              {localRuntime.version ?? 'llama-server'} · loads GGUFs from your Library straight into GPU VRAM. Switching models unloads the previous one first.
+            </span>
+          </div>
+        ) : (
+          <div role="status" aria-label="Local runtime not installed">
+            <p className="muted small">
+              Not installed. One-time download (~240MB pinned CUDA build) — afterwards Sovara runs fully offline and loads your Library GGUFs into VRAM itself.
+            </p>
+            {runtimeProgress ? (
+              <p className="muted small" role="status" aria-label="Runtime install progress">
+                {runtimeProgress.phase}… {runtimeProgress.totalBytes ? `${Math.round((runtimeProgress.receivedBytes / runtimeProgress.totalBytes) * 100)}%` : `${Math.round(runtimeProgress.receivedBytes / 1048576)}MB`}
+              </p>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={() => void handleEnsureRuntime()}
+                disabled={busy !== null}
+                aria-label="Install Sovara local runtime"
+              >
+                Install local runtime
+              </Button>
+            )}
+          </div>
         )}
       </Card>
 
@@ -215,8 +256,11 @@ export function ModelsPage(): ReactElement {
         </div>
         {resources ? (
           <p className="muted small" data-testid="resource-strip" role="status">
-            CPU {resources.cpu.logicalCores} cores | RAM {resources.ram.freeMB}/{resources.ram.totalMB} MB free | VRAM{' '}
-            {vramUnknown ? 'UNKNOWN - not measured in this build' : `${resources.vram.freeMB}/${resources.vram.totalMB} MB free`}
+            CPU {resources.cpu.logicalCores} cores | RAM {resources.ram.freeMB}/{resources.ram.totalMB} MB free
+            {resources.gpu.name ? ` | GPU ${resources.gpu.name}` : ''}
+            {' '}| VRAM{' '}
+            {vramUnknown ? 'UNKNOWN — no NVIDIA driver reading (install the driver or load a model)' : `${resources.vram.freeMB}/${resources.vram.totalMB} MB free`}
+            {resources.vram.usedByModelsMB !== undefined ? ` | models hold ${resources.vram.usedByModelsMB} MB` : ''}
           </p>
         ) : (
           <p className="muted small">Loading resource snapshot...</p>

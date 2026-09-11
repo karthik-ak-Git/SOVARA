@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   addRuntime,
+  ensureLocalRuntime,
   getActiveModel,
   getSystemResources,
   listDiscoveredModels,
   listRuntimes,
   listLibraryModels,
+  onDownloadEvents,
+  probeLocalRuntime,
   removeRuntime,
   selectModel,
   testRuntimeConnection,
+  type LocalRuntimeStatus,
   type SystemResourcesView,
 } from '../../lib/ipc'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry, RuntimeProbeResult } from '@shared/types/models'
@@ -26,6 +30,9 @@ export function useModelWorkbench() {
   const [probes, setProbes] = useState<Record<string, RuntimeProbeResult>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Owned runtime (Sovara's own llama.cpp sidecar — no Ollama/LM Studio needed)
+  const [localRuntime, setLocalRuntime] = useState<LocalRuntimeStatus | null>(null)
+  const [runtimeProgress, setRuntimeProgress] = useState<{ phase: string; receivedBytes: number; totalBytes: number | null } | null>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
     const [rt, md, ac, libRaw] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
@@ -64,10 +71,31 @@ export function useModelWorkbench() {
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
       }
+      try {
+        const status = await probeLocalRuntime()
+        if (!cancelled) setLocalRuntime(status)
+      } catch {
+        if (!cancelled) setLocalRuntime({ available: false })
+      }
     })()
     return () => {
       cancelled = true
     }
+  }, [refresh])
+
+  // Runtime-install progress (modelId `__sovara_runtime__` on the shared channel)
+  useEffect(() => {
+    const dispose = onDownloadEvents((ev) => {
+      if (ev.modelId !== '__sovara_runtime__') return
+      if (ev.state === 'done' || ev.state === 'error' || ev.state === 'cancelled') {
+        setRuntimeProgress(null)
+        void probeLocalRuntime().then(setLocalRuntime).catch(() => {})
+        void refresh().catch(() => {})
+      } else {
+        setRuntimeProgress({ phase: ev.state, receivedBytes: ev.receivedBytes, totalBytes: ev.totalBytes })
+      }
+    })
+    return dispose
   }, [refresh])
 
   const runGuarded = useCallback(
@@ -123,7 +151,23 @@ export function useModelWorkbench() {
     [runGuarded]
   )
 
+  const handleEnsureRuntime = useCallback(
+    () =>
+      runGuarded('ensure-runtime', async () => {
+        setRuntimeProgress({ phase: 'starting', receivedBytes: 0, totalBytes: null })
+        try {
+          await ensureLocalRuntime()
+        } finally {
+          const status = await probeLocalRuntime().catch(() => ({ available: false }) as LocalRuntimeStatus)
+          setLocalRuntime(status)
+          setRuntimeProgress(null)
+          await refresh()
+        }
+      }),
+    [runGuarded, refresh]
+  )
+
   const dismissError = useCallback(() => setError(null), [])
 
-  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, refresh }
+  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
 }

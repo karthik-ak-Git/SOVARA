@@ -55,6 +55,8 @@ export const zChatEditResend = z
 
 export const zModelsProbe = z.string().min(1).max(64)
 
+export const zModelsEnsureRuntime = z.object({}).strict().default({})
+
 const zRuntimeType = z.enum(['openai-compatible', 'ollama', 'lmstudio', 'vllm', 'llama.cpp', 'custom'])
 
 const zRuntimeId = z

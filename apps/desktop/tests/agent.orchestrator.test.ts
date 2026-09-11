@@ -185,18 +185,39 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     const persistence = makePersistence()
     const emitted: ChatStreamEvent[] = []
     const workbench = makeWorkbench([{ modelId: 'local:phi-4', displayName: 'phi-4', runtimeId: 'local', available: true }], { runtimeId: 'local', modelId: 'local:phi-4' })
+    // Owned-runtime path, honestly mocked at the PORT boundary: load resolves
+    // a serving instance, baseUrl points at it, and the scripted LLM streams.
+    // No canned assistant text anywhere in shipped code — the script stands in
+    // for the sidecar's HTTP stream only.
+    const loaded: Array<{ id: string; modelId: string }> = []
+    const mockModels = {
+      load: async (modelId: string) => {
+        const inst = { id: `inst_${String(modelId).replace(/[^a-z0-9]/gi, '_')}`, modelId }
+        loaded.push(inst)
+        return inst
+      },
+      baseUrl: (id: string) => {
+        if (!loaded.some((i) => i.id === String(id))) throw new Error('instance not found')
+        return 'http://127.0.0.1:9/v1'
+      },
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => loaded.map((i) => ({ id: i.id, modelId: i.modelId, runtimeId: 'local', status: 'loaded' as const, ctxLen: 4096 })),
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
     const orchestrator = new AgentOrchestrator({
       persistence,
-      llm: scriptLlm(['Hello', ' world']),
+      // 'analysis' tasks enable reasoning: the stream carries a closed
+      // <thinking> block first (as a real reasoning model would), then answer.
+      llm: scriptLlm(['<thinking>checking the project</thinking>', 'Hello', ' world']),
       tools: { list: () => [], dispatch: async () => '' } as never,
       workbench,
       resources: okResources,
-      models: (await import('../src/main/backend/ports/ModelRuntimeStub')).ModelRuntimeStub.prototype ? new (await import('../src/main/backend/ports/ModelRuntimeStub')).ModelRuntimeStub() : null as never,
+      models: mockModels as never,
       baseDir: dir,
       emit: (e) => emitted.push(e),
     })
-    // Ensure models port is real stub (load will animate)
-    ;(orchestrator as unknown as { deps: { models: unknown } }).deps.models = new (await import('../src/main/backend/ports/ModelRuntimeStub')).ModelRuntimeStub()
 
     const sid = 'sess-1' as SessionId
     // Need a session header for persistence.get to succeed — our mock returns one, but ensure event seq starts empty
@@ -220,10 +241,10 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     expect(types).toContain('user/message')
     expect(types).toContain('assistant/message')
     expect(types).toContain('agent/execution')
-    // Model should be in loaded state via ModelRuntimePort
-    const { ModelRuntimeStub } = await import('../src/main/backend/ports/ModelRuntimeStub')
-    const instances = await new ModelRuntimeStub().listInstances()
-    expect(instances.some((i) => i.modelId === 'local:phi-4')).toBe(true)
+    // The streamed reply is the LLM's real output, not a canned stub
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe('Hello world')
+    // Model went through ModelRuntimePort.load (the VRAM seam)
+    expect(loaded.some((i) => i.modelId === 'local:phi-4')).toBe(true)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

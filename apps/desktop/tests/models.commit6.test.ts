@@ -257,12 +257,18 @@ describe('Commit 6 — resource stub honesty', () => {
     const { clearAllInstances } = await import('../src/main/backend/ports/ModelRuntimeStub')
     clearAllInstances()
   })
-  it('reports VRAM as unknown, never fabricated', async () => {
+  it('reports VRAM honestly: real readings when a GPU exists, unknown otherwise — never fabricated', async () => {
     const snap = await new SystemResourceStub().getSnapshot()
-    expect(snap.vram.totalMB).toBeUndefined()
-    expect(snap.vram.freeMB).toBeUndefined()
+    // No instances → nothing held by models, regardless of hardware.
     expect(snap.vram.usedByModelsMB).toBeUndefined()
-    expect(snap.gpu.available).toBe(false)
+    if (snap.vram.totalMB === undefined) {
+      // No driver reading (CI without GPU): free must not be invented either.
+      expect(snap.vram.freeMB).toBeUndefined()
+    } else {
+      // Real GPU (e.g. dev RTX): readings are positive, plausible numbers.
+      expect(snap.vram.totalMB).toBeGreaterThan(0)
+      expect(snap.gpu.available).toBe(true)
+    }
   })
 
   it('request log never carries bodies or secrets', async () => {
@@ -314,9 +320,9 @@ describe('Commit 6 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL)
+        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts)$/)
       }
     }
   })

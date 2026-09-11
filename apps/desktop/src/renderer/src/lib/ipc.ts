@@ -169,6 +169,27 @@ export async function getActiveModel(): Promise<ActiveModelState> {
   return (await sovara().invoke('models:getActiveModel')) as ActiveModelState
 }
 
+// ── Owned local runtime (Sovara's own llama.cpp sidecar, no third party) ──
+export interface LocalRuntimeStatus {
+  available: boolean
+  version?: string
+  path?: string
+}
+
+export async function probeLocalRuntime(): Promise<LocalRuntimeStatus> {
+  return (await sovara().invoke('models:probeRuntime', 'local')) as LocalRuntimeStatus
+}
+
+export interface LocalRuntimeInstallResult {
+  path: string
+  version: string | null
+  downloaded: boolean
+}
+
+export async function ensureLocalRuntime(): Promise<LocalRuntimeInstallResult> {
+  return (await sovara().invoke('models:ensureRuntime', {})) as LocalRuntimeInstallResult
+}
+
 // ── Local model library registry (SQLite-backed inventory) ──
 export type RegistryInstallStatus = 'installed' | 'missing' | 'unregistered'
 export type DownloadRowStatus = 'queued' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'verifying'

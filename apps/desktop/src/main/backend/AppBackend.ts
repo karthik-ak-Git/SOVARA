@@ -8,7 +8,7 @@ import { LocalOpenAIChatAdapter } from './ports/LocalOpenAIChatAdapter'
 import { ToolStubAdapter, createWebRuntime } from './ports/ToolStubAdapter'
 import { DshStubAdapter } from './ports/DshStubAdapter'
 import { HermesStubAdapter } from './ports/HermesStubAdapter'
-import { ModelRuntimeStub } from './ports/ModelRuntimeStub'
+import { LlamaCppServerAdapter } from './ports/LlamaCppServerAdapter'
 import { SystemResourceStub } from './ports/SystemResourceStub'
 import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
@@ -60,13 +60,18 @@ export class AppBackend {
 
   constructor(baseDir?: string, emit?: (event: import('@shared/types/chat').ChatStreamEvent) => void) {
     this.persistenceAdapter = new SqlitePersistenceAdapter(baseDir)
-    const resources = new SystemResourceStub()
+    // Owned local runtime first: resources aggregate ITS live instances
+    // (real VRAM), and the workbench drives ITS load/unload on select.
+    const models = new LlamaCppServerAdapter(baseDir, null)
+    const resources = new SystemResourceStub(() => models.listInstances())
     this.runtimeConfig = new RuntimeConfigStore(baseDir)
-    this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir)
+    // Rebind the adapter to the real config now that it exists (registry
+    // localPath resolution + library dir). Same instance, no rescan cost.
+    models.bindConfig(this.runtimeConfig)
+    this.workbench = new ModelWorkbench(this.runtimeConfig, resources, baseDir, undefined, models)
     this.validation = new ValidationRunner()
     this.validationStore = new ValidationStore(baseDir)
     const llm = new LocalOpenAIChatAdapter()
-    const models = new ModelRuntimeStub()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
     const toolAdapter = new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig))
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
@@ -580,12 +585,27 @@ export class AppBackend {
     return probeMcpServer(this.runtimeConfig, id)
   }
 
+  /** One-time owned-runtime install (pinned llama.cpp CUDA build). Progress via callback. */
+  async ensureLocalRuntime(
+    onProgress?: (p: { phase: string; receivedBytes: number; totalBytes: number | null }) => void
+  ): Promise<{ path: string; version: string | null; downloaded: boolean }> {
+    const { ensureLlamaRuntime } = await import('../services/llamaRuntime')
+    return ensureLlamaRuntime(undefined, onProgress)
+  }
+
   recordUpdateCheck(status: string): void {
     this.runtimeConfig.setAppSetting('last_update_check_at', String(Date.now()))
     this.runtimeConfig.setAppSetting('last_update_status', status.slice(0, 64))
   }
 
   async dispose(): Promise<void> {
+    // Kill owned sidecars FIRST so no VRAM stays claimed after quit.
+    try {
+      const models = this.ports.models as unknown as { disposeAll?: () => Promise<void> }
+      await models.disposeAll?.()
+    } catch {
+      // ignore
+    }
     try {
       await this.persistenceAdapter.close()
     } catch {

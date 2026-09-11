@@ -185,10 +185,12 @@ export class AgentOrchestrator {
         }
       }
 
-      // ── PHASE 4: model lifecycle — load if needed, healthcheck (real, not faked) ──
+      // ── PHASE 4: model lifecycle — owned runtime loads the GGUF into VRAM
+      // (switch evicts the previous resident). Third-party loopback runtimes
+      // own their lifecycle — selection alone suffices, no sidecar spawn.
       const vramTotal = resources.vram.totalMB
-      // For local stub runtimes we still go through ModelRuntimePort.load so the lifecycle is exercised
-      const isLocalStub = entry.endpoint === 'local' || entry.id === 'local'
+      const isOwnedRuntime = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
+      let ownedEndpoint: string | null = null
 
       this.emit(sid, 'model:loading', {
         taskKind: classification.kind,
@@ -198,27 +200,16 @@ export class AgentOrchestrator {
         detail: switched ? `selected ${routing.modelId} — loading` : `model ${routing.modelId} — checking`,
       })
 
-      // Ensure loaded (both local stub and HTTP runtimes benefit from instance lifecycle)
       try {
-        // For local stub: ModelRuntimeStub.load() now succeeds and animates loading→loaded
-        // For HTTP runtimes: instance lifecycle is lightweight; load verifies slot availability
-        const inst = await this.deps.models.load(routing.modelId as never, {
-          ctxLen: classification.contextLengthNeeded,
-          runtimeId: routing.runtimeId,
-        })
-        // Poll health briefly until loaded (stub animates ~1.8s, HTTP should be instant)
-        const deadline = Date.now() + 4000
-        while (Date.now() < deadline) {
-          if (controller.signal.aborted) throw new AgentOrchestratorError('cancelled', 'cancelled')
-          const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health failed' }))
-          if (h.ok) break
-          if (h.error === 'not-found') break
-          // If still loading (vram 0) wait a bit
-          if ((inst.status as string) === 'loading' || ((h as { vramUsedMB?: number }).vramUsedMB ?? 0) === 0) {
-            await new Promise((r) => setTimeout(r, 180))
-            continue
-          }
-          break
+        if (isOwnedRuntime) {
+          // Blocking load: resolves only when /health is green (VRAM-resident).
+          const inst = await this.deps.models.load(routing.modelId as never, {
+            ctxLen: classification.contextLengthNeeded,
+            runtimeId: routing.runtimeId,
+          })
+          ownedEndpoint = this.deps.models.baseUrl(inst.id)
+        } else if (controller.signal.aborted) {
+          throw new AgentOrchestratorError('cancelled', 'cancelled')
         }
         // Re-read snapshot for accurate VRAM after load
         const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
@@ -325,7 +316,10 @@ export class AgentOrchestrator {
       // is prepared: if a tool is needed, we emit tool:start/delta/end and loop.
       this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: 'llm generation' })
 
-      const endpoint = entry.endpoint
+      // Owned sidecar serves on its own loopback port; third-party runtimes
+      // serve on their registered endpoint. Either way this is REAL streaming
+      // through LlmPort — no canned text anywhere on this path.
+      const endpoint = ownedEndpoint ?? entry.endpoint
       const model = remoteModelId(routing.modelId)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)
       let streamed = true
@@ -334,78 +328,7 @@ export class AgentOrchestrator {
       let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
-      // Local stub path: no HTTP needed — generate via deterministic stub but emit honest lifecycle
-      if (isLocalStub) {
-        // Keep stub honest: emit one streaming phase, then persist exactly one assistant message.
-        // No fake multi-step. The stub text is clearly marked as local stub.
-        const stubText = this.buildLocalStubResponse(content, routing.modelId, classification)
-        const reasoningOn = !!(classification.reasoningRequired || opts?.reasoning)
-        if (reasoningOn) {
-          const reasoningText = `Task: ${classification.kind} | Model: ${routing.modelId} | Need to provide helpful, concise, local response.`
-          this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: reasoningText })
-          // persist reasoning for later reconstruction
-          try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningText }) } catch {}
-          // also emit step tool seam opportunity (future: could dispatch tool here)
-        }
-        // Honest streaming: respect cancellation during stub generation
-        if (controller.signal.aborted) {
-          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled during stub' })
-          return await this.finishCancelled(sessionId, sid, startedAll, entry.id, endpoint, model, streamed, userSeq)
-        }
-        text = stubText
-        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: stubText })
-        // Optional tool step for tool-use/agent tasks — honest multi-step via ToolPort
-        if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
-          const defs = this.deps.tools.list()
-          if (defs.some((d) => d.name === 'web_search')) {
-            this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `dispatching web_search for: ${content.slice(0,60)}` })
-            try {
-              const raw = await this.deps.tools.dispatch('web_search', { queries: [content.slice(0,200)] })
-              let toolText = ''
-              try {
-                const parsed = JSON.parse(raw)
-                if (parsed.error) {
-                  toolText = `Tool error: ${parsed.error}`
-                  this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: toolText })
-                } else {
-                  toolText = String(raw).slice(0, 1500)
-                  this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
-                  this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
-                }
-              } catch {
-                toolText = String(raw).slice(0, 1500)
-                this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
-                this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
-              }
-              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, content: toolText }) } catch {}
-              if (toolText && !controller.signal.aborted) {
-                const augmented = `\n\n[Tool web_search result: ${toolText.slice(0,800)}]`
-                text += augmented
-                this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: augmented })
-              }
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e)
-              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool failed: ${msg}` })
-            }
-          }
-        }
-        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `local stub — ${text.length} chars steps=${(classification.kind === 'tool-use' || classification.kind === 'agent') ? 2 : 1}` })
-
-        const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
-        const promptTokens = Math.ceil(content.length / 4)
-        const completionTokens = Math.ceil(text.length / 4)
-        const totalTokens = promptTokens + completionTokens
-        try {
-          this.deps.persistence.insertTokenUsage({ sessionId: sid, model: routing.modelId, promptTokens, completionTokens, totalTokens })
-        } catch {}
-        appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: routing.runtimeId, method: 'POST', target: 'local/stub', latencyMs: Date.now() - startedAll, outcome: 'ok', modelId: routing.modelId, streamed: true })
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId: routing.modelId, runtimeId: routing.runtimeId, outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now() - startedAll, detail: `agent local stub steps=1 task=${classification.kind}` })
-        this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
-        return { ok: true, userSeq, assistantSeq, routing, classification }
-      }
-
-      // HTTP runtime path — real streaming
+      // Real streaming (owned sidecar or remote runtime — same protocol)
       try {
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
@@ -672,13 +595,15 @@ export class AgentOrchestrator {
         entry = this.deps.workbench.describeRuntime(routing.runtimeId)!
       }
       this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramTotalMB: resources.vram.totalMB })
-      const inst = await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
-      const deadline = Date.now() + 4000
-      while (Date.now() < deadline) {
-        if (controller.signal.aborted) throw new AgentOrchestratorError('cancelled', 'cancelled')
-        const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health failed' }))
-        if (h.ok) break
-        await new Promise((r) => setTimeout(r, 180))
+      // Owned runtime: blocking VRAM load. Remote runtimes own their
+      // lifecycle — no sidecar spawn, proceed straight to ready.
+      let regenOwnedEndpoint: string | null = null
+      const regenIsOwned = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
+      if (regenIsOwned) {
+        const inst = await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
+        regenOwnedEndpoint = this.deps.models.baseUrl(inst.id)
+      } else if (controller.signal.aborted) {
+        throw new AgentOrchestratorError('cancelled', 'cancelled')
       }
       const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
       this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramUsedMB: snapAfter.models.totalVramUsedMB, vramTotalMB: snapAfter.vram.totalMB, detail: routing.reason })
@@ -709,29 +634,7 @@ export class AgentOrchestrator {
         ...toRequestMessages(prior),
       ]
       this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId, runtimeId: routing.runtimeId })
-      const isLocalStub = entry.endpoint === 'local' || entry.id === 'local'
-      if (isLocalStub) {
-        const reasoningOn = !!(classification.reasoningRequired || opts?.reasoning)
-        if (reasoningOn) {
-          const rt = `Task: ${classification.kind} | Model: ${routing.modelId} | Regenerating response.`
-          this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: rt })
-          try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: rt }) } catch {}
-        }
-        const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()
-        const text = snippet ? `Regenerated: You said "${snippet}" — local stub for ${routing.modelId} (regenerated at ${new Date().toLocaleTimeString()}, task=${classification.kind}).` : `Local stub for ${routing.modelId} — regenerated response (task=${classification.kind}).`
-        if (!controller.signal.aborted) this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
-        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0 })
-        const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
-        const promptTokens = Math.ceil(content.length / 4)
-        const completionTokens = Math.ceil(text.length / 4)
-        try { this.deps.persistence.insertTokenUsage({ sessionId: sid, model: routing.modelId, promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }) } catch {}
-        appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: entry.id, method: 'POST', target: 'local/stub', latencyMs: Date.now() - startedAll, outcome: 'ok', modelId: routing.modelId, streamed: true })
-        this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
-        return { ok: true, assistantSeq, routing, classification }
-      }
-
-      const endpoint = entry.endpoint
+      const endpoint = regenOwnedEndpoint ?? entry.endpoint
       const model = remoteModelId(routing.modelId)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)
       let text = ''
@@ -803,23 +706,6 @@ export class AgentOrchestrator {
 
   private emit(sessionId: string, kind: ChatStreamEvent['kind'], extra: Partial<ChatStreamEvent> = {}): void {
     this.deps.emit({ sessionId, kind, ...extra })
-  }
-
-  private buildLocalStubResponse(prompt: string, modelId: string, classification: TaskClassification): string {
-    const shortId = modelId.split('/').pop()?.split(':').pop() || modelId
-    const lower = prompt.toLowerCase().trim()
-    let content: string
-    if (lower === 'hi' || lower === 'hello' || lower === 'hey' || lower === 'hi!' || lower === 'hello!') {
-      content = `Hello! I'm ${shortId} running locally on your machine via Sovara (task: ${classification.kind}). How can I help you today?`
-    } else if (lower.includes('help') && lower.length < 30) {
-      content = `I'm here to help! As ${shortId} running locally (task: ${classification.kind}), I can assist with code, writing, analysis, and more. What would you like to work on?`
-    } else if (prompt.length < 20) {
-      content = `Thanks for your message — "${prompt.slice(0, 100)}". I'm ${shortId} running locally (task: ${classification.kind}) and ready to help. What would you like to explore?`
-    } else {
-      const snippet = prompt.slice(0, 120).replace(/\s+/g, ' ')
-      content = `Got it — you said "${snippet}${prompt.length > 120 ? '…' : ''}". This is a local inference response from ${shortId} (task: ${classification.kind}, loaded in RAM via Sovara's ModelRuntimePort). With a configured HTTP runtime at http://127.0.0.1:1234 you'd get a full model-generated answer here — the agent pipeline (classify → route → load → generate) is working and the model is resident.`
-    }
-    return content
   }
 
   private async finishCancelled(
