@@ -24,10 +24,16 @@ interface Props {
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
   onCloseChat?: (id: string) => void
-  /** Open header tabs — defaults to recentChats. Closed tabs hide without deleting. */
   tabs?: Array<{ id: string; title: string }>
-  /** Hide the app sidebar (e.g. full-page settings). */
   hideSidebar?: boolean
+  activeModelName?: string
+  activeModelContext?: string
+  onToggleArtifacts?: () => void
+  artifactsOpen?: boolean
+  onToggleSplit?: () => void
+  splitOpen?: boolean
+  onShare?: () => void
+  hardwareStatus?: string
 }
 
 export function AppShell({
@@ -54,6 +60,14 @@ export function AppShell({
   onCloseChat = () => {},
   tabs,
   hideSidebar = false,
+  activeModelName,
+  activeModelContext,
+  onToggleArtifacts,
+  artifactsOpen = false,
+  onToggleSplit,
+  splitOpen = false,
+  onShare,
+  hardwareStatus,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -67,27 +81,36 @@ export function AppShell({
         selectedChatId={selectedChatId}
         onSelectChat={onSelectChat}
         onCloseChat={onCloseChat}
+        onNewChat={onNewChat}
+        activeModelName={activeModelName}
+        activeModelContext={activeModelContext}
+        onToggleArtifacts={onToggleArtifacts}
+        artifactsOpen={artifactsOpen}
+        onToggleSplit={onToggleSplit}
+        splitOpen={splitOpen}
+        onShare={onShare}
+        hardwareStatus={hardwareStatus}
       />
       <div className="layout">
         {sidebarOpen && !hideSidebar ? (
-        <Sidebar
-          activeId={activeNav}
-          onNavigate={onNavigate}
-          footer={footer}
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          selectedSessionId={selectedSessionId}
-          onSelectProject={onSelectProject}
-          onSelectSession={onSelectSession}
-          onNewProject={onNewProject}
-          onNewChat={onNewChat}
-          onNewProjectChat={onNewProjectChat}
-          onRenameChat={onRenameChat}
-          onDeleteChat={onDeleteChat}
-          recentChats={recentChats}
-          selectedChatId={selectedChatId}
-          onSelectChat={onSelectChat}
-        />
+          <Sidebar
+            activeId={activeNav}
+            onNavigate={onNavigate}
+            footer={footer}
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            selectedSessionId={selectedSessionId}
+            onSelectProject={onSelectProject}
+            onSelectSession={onSelectSession}
+            onNewProject={onNewProject}
+            onNewChat={onNewChat}
+            onNewProjectChat={onNewProjectChat}
+            onRenameChat={onRenameChat}
+            onDeleteChat={onDeleteChat}
+            recentChats={recentChats}
+            selectedChatId={selectedChatId}
+            onSelectChat={onSelectChat}
+          />
         ) : null}
         <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content">
           {children}

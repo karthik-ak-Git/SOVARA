@@ -1,38 +1,50 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import {
   MessageSquare,
   Database,
-  Bot,
-  Sparkles,
+  Globe,
   Library,
   Cpu,
+  Bot,
+  Sparkles,
+  Link2,
   Settings,
   FolderOpen,
   Plus,
   Pencil,
-  ChevronDown,
+  Search,
   MoreHorizontal,
   Trash2,
+  Shield,
   type LucideIcon,
 } from 'lucide-react'
 
-export type NavId = 'chat' | 'models' | 'agents' | 'skills' | 'library' | 'runtime' | 'settings'
+export type NavId =
+  | 'chat'
+  | 'models'
+  | 'explore'
+  | 'library'
+  | 'runtime'
+  | 'agents'
+  | 'skills'
+  | 'connections'
+  | 'settings'
 
 interface NavItem {
   id: NavId
   label: string
   icon: LucideIcon
-  disabled?: boolean
 }
 
-const NAV: NavItem[] = [
+const PRIMARY_NAV: NavItem[] = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'models', label: 'Models', icon: Database },
+  { id: 'explore', label: 'Explorer', icon: Globe },
+  { id: 'library', label: 'Library', icon: Library },
+  { id: 'runtime', label: 'Runtime', icon: Cpu },
   { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'skills', label: 'Skills', icon: Sparkles, disabled: true },
-  { id: 'library', label: 'Library', icon: Library, disabled: true },
-  { id: 'runtime', label: 'Runtime', icon: Cpu, disabled: true },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'connections', label: 'Connections', icon: Link2 },
 ]
 
 interface ProjectItem {
@@ -44,6 +56,7 @@ interface ProjectItem {
 interface ChatItem {
   id: string
   title: string
+  updatedAt?: number
 }
 
 interface Props {
@@ -63,6 +76,7 @@ interface Props {
   recentChats?: ChatItem[]
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
+  onToggleSidebar?: () => void
 }
 
 function ChatRow({
@@ -90,9 +104,13 @@ function ChatRow({
     if (!menuOpen) return
     const onDoc = (e: MouseEvent): void => {
       if (
-        menuRef.current && !menuRef.current.contains(e.target as Node) &&
-        dotsRef.current && !dotsRef.current.contains(e.target as Node)
-      ) setMenuOpen(false)
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node) &&
+        dotsRef.current &&
+        !dotsRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false)
+      }
     }
     const onScroll = (): void => setMenuOpen(false)
     document.addEventListener('mousedown', onDoc)
@@ -105,7 +123,6 @@ function ChatRow({
 
   const toggleMenu = (): void => {
     if (!menuOpen && dotsRef.current) {
-      // position:fixed — escapes the sidebar's overflow-x:hidden clipping
       const r = dotsRef.current.getBoundingClientRect()
       setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - 160) })
     }
@@ -237,9 +254,106 @@ export function Sidebar({
   selectedChatId,
   onSelectChat,
 }: Props): React.JSX.Element {
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  // Quick keyboard shortcut "/" to focus search
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const filteredProjects = useMemo(() => {
+    if (!searchQuery.trim()) return projects
+    const q = searchQuery.toLowerCase()
+    return projects.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.sessions.some((s) => s.title.toLowerCase().includes(q))
+    )
+  }, [projects, searchQuery])
+
+  const filteredRecentChats = useMemo(() => {
+    if (!searchQuery.trim()) return recentChats
+    const q = searchQuery.toLowerCase()
+    return recentChats.filter((c) => c.title.toLowerCase().includes(q))
+  }, [recentChats, searchQuery])
+
   return (
     <nav className="sidebar" aria-label="Primary navigation">
-      {/* Projects section — each project is an isolated scope: own folder access + own memory */}
+      {/* Workspace Brand Header */}
+      <div className="sidebar-workspace-header">
+        <div className="sidebar-workspace-info">
+          <div className="sidebar-workspace-avatar">
+            <Shield size={16} className="text-primary" />
+          </div>
+          <div className="sidebar-workspace-meta">
+            <span className="sidebar-workspace-name">Sovora Workspace</span>
+            <span className="sidebar-workspace-status">
+              <span className="status-dot" aria-hidden>●</span> Sovereign Local AI
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Action: Start New Chat */}
+      <div className="sidebar-action-wrap">
+        <button
+          type="button"
+          className="sidebar-new-chat-btn"
+          aria-label="New Chat"
+          onClick={onNewChat}
+        >
+          <div className="sidebar-new-chat-label">
+            <Plus size={16} aria-hidden />
+            <span>New Chat</span>
+          </div>
+          <span className="sidebar-shortcut-badge">⌘K</span>
+        </button>
+      </div>
+
+      {/* Search Input */}
+      <div className="sidebar-search-wrap">
+        <Search size={14} className="sidebar-search-icon" aria-hidden />
+        <input
+          ref={searchInputRef}
+          type="search"
+          className="sidebar-search-input"
+          placeholder="Search chats & docs..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          aria-label="Search chats and projects"
+        />
+        <span className="sidebar-search-key">/</span>
+      </div>
+
+      {/* Core Nav Views */}
+      <div className="nav-section sidebar-nav-items">
+        {PRIMARY_NAV.map((item) => {
+          const Icon = item.icon
+          const isActive = activeId === item.id
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`nav-item ${isActive ? 'active' : ''}`}
+              aria-current={isActive ? 'page' : undefined}
+              onClick={() => onNavigate(item.id)}
+            >
+              <Icon size={15} aria-hidden className="nav-icon" />
+              <span className="nav-text">{item.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="sidebar-divider" />
+
+      {/* Projects section */}
       <div className="nav-section">
         <div className="nav-label">
           <span>Projects</span>
@@ -253,13 +367,13 @@ export function Sidebar({
             New Project
           </button>
         </div>
-        {projects.length === 0 ? (
+        {filteredProjects.length === 0 ? (
           <div className="nav-empty-hint">
             <FolderOpen size={14} aria-hidden />
-            <span className="nav-empty-text">No projects yet</span>
+            <span className="nav-empty-text">{searchQuery ? 'No matching projects' : 'No projects yet'}</span>
           </div>
         ) : (
-          projects.map((project) => (
+          filteredProjects.map((project) => (
             <div key={project.id} className="nav-project-block">
               <div className="nav-project-row">
                 <button
@@ -297,48 +411,56 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Chats section — normal (global) chats, separate from project chats */}
+      {/* Chats section */}
       <div className="nav-section">
         <div className="nav-label">
           <span>Chats</span>
-          <button type="button" className="nav-label-action" aria-label="Chats menu">
-            <ChevronDown size={12} aria-hidden />
-          </button>
+        </div>
+        {filteredRecentChats.length === 0 ? (
+          <div className="nav-empty-hint">
+            <MessageSquare size={14} aria-hidden />
+            <span className="nav-empty-text">{searchQuery ? 'No matching chats' : 'No recent chats'}</span>
+          </div>
+        ) : (
+          filteredRecentChats.map((chat) => (
+            <ChatRow
+              key={chat.id}
+              chat={chat}
+              active={selectedChatId === chat.id}
+              onSelect={() => onSelectChat?.(chat.id)}
+              onRename={onRenameChat}
+              onDelete={onDeleteChat}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Footer: User profile & Settings */}
+      <div className="sidebar-foot">
+        <div className="sidebar-operator-info">
+          <div className="sidebar-operator-avatar">
+            <Cpu size={14} />
+          </div>
+          <div className="sidebar-operator-meta">
+            <span className="sidebar-operator-name">Local Operator</span>
+            <span className="sidebar-operator-tag">Sovora Desktop</span>
+          </div>
         </div>
         <button
           type="button"
-          className="nav-item"
-          onClick={onNewChat}
-        >
-          <Pencil size={14} aria-hidden className="nav-icon" />
-          <span className="nav-text">New Chat</span>
-        </button>
-        {recentChats.map((chat) => (
-          <ChatRow
-            key={chat.id}
-            chat={chat}
-            active={selectedChatId === chat.id}
-            onSelect={() => onSelectChat?.(chat.id)}
-            onRename={onRenameChat}
-            onDelete={onDeleteChat}
-          />
-        ))}
-      </div>
-
-      {/* Settings at bottom */}
-      <div className="sidebar-foot">
-        <button
-          type="button"
-          className={`nav-item ${activeId === 'settings' ? 'active' : ''}`}
+          className={`nav-item sidebar-settings-btn ${activeId === 'settings' ? 'active' : ''}`}
           aria-current={activeId === 'settings' ? 'page' : undefined}
+          aria-label="Settings"
+          title="Settings"
           onClick={() => onNavigate('settings')}
         >
           <Settings size={16} aria-hidden className="nav-icon" />
           <span className="nav-text">Settings</span>
         </button>
+        {footer}
       </div>
     </nav>
   )
 }
 
-export const NAV_ITEMS = NAV
+export const NAV_ITEMS = PRIMARY_NAV
