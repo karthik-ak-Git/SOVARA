@@ -56,3 +56,4 @@ screenshots/
 
 # Test folder traces
 test/
+.opencode
