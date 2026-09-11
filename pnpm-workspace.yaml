@@ -1,5 +1,7 @@
 packages:
   - apps/*
+  # Reference backup of the previous desktop implementation — not a package.
+  - '!apps/desktop1'
 allowBuilds:
   electron: true
   esbuild: true
