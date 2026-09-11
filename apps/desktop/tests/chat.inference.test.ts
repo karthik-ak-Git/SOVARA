@@ -579,9 +579,9 @@ describe('Commit 7 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning)
+        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning), nextServer (loopback health-check of the internal Next.js server)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts)$/)
+        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts)$/)
       }
     }
   })

@@ -52,13 +52,14 @@ export function expectFetch(
   path: string,
   body?: Record<string, unknown>
 ): void {
-  const call = fetchMock.mock.calls.find(
-    ([input, init]: [unknown, { method?: string } | undefined]) =>
-      String(input).split('?')[0] === path && (init?.method ?? 'GET').toUpperCase() === method.toUpperCase()
-  )
+  const call = (fetchMock.mock.calls as unknown[][]).find((args) => {
+    const [input, init] = args as [unknown, { method?: string; body?: string } | undefined]
+    return String(input).split('?')[0] === path && (init?.method ?? 'GET').toUpperCase() === method.toUpperCase()
+  })
   if (!call) throw new Error(`expected fetch ${method} ${path} — not called`)
   if (body !== undefined) {
-    const sent = JSON.parse((call[1]?.body as string) ?? '{}') as Record<string, unknown>
+    const init = call[1] as { body?: string } | undefined
+    const sent = JSON.parse(init?.body ?? '{}') as Record<string, unknown>
     for (const [k, v] of Object.entries(body)) {
       if (JSON.stringify(sent[k]) !== JSON.stringify(v)) {
         throw new Error(

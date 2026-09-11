@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Sidebar } from '../../web/src/components/layout/Sidebar'
@@ -194,11 +194,26 @@ describe('Renderer shell — navigation & layout', () => {
     expect(screen.getByRole('tab', { name: /Hello/ })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /New tab/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /Sovara Session/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    // Browser context (no preload bridge): native controls stay hidden.
+    expect(screen.queryByRole('button', { name: /Minimize/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Close Hello' }))
     expect(onCloseChat).toHaveBeenCalledWith('c1')
+    cleanup()
+
+    // Electron shell (preload bridge present): native Min/Max/Close render.
+    // Detection is module-level, so the bridge must exist before a fresh
+    // import of the module.
+    ;(window as unknown as Record<string, unknown>).sovara = { invoke: vi.fn() }
+    try {
+      vi.resetModules()
+      const { TopBar: ShellTopBar } = await import('../../web/src/components/layout/TopBar')
+      render(<ShellTopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" />)
+      expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    } finally {
+      delete (window as unknown as Record<string, unknown>).sovara
+    }
   })
 
   it('AppShell renders topbar, sidebar, and main', () => {

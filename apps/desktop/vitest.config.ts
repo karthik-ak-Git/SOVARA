@@ -8,9 +8,17 @@ export default defineConfig({
     passWithNoTests: true,
     setupFiles: ['tests/setup.ts']
   },
+  // Web components use the automatic JSX runtime (no `import React`) —
+  // match Next.js/SWC behavior so UI tests can render them.
+  esbuild: {
+    jsx: 'automatic',
+  },
   resolve: {
-    alias: {
-      '@shared': resolve(__dirname, 'src/shared')
-    }
+    // `@shared` = desktop shared types; `@/*` = Next.js web app source
+    // (regex so scoped packages like `@testing-library` still resolve).
+    alias: [
+      { find: '@shared', replacement: resolve(__dirname, 'src/shared') },
+      { find: /^@\//, replacement: `${resolve(__dirname, '../web/src')}/` },
+    ],
   }
 })

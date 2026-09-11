@@ -16,10 +16,10 @@
     "jsxImportSource": "react",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
-      "@shared/*": ["./src/shared/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["../web/src/*"]
     },
     "outDir": "out",
-    "rootDir": ".",
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,

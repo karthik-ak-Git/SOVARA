@@ -9,6 +9,8 @@ import { MessageBubble } from '../../web/src/features/chat/MessageBubble'
 import { ChatView } from '../../web/src/features/chat/ChatView'
 import { deriveMessages } from '../../web/src/features/chat/conversation'
 import type { ChatStreamEvent } from '../src/shared/types/chat'
+import { mockApi, expectFetch } from './helpers/http'
+import { streamFor } from './helpers/sse'
 
 afterEach(() => cleanup())
 
@@ -97,37 +99,34 @@ describe('Commit 7 — ChatView states', () => {
 })
 
 describe('Commit 7 — delta subscription flow', () => {
-  let listeners: Array<(ev: ChatStreamEvent) => void>
-  let invoke: ReturnType<typeof vi.fn>
+  const sessionList = [{ id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 }]
+  const baseRoutes: Record<string, unknown> = {
+    'GET /api/sessions': sessionList,
+    'GET /api/sessions/s1/events': [{ seq: 0, time: 1, type: 'user/message', data: { content: 'q' } }],
+    'GET /api/models/active': {
+      selection: { runtimeId: 'rt-1', modelId: 'rt-1:m' },
+      available: true,
+      displayName: 'm',
+    },
+  }
 
   beforeEach(() => {
-    listeners = []
-    invoke = vi.fn(async (ch: string) => {
-      if (ch === 'sessions:list') return [{ id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 }]
-      if (ch === 'sessions:getEvents') return [{ seq: 0, time: 1, type: 'user/message', data: { content: 'q' } }]
-      if (ch === 'models:getActiveModel') {
-        return { selection: { runtimeId: 'rt-1', modelId: 'rt-1:m' }, available: true, displayName: 'm' }
-      }
-      if (ch === 'chat:send') {
-        // Simulate main pushing deltas, then resolving on completion.
-        for (const t of ['He', 'llo']) {
-          for (const l of listeners) l({ sessionId: 's1', kind: 'assistant-delta', text: t })
-        }
-        for (const l of listeners) l({ sessionId: 's1', kind: 'assistant-done', seq: 1 })
-        return { ok: true, userSeq: 0, assistantSeq: 1 }
-      }
-      return null
-    })
-    ;(window as unknown as { sovara: unknown }).sovara = {
-      invoke,
-      on: vi.fn((_ch: string, cb: (ev: ChatStreamEvent) => void) => {
-        listeners.push(cb)
-        return () => {}
-      }),
-    } as unknown as Window['sovara']
+    mockApi(baseRoutes)
   })
 
   it('accumulates deltas transiently and reloads on done', async () => {
+    const fetchMock = mockApi({
+      ...baseRoutes,
+      'POST /api/chat': () => {
+        // Deltas stream over SSE while POST is in flight, exactly as the
+        // internal server behaves (deltas via stream, durable event on done).
+        const stream = streamFor('/api/chat/stream')
+        stream.emit({ sessionId: 's1', kind: 'assistant-delta', text: 'He' })
+        stream.emit({ sessionId: 's1', kind: 'assistant-delta', text: 'llo' })
+        stream.emit({ sessionId: 's1', kind: 'assistant-done', seq: 1 })
+        return { ok: true, userSeq: 0, assistantSeq: 1 }
+      },
+    })
     const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
@@ -139,23 +138,21 @@ describe('Commit 7 — delta subscription flow', () => {
     await waitFor(() => expect(result.current.events).toHaveLength(1))
     expect(result.current.streamingText).toBe('')
     expect(result.current.phase).toBe('idle')
-    expect(invoke).toHaveBeenCalledWith('chat:send', { sessionId: 's1', content: 'hello' })
+    expectFetch(fetchMock, 'POST', '/api/chat', { sessionId: 's1', content: 'hello' })
   })
 
-  it('routes cancel to chat:cancel for the selected session', async () => {    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
+  it('routes cancel to chat:cancel for the selected session', async () => {
+    const fetchMock = mockApi({
+      ...baseRoutes,
+      // Hanging send: POST never resolves, mirroring a generation in flight.
+      'POST /api/chat': () => new Promise(() => {}),
+      'POST /api/chat/cancel': { cancelled: true },
+    })
+    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
     // Force busy via a hanging send.
-    invoke.mockImplementation(async (ch: string) => {
-      if (ch === 'chat:send') {
-        await new Promise(() => {})
-        return { ok: true, userSeq: 0, assistantSeq: 1 }
-      }
-      if (ch === 'sessions:getEvents') return []
-      if (ch === 'models:getActiveModel') return { selection: null, available: false }
-      return null
-    })
     void act(() => {
       void result.current.handleSend('hanging')
     })
@@ -163,31 +160,27 @@ describe('Commit 7 — delta subscription flow', () => {
     await act(async () => {
       await result.current.handleCancel()
     })
-    expect(invoke).toHaveBeenCalledWith('chat:cancel', { sessionId: 's1' })
+    expectFetch(fetchMock, 'POST', '/api/chat/cancel', { sessionId: 's1' })
   })
 
   it('never renders another session events after switching mid-send', async () => {
     let resolveSend!: (v: unknown) => void
-    invoke.mockImplementation(async (ch: string, payload: unknown) => {
-      if (ch === 'sessions:list') {
-        return [
-          { id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 },
-          { id: 's2', title: 'S2', createdAt: 2, updatedAt: 2 },
-        ]
-      }
-      if (ch === 'sessions:getEvents') {
-        return payload === 's2'
-          ? [{ seq: 0, time: 1, type: 'user/message', data: { content: 's2 question' } }]
-          : [{ seq: 0, time: 1, type: 'user/message', data: { content: 's1 question' } }]
-      }
-      if (ch === 'models:getActiveModel') return { selection: null, available: false }
-      if (ch === 'chat:send') {
-        await new Promise((resolve) => {
+    mockApi({
+      'GET /api/sessions': [
+        { id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 },
+        { id: 's2', title: 'S2', createdAt: 2, updatedAt: 2 },
+      ],
+      'GET /api/sessions/s1/events': [
+        { seq: 0, time: 1, type: 'user/message', data: { content: 's1 question' } },
+      ],
+      'GET /api/sessions/s2/events': [
+        { seq: 0, time: 1, type: 'user/message', data: { content: 's2 question' } },
+      ],
+      'GET /api/models/active': { selection: null, available: false },
+      'POST /api/chat': () =>
+        new Promise((resolve) => {
           resolveSend = resolve
-        })
-        return { ok: true, userSeq: 0, assistantSeq: 1 }
-      }
-      return null
+        }),
     })
     const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
     const { renderHook } = await import('@testing-library/react')

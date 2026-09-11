@@ -36,9 +36,9 @@ describe('Commit 1 sovereignty guards', () => {
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned llama.cpp binary provisioning — inference itself stays loopback)
+        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned llama.cpp binary provisioning — inference itself stays loopback), nextServer (loopback health-check of the internal Next.js server)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts)$/)
       }
     }
   })
