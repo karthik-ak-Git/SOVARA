@@ -235,6 +235,7 @@ export function App(): React.JSX.Element {
             reasoningEnabled={reasoningEnabled}
             onReasoningToggle={setReasoningEnabled}
             onSelectModel={(rid,mid)=>{ console.info('[app] select', rid, mid); void workbench.handleSelect(rid,mid).then(()=>chat.refreshModelStatus()) }}
+            loadingProgress={chat.loadingProgress}
           />
         ) : null}
 

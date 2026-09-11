@@ -351,6 +351,7 @@ export function useChatSession() {
     busy,
     phase,
     streamingText,
+    loadingProgress,
     error,
     model,
     dismissError,

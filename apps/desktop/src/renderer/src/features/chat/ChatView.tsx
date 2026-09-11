@@ -3,9 +3,10 @@ import { MessageList } from './MessageList'
 import { Composer, type FileAttachment } from './Composer'
 import type { SessionEventLike } from './conversation'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
-import type { ChatPhase } from './useChatSession'
+import type { ChatPhase, ModelLoadingState } from './useChatSession'
 import type { ExecMode } from '../../components/ui/PermissionControl'
 import { MessageSquare, Cpu } from 'lucide-react'
+import { ModelLoadingIndicator } from './components/ModelLoadingIndicator'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -38,6 +39,7 @@ interface ChatViewProps {
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
   onSelectModel?: (runtimeId: string, modelId: string) => void
+  loadingProgress?: ModelLoadingState | null
 }
 
 export function ChatView({
@@ -71,6 +73,7 @@ export function ChatView({
   reasoningEnabled = false,
   onReasoningToggle = () => {},
   onSelectModel,
+  loadingProgress = null,
 }: ChatViewProps): ReactElement {
   const streaming = busy && phase === 'streaming'
   const hasConversation = !!selectedId
@@ -161,6 +164,7 @@ export function ChatView({
           </div>
 
           <div className="chat-empty-composer">
+            {loadingProgress ? <ModelLoadingIndicator progress={loadingProgress} /> : null}
             <Composer
               value={draft}
               onChange={setDraft}
@@ -208,6 +212,8 @@ export function ChatView({
               </div>
             </div>
           ) : null}
+
+          {loadingProgress ? <ModelLoadingIndicator progress={loadingProgress} /> : null}
 
           <MessageList
             events={events}

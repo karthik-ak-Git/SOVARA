@@ -12,5 +12,8 @@
     "build:win": "pnpm --filter @sovara/desktop build:win",
     "typecheck": "pnpm --filter @sovara/desktop typecheck"
   },
-  "pnpm": {}
+  "pnpm": {},
+  "dependencies": {
+    "node-llama-cpp": "^3.20.0"
+  }
 }
