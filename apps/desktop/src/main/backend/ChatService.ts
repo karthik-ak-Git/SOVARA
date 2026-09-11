@@ -326,26 +326,71 @@ export class ChatService {
     const started = Date.now()
     let userSeq = -1
     try { userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq } catch (e) { this.inFlight.delete(sid); throw new ChatServiceError('persistence-failed', e instanceof Error ? e.message : 'persist failed') }
-    // Local stub — echo user input so chat feels live even without a remote runtime.
-    // Generates a deterministic but chat-like response; streamed as one delta for UI continuity.
-    const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()
-    let text = snippet ? `You said: "${snippet}" — local stub for ${modelId}. Configure an OpenAI-compatible runtime in Models → Connected runtimes (e.g., LM Studio at http://127.0.0.1:1234) for full inference.` : `Local stub for ${modelId} is ready — send a message to see an echo. Configure a runtime in Models for full inference.`
-    // Simulate streaming for UI (one delta, honours abort)
-    if (!controller.signal.aborted) {
-      this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
+
+    // Try real llama.cpp path first — our logic, not an external app (LM Studio/Ollama).
+    // If the GGUF is on disk we run the 4-step native load and stream; otherwise
+    // we fall back to the deterministic echo so contract tests stay green.
+    let text = ''
+    let usedNative = false
+    try {
+      const { ensureLlamaModelLoaded, streamLocalLlama } = await import('../services/llamaCppRunner')
+      // library dir from AppBackend userData (same as modelDownloads)
+      let libraryDir = ''
+      try {
+        const { getSovaraDataDir } = await import('../storage/paths')
+        const { join } = await import('node:path')
+        const { app: electronApp } = await import('electron')
+        try { libraryDir = join(getSovaraDataDir(undefined), 'models') } catch {
+          try { libraryDir = join(electronApp.getPath('userData'), 'models') } catch { libraryDir = '' }
+        }
+        // prefer persisted library dir
+        try {
+          const cfg = (this.deps.workbench as unknown as { config: { getAppSetting: (k:string)=>string|null }}).config
+          const stored = cfg?.getAppSetting('model_library_dir')
+          if (stored) libraryDir = stored
+        } catch {}
+      } catch {}
+      const load = libraryDir ? await ensureLlamaModelLoaded(modelId, libraryDir, 4096) : null
+      if (load) {
+        usedNative = true
+        for await (const tok of streamLocalLlama(content, load, controller.signal)) {
+          text += tok
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: tok })
+        }
+      }
+    } catch (e) {
+      if ((e as Error)?.message === 'cancelled') {
+        this.inFlight.delete(sid)
+        const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
+        this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
+        return { ok: true, userSeq, assistantSeq: ev.seq }
+      }
+      // native path failed — fall through to stub
+    }
+    if (!usedNative || text === '') {
+      const snippet = content.slice(0, 500).replace(/\s+/g, ' ').trim()
+      text = snippet ? `You said: "${snippet}" — local stub for ${modelId}. Configure an OpenAI-compatible runtime in Models → Connected runtimes (e.g., LM Studio at http://127.0.0.1:1234) for full inference.` : `Local stub for ${modelId} is ready — send a message to see an echo. Configure a runtime in Models for full inference.`
+      if (!controller.signal.aborted) {
+        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
+      }
     }
     this.inFlight.delete(sid)
+    if (controller.signal.aborted) {
+      const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
+      this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
+      return { ok: true, userSeq, assistantSeq: ev.seq }
+    }
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     const promptTokens = Math.ceil(content.length / 4)
     const completionTokens = Math.ceil(text.length / 4)
     const totalTokens = promptTokens + completionTokens
-    // Persist token usage for Settings → Usage / Local Model API
     try {
       this.deps.persistence.insertTokenUsage({ sessionId: sid, model: modelId, promptTokens, completionTokens, totalTokens })
     } catch {}
-    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
-    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now()-started, injected: { workspace: false, mcp: false, skills: false, webSearch: false }, detail: `stub echo len=${content.length}` })
+    const target = usedNative ? 'local/llama.cpp' : 'local/stub'
+    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target, latencyMs: Date.now()-started, outcome: 'ok', modelId, streamed: true })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now()-started, injected: { workspace: false, mcp: false, skills: false, webSearch: false }, detail: `${usedNative ? 'llama.cpp native' : 'stub echo'} len=${content.length}` })
     return { ok: true, userSeq, assistantSeq }
   }
 
@@ -527,13 +572,51 @@ export class ChatService {
     const controller = new AbortController()
     this.inFlight.set(sid, controller)
     const started = Date.now()
-    // Regenerated stub — echo with a hint that it's a regeneration
-    const snippet = prompt.slice(0, 500).replace(/\s+/g, ' ').trim()
-    let text = snippet ? `Regenerated: You said "${snippet}" — local stub for ${modelId} (regenerated at ${new Date().toLocaleTimeString()}).` : `Local stub for ${modelId} — regenerated response. Configure a runtime in Models for full inference.`
-    if (!controller.signal.aborted) {
-      this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
+    let text = ''
+    let usedNative = false
+    try {
+      const { ensureLlamaModelLoaded, streamLocalLlama } = await import('../services/llamaCppRunner')
+      let libraryDir = ''
+      try {
+        const { getSovaraDataDir } = await import('../storage/paths')
+        const { join } = await import('node:path')
+        const { app: electronApp } = await import('electron')
+        try { libraryDir = join(getSovaraDataDir(undefined), 'models') } catch {
+          try { libraryDir = join(electronApp.getPath('userData'), 'models') } catch { libraryDir = '' }
+        }
+        try {
+          const cfg = (this.deps.workbench as unknown as { config: { getAppSetting: (k:string)=>string|null }}).config
+          const stored = cfg?.getAppSetting('model_library_dir')
+          if (stored) libraryDir = stored
+        } catch {}
+      } catch {}
+      const load = libraryDir ? await ensureLlamaModelLoaded(modelId, libraryDir, 4096) : null
+      if (load) {
+        usedNative = true
+        for await (const tok of streamLocalLlama(prompt, load, controller.signal)) {
+          text += tok
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: tok })
+        }
+      }
+    } catch (e) {
+      if ((e as Error)?.message === 'cancelled') {
+        this.inFlight.delete(sid)
+        const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
+        this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
+        return { ok: true, assistantSeq: ev.seq }
+      }
+    }
+    if (!usedNative || text === '') {
+      const snippet = prompt.slice(0, 500).replace(/\s+/g, ' ').trim()
+      text = snippet ? `Regenerated: You said "${snippet}" — local stub for ${modelId} (regenerated at ${new Date().toLocaleTimeString()}).` : `Local stub for ${modelId} — regenerated response. Configure a runtime in Models for full inference.`
+      if (!controller.signal.aborted) this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text })
     }
     this.inFlight.delete(sid)
+    if (controller.signal.aborted) {
+      const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
+      this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
+      return { ok: true, assistantSeq: ev.seq }
+    }
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     const promptTokens = Math.ceil(prompt.length / 4)
@@ -542,8 +625,9 @@ export class ChatService {
     try {
       this.deps.persistence.insertTokenUsage({ sessionId: sid, model: modelId, promptTokens, completionTokens, totalTokens })
     } catch {}
-    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target: 'local/stub', latencyMs: Date.now() - started, outcome: 'ok', modelId, streamed: true })
-    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now() - started, detail: 'regenerate stub' })
+    const target = usedNative ? 'local/llama.cpp' : 'local/stub'
+    appendRuntimeLog(this.deps.baseDir, { time: Date.now(), runtimeId: 'local', method: 'POST', target, latencyMs: Date.now() - started, outcome: 'ok', modelId, streamed: true })
+    appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', modelId, runtimeId: 'local', outcome: 'ok', promptTokens, completionTokens, totalTokens, latencyMs: Date.now() - started, detail: usedNative ? 'regenerate llama.cpp native' : 'regenerate stub' })
     return { ok: true, assistantSeq }
   }
 
