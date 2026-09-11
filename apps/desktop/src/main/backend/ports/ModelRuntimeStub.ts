@@ -49,6 +49,25 @@ export class ModelRuntimeStub implements ModelRuntimePort {
   }
   async listInstances(): Promise<ModelInstance[]> { return [...instances.values()] }
   async probeRuntime(runtimeId: string): Promise<{ available: boolean; version?: string; path?: string }> { void runtimeId; return { available: false } }
+  async ensureHealthy(modelId: ModelId, opts?: { ctxLen?: number; runtimeId?: string }): Promise<ModelInstance> {
+    return this.load(modelId, opts)
+  }
+  noteRequestStart(instanceId: InstanceId): void {
+    const inst = instances.get(instanceId as string)
+    if (!inst) return
+    inst.activeRequests = (inst.activeRequests ?? 0) + 1
+    if (inst.status === 'loaded' || inst.status === 'idle') inst.status = 'generating'
+    inst.lastActiveAt = Date.now()
+  }
+  noteRequestEnd(instanceId: InstanceId, info?: { ttftMs?: number; tokensPerSec?: number }): void {
+    const inst = instances.get(instanceId as string)
+    if (!inst) return
+    inst.activeRequests = Math.max(0, (inst.activeRequests ?? 1) - 1)
+    if (inst.status === 'generating' && (inst.activeRequests ?? 0) === 0) inst.status = 'loaded'
+    if (typeof info?.ttftMs === 'number') inst.ttftMs = info.ttftMs
+    if (typeof info?.tokensPerSec === 'number' && inst.metrics) inst.metrics.tokensPerSec = info.tokensPerSec
+    inst.lastActiveAt = Date.now()
+  }
 }
 // helper for ChatService/Workbench to register an actual loaded model (e.g. from llama.cpp)
 // Animates: loading → GPU upload (0→target VRAM) → loaded. Visible in LoadedInstancesSection with live MetricBar.

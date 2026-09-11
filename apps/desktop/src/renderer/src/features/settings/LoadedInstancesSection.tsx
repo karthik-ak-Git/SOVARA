@@ -31,10 +31,13 @@ function formatBytes(mb?: number): string {
 function statusLabel(status: ModelInstance['status']): string {
   switch (status) {
     case 'loading': return 'Loading…'
-    case 'loaded': return 'Loaded'
+    case 'loaded':
+    case 'active': return 'Loaded'
     case 'idle': return 'Idle'
-    case 'generating': return 'Generating'
-    case 'unloading': return 'Unloading…'
+    case 'generating':
+    case 'busy': return 'Generating'
+    case 'unloading':
+    case 'evicting': return 'Unloading…'
     case 'unloaded': return 'Unloaded'
     case 'error': return 'Error'
     case 'failed': return 'Failed'
@@ -46,10 +49,13 @@ function statusLabel(status: ModelInstance['status']): string {
 function statusVariant(status: ModelInstance['status']): 'success' | 'warn' | 'neutral' | 'info' {
   switch (status) {
     case 'loaded':
+    case 'active':
     case 'idle': return 'success'
-    case 'generating': return 'info'
+    case 'generating':
+    case 'busy': return 'info'
     case 'loading':
-    case 'unloading': return 'info'
+    case 'unloading':
+    case 'evicting': return 'info'
     case 'error':
     case 'failed':
     case 'crashed': return 'warn'
@@ -115,13 +121,32 @@ function InstanceCard({ instance, onUnload }: { instance: ModelInstance; onUnloa
         <span className="instance-meta-item">Runtime: {instance.runtimeId}</span>
         <span className="instance-meta-item">Context: {instance.ctxLen.toLocaleString()} tokens</span>
         {instance.port ? <span className="instance-meta-item">Port: {instance.port}</span> : null}
+        <span className="instance-meta-item" title="Running instance id">Instance: {instance.id}</span>
+        {instance.pid ? <span className="instance-meta-item">PID: {instance.pid}</span> : null}
+        {instance.hardwareDevice ? <span className="instance-meta-item">Backend: {instance.hardwareDevice}</span> : null}
+        {instance.endpoint ? <span className="instance-meta-item" title={instance.endpoint}>Endpoint: {instance.endpoint.replace('http://127.0.0.1:', ':')}</span> : null}
+        {instance.configuration?.nGpuLayers !== undefined ? <span className="instance-meta-item">Offload: {instance.configuration.nGpuLayers === 999 ? 'full' : instance.configuration.nGpuLayers} layers</span> : instance.offloadedLayers !== undefined ? <span className="instance-meta-item">Offload: {instance.offloadedLayers} layers</span> : null}
+        {(instance.activeRequests ?? 0) > 0 ? <span className="instance-meta-item">Active requests: {instance.activeRequests}</span> : null}
+        {instance.health && instance.health !== 'unknown' ? <span className="instance-meta-item">Health: {instance.health}</span> : null}
       </div>
 
       <div className="instance-metrics-grid">
         <MetricBar label="GPU" value={m?.gpuUtilization} max={100} unit="%" />
-        <MetricBar label="VRAM" value={m?.vramUsedMB} max={m?.vramUsedMB !== undefined ? Math.max(m.vramUsedMB * 1.2, 1024) : 1024} unit=" MB" />
+        <MetricBar label={instance.vramEstimated || m?.vramEstimated ? 'VRAM (est.)' : 'VRAM'} value={m?.vramUsedMB} max={m?.vramUsedMB !== undefined ? Math.max(m.vramUsedMB * 1.2, 1024) : 1024} unit=" MB" />
         <MetricBar label="CPU" value={m?.cpuUsage} max={100} unit="%" />
         <MetricBar label="RAM" value={m?.ramUsedMB} max={m?.ramUsedMB !== undefined ? Math.max(m.ramUsedMB * 1.5, 2048) : 2048} unit=" MB" />
+      </div>
+
+      <div className="instance-card-meta instance-card-meta--perf">
+        {instance.loadTimeMs !== undefined ? <span className="instance-meta-item">Load: {(instance.loadTimeMs / 1000).toFixed(1)}s</span> : null}
+        {instance.ttftMs !== undefined ? <span className="instance-meta-item">TTFT: {(instance.ttftMs / 1000).toFixed(2)}s</span> : null}
+        {instance.lastActiveAt ? <span className="instance-meta-item">Last active: {formatUptime(instance.lastActiveAt)} ago</span> : null}
+        {instance.estimatedVramMB !== undefined && instance.observedVramMB !== undefined ? (
+          <span className="instance-meta-item" title="Preflight estimate vs observed allocation">VRAM est. {(instance.estimatedVramMB / 1024).toFixed(1)}G / obs. {(instance.observedVramMB / 1024).toFixed(1)}G</span>
+        ) : instance.estimatedVramMB !== undefined ? (
+          <span className="instance-meta-item">VRAM est. {(instance.estimatedVramMB / 1024).toFixed(1)}G</span>
+        ) : null}
+        {instance.lastError ? <span className="instance-meta-item instance-meta-item--error" title={instance.lastError}>Error: {instance.lastError.slice(0, 120)}</span> : null}
       </div>
 
       {m?.tokensPerSec !== undefined ? (

@@ -64,7 +64,6 @@ interface TrackedInstance extends ModelInstance {
   port: number
   modelPath: string
   fileSizeBytes: number
-  estimatedVramMB: number
 }
 
 function instanceIdFor(modelId: string): InstanceId {
@@ -377,7 +376,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       estimatedVramMB, vramEstimated: true, offloadedLayers: selection.backend === 'cuda' ? 999 : 0,
       startedAt: Date.now(), lastActiveAt: Date.now(), activeRequests: 0,
       metrics: { vramUsedMB: estimatedVramMB, vramEstimated: true, lastUpdatedAt: Date.now() },
-      proc: undefined as unknown as ChildPort, modelPath, fileSizeBytes: fileSize, estimatedVramMB,
+      proc: undefined as unknown as ChildPort, modelPath, fileSizeBytes: fileSize,
     }
     this.instances.set(key, tracked)
     appendLlamaLog(this.baseDir, 'spawn', { modelId, port, backend: selection.backend, device: selection.device, args: JSON.stringify(args) })
@@ -610,10 +609,11 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   }
 
   private publicView(t: TrackedInstance): ModelInstance {
-    // Strip the ChildProcess (never crosses IPC) — plain data only.
+    // Strip the ChildProcess + local path (never cross IPC) — plain data only.
+    // Estimated/observed VRAM stay visible so the UI can label est. vs obs.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { proc, modelPath, fileSizeBytes, estimatedVramMB, ...rest } = t
-    void modelPath; void fileSizeBytes; void estimatedVramMB
+    const { proc, modelPath, fileSizeBytes, ...rest } = t
+    void modelPath; void fileSizeBytes
     return { ...rest, metrics: rest.metrics ? { ...rest.metrics } : undefined }
   }
 }

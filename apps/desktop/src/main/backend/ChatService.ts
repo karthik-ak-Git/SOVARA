@@ -512,6 +512,13 @@ export class ChatService {
     } catch { /* non-critical */ }
 
     const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    if (regenInstanceId) {
+      const elapsedS = Math.max(0.1, (Date.now() - started) / 1000)
+      this.noteEnd(regenInstanceId, {
+        ...(regenFirstTokenAt !== null ? { ttftMs: regenFirstTokenAt - started } : {}),
+        tokensPerSec: tokenUsage.completionTokens / elapsedS,
+      })
+    }
     this.log(entry.id, endpoint, model, started, 200, 'ok', streamed)
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     return { ok: true, assistantSeq }
@@ -630,8 +637,26 @@ export class ChatService {
     appendChatLog(this.deps.baseDir, { sessionId: String(sessionId), action: 'cancel', outcome: 'cancelled' })
     // eslint-disable-next-line no-console
     console.log(`[SOVARA][CHAT] CANCEL cancel sid=${String(sessionId)}`)
+    // Aborting the in-flight HTTP cancels the actual generation on the
+    // runner (spec §11) — the stream loop observes it and persists the
+    // cancelled marker instead of letting the runner keep generating.
     controller.abort(new Error('cancelled'))
     return { cancelled: true }
+  }
+
+  /** Best-effort activity accounting — mocks without the seam simply no-op. */
+  private noteStart(instanceId: string): void {
+    try {
+      const m = this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }
+      m.noteRequestStart?.(instanceId as never)
+    } catch { /* accounting never breaks inference */ }
+  }
+
+  private noteEnd(instanceId: string, info?: { ttftMs?: number; tokensPerSec?: number }): void {
+    try {
+      const m = this.deps.models as unknown as { noteRequestEnd?: (id: unknown, i?: unknown) => void }
+      m.noteRequestEnd?.(instanceId as never, info as never)
+    } catch { /* accounting never breaks inference */ }
   }
 
   private async finishCancelled(

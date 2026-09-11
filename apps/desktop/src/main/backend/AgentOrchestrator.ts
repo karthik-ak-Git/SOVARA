@@ -191,6 +191,7 @@ export class AgentOrchestrator {
       const vramTotal = resources.vram.totalMB
       const isOwnedRuntime = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
       let ownedEndpoint: string | null = null
+      let ownedInstanceForMetrics: string | null = null
 
       this.emit(sid, 'model:loading', {
         taskKind: classification.kind,
@@ -203,11 +204,26 @@ export class AgentOrchestrator {
       try {
         if (isOwnedRuntime) {
           // Blocking load: resolves only when /health is green (VRAM-resident).
-          const inst = await this.deps.models.load(routing.modelId as never, {
-            ctxLen: classification.contextLengthNeeded,
-            runtimeId: routing.runtimeId,
-          })
+          // Verify health before routing — never trust process existence alone.
+          const models = this.deps.models as ModelRuntimePort & {
+            ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
+          }
+          const inst = models.ensureHealthy
+            ? await models.ensureHealthy(routing.modelId as never, {
+              ctxLen: classification.contextLengthNeeded,
+              runtimeId: routing.runtimeId,
+            })
+            : await this.deps.models.load(routing.modelId as never, {
+              ctxLen: classification.contextLengthNeeded,
+              runtimeId: routing.runtimeId,
+            })
+          const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
+          if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
           ownedEndpoint = this.deps.models.baseUrl(inst.id)
+          try {
+            (this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(inst.id)
+            ownedInstanceForMetrics = String(inst.id)
+          } catch { /* accounting never blocks */ }
         } else if (controller.signal.aborted) {
           throw new AgentOrchestratorError('cancelled', 'cancelled')
         }
@@ -329,6 +345,7 @@ export class AgentOrchestrator {
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
       // Real streaming (owned sidecar or remote runtime — same protocol)
+      let orchFirstTokenAt: number | null = null
       try {
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
@@ -365,6 +382,7 @@ export class AgentOrchestrator {
               }
             }
             text += delta
+            if (orchFirstTokenAt === null) orchFirstTokenAt = Date.now()
             this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
           }
           if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
@@ -374,6 +392,7 @@ export class AgentOrchestrator {
       } catch (e) {
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled' })
+          this.noteEndQuiet(ownedInstanceForMetrics)
           return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
         }
         const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
@@ -382,6 +401,7 @@ export class AgentOrchestrator {
         this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: safe, error: safe })
         this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
         this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `failed: ${safe}` })
+        this.noteEndQuiet(ownedInstanceForMetrics)
         throw new AgentOrchestratorError('llm-failed', safe)
       }
 
@@ -449,6 +469,7 @@ export class AgentOrchestrator {
                   this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `second step failed: ${safe2}` })
                 } else {
                   this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: 'cancelled during tool follow-up' })
+                  this.noteEndQuiet(ownedInstanceForMetrics)
                   return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
                 }
               }
@@ -461,11 +482,13 @@ export class AgentOrchestrator {
       }
 
       if (controller.signal.aborted) {
+        this.noteEndQuiet(ownedInstanceForMetrics)
         return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
       }
 
       if (text.trim() === '') {
         const msg = 'invalid-response: the local model returned an empty reply'
+        this.noteEndQuiet(ownedInstanceForMetrics)
         this.log(routing.runtimeId, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: routing.runtimeId, latencyMs: Date.now() - startedAll })
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
@@ -490,6 +513,14 @@ export class AgentOrchestrator {
       } catch { /* non-critical */ }
 
       const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+      if (ownedInstanceForMetrics) {
+        const elapsedS = Math.max(0.1, (Date.now() - startedAll) / 1000)
+        this.noteEndQuiet(ownedInstanceForMetrics, {
+          ...(orchFirstTokenAt !== null ? { ttftMs: orchFirstTokenAt - startedAll } : {}),
+          tokensPerSec: tokenUsage.completionTokens / elapsedS,
+        })
+        ownedInstanceForMetrics = null
+      }
       this.log(routing.runtimeId, endpoint, model, startedAll, 200, 'ok', streamed)
       appendChatLog(this.deps.baseDir, {
         sessionId: sid,
@@ -600,7 +631,14 @@ export class AgentOrchestrator {
       let regenOwnedEndpoint: string | null = null
       const regenIsOwned = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
       if (regenIsOwned) {
-        const inst = await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
+        const models = this.deps.models as ModelRuntimePort & {
+          ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
+        }
+        const inst = models.ensureHealthy
+          ? await models.ensureHealthy(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
+          : await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
+        const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
+        if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) — refusing to route`)
         regenOwnedEndpoint = this.deps.models.baseUrl(inst.id)
       } else if (controller.signal.aborted) {
         throw new AgentOrchestratorError('cancelled', 'cancelled')
@@ -706,6 +744,14 @@ export class AgentOrchestrator {
 
   private emit(sessionId: string, kind: ChatStreamEvent['kind'], extra: Partial<ChatStreamEvent> = {}): void {
     this.deps.emit({ sessionId, kind, ...extra })
+  }
+
+  /** Best-effort activity accounting — null-safe, never breaks inference. */
+  private noteEndQuiet(instanceId: string | null, info?: { ttftMs?: number; tokensPerSec?: number }): void {
+    if (!instanceId) return
+    try {
+      (this.deps.models as unknown as { noteRequestEnd?: (id: unknown, i?: unknown) => void }).noteRequestEnd?.(instanceId as never, info as never)
+    } catch { /* accounting never breaks inference */ }
   }
 
   private async finishCancelled(
