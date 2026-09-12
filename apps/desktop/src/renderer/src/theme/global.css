@@ -5027,3 +5027,56 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .chat-empty-composer { max-width: 672px; }
 .chat-empty-hints { color: var(--stitch-muted); }
 
+
+/* Bionic empty */
+.bionic-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 0;
+  padding: 40px 24px 24px;
+  gap: 18px;
+  background: #ffffff;
+}
+.bionic-empty-mascot { display:flex; align-items:center; justify-content:center; margin-bottom:6px; }
+.bionic-empty-composer-wrap { width:100%; max-width:640px; display:flex; flex-direction:column; gap:8px; }
+.bionic-composer-dock { width:100%; }
+.bionic-composer-card {
+  background:#fff; border:1px solid #e5e7eb; border-radius:20px;
+  box-shadow:0 8px 32px rgba(0,0,0,.08),0 1px 4px rgba(0,0,0,.06);
+  padding:12px 14px 10px; display:flex; flex-direction:column; gap:4px;
+}
+.bionic-composer-input { border:none !important; background:transparent !important; box-shadow:none !important; padding:8px 4px 6px !important; font-size:14px !important; color:#1a1a2e; }
+.bionic-composer-input::placeholder { color:#9ca3af !important; }
+.bionic-composer-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding-top:6px; }
+.bionic-composer-left, .bionic-composer-right { display:flex; align-items:center; gap:6px; }
+.bionic-plus-btn { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e5e7eb; background:#fff; color:#6b7280; cursor:pointer; }
+.bionic-plus-btn:hover { background:#f3f4f6; color:#1a1a2e; }
+.bionic-shield-btn { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e5e7eb; background:#fff; color:#6b7280; cursor:pointer; }
+.bionic-shield-btn:hover { background:#f3f4f6; color:#1a1a2e; }
+.bionic-attach-wrap { position:relative; }
+.bionic-attach-menu { position:absolute; bottom:calc(100% + 8px); left:0; min-width:176px; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.14); padding:6px; display:flex; flex-direction:column; gap:2px; z-index:80; }
+.bionic-attach-menu-item { display:flex; align-items:center; gap:8px; width:100%; padding:8px 10px; border-radius:8px; border:none; background:transparent; color:#1f2937; font:13px/1 ui-sans-system,sans-serif; text-align:left; cursor:pointer; }
+.bionic-attach-menu-item:hover { background:#f3f4f6; }
+.bionic-attach-menu-item--accent { background:#3b82f6; color:#fff; }
+.bionic-attach-menu-item--accent:hover { background:#2563eb; }
+.bionic-model-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; border:1px solid #e5e7eb; background:#f9fafb; color:#374151; font:12px/1 ui-sans-system,sans-serif; cursor:pointer; }
+.bionic-model-pill:hover { border-color:#d1d5db; }
+.bionic-mic-btn { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:1px solid #e5e7eb; background:#fff; color:#6b7280; cursor:pointer; }
+.bionic-mic-btn.recording { background:#ef4444; color:#fff; border-color:#ef4444; }
+.bionic-send-btn { width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:none; background:#dbeafe; color:#3b82f6; cursor:pointer; }
+.bionic-send-btn.active { background:#3b82f6; color:#fff; }
+.bionic-send-btn:disabled { opacity:.45; cursor:not-allowed; }
+.bionic-empty-project-row { display:flex; align-items:center; padding-left:2px; }
+.bionic-project-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; border:1px solid #e5e7eb; background:#f9fafb; color:#6b7280; font:12px/1 ui-sans-system,sans-serif; cursor:pointer; }
+.bionic-project-pill:hover { border-color:#d1d5db; color:#1f2937; }
+.bionic-project-chevron { font-size:10px; opacity:.7; }
+.bionic-skills-banner { display:flex; align-items:center; justify-content:space-between; gap:16px; width:100%; max-width:640px; margin-top:10px; padding:12px 14px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; }
+.bionic-skills-banner-text { display:flex; flex-direction:column; gap:2px; }
+.bionic-skills-banner-text strong { font-size:13px; color:#1f2937; }
+.bionic-skills-banner-text span { font-size:12px; color:#6b7280; }
+.bionic-skills-banner-link { font-size:12px; color:#3b82f6; text-decoration:none; }
+.bionic-skills-banner-link:hover { text-decoration:underline; }
+.bionic-exec-row { display:flex; align-items:center; gap:8px; margin-top:6px; }

@@ -9,6 +9,9 @@ import {
   X,
   Loader2,
   FileText,
+  Folder,
+  Sparkles,
+  Shield,
 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
@@ -75,10 +78,13 @@ export function Composer({
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
   const [micActive, setMicActive] = useState(false)
   const [micLoading, setMicLoading] = useState(false)
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const attachWrapRef = useRef<HTMLDivElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
@@ -104,6 +110,23 @@ export function Composer({
     if (wasDisabled.current && !disabled) areaRef.current?.focus()
     wasDisabled.current = disabled
   }, [disabled])
+
+  // Close attach menu on outside click / Esc
+  useEffect(() => {
+    if (!attachMenuOpen) return
+    const onDoc = (e: MouseEvent): void => {
+      if (attachWrapRef.current && !attachWrapRef.current.contains(e.target as Node)) setAttachMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setAttachMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    window.addEventListener('keydown', onKey as unknown as EventListener)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      window.removeEventListener('keydown', onKey as unknown as EventListener)
+    }
+  }, [attachMenuOpen])
 
   // Cleanup audio on unmount
   useEffect(() => {
@@ -304,46 +327,39 @@ export function Composer({
   }, [])
 
   return (
-    <div className="stitch-composer-dock" aria-label="Composer workspace">
-      <div className="stitch-composer-card">
-        {/* Attached Files Ribbon — Stitch active pill */}
-        <div className="stitch-attach-ribbon">
-          {attachments.map((a, i) => (
-            <div key={`${a.name}-${i}`} className="stitch-attach-pill">
-              <FileText size={15} aria-hidden />
-              <span className="stitch-attach-name">{a.name}</span>
-              <span className="stitch-attach-size">{formatFileSize(a.size)}</span>
-              <button
-                type="button"
-                className="stitch-attach-remove"
-                onClick={() => removeAttachment(i)}
-                aria-label={`Remove ${a.name}`}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="stitch-attach-context-btn"
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach context file"
-          >
-            <Plus size={13} />
-            <span>Attach Context</span>
-          </button>
-        </div>
+    <div className="stitch-composer-dock bionic-composer-dock" aria-label="Composer workspace">
+      <div className="stitch-composer-card bionic-composer-card">
+        {/* Attached Files Ribbon */}
+        {attachments.length > 0 ? (
+          <div className="stitch-attach-ribbon">
+            {attachments.map((a, i) => (
+              <div key={`${a.name}-${i}`} className="stitch-attach-pill">
+                <FileText size={15} aria-hidden />
+                <span className="stitch-attach-name">{a.name}</span>
+                <span className="stitch-attach-size">{formatFileSize(a.size)}</span>
+                <button
+                  type="button"
+                  className="stitch-attach-remove"
+                  onClick={() => removeAttachment(i)}
+                  aria-label={`Remove ${a.name}`}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
 
-        {/* Text Input Area — Stitch: expandable, no inner scrollbar until 200px */}
+        {/* Text Input Area — Bionic aligned */}
         <textarea
           ref={areaRef}
-          className="stitch-composer-input"
+          className="stitch-composer-input bionic-composer-input"
           placeholder={
             streaming
               ? 'Generating local model response… (Esc to stop)'
               : disabled
                 ? 'Waiting for local model to become ready…'
-                : 'Reply to Claude or drop files here... (Press Shift+Enter for new line)'
+                : 'Ask Bionic to do something'
           }
           value={value}
           onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
@@ -355,28 +371,68 @@ export function Composer({
           data-testid="composer-input"
         />
 
-        {/* Composer Bottom Toolbar — Stitch left/right controls */}
-        <div className="stitch-composer-toolbar">
-          <div className="stitch-composer-left">
+        {/* Composer Bottom Toolbar — Bionic: (+ / shield) left, (model / mic / send) right */}
+        <div className="stitch-composer-toolbar bionic-composer-toolbar">
+          <div className="stitch-composer-left bionic-composer-left">
+            <div className="bionic-attach-wrap" ref={attachWrapRef}>
+              <button
+                type="button"
+                className="bionic-plus-btn"
+                aria-label="Attach or use skill"
+                aria-expanded={attachMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setAttachMenuOpen((v) => !v)}
+              >
+                <Plus size={16} aria-hidden />
+              </button>
+              {attachMenuOpen ? (
+                <div className="bionic-attach-menu" role="menu" aria-label="Attachment options">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="bionic-attach-menu-item"
+                    onClick={() => {
+                      setAttachMenuOpen(false)
+                      fileInputRef.current?.click()
+                    }}
+                  >
+                    <Paperclip size={14} aria-hidden /> Attach files…
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="bionic-attach-menu-item"
+                    onClick={() => {
+                      setAttachMenuOpen(false)
+                      folderInputRef.current?.click()
+                    }}
+                  >
+                    <Folder size={14} aria-hidden /> Attach folder…
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="bionic-attach-menu-item bionic-attach-menu-item--accent"
+                    onClick={() => {
+                      setAttachMenuOpen(false)
+                      onOpenSettings?.()
+                    }}
+                  >
+                    <Sparkles size={14} aria-hidden /> Use skill
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
-              className="stitch-model-badge"
-              onClick={() => onOpenSettings?.()}
-              title="Switch model"
-              aria-label="Switch model"
+              className="bionic-shield-btn"
+              aria-label="Execution permissions"
+              title="Execution permissions"
+              onClick={() => onExecModeChange(execMode === 'off' ? 'ask' : 'off')}
             >
-              <span className="stitch-model-badge-icon" aria-hidden>✦</span>
-              <span>{active.displayName ?? 'No model'}</span>
+              <Shield size={15} aria-hidden />
             </button>
-            <button
-              type="button"
-              className="stitch-icon-btn"
-              aria-label="Attach file"
-              title="Attach code, documents, or screenshots"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip size={18} aria-hidden />
-            </button>
+            {/* hidden file inputs */}
             <input
               ref={fileInputRef}
               type="file"
@@ -386,26 +442,16 @@ export function Composer({
               onChange={handleFileSelect}
               aria-label="Select files to attach"
             />
-            <button
-              type="button"
-              className={`stitch-search-btn${webSearch ? ' active' : ''}`}
-              aria-label={webSearch ? 'Web search on' : 'Web search off'}
-              title={webSearch ? 'Web search enabled' : 'Toggle web search'}
-              onClick={() => setWebSearch((v) => !v)}
-            >
-              <Globe size={15} aria-hidden />
-              <span>Search Web</span>
-            </button>
-            <button
-              type="button"
-              className={`stitch-icon-btn mic-btn ${micActive ? 'recording' : ''} ${micLoading ? 'loading' : ''}`}
-              aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
-              title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Dictate prompt via voice'}
-              onClick={handleMicClick}
-              disabled={micLoading}
-            >
-              {micLoading ? <Loader2 size={18} aria-hidden className="spin" /> : <Mic size={18} aria-hidden />}
-            </button>
+            <input
+              ref={folderInputRef}
+              type="file"
+              className="sr-only"
+              // @ts-expect-error webkitdirectory is non-standard but supported in Electron/Chromium
+              webkitdirectory=""
+              multiple
+              onChange={handleFileSelect}
+              aria-label="Select folder to attach"
+            />
             <span className="stitch-composer-hidden-model">
               <ModelSelector
                 active={active}
@@ -421,12 +467,31 @@ export function Composer({
             </span>
           </div>
 
-          <div className="stitch-composer-right">
-            <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
+          <div className="stitch-composer-right bionic-composer-right">
+            <button
+              type="button"
+              className="bionic-model-pill"
+              onClick={() => onOpenSettings?.()}
+              title="Switch model"
+              aria-label="Switch model"
+            >
+              <span aria-hidden>◈</span>
+              <span>{active.displayName ?? 'Glm 4.6v Flash'}</span>
+            </button>
+            <button
+              type="button"
+              className={`bionic-mic-btn ${micActive ? 'recording' : ''} ${micLoading ? 'loading' : ''}`}
+              aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
+              title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Voice input'}
+              onClick={handleMicClick}
+              disabled={micLoading}
+            >
+              {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
+            </button>
             {showStop ? (
               <button
                 type="button"
-                className="stitch-send-btn active"
+                className="bionic-send-btn active"
                 onClick={() => onCancel?.()}
                 aria-label="Stop generating"
                 title="Stop generating (Esc)"
@@ -437,31 +502,24 @@ export function Composer({
             ) : (
               <button
                 type="button"
-                className={`stitch-send-btn ${canSend ? 'active' : ''}`}
+                className={`bionic-send-btn ${canSend ? 'active' : ''}`}
                 onClick={submit}
                 disabled={!canSend}
                 aria-label="Send message"
-                title="Send prompt (⌘ + Enter)"
+                title="Send prompt (Enter)"
                 data-testid="send-button"
               >
-                <span className="stitch-send-label">Send</span>
                 <ArrowUp size={16} aria-hidden />
-                <span className="stitch-send-key">⌘⏎</span>
               </button>
             )}
           </div>
         </div>
       </div>
 
-      {/* Legal / Ergonomics Sub-footer — Stitch */}
-      <div className="stitch-composer-subfooter">
-        <span className="stitch-composer-subfooter-note">Claude can make mistakes. Verify critical code and research.</span>
-        <span className="stitch-composer-subfooter-keys">⌘K jump to chat • ⌘T new tab</span>
-      </div>
-      <div className="composer-bionic-footer stitch-exec-row">
+      <div className="composer-bionic-footer bionic-exec-row">
         <PermissionControl mode={execMode} onChange={onExecModeChange} />
-        <span className="composer-footer-note muted small">
-          Sovora runs sovereign &amp; local • {execMode === 'allow' ? 'Full access — commands run directly' : execMode}
+        <span className="muted small">
+          Sovora runs sovereign &amp; local • {execMode === 'allow' ? 'Full access — commands run directly' : execMode === 'ask' ? 'Ask before running' : 'Read-only'}
         </span>
       </div>
     </div>

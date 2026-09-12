@@ -515,25 +515,35 @@ export function ChatView({
       <div className={`stitch-layout-split${artifactsPanelOpen ? ' has-split' : ''}`}>
         <div className="stitch-main-column">
           {showEmpty ? (
-            <div className="stitch-empty-state" role="status" aria-label="Start a conversation">
-              <div className="stitch-empty-hero">
-                <div className="stitch-empty-icon" aria-hidden>
-                  <MessageSquare size={28} strokeWidth={1.5} />
-                </div>
-                <h1 className="stitch-empty-title">What can I help with?</h1>
-                <p className="stitch-empty-subtitle">
-                  {model.available
-                    ? 'Ask anything — replies stream from your local model directly on your hardware.'
-                    : 'No model runtime available — connect or load a local model from Models to start chatting.'}
-                </p>
-                {!model.available ? (
-                  <button type="button" className="btn" onClick={onOpenModels} aria-label="Open Models to load a model">
-                    Open Models
-                  </button>
-                ) : null}
+            <div className="bionic-empty" role="status" aria-label="Start a conversation">
+              {/* Centered mascot — purple Bionic with yellow hardhat, like screenshot */}
+              <div className="bionic-empty-mascot" aria-hidden>
+                <svg width="88" height="88" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  {/* toolbox */}
+                  <rect x="10" y="52" width="18" height="12" rx="2" fill="#E85D3F" stroke="#C94A2E" strokeWidth="1.2"/>
+                  <rect x="13" y="55" width="4" height="4" rx="0.5" fill="#fff" opacity="0.9"/>
+                  <rect x="19" y="55" width="4" height="4" rx="0.5" fill="#fff" opacity="0.9"/>
+                  <path d="M14 52 V48 H24 V52" stroke="#5C3A21" strokeWidth="1.4" fill="none"/>
+                  {/* body */}
+                  <path d="M42 68 L28 58 L30 38 L44 28 L62 30 L66 44 L62 62 L48 68 Z" fill="#7C3AED" stroke="#5B21B6" strokeWidth="1.2"/>
+                  {/* hardhat */}
+                  <path d="M30 32 C30 18 42 10 56 14 L60 18 L34 28 Z" fill="#FACC15" stroke="#EAB308" strokeWidth="1.2"/>
+                  <rect x="28" y="28" width="34" height="4" rx="2" fill="#FACC15" stroke="#EAB308" strokeWidth="1"/>
+                  <rect x="46" y="10" width="8" height="6" rx="1.5" fill="#FACC15" stroke="#EAB308" strokeWidth="1"/>
+                  {/* face */}
+                  <rect x="38" y="44" width="8" height="10" rx="2" fill="#1F2937"/>
+                  <rect x="52" y="44" width="8" height="10" rx="2" fill="#1F2937"/>
+                  <circle cx="41.5" cy="48.5" r="1.5" fill="#fff"/>
+                  <circle cx="55.5" cy="48.5" r="1.5" fill="#fff"/>
+                  <rect x="44" y="58" width="8" height="2" rx="1" fill="#1F2937"/>
+                  {/* pickaxe */}
+                  <path d="M62 52 L74 46 L78 48 L66 54 Z" fill="#9CA3AF" stroke="#6B7280" strokeWidth="1"/>
+                  <rect x="60" y="50" width="14" height="3" rx="1" fill="#6B7280" transform="rotate(-28 62 51)"/>
+                </svg>
               </div>
 
-              <div className="stitch-empty-composer">
+              {/* Floating composer — image-aligned: Ask Bionic card */}
+              <div className="bionic-empty-composer-wrap">
                 <Composer
                   value={draft}
                   onChange={setDraft}
@@ -555,13 +565,40 @@ export function ChatView({
                   onSelectModel={onSelectModel}
                   onOpenSettings={onOpenModels}
                 />
+                {/* Below-input project picker — image: folder + No project dropdown */}
+                <div className="bionic-empty-project-row">
+                  <button
+                    type="button"
+                    className="bionic-project-pill"
+                    onClick={() => {
+                      if (projects.length > 0) setProjectDropdownOpen((v) => !v)
+                      else onNewProject()
+                    }}
+                    aria-label="Select project"
+                  >
+                    <FolderOpen size={14} aria-hidden />
+                    <span>{projectName ?? 'No project'}</span>
+                    <span className="bionic-project-chevron" aria-hidden>⌄</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="stitch-empty-hints">
-                <span>Shift+Enter for newline • Enter to send • Esc to stop</span>
-                <span className="stitch-empty-dot" aria-hidden>·</span>
-                <span>Sovereign &amp; Private • No cloud telemetry</span>
+              {/* Skills banner — image: Bionic now supports skills */}
+              <div className="bionic-skills-banner" role="note" aria-label="Skills announcement">
+                <div className="bionic-skills-banner-text">
+                  <strong>Bionic now supports skills</strong>
+                  <span>Use, install, and create skills.</span>
+                </div>
+                <a className="bionic-skills-banner-link" href="#" onClick={(e) => { e.preventDefault(); setActiveArtifact?.(null as any) }}>
+                  Learn more
+                </a>
               </div>
+
+              {!model.available ? (
+                <button type="button" className="btn btn-sm" onClick={onOpenModels} aria-label="Open Models to load a model">
+                  Open Models — no local engine selected
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="stitch-active-wrap">
