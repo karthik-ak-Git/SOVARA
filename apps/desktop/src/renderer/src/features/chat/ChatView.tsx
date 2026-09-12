@@ -205,7 +205,8 @@ export function ChatView({
       return { title: 'Model could not be loaded', hint: err, action: 'models' }
     }
     if (lower.includes('resource-pressure') || lower.includes('resource-blocked')) {
-      return { title: 'Resource pressure', hint: 'The system is under memory pressure and refused the request. Close other models or lower context.', action: 'models' }
+      // Show real reason (e.g. waiting for previous load) not generic runtime error
+      return { title: 'Model busy — please wait', hint: err.replace('resource-pressure:', '').trim() || 'A model is still loading. Wait a few seconds or unload the previous model.', action: 'models' }
     }
     if (lower.includes('already-generating')) {
       return { title: 'Already generating', hint: 'Wait for the current reply to finish or press Stop.' }
@@ -235,13 +236,14 @@ export function ChatView({
       default: return null
     }
   })()
-  // Send-stage stepper — honest pipeline position derived from backend events.
+  // Orchestration flow: select (no load) -> send -> loading (real) -> prompting -> thinking(optional) -> generating
+  // Model only loads on send, not on select — theme preserved. Order shows loading before prompting.
   const STAGE_ORDER: Array<{ key: string; label: string }> = [
     { key: 'reading', label: 'Reading' },
     { key: 'planning', label: 'Planning' },
-    { key: 'prompting', label: 'Prompting' },
     { key: 'selecting', label: 'Routing' },
     { key: 'loading', label: 'Loading' },
+    { key: 'prompting', label: 'Prompting' },
     { key: 'thinking', label: 'Thinking' },
     { key: 'streaming', label: 'Generating' },
     { key: 'tool', label: 'Tool' },
@@ -295,10 +297,10 @@ export function ChatView({
 
   return (
     <div className="sv-chat" style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
-      {/* Main chat column */}
+      {/* Main chat column — empty centered, active bottom-anchored */}
       <div className="sv-chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {showEmpty ? (
-          <div className="sv-empty" role="status" aria-label="Start a conversation">
+          <div className="chat-empty-state" role="status" aria-label="Start a conversation" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '32px 24px', gap: 20 }}>
             <div className="sv-empty-art" aria-hidden>
               <svg width="88" height="88" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="10" y="52" width="18" height="12" rx="2" fill="#D97757" stroke="#C46A4A" strokeWidth="1.2"/>

@@ -13,8 +13,9 @@ interface Props {
  * Controlled by caller; renders reasoning text verbatim, no parsing.
  */
 export function ReasoningBlock({ reasoning, streaming = false, open, onToggle }: Props): ReactElement {
+  // Only rendered when reasoningEnabled — caller controls visibility. Curved rectangular box with dropdown sub-box for actual thinking.
   return (
-    <div className="stitch-reasoning" data-testid="message-reasoning">
+    <div className="stitch-reasoning" data-testid="message-reasoning" style={{ borderRadius: 12 }}>
       <button
         type="button"
         className="stitch-reasoning-toggle"
@@ -23,13 +24,13 @@ export function ReasoningBlock({ reasoning, streaming = false, open, onToggle }:
         aria-label={open ? 'Hide reasoning' : 'Show reasoning'}
       >
         <Brain size={14} aria-hidden />
-        <span className="stitch-reasoning-label">{streaming ? 'Thinking…' : 'Reasoning Process'}</span>
+        <span className="stitch-reasoning-label">{streaming ? 'Thinking…' : 'Thinking'}</span>
         <span className="stitch-reasoning-chevron" aria-hidden>
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
       </button>
       {open ? (
-        <div className={`stitch-reasoning-content${streaming ? ' stitch-reasoning-content--streaming' : ''}`}>
+        <div className={`stitch-reasoning-content${streaming ? ' stitch-reasoning-content--streaming' : ''}`} style={{ borderRadius: 10 }}>
           {reasoning}
           {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
         </div>

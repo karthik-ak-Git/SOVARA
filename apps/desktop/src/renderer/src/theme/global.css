@@ -686,12 +686,31 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 
 .message-list {
   flex: 1; min-height: 120px;
-  margin: 0 22px;
+  margin: 0 auto;
+  width: 100%; max-width: 840px;
   overflow-y: auto; overflow-x: hidden;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 12px;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 12px 22px;
   scrollbar-width: thin; scrollbar-color: var(--border) transparent;
 }
+/* Chat alignment: user right, assistant left — clear row separation */
+.sv-message { display: flex; gap: 10px; max-width: 100%; }
+.sv-message--user { flex-direction: row-reverse; align-self: flex-end; justify-content: flex-start; }
+.sv-message--user .sv-message-bubble.sv-message-user { background: #e8f0fe; border: 1px solid #d2e3fc; border-radius: 16px 4px 16px 16px; }
+.sv-message--assistant { align-self: flex-start; }
+.sv-message--assistant .sv-message-assistant { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px 16px 16px 16px; padding: 10px 12px; }
+/* Centered empty -> bottom transition: composer anchored, list grows */
+.chat-empty-state .sv-composer, .chat-empty-state .composer-bionic { width: 100%; max-width: 640px; }
+/* Loading tracking bar */
+.sovara-stages { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sovara-stage { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted-2); }
+.sovara-stage.is-active { color: var(--accent); font-weight: 600; }
+.sovara-stage.is-done { color: var(--success); }
+.sovara-stage-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .7; }
+/* Reasoning rectangular curved box */
+.stitch-reasoning { border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); overflow: hidden; }
+.stitch-reasoning-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; font: 12px/1 ui-sans-system; color: var(--muted); }
+.stitch-reasoning-content { margin: 0 12px 12px; padding: 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border-soft); font: 12px/1.5 ui-monospace; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
 .message-list:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .message-list-empty { text-align: left; padding: 18px; border: 1px dashed var(--border); border-radius: var(--radius-lg); background: var(--panel-2); }
 .bubble {

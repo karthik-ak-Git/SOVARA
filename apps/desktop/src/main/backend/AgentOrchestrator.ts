@@ -204,7 +204,7 @@ export class AgentOrchestrator {
       // swap away from baseSnapshot even if the scorer prefers a larger model.
       // This is what makes hi stay on the fast Nemotron-4B instead of evicting
       // to the 27B Q1_0 on CPU and appearing "stuck".
-      if (baseSnapshot && classification.kind === 'chat' && !classification.requiresVision) {
+      if (baseSnapshot && (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision) {
         const baseModel = models.find((m) => m.modelId === baseSnapshot.modelId && m.runtimeId === baseSnapshot.runtimeId)
         const basePressure = baseModel
           ? await this.deps.resources.checkBeforeLoad({ id: baseSnapshot.modelId as never, displayName: baseSnapshot.modelId, source: 'custom', format: 'unknown' } as never, { ctxLen: classification.contextLengthNeeded }).catch(() => ({ blocking: false } as never))

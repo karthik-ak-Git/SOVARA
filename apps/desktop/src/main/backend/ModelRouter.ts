@@ -78,9 +78,13 @@ function scoreModel(
   // Prefer available models (should be filtered already)
   if (m.available) score += 5
 
-  // VRAM signal: if resource snapshot says we have pressure, penalize large models
+  // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
   const vramFree = resources.vram.freeMB
-  if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 12; reasons.push('vram pressure vs xlarge') }
+  const vramTotal = resources.vram.totalMB
+  if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 25; reasons.push('vram pressure vs xlarge') }
+  if (vramTotal !== undefined && vramTotal < 7000 && profile?.paramsBucket === 'xlarge') { score -= 20; reasons.push('needs large VRAM') }
+  // If task is simple chat/tool pdf, prefer small/medium resident model over xlarge CPU
+  if (profile?.paramsBucket === 'xlarge' && (task.kind === 'chat' || task.kind === 'tool-use')) { score -= 8; reasons.push('xlarge overkill') }
 
   return { model: m, score, reason: reasons.join(', '), capabilities: capabilities as string[], contextLength }
 }

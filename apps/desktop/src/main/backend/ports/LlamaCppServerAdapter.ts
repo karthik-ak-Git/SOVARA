@@ -125,7 +125,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private readonly pendingLoads = new Map<string, Promise<TrackedInstance>>()
   /** Short global mutex for the evict-decide-spawn section. */
   private globalMutex: Promise<void> = Promise.resolve()
-  private maxConcurrentModels = 1
+  private maxConcurrentModels = 2
   private readonly deps: Required<Pick<AdapterDeps, 'spawn' | 'waitReady' | 'queryVram' | 'findPort'>> & Pick<AdapterDeps, 'exePathOverride'>
 
   constructor(
@@ -455,14 +455,15 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         autoFallback = 'fit'
         appendLlamaLog(this.baseDir, 'load-auto-fit', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB, vramTotalMB: gpu.totalMB })
       } else {
-        // Even minimum offload doesn't fit — fall through to CPU (RAM) if plausible.
-        const needRamMB = plan.estimatedMB // rough RAM need (same weights+KV)
+        // Even minimum offload doesn't fit — CPU fallback is slow and often timeouts (130s invalid-response on 9B Q4). Only allow CPU for small models <=4GB.
+        const needRamMB = plan.estimatedMB
         const totalRamMB = Math.round((await import('node:os')).default.totalmem() / (1024 * 1024))
-        if (needRamMB <= totalRamMB * 0.88) {
+        const isSmallForCpu = fileSize < 4 * 1024 * 1024 * 1024
+        if (isSmallForCpu && needRamMB <= totalRamMB * 0.75) {
           ngl = 0
-          estimatedVramMB = 0 // no VRAM claimed
+          estimatedVramMB = 0
           autoFallback = 'cpu'
-          appendLlamaLog(this.baseDir, 'load-auto-cpu', { modelId, reason: 'no fit layers fit, falling to CPU', totalRamMB, needRamMB })
+          appendLlamaLog(this.baseDir, 'load-auto-cpu', { modelId, reason: 'no fit layers fit, falling to CPU (small model)', totalRamMB, needRamMB })
         } else {
           const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
           const altHint = alternatives.length > 0
@@ -494,9 +495,13 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         throw new Error(msg)
       }
       // Make room: evict LRU eligible residents until under the cap.
+      // Fix instant "resource-pressure / runtime unavailable": same-model re-send reuses pendingLoads, so don't block.
+      // For different model while previous is still LOADING/BUSY, wait briefly for it to settle before refusing.
+      let retries = 0
       while (this.liveCount() >= this.maxConcurrentModels) {
         const victim = this.pickEvictionVictim(key)
         if (!victim) {
+          if (retries < 6) { retries++; await new Promise(r => setTimeout(r, 500)); continue }
           throw new Error(`resource-pressure: ${this.maxConcurrentModels} model(s) already resident and none is eligible for eviction (all busy/loading/evicting) -- wait or unload one first`)
         }
         appendLlamaLog(this.baseDir, 'lru-evict', { evicting: victim.modelId, for: modelId })
