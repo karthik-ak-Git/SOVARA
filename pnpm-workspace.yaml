@@ -5,6 +5,7 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  node-llama-cpp: true
   onnxruntime-node: true
   protobufjs: true
   sharp: true

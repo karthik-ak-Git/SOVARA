@@ -33,6 +33,7 @@ export interface AgentExecutionView {
   vramUsedMB?: number
   vramTotalMB?: number
   error?: string
+  progress?: number
 }
 
 export interface ChatError {
@@ -242,7 +243,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     if (ev.kind === 'model:loading') {
       if (!isSelected) return
-      set({ execution: { taskKind: (ev.taskKind as TaskKind) ?? get().execution.taskKind, phase: 'loading', modelId: ev.modelId, runtimeId: ev.runtimeId, vramUsedMB: ev.vramUsedMB, vramTotalMB: ev.vramTotalMB, detail: ev.detail }, status: 'streaming' as ChatStatus })
+      set({ execution: { taskKind: (ev.taskKind as TaskKind) ?? get().execution.taskKind, phase: 'loading', modelId: ev.modelId, runtimeId: ev.runtimeId, vramUsedMB: ev.vramUsedMB, vramTotalMB: ev.vramTotalMB, detail: ev.detail, progress: ev.progress }, status: 'streaming' as ChatStatus })
       return
     }
     if (ev.kind === 'model:ready') {
@@ -295,7 +296,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     if (ev.kind === 'assistant-delta' && ev.text) {
       if (!isSelected) return
-      set((s) => ({ streamingText: s.streamingText + (ev.text ?? ''), status: 'streaming' as ChatStatus, execution: { ...s.execution, phase: 'streaming' } }))
+      set((s) => ({ streamingText: s.streamingText + (ev.text ?? ''), status: 'streaming' as ChatStatus, execution: { ...s.execution, phase: 'streaming', progress: ev.progress ?? s.execution.progress } }))
     } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
       if (isSelected) {
         set({ streamingText: '', streamingReasoning: '', status: 'idle', execution: { taskKind: null, phase: 'idle' } })
