@@ -97,11 +97,11 @@ export class AgentOrchestrator {
     ;(this.deps as { emit: (event: ChatStreamEvent) => void }).emit = emit
   }
 
+  private safeLog(msg: string): void { try { console.log(msg) } catch {} }
   cancel(sessionId: SessionId): { cancelled: boolean } {
     const c = this.inFlight.get(String(sessionId))
     if (!c) return { cancelled: false }
-    // eslint-disable-next-line no-console
-    console.log(`[AgentOrchestrator] cancel sid=${String(sessionId)}`)
+    this.safeLog(`[AgentOrchestrator] cancel sid=${String(sessionId)}`)
     c.abort(new Error('cancelled'))
     return { cancelled: true }
   }
@@ -195,9 +195,28 @@ export class AgentOrchestrator {
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) {
-        const msg = `resource-pressure: ${pressure.reason ?? 'load refused'}`
-        this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
-        throw new AgentOrchestratorError('resource-blocked', msg)
+        const msg = pressure.reason ?? 'load refused'
+        // Auto-fallback: try next model in router score order (score already computed) — pick first non-blocking
+        const remaining = models.filter((m) => m.available && m.modelId !== routing.modelId!)
+        let fallback: typeof routing | null = null
+        for (const cand of remaining) {
+          try {
+            const p = await this.deps.resources.checkBeforeLoad({ id: cand.modelId as never, displayName: cand.displayName, path: (cand as { path?: string })?.path, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded })
+            if (!p.blocking) {
+              fallback = { modelId: cand.modelId, runtimeId: cand.runtimeId, reason: `auto-fallback from ${routing.modelId!} blocked (${msg.slice(0,60)}) → ${cand.modelId}`, task: classification, candidatesConsidered: remaining.length, switched: true }
+              break
+            }
+          } catch {}
+        }
+        if (fallback) {
+          this.safeLog(`[SOVARA][ROUTER] auto-fallback ${routing.modelId!} blocked → ${fallback.modelId} (${msg})`)
+          this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `auto-fallback to ${fallback.modelId}` })
+          routing = fallback
+        } else {
+          const errMsg = `resource-pressure: ${msg}`
+          this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
+          throw new AgentOrchestratorError('resource-blocked', errMsg)
+        }
       }
 
       // ── PHASE 3: ensure selected model is active (select if router chose different) ──
@@ -208,13 +227,33 @@ export class AgentOrchestrator {
       if (baseSnapshot && (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision) {
         const baseModel = models.find((m) => m.modelId === baseSnapshot.modelId && m.runtimeId === baseSnapshot.runtimeId)
         const basePressure = baseModel
-          ? await this.deps.resources.checkBeforeLoad({ id: baseSnapshot.modelId as never, displayName: baseSnapshot.modelId, source: 'custom', format: 'unknown' } as never, { ctxLen: classification.contextLengthNeeded }).catch(() => ({ blocking: false } as never))
+          ? await this.deps.resources.checkBeforeLoad({ id: baseSnapshot.modelId as never, displayName: baseModel.displayName ?? baseSnapshot.modelId, path: (baseModel as { path?: string }).path ?? (baseModel as { filePath?: string }).filePath, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded }).catch(() => ({ blocking: false } as never))
           : ({ blocking: true } as never)
         if (baseModel?.available && !(basePressure as { blocking?: boolean }).blocking) {
           if (routing.modelId! !== baseSnapshot.modelId || routing.runtimeId! !== baseSnapshot.runtimeId) {
-            // eslint-disable-next-line no-console
-            console.log(`[SOVARA][ROUTER] honoring base ${baseSnapshot.modelId} over routed ${routing.modelId!} for chat`)
+            this.safeLog(`[SOVARA][ROUTER] honoring base ${baseSnapshot.modelId} over routed ${routing.modelId!} for chat`)
             routing = { ...routing, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, switched: false, reason: `honoring user base ${baseSnapshot.modelId} | ${routing.reason}` }
+          }
+        } else if (basePressure && (basePressure as { blocking?: boolean }).blocking) {
+          this.safeLog(`[SOVARA][ROUTER] base ${baseSnapshot.modelId} blocked (${(basePressure as { reason?: string }).reason ?? 'vram'}), keeping routed ${routing.modelId!} — will not honor`)
+        }
+        // Post-honor guard: if honored (or original) routing is still blocking, force fallback to fitting model
+        const postPressure = await this.deps.resources.checkBeforeLoad(
+          { id: routing.modelId! as never, displayName: models.find((m) => m.modelId === routing.modelId!)?.displayName ?? routing.modelId!, path: (models.find((m) => m.modelId === routing.modelId!) as { path?: string })?.path, source: 'custom', format: 'gguf' } as never,
+          { ctxLen: classification.contextLengthNeeded },
+        ).catch(() => ({ blocking: false } as never))
+        if ((postPressure as { blocking?: boolean }).blocking) {
+          const availFitting = models.filter((m) => m.available && m.modelId !== routing.modelId!)
+          for (const cand of availFitting) {
+            try {
+              const p = await this.deps.resources.checkBeforeLoad({ id: cand.modelId as never, displayName: cand.displayName, path: (cand as { path?: string })?.path, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded })
+              if (!p.blocking) {
+                this.safeLog(`[SOVARA][ROUTER] post-honor fallback ${routing.modelId!} blocked → ${cand.modelId}`)
+                this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `fallback to ${cand.modelId} (base blocked)` })
+                routing = { modelId: cand.modelId, runtimeId: cand.runtimeId, reason: `fallback from blocked ${routing.modelId!} → ${cand.modelId} | ${routing.reason}`, task: classification, candidatesConsidered: availFitting.length, switched: true }
+                break
+              }
+            } catch {}
           }
         }
       }
@@ -557,7 +596,7 @@ export class AgentOrchestrator {
       }
       this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'llm generation' })
       // eslint-disable-next-line no-console
-      console.log(`[SOVARA][CHAT] -> stream sid=${sid} endpoint=${ownedEndpoint ?? entry!.endpoint} model=${remoteModelId(routing.modelId!)} toolCtx=${toolContextForFinal ? toolContextForFinal.length : 0} msgs=${messages.length}`)
+      this.safeLog(`[SOVARA][CHAT] -> stream sid=${sid} endpoint=${ownedEndpoint ?? entry!.endpoint} model=${remoteModelId(routing.modelId!)} toolCtx=${toolContextForFinal ? toolContextForFinal.length : 0} msgs=${messages.length}`)
 
       // Owned sidecar serves on its own loopback port; third-party runtimes
       // serve on their registered endpoint. Either way this is REAL streaming
