@@ -838,7 +838,7 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   text-overflow: ellipsis;
   font-weight: 500;
 }
-.model-pill-status { font-size: 10px; margin-left: 2px; border: none; background: none; padding: 0 2px; }
+.model-pill-status { font-size: 10px; margin-left: 2px; border: none; padding: 1px 6px; }
 
 /* ═══════════════════════════════════════════════════════════════
    Popover — shared positioning
@@ -5259,8 +5259,74 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; padding-top: 8px; margin-top: 4px;
 }
+.sv-composer-bottom {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding-top: 8px; margin-top: 4px;
+}
 .sv-composer-left { display: flex; align-items: center; gap: 4px; }
 .sv-composer-right { display: flex; align-items: center; gap: 8px; }
+.sv-composer-card.composer-drop-active {
+  border-color: var(--stitch-terracotta, #C65D3B);
+  border-style: dashed;
+  box-shadow: 0 0 0 3px rgba(198, 93, 59, 0.15);
+}
+.composer-drop-hint {
+  font: 600 12px/1.4 Inter, sans-serif;
+  color: var(--stitch-terracotta, #C65D3B);
+  background: rgba(198, 93, 59, 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+.sovara-stages {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.sovara-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 999px;
+  opacity: 0.45;
+}
+.sovara-stage-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1.5px solid var(--stitch-muted, #8A8279);
+  flex: none;
+}
+.sovara-stage-label {
+  font: 500 10px/1 Inter, sans-serif;
+  color: var(--stitch-muted, #8A8279);
+  letter-spacing: 0.02em;
+}
+.sovara-stage.is-done { opacity: 0.85; }
+.sovara-stage.is-done .sovara-stage-dot {
+  background: var(--stitch-terracotta, #C65D3B);
+  border-color: var(--stitch-terracotta, #C65D3B);
+}
+.sovara-stage.is-done .sovara-stage-label { color: var(--stitch-ink, #1A1614); }
+.sovara-stage.is-active { opacity: 1; }
+.sovara-stage.is-active .sovara-stage-dot {
+  background: var(--stitch-terracotta, #C65D3B);
+  border-color: var(--stitch-terracotta, #C65D3B);
+  animation: sovara-stage-pulse 1.1s ease-in-out infinite;
+}
+.sovara-stage.is-active .sovara-stage-label {
+  color: var(--stitch-terracotta-deep, #8B3A22);
+  font-weight: 700;
+}
+@keyframes sovara-stage-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.55); opacity: 0.55; }
+}
 
 /* Buttons */
 .sv-btn {
@@ -5283,6 +5349,30 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   background: #FEE2E2; color: #B91C1C;
 }
 .sv-btn-stop:hover { background: #FECACA; }
+.sv-composer-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px;
+  border: 1px solid var(--stitch-border, #E8E4DE);
+  background: var(--stitch-surface-container, #F0EDE8);
+  color: var(--stitch-muted, #8A8279); cursor: pointer;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+.sv-composer-icon-btn:hover { background: #fff; border-color: var(--stitch-terracotta, #C65D3B); color: var(--stitch-ink, #1A1614); }
+.sv-send-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 999px; border: none;
+  background: var(--stitch-terracotta, #C65D3B); color: #fff; cursor: pointer;
+  transition: background 80ms ease, opacity 80ms ease;
+}
+.sv-send-btn:hover { background: var(--stitch-terracotta-deep, #8B3A22); }
+.sv-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.sv-dropdown {
+  position: absolute; z-index: 50; min-width: 160px; padding: 4px;
+  background: #fff; border: 1px solid var(--stitch-border, #E8E4DE); border-radius: 12px;
+  box-shadow: 0 12px 32px -4px rgba(60,50,40,0.18), 0 4px 12px -2px rgba(60,50,40,0.08);
+  overflow: hidden;
+}
+.sv-status-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* Generation controls */
 .sv-generation-controls {

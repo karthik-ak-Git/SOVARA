@@ -185,15 +185,17 @@ export function App(): React.JSX.Element {
     .map((s) => ({ id: s.id, title: s.title }))
 
   const handleSend = useCallback(
-    (content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean }): void => {
-      let enrichedContent = content
-      if (attachments && attachments.length > 0) {
-        const fileSummary = attachments.map((a) => `[Attached: ${a.name} (${a.type})]`).join(' ')
-        enrichedContent = `${fileSummary}\n\n${content}`
-      }
-      const sendOpts: { webSearch?: boolean; reasoning?: boolean } = { ...opts }
+    (content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean; reasoning?: boolean }): void => {
+      const forward = (attachments ?? []).slice(0, 5).map((a) => ({
+        name: a.name,
+        type: a.type,
+        size: a.size,
+        data: a.data,
+      }))
+      const sendOpts: { webSearch?: boolean; reasoning?: boolean; attachments?: typeof forward } = { ...opts }
       if (reasoningEnabled) sendOpts.reasoning = true
-      void chat.handleSend(enrichedContent, sendOpts)
+      if (forward.length > 0) sendOpts.attachments = forward
+      void chat.handleSend(content, sendOpts)
     },
     [chat, reasoningEnabled]
   )
@@ -250,6 +252,16 @@ export function App(): React.JSX.Element {
   }, [workbench.resources])
 
   const [artifactsOpen, setArtifactsOpen] = useState(false)
+
+  const handleOpenArtifact = useCallback((filePath: string): void => {
+    // Web: artifacts are served from the local file system via /api path.
+    // Try to open as a download; fall back to no-op if not available.
+    try {
+      window.open(`/api/artifacts/open?path=${encodeURIComponent(filePath)}`, '_blank')
+    } catch (e) {
+      console.error('[App] openArtifact failed:', e instanceof Error ? e.message : String(e))
+    }
+  }, [])
 
   const handleShareSession = useCallback(() => {
     const transcript = chat.events
@@ -342,6 +354,7 @@ export function App(): React.JSX.Element {
             onToggleArtifacts={setArtifactsOpen}
             projects={projects.map((p) => ({ id: p.id, name: p.name }))}
             onSelectProject={setSelectedProjectId}
+            onOpenArtifactFile={handleOpenArtifact}
           />
         ) : null}
 

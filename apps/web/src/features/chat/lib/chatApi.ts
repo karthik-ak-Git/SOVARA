@@ -39,7 +39,7 @@ export async function createChatSession(
 export async function sendMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   const text = content.trim()
   if (!text) throw new Error('message empty: cannot send empty message')
@@ -59,7 +59,7 @@ export async function regenerateResponse(sessionId: string): Promise<{ ok: boole
 export async function editAndResend(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   const text = content.trim()
   if (!text) throw new Error('message empty: cannot resend empty message')

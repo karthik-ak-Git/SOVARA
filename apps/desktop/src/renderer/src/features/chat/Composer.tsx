@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import {
   Plus,
+  Globe,
   Mic,
   ArrowUp,
   Square,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
+import { TokenMeter } from '../../components/ui/TokenMeter'
 import { transcribeAudio } from '@/lib/client/api'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 import type { ChatPhase } from './useChatSession'
@@ -91,6 +93,9 @@ export function Composer({
   const streaming = busy && phase !== 'idle'
   const [dragActive, setDragActive] = useState(false)
   const showStop = streaming && onCancel
+  const [webSearch, setWebSearch] = useState(false)
+  const estimatedTokens = value.trim() ? Math.round(value.trim().length / 4) : 0
+  const contextMaxTokens = 8192
 
   useEffect(() => {
     const el = areaRef.current
@@ -244,8 +249,6 @@ export function Composer({
     }
     setAttachments([])
   }
-
-  const [webSearch, setWebSearch] = useState(false)
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key !== 'Enter') return
@@ -404,11 +407,22 @@ export function Composer({
             >
               <Shield size={15} aria-hidden />
             </button>
+            <button
+              type="button"
+              className={`sv-composer-icon-btn${webSearch ? ' sv-btn-active' : ''}`}
+              aria-label={webSearch ? 'Web search on' : 'Web search off'}
+              title={webSearch ? 'Web search enabled' : 'Toggle web search'}
+              onClick={() => setWebSearch((v) => !v)}
+              style={webSearch ? { color: '#D97757' } : undefined}
+            >
+              <Globe size={14} aria-hidden />
+            </button>
             <input ref={fileInputRef} type="file" className="sr-only" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json,.csv" multiple onChange={handleFileSelect} aria-label="Select files to attach" />
             <input ref={folderInputRef} type="file" className="sr-only" {...{ webkitdirectory: '' } as any} multiple onChange={handleFileSelect} aria-label="Select folder to attach" />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
             <ModelSelector
               active={active}
               models={models}

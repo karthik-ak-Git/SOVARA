@@ -178,7 +178,7 @@ export async function regenerateChatMessage(sessionId: string, opts?: { reasonin
 export async function editAndResendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean; reasoning?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   return apiFetch('/api/chat/edit-resend', { method: 'POST', body: { sessionId, content, ...opts } })
 }

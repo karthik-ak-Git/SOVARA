@@ -20,6 +20,11 @@ import {
   Check,
   Copy,
   X,
+  FileSearch,
+  Route,
+  ListChecks,
+  FileDown,
+  FileText,
 } from 'lucide-react'
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
@@ -63,6 +68,7 @@ interface ChatViewProps {
   onToggleArtifacts?: (open: boolean) => void
   projects?: Array<{ id: string; name: string }>
   onSelectProject?: (id: string) => void
+  onOpenArtifactFile?: (path: string) => void
 }
 
 /**
@@ -108,6 +114,7 @@ export function ChatView({
   onToggleArtifacts: propOnToggleArtifacts,
   projects = [],
   onSelectProject,
+  onOpenArtifactFile = (): void => {},
 }: ChatViewProps): ReactElement {
   const exec = execution ?? { taskKind: null, phase: phase as AgentExecutionState['phase'] }
   const isStreaming =
@@ -116,8 +123,12 @@ export function ChatView({
       exec.phase === 'streaming' ||
       exec.phase === 'loading' ||
       exec.phase === 'planning' ||
+      exec.phase === 'reading' ||
+      exec.phase === 'prompting' ||
+      exec.phase === 'thinking' ||
       exec.phase === 'selecting' ||
       exec.phase === 'ready' ||
+      exec.phase === 'artifact' ||
       exec.phase === 'tool')
   const streaming = isStreaming
   const hasConversation = !!selectedId
@@ -203,17 +214,54 @@ export function ChatView({
   const showExecution = exec.phase !== 'idle' && exec.phase !== 'done'
   const executionLabel = (() => {
     switch (exec.phase) {
+      case 'reading': return exec.fileName ? `Reading ${exec.fileName}…` : 'Reading attachments…'
       case 'planning': return exec.taskKind ? `Planning — task: ${exec.taskKind}` : 'Understanding task…'
-      case 'selecting': return `Selecting model${exec.modelId ? ` — ${exec.modelId.split(':').pop()}` : ''}…`
+      case 'prompting': return 'Assembling prompt…'
+      case 'selecting': return `Routing to best model${exec.modelId ? ` — ${exec.modelId.split(':').pop()}` : ''}…`
       case 'loading': return exec.modelId ? `Loading ${exec.modelId.split(':').pop()?.split('/').pop() ?? exec.modelId}…` : 'Loading model…'
       case 'ready': return exec.modelId ? `${exec.modelId.split(':').pop()?.split('/').pop() ?? exec.modelId} — Ready` : 'Model ready'
+      case 'thinking': return 'Thinking…'
       case 'tool': return exec.toolName ? `Running tool: ${exec.toolName}…` : 'Running tool…'
+      case 'artifact': return exec.artifactPath ? `Saved ${exec.fileName ?? 'file'}` : `Generating ${exec.fileName ?? 'file'}…`
       case 'streaming': return exec.taskKind ? `Generating — task: ${exec.taskKind}` : 'Generating…'
       case 'error': return exec.error ?? 'Task failed'
       case 'cancelled': return 'Cancelled'
       default: return null
     }
   })()
+  // Send-stage stepper — honest pipeline position derived from backend events.
+  const STAGE_ORDER: Array<{ key: string; label: string }> = [
+    { key: 'reading', label: 'Reading' },
+    { key: 'planning', label: 'Planning' },
+    { key: 'prompting', label: 'Prompting' },
+    { key: 'selecting', label: 'Routing' },
+    { key: 'loading', label: 'Loading' },
+    { key: 'thinking', label: 'Thinking' },
+    { key: 'streaming', label: 'Generating' },
+    { key: 'tool', label: 'Tool' },
+    { key: 'artifact', label: 'File' },
+  ]
+  const stageIndexFor = (p: string): number => {
+    if (p === 'ready') return 5
+    const i = STAGE_ORDER.findIndex((s) => s.key === p)
+    return i
+  }
+  const activeStage = stageIndexFor(exec.phase)
+  // Generated files persist in the timeline (artifact/created session events).
+  const generatedFiles: Array<{ fileName: string; path: string; kind: string; bytes?: number }> = []
+  for (const e of events) {
+    if (e && e.type === 'artifact/created' && e.data && typeof e.data === 'object') {
+      const d = e.data as Record<string, unknown>
+      if (typeof d['path'] === 'string' && typeof d['fileName'] === 'string') {
+        generatedFiles.push({
+          fileName: d['fileName'],
+          path: d['path'],
+          kind: typeof d['kind'] === 'string' ? d['kind'] : 'file',
+          bytes: typeof d['bytes'] === 'number' ? d['bytes'] : undefined,
+        })
+      }
+    }
+  }
   const showVramBar = exec.phase === 'loading' && typeof exec.vramTotalMB === 'number'
   const taskKindBadge = exec.taskKind ? exec.taskKind : null
 
@@ -277,16 +325,35 @@ export function ChatView({
           ) : null}
 
           {showExecution && executionLabel ? (
-            <div style={{ padding: '10px 24px', fontSize: 12, color: 'var(--stitch-muted, #8A8279)', borderBottom: '1px solid var(--stitch-border, #E8E4DE)', display: 'flex', flexDirection: 'column', gap: 4 }} role="status" aria-live="polite">
+            <div style={{ padding: '10px 24px', fontSize: 12, color: 'var(--stitch-muted, #8A8279)', borderBottom: '1px solid var(--stitch-border, #E8E4DE)', display: 'flex', flexDirection: 'column', gap: 6 }} role="status" aria-live="polite">
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {exec.phase === 'loading' ? <Loader2 size={14} className="spin" />
-                  : exec.phase === 'tool' ? <Wrench size={14} />
-                  : exec.phase === 'planning' || exec.phase === 'selecting' ? <Brain size={14} />
-                  : exec.phase === 'error' ? <XCircle size={14} />
-                  : exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
+                <span aria-hidden>
+                  {exec.phase === 'loading' || exec.phase === 'planning' ? <Loader2 size={14} className="spin" /> :
+                   exec.phase === 'tool' ? <Wrench size={14} /> :
+                   exec.phase === 'reading' ? <FileSearch size={14} /> :
+                   exec.phase === 'prompting' ? <ListChecks size={14} /> :
+                   exec.phase === 'selecting' ? <Route size={14} /> :
+                   exec.phase === 'thinking' || exec.phase === 'streaming' ? <Brain size={14} /> :
+                   exec.phase === 'artifact' ? <FileDown size={14} /> :
+                   exec.phase === 'error' ? <XCircle size={14} /> :
+                   exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
+                </span>
                 <span>{executionLabel}</span>
                 {taskKindBadge ? <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--stitch-terracotta-bg, #FDF1ED)', color: 'var(--stitch-terracotta, #C65D3B)' }}>{taskKindBadge}</span> : null}
+                {exec.phase === 'artifact' && exec.artifactPath ? (
+                  <button type="button" className="sv-btn sv-btn-ghost" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => onOpenArtifactFile(exec.artifactPath as string)}>Open file</button>
+                ) : null}
               </div>
+              {activeStage >= 0 ? (
+                <div className="sovara-stages" aria-hidden>
+                  {STAGE_ORDER.map((s, i) => (
+                    <span key={s.key} className={`sovara-stage${i < activeStage ? ' is-done' : ''}${i === activeStage ? ' is-active' : ''}`} title={s.label}>
+                      <span className="sovara-stage-dot" />
+                      <span className="sovara-stage-label">{s.label}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {showVramBar ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'var(--stitch-border, #E8E4DE)' }}>
@@ -303,9 +370,22 @@ export function ChatView({
             </div>
           ) : null}
 
+          {generatedFiles.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 24px' }} aria-label="Generated files">
+              {generatedFiles.map((f) => (
+                <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--stitch-parchment, #F7F5F2)', fontSize: 12 }}>
+                  <FileText size={14} aria-hidden />
+                  <span style={{ fontWeight: 600 }}>{f.fileName}</span>
+                  <span style={{ opacity: 0.55 }}>{f.kind}{typeof f.bytes === 'number' ? ` • ${(f.bytes / 1024).toFixed(1)}KB` : ''}</span>
+                  <button type="button" className="sv-btn sv-btn-ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={() => onOpenArtifactFile(f.path)}>Open</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <MessageList
             events={events}
-            thinking={busy && streamingText === '' && streamingReasoning === '' && exec.phase === 'streaming'}
+            thinking={busy && streamingText === '' && streamingReasoning === '' && (exec.phase === 'streaming' || exec.phase === 'thinking')}
             streamingText={streamingText}
             streamingReasoning={streamingReasoning}
             streamingModelBadge={activeModel.displayName ?? undefined}
@@ -316,6 +396,22 @@ export function ChatView({
             busy={busy}
             onOpenArtifact={handleOpenArtifactInPanel}
           />
+
+          <div className="sv-status-bar" style={{ display: 'flex', gap: 8, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
+            {model.available && model.displayName ? (
+              <span>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
+            ) : (
+              <span>NO LOCAL MODEL</span>
+            )}
+            {streaming ? <span style={{ color: '#D97757' }}>● Streaming…</span> : null}
+            {exec.phase === 'reading' ? <span style={{ color: '#D97757' }}>● Reading file…</span> : null}
+            {exec.phase === 'prompting' ? <span style={{ color: '#D97757' }}>● Prompting…</span> : null}
+            {exec.phase === 'selecting' ? <span style={{ color: '#D97757' }}>● Routing model…</span> : null}
+            {exec.phase === 'loading' ? <span style={{ color: '#D97757' }}>● Loading model…</span> : null}
+            {exec.phase === 'thinking' ? <span style={{ color: '#D97757' }}>● Thinking…</span> : null}
+            {exec.phase === 'tool' ? <span style={{ color: '#D97757' }}>● Tool running…</span> : null}
+            {exec.phase === 'artifact' ? <span style={{ color: '#D97757' }}>● Generating file…</span> : null}
+          </div>
 
           <div className="sv-composer">
             <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy} busy={busy} phase={phase}
