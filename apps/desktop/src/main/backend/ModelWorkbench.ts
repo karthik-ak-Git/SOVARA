@@ -344,25 +344,9 @@ export class ModelWorkbench {
       throw new ModelWorkbenchError(`resource-pressure: ${pressure.reason ?? 'load refused'}`)
     }
     this.config.setActiveSelection({ runtimeId, modelId })
-    // Owned runtime: switching models loads the new GGUF into VRAM NOW
-    // (evicting the previous resident inside the adapter). Remote runtimes
-    // own their lifecycle — selection alone is enough for them.
-    if ((snap.entry.endpoint === 'local' || snap.entry.id === 'local') && this.models) {
-      appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'loading into VRAM (switch evicts previous)', fit: opts?.fit === true })
-      try {
-        await this.models.load(modelId as never, { runtimeId, ...(opts?.fit === true ? { gpu: 'fit' as const } : {}) })
-        appendLlamaLog(this.baseDir, 'select-ready', { modelId, runtimeId })
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        // If the GGUF truly vanished, prune it from the snapshot so it
-        // never reappears as a hard-coded list entry; user selection stays
-        // tracked (sticky till end-of-chat) but the list is live-only.
-        if (/model-not-found/i.test(msg)) {
-          try { this.pruneMissingFromLocalSnapshot() } catch {}
-        }
-        throw new ModelWorkbenchError(msg)
-      }
-    }
+    // Dropdown selection is instant — don't block UI loading VRAM. Actual
+    // load is deferred to chat:send (AgentOrchestrator ensures healthy). Log only.
+    appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'selection updated (load deferred to next chat)', fit: opts?.fit === true })
     return this.getActiveModel()
   }
 

@@ -85,8 +85,13 @@ export class SystemResourceStub implements SystemResourceManagerPort {
         } catch { return false }
       })()
       const canFitCpu = (() => {
-        const totalRam = Math.round(os.totalmem() / (1024 * 1024))
-        return needMB <= totalRam * 0.88
+        try {
+          if (!model.path || !fs.existsSync(model.path)) return false
+          const size = fs.statSync(model.path).size
+          if (size >= 4 * 1024 * 1024 * 1024) return false // large >4GB never auto-CPU (timeout invalid-response)
+          const totalRam = Math.round(os.totalmem() / (1024 * 1024))
+          return needMB <= totalRam * 0.75
+        } catch { return false }
       })()
       const effectiveFreeAfterEvict = total - usedByOthers
       if (needMB > total) {
@@ -103,8 +108,11 @@ export class SystemResourceStub implements SystemResourceManagerPort {
         }
       }
       if (needMB > effectiveFreeAfterEvict) {
-        if (canFitPartial || canFitCpu) {
-          return { level: 'warn', blocking: false, reason: `need ~${needMB}MB but only ~${effectiveFreeAfterEvict}MB free after evict — will auto-fit partial/CPU` }
+        if (canFitPartial) {
+          return { level: 'warn', blocking: false, reason: `need ~${needMB}MB but only ~${effectiveFreeAfterEvict}MB free after evict — will auto-fit partial` }
+        }
+        if (canFitCpu) {
+          return { level: 'warn', blocking: false, reason: `need ~${needMB}MB but only ~${effectiveFreeAfterEvict}MB free after evict — will run on CPU` }
         }
         return {
           level: 'critical',

@@ -170,10 +170,10 @@ export class AgentOrchestrator {
         active: active.selection ?? null,
         resources,
         checkBeforeLoad: async (modelId) => {
-          // Use the resource manager's real check for this candidate
           try {
+            const m = models.find((x) => x.modelId === modelId)
             return await this.deps.resources.checkBeforeLoad(
-              { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' } as never,
+              { id: modelId as never, displayName: m?.displayName ?? modelId, path: (m as { path?: string })?.path ?? (m as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
               { ctxLen: classification.contextLengthNeeded }
             )
           } catch {
@@ -188,9 +188,10 @@ export class AgentOrchestrator {
         throw new AgentOrchestratorError('no-model-available', msg)
       }
 
-      // Resource block already handled by router (skipped blocked candidates), but final guard
+      // Resource block already handled by router, but final guard with real path
+      const routedM = models.find((x) => x.modelId === routing.modelId!)
       const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
+        { id: routing.modelId! as never, displayName: routedM?.displayName ?? routing.modelId!, path: (routedM as { path?: string })?.path ?? (routedM as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) {
