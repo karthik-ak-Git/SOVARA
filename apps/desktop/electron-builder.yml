@@ -21,18 +21,6 @@ extraResources:
     to: bins
   - from: python
     to: python
-  # Internal Next.js server (UI + /api), staged by scripts/stage-web-runtime.ps1.
-  # Unpacked (outside asar) so node can execute it; resolved in nextServer.ts.
-  - from: web-runtime
-    to: web-runtime
-    filter:
-      - package.json
-      - next.config.mjs
-      - .next/**/*
-      - node_modules/**/*
-      - '!node_modules/.bin{,/**/*}'
-      - '!node_modules/typescript{,/**/*}'
-      - '!**/*.map'
 
 asar: true
 compression: maximum

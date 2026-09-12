@@ -10,9 +10,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
-    "stage:web": "powershell -ExecutionPolicy Bypass -File ../../scripts/stage-web-runtime.ps1",
-    "build:win": "pnpm stage:web && electron-vite build && electron-builder --win --x64",
-    "build:win:dir": "pnpm stage:web && electron-vite build && electron-builder --win --x64 --dir",
+    "build:win": "electron-vite build && electron-builder --win --x64",
+    "build:win:dir": "electron-vite build && electron-builder --win --x64 --dir",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
