@@ -4749,8 +4749,15 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .stitch-reasoning-label { flex: 1; }
 .stitch-reasoning-content {
   margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--stitch-border);
-  font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+  font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  max-height: 42vh; overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--stitch-border, #E8E4DE) transparent;
+  padding-right: 4px;
 }
+.stitch-reasoning-content::-webkit-scrollbar { width: 6px; }
+.stitch-reasoning-content::-webkit-scrollbar-thumb { background: var(--stitch-border, #E8E4DE); border-radius: 999px; }
 
 /* Artifact card (generic) */
 .stitch-artifact-card {
@@ -5188,13 +5195,27 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .sv-header-btn:hover { background: var(--stitch-surface-container, #F0EDE8); }
 
-/* ---- Message list ---- */
+/* ---- Message list — scroll container (Vercel: rendering-content-visibility) ---- */
 .sv-message-list {
-  flex: 1; overflow-y: auto; padding: 24px 16px 32px;
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 24px 16px 32px;
   display: flex; flex-direction: column; gap: 24px;
   max-width: 864px; width: 100%; margin: 0 auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--stitch-border, #E8E4DE) transparent;
+  scroll-behavior: smooth;
+  /* rendering-content-visibility: offscreen culling for long chat histories */
+  contain: layout style;
 }
+.sv-message-list::-webkit-scrollbar { width: 6px; }
+.sv-message-list::-webkit-scrollbar-thumb { background: var(--stitch-border, #E8E4DE); border-radius: 999px; }
+.sv-message-list::-webkit-scrollbar-track { background: transparent; }
 .sv-message-list:focus-visible { outline: 2px solid var(--stitch-terracotta, #C65D3B); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .sv-message-list { scroll-behavior: auto; }
+}
 
 /* ---- Messages ---- */
 .sv-message { display: flex; gap: 12px; align-items: flex-start; width: 100%; }
@@ -5449,9 +5470,10 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 }
 .sv-status-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; overflow: hidden; }
 .sv-status-bar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sv-chat-bottom { padding: 6px 16px 0; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; background: var(--stitch-surface, #F8F5F0); }
+.sv-chat-bottom { padding: 6px 16px 0; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; background: var(--stitch-surface, #F8F5F0); border-top: 1px solid var(--stitch-border, #E8E4DE); }
 .sv-chat-stream { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.sv-message-list { contain: content; content-visibility: auto; contain-intrinsic-size: 1px 400px; }
+/* per-message culling — rendering-content-visibility */
+.sv-message { content-visibility: auto; contain-intrinsic-size: auto 120px; contain: layout style paint; }
 
 /* Generation controls */
 .sv-generation-controls {

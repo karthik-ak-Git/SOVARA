@@ -240,7 +240,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   }
 
   async listLocalModels(): Promise<LocalModel[]> {
-    const files = this.scanGgufFiles()
+    const files = this.scanGgufFiles().filter((f) => !isMmprojFile(path.basename(f)))
     return files.map((file) => {
       const base = path.basename(file)
       return {

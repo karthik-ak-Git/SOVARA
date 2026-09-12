@@ -213,7 +213,13 @@ export class ModelWorkbench {
     return out
   }
 
+  private isMmprojId(modelId: string): boolean {
+    const b = String(modelId).split('/').pop()?.toLowerCase() ?? ''
+    return b === 'mmproj.gguf' || b.startsWith('mmproj-')
+  }
+
   private isModelLive(modelId: string): boolean {
+    if (this.isMmprojId(modelId)) return false // projector shard — never a runnable selection
     try {
       if (!this.models?.resolveModelPath) return true // adapter without path check — don't prune
       this.models.resolveModelPath(modelId)
@@ -361,7 +367,21 @@ export class ModelWorkbench {
   }
 
   getActiveModel(): ActiveModelState {
-    const sel = this.config.getActiveSelection()
+    let sel = this.config.getActiveSelection()
+    // Auto-migrate stale mmproj selection (vision projector shard) to a real LLM
+    if (sel && this.isMmprojId(sel.modelId)) {
+      const snap0 = this.config.getRuntime(sel.runtimeId)
+      const live = snap0?.lastModels.find((m) => !this.isMmprojId(m.modelId) && this.isModelLive(m.modelId))
+      if (live) {
+        this.config.setActiveSelection({ runtimeId: sel.runtimeId, modelId: live.modelId })
+        sel = this.config.getActiveSelection()
+        appendLlamaLog(this.baseDir, 'migrate-mmproj-selection', { from: sel?.modelId, to: live.modelId })
+      } else {
+        this.config.setActiveSelection(null as unknown as never)
+        try { (this.config as unknown as { clearActiveSelection?: () => void }).clearActiveSelection?.() } catch {}
+        return { selection: null, available: false }
+      }
+    }
     if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)
     if (!snap || !snap.entry.enabled) return { selection: sel, available: false }

@@ -354,9 +354,9 @@ export function ChatView({
             <Composer {...composerProps} />
           </div>
         ) : (
-          <div className="sv-chat-active" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-            <div className="sv-chat-stream" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="sv-chat-active" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <div className="sv-chat-stream" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
                 <div className="sv-session-header" style={{ padding: '8px 0' }}>
                   <SessionBadge label={`TODAY • ${projectName ? `Project ${projectName}` : 'Sovora Sovereign Workspace'}`} />
                 </div>
