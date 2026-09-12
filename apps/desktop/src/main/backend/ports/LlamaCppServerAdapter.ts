@@ -24,6 +24,7 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { app } from 'electron'
+import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { InstanceId, ModelId } from '@shared/types/branded'
@@ -177,7 +178,34 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private scanGgufFiles(): string[] {
     const out: string[] = []
     walkGguf(this.libraryDir(), out)
-    return out.sort()
+    // Also scan LM Studio / common external GGUF locations so a GGUF that
+    // the user already has (e.g. Nemotron in ~/.lmstudio/models) is
+    // considered "detected" without requiring a manual copy into the Sovara
+    // library. Missing files are pruned from the model list by the workbench.
+    for (const dir of this.lmStudioCandidateDirs()) walkGguf(dir, out)
+    // Deduplicate by basename+size would be ideal, but basename is enough for the UI
+    return [...new Set(out)].sort()
+  }
+
+  private lmStudioCandidateDirs(): string[] {
+    const out: string[] = []
+    try {
+      const home = os.homedir()
+      const primary = path.join(home, '.lmstudio', 'models')
+      if (fs.existsSync(primary)) out.push(primary)
+    } catch {}
+    try {
+      const localApp = process.env.LOCALAPPDATA
+      if (localApp) {
+        const p = path.join(localApp, 'LM Studio', 'models')
+        if (fs.existsSync(p) && !out.includes(p)) out.push(p)
+      }
+    } catch {}
+    try {
+      const extra = this.config?.getAppSetting('lmstudio_models_dir')
+      if (extra && fs.existsSync(extra) && !out.includes(extra)) out.push(extra)
+    } catch {}
+    return out
   }
 
   /**

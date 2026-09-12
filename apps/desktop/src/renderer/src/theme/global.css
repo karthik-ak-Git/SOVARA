@@ -52,6 +52,9 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; overflow: hidden; }
+/* Use dynamic viewport to avoid Windows taskbar / OS chrome overlap */
+html { height: 100dvh; }
+body, #root { min-height: 0; }
 body {
   margin: 0;
   background: var(--bg);
@@ -77,7 +80,7 @@ body {
   }
 }
 
-.app { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.app { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 /* ═══════════════════════════════════════════════════════════════
    TopBar — Bionic-style with tabs and window controls
@@ -856,6 +859,22 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   border-radius: var(--radius-lg);
   box-shadow: 0 4px 16px rgba(0,0,0,.12);
   overflow: hidden;
+}
+/* Composer popovers must flip upward to avoid clipping at window / taskbar edge */
+.sv-composer .popover,
+.sv-chat-bottom .popover,
+.composer-bionic .popover {
+  top: auto;
+  bottom: calc(100% + 8px);
+  /* Prevent horizontal overflow on narrow windows */
+  left: auto;
+  right: 0;
+  max-width: min(400px, calc(100vw - 32px));
+}
+.sv-composer .popover {
+  /* keep model picker anchored to its trigger, not full-width */
+  left: 0;
+  right: auto;
 }
 .model-popover, .project-popover { padding: 0; }
 .model-popover-head, .project-popover-head {
@@ -5286,9 +5305,11 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 
 /* ---- Composer ---- */
 .sv-composer {
-  padding: 8px 16px 16px; background: linear-gradient(to top, var(--stitch-surface, #FAF9F5) 60%, transparent);
-  position: sticky; bottom: 0; z-index: 20;
-}
+    padding: 8px 16px max(16px, env(safe-area-inset-bottom, 0px)); background: linear-gradient(to top, var(--stitch-surface, #FAF9F5) 60%, transparent);
+    position: sticky; bottom: 0; z-index: 20;
+    /* Ensure composer stays above Windows taskbar / OS chrome */
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px) + 4px);
+  }
 .sv-composer-inner { max-width: 832px; margin: 0 auto; }
 .sv-composer-card {
   background: #FFFFFF; border: 1px solid var(--stitch-border, #E8E4DE);
@@ -5426,7 +5447,11 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
   box-shadow: 0 12px 32px -4px rgba(60,50,40,0.18), 0 4px 12px -2px rgba(60,50,40,0.08);
   overflow: hidden;
 }
-.sv-status-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sv-status-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; overflow: hidden; }
+.sv-status-bar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-chat-bottom { padding: 6px 16px 0; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; background: var(--stitch-surface, #F8F5F0); }
+.sv-chat-stream { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.sv-message-list { contain: content; content-visibility: auto; contain-intrinsic-size: 1px 400px; }
 
 /* Generation controls */
 .sv-generation-controls {
@@ -5459,10 +5484,10 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 
 /* ---- Chat main container ---- */
 .sv-chat-main {
-  flex: 1; display: flex; flex-direction: column; min-width: 0;
-  background: var(--stitch-surface, #F8F5F0);
-  height: 100vh; overflow: hidden;
-}
+    flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--stitch-surface, #F8F5F0);
+    height: 100%; overflow: hidden;
+  }
 .sv-chat-active-wrap {
   flex: 1; display: flex; flex-direction: column; min-height: 0;
   overflow: hidden;

@@ -197,6 +197,9 @@ export function ChatView({
       return { title: 'No local model available', hint: 'No compatible model is available for this task. Open Models and select a model or download one.', action: 'models' }
     if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable'))
       return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
+    if (lower.includes('invalid-response') || lower.includes('runtime answered 500') || lower.includes('runtime answered 502') || lower.includes('runtime answered 503')) {
+      return { title: 'Model failed to generate', hint: `${err} — The local server returned an error. This often means the GGUF is incompatible with this llama.cpp build, context is too large, or the model file is corrupted. Try a different quant (e.g. Q4_K_M) or lower context to 2048, then reload the model.`, action: 'models' }
+    }
     if (lower.includes('model could not be loaded') || lower.includes('model-load-failed') || lower.includes('failed')) {
       if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }
       return { title: 'Model could not be loaded', hint: err, action: 'models' }
@@ -288,6 +291,41 @@ export function ChatView({
               <button type="button" className="sv-btn sv-btn-primary" onClick={onOpenModels} aria-label="Open Models to load a model">
                 Open Models
               </button>
+            ) : null}
+            {actionable ? (
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid var(--stitch-danger, #C04040)', background: 'var(--stitch-danger-bg, #FFF5F5)', maxWidth: 560, width: '100%', textAlign: 'left' }} role="alert">
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--stitch-danger, #C04040)' }}>{actionable.title}</div>
+                <div style={{ fontSize: 12, color: 'var(--stitch-muted, #8A8279)', marginTop: 2, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{actionable.hint}</div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  {actionable.action === 'models' ? (
+                    <>
+                      <button type="button" className="sv-btn sv-btn-primary" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onOpenModels}>Open Models</button>
+                      <button type="button" className="sv-btn sv-btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onOpenModels}>Choose another model</button>
+                    </>
+                  ) : null}
+                  {onDismissError ? (
+                    <button type="button" className="sv-btn sv-btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onDismissError}>Dismiss</button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {showExecution && executionLabel ? (
+              <div style={{ marginTop: 10, padding: '8px 12px', fontSize: 12, color: 'var(--stitch-muted, #8A8279)', display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 560, width: '100%' }} role="status" aria-live="polite">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span aria-hidden>
+                    {exec.phase === 'loading' || exec.phase === 'planning' ? <Loader2 size={14} className="spin" /> :
+                     exec.phase === 'tool' ? <Wrench size={14} /> :
+                     exec.phase === 'reading' ? <FileSearch size={14} /> :
+                     exec.phase === 'prompting' ? <ListChecks size={14} /> :
+                     exec.phase === 'selecting' ? <Route size={14} /> :
+                     exec.phase === 'thinking' || exec.phase === 'streaming' ? <Brain size={14} /> :
+                     exec.phase === 'artifact' ? <FileDown size={14} /> :
+                     exec.phase === 'error' ? <XCircle size={14} /> :
+                     exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
+                  </span>
+                  <span>{executionLabel}</span>
+                </div>
+              </div>
             ) : null}
           </div>
           <div className="sv-composer">

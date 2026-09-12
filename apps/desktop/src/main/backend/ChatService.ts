@@ -212,13 +212,19 @@ export class ChatService {
       }
     }
     const reasoningSystem = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+    // Bonsai / Llama-3-style Jinja templates require exactly one leading system
+    // message ("System message must be at the beginning"). Merge all advisory
+    // contexts into a single system block so we never send 2+ system turns.
+    const systemBlocks = [
+      CHAT_SYSTEM_PROMPT,
+      ...(reasoningSystem ? [reasoningSystem] : []),
+      ...(workspaceContext ? [workspaceContext] : []),
+      ...(mcpContext ? [mcpContext] : []),
+      ...(skillsContext ? [skillsContext] : []),
+      ...(webContext ? [webContext] : []),
+    ]
     const messages: LlmChatMessage[] = [
-      { role: 'system', content: CHAT_SYSTEM_PROMPT },
-      ...(reasoningSystem ? [{ role: 'system' as const, content: reasoningSystem }] : []),
-      ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
-      ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
-      ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
-      ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
+      { role: 'system', content: systemBlocks.join('\n\n') },
       ...toRequestMessages(prior),
       { role: 'user', content },
     ]
@@ -435,12 +441,15 @@ export class ChatService {
     let skillsContext: string | null = null
     try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
     const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+    const systemBlocksReg = [
+      CHAT_SYSTEM_PROMPT,
+      ...(reasoningSystemReg ? [reasoningSystemReg] : []),
+      ...(workspaceContext ? [workspaceContext] : []),
+      ...(mcpContext ? [mcpContext] : []),
+      ...(skillsContext ? [skillsContext] : []),
+    ]
     const messages: LlmChatMessage[] = [
-      { role: 'system', content: CHAT_SYSTEM_PROMPT },
-      ...(reasoningSystemReg ? [{ role: 'system' as const, content: reasoningSystemReg }] : []),
-      ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
-      ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
-      ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
+      { role: 'system', content: systemBlocksReg.join('\n\n') },
       ...toRequestMessages(prior),
     ]
 

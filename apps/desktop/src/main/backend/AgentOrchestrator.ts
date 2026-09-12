@@ -17,7 +17,7 @@ import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimeP
 import type { ModelWorkbench } from './ModelWorkbench'
 import { classifyTask } from './TaskClassifier'
 import { routeModel } from './ModelRouter'
-import { resolveCapabilities } from '@shared/types/modelCapabilities'
+import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
 import { getArtifactsDir } from '../storage/paths'
@@ -156,12 +156,15 @@ export class AgentOrchestrator {
       this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: classification.reason })
 
       // ── PHASE 2: model routing (smart, resource-aware) ──
+      // Snapshot the user's initially selected model as the "base" that
+      // will book-end the run: base → (tool models)* → base (formatted).
       this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `routing for ${classification.kind}` })
       const models = this.deps.workbench.listModels()
       const active = this.deps.workbench.getActiveModel()
       const resources = await this.deps.resources.getSnapshot()
+      const baseSnapshot = active.selection ? { modelId: active.selection.modelId, runtimeId: active.selection.runtimeId } : null
 
-      const routing = await routeModel({
+      let routing = await routeModel({
         task: classification,
         models,
         active: active.selection ?? null,
@@ -179,7 +182,7 @@ export class AgentOrchestrator {
         },
       })
 
-      if (!routing.modelId || !routing.runtimeId) {
+      if (!routing.modelId! || !routing.runtimeId!) {
         const msg = `No compatible model available for task "${classification.kind}". ${routing.reason}`
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
         throw new AgentOrchestratorError('no-model-available', msg)
@@ -187,7 +190,7 @@ export class AgentOrchestrator {
 
       // Resource block already handled by router (skipped blocked candidates), but final guard
       const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: routing.modelId as never, displayName: routing.modelId, source: 'custom', format: 'unknown' } as never,
+        { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) {
@@ -197,10 +200,27 @@ export class AgentOrchestrator {
       }
 
       // ── PHASE 3: ensure selected model is active (select if router chose different) ──
-      let entry = this.deps.workbench.describeRuntime(routing.runtimeId)
+      // Honour the user's explicit base choice: for simple chat, never silently
+      // swap away from baseSnapshot even if the scorer prefers a larger model.
+      // This is what makes hi stay on the fast Nemotron-4B instead of evicting
+      // to the 27B Q1_0 on CPU and appearing "stuck".
+      if (baseSnapshot && classification.kind === 'chat' && !classification.requiresVision) {
+        const baseModel = models.find((m) => m.modelId === baseSnapshot.modelId && m.runtimeId === baseSnapshot.runtimeId)
+        const basePressure = baseModel
+          ? await this.deps.resources.checkBeforeLoad({ id: baseSnapshot.modelId as never, displayName: baseSnapshot.modelId, source: 'custom', format: 'unknown' } as never, { ctxLen: classification.contextLengthNeeded }).catch(() => ({ blocking: false } as never))
+          : ({ blocking: true } as never)
+        if (baseModel?.available && !(basePressure as { blocking?: boolean }).blocking) {
+          if (routing.modelId! !== baseSnapshot.modelId || routing.runtimeId! !== baseSnapshot.runtimeId) {
+            // eslint-disable-next-line no-console
+            console.log(`[SOVARA][ROUTER] honoring base ${baseSnapshot.modelId} over routed ${routing.modelId!} for chat`)
+            routing = { ...routing, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, switched: false, reason: `honoring user base ${baseSnapshot.modelId} | ${routing.reason}` }
+          }
+        }
+      }
+      let entry = this.deps.workbench.describeRuntime(routing.runtimeId!)
       if (!entry || !entry.enabled) {
         const msg = 'The selected runtime is unavailable. Open Models and test its connection.'
-        this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: msg, error: msg })
+        this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
         throw new AgentOrchestratorError('runtime-unavailable', msg)
       }
 
@@ -208,12 +228,12 @@ export class AgentOrchestrator {
       let switched = false
       if (routing.switched) {
         try {
-          await this.deps.workbench.selectModel(routing.runtimeId, routing.modelId)
+          await this.deps.workbench.selectModel(routing.runtimeId!, routing.modelId!)
           switched = true
-          entry = this.deps.workbench.describeRuntime(routing.runtimeId)!
+          entry = this.deps.workbench.describeRuntime(routing.runtimeId!)!
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'model selection failed'
-          this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: msg, error: msg })
+          this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
           throw new AgentOrchestratorError('model-load-failed', msg)
         }
       }
@@ -222,16 +242,16 @@ export class AgentOrchestrator {
       // (switch evicts the previous resident). Third-party loopback runtimes
       // own their lifecycle — selection alone suffices, no sidecar spawn.
       const vramTotal = resources.vram.totalMB
-      const isOwnedRuntime = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
+      const isOwnedRuntime = entry!.endpoint === 'local' || entry.id === 'local' || routing.runtimeId! === 'local'
       let ownedEndpoint: string | null = null
       let ownedInstanceForMetrics: string | null = null
 
       this.emit(sid, 'model:loading', {
         taskKind: classification.kind,
-        modelId: routing.modelId,
-        runtimeId: routing.runtimeId,
+        modelId: routing.modelId!,
+        runtimeId: routing.runtimeId!,
         vramTotalMB: vramTotal,
-        detail: switched ? `selected ${routing.modelId} — loading` : `model ${routing.modelId} — checking`,
+        detail: switched ? `selected ${routing.modelId!} — loading` : `model ${routing.modelId!} — checking`,
       })
 
       try {
@@ -242,13 +262,13 @@ export class AgentOrchestrator {
             ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
           }
           const inst = models.ensureHealthy
-            ? await models.ensureHealthy(routing.modelId as never, {
+            ? await models.ensureHealthy(routing.modelId! as never, {
               ctxLen: classification.contextLengthNeeded,
-              runtimeId: routing.runtimeId,
+              runtimeId: routing.runtimeId!,
             })
-            : await this.deps.models.load(routing.modelId as never, {
+            : await this.deps.models.load(routing.modelId! as never, {
               ctxLen: classification.contextLengthNeeded,
-              runtimeId: routing.runtimeId,
+              runtimeId: routing.runtimeId!,
             })
           const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
           if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
@@ -264,8 +284,8 @@ export class AgentOrchestrator {
         const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
         this.emit(sid, 'model:ready', {
           taskKind: classification.kind,
-          modelId: routing.modelId,
-          runtimeId: routing.runtimeId,
+          modelId: routing.modelId!,
+          runtimeId: routing.runtimeId!,
           vramUsedMB: snapAfter.models.totalVramUsedMB,
           vramTotalMB: snapAfter.vram.totalMB,
           detail: routing.reason,
@@ -277,19 +297,19 @@ export class AgentOrchestrator {
         }
         const msg = e instanceof Error ? e.message : String(e)
         if (msg.toLowerCase().includes('resource') || msg.toLowerCase().includes('vram') || msg.toLowerCase().includes('max concurrent')) {
-          this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: msg, error: msg })
+          this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
           throw new AgentOrchestratorError('resource-blocked', msg)
         }
-        this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: msg, error: msg })
+        this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
         throw new AgentOrchestratorError('model-load-failed', msg)
       }
 
       // ── PHASE 4b: vision check — does the routed model actually see pixels?
       // resolveCapabilities is the ONLY capability source (registry or
       // adapter-advertised); text-only winners get metadata, never fake sight.
-      const routedModel = models.find((m) => m.modelId === routing.modelId && m.runtimeId === routing.runtimeId)
+      const routedModel = models.find((m) => m.modelId === routing.modelId! && m.runtimeId === routing.runtimeId!)
       const routedCaps = resolveCapabilities(
-        routing.modelId,
+        routing.modelId!,
         routedModel?.capabilities,
         routedModel?.contextLength ?? classification.contextLengthNeeded
       )
@@ -339,8 +359,8 @@ export class AgentOrchestrator {
       const attachmentContext = buildAttachmentContext(attached.files, visionCapable)
       this.emit(sid, 'task:prompting', {
         taskKind: classification.kind,
-        modelId: routing.modelId,
-        runtimeId: routing.runtimeId,
+        modelId: routing.modelId!,
+        runtimeId: routing.runtimeId!,
         detail: attached.files.length > 0
           ? `assembling prompt — ${attached.files.length} attachment(s), vision ${visionCapable ? 'on' : 'off'}`
           : 'assembling prompt — history + workspace context',
@@ -365,8 +385,8 @@ export class AgentOrchestrator {
           phase: 'routing',
           kind: classification.kind,
           confidence: classification.confidence,
-          modelId: routing.modelId,
-          runtimeId: routing.runtimeId,
+          modelId: routing.modelId!,
+          runtimeId: routing.runtimeId!,
           reason: routing.reason,
         })
       } catch { /* audit event best-effort */ }
@@ -374,15 +394,20 @@ export class AgentOrchestrator {
       const reasoningSystem = classification.reasoningRequired || opts?.reasoning
         ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.'
         : null
-
+      // Single leading system message — Bonsai/Mistral Jinja aborts if any
+      // system turn appears after index 0 ("System message must be at the
+      // beginning"). Merge all advisory blocks into one.
+      const systemBlocks = [
+        CHAT_SYSTEM_PROMPT,
+        ...(reasoningSystem ? [reasoningSystem] : []),
+        ...(workspaceContext ? [workspaceContext] : []),
+        ...(mcpContext ? [mcpContext] : []),
+        ...(skillsContext ? [skillsContext] : []),
+        ...(webContext ? [webContext] : []),
+        ...attachmentContext,
+      ]
       const messages: import('@shared/types/ports').LlmChatMessage[] = [
-        { role: 'system', content: CHAT_SYSTEM_PROMPT },
-        ...(reasoningSystem ? [{ role: 'system' as const, content: reasoningSystem }] : []),
-        ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
-        ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
-        ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
-        ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
-        ...attachmentContext.map((c) => ({ role: 'system' as const, content: c })),
+        { role: 'system', content: systemBlocks.join('\n\n') },
         ...toRequestMessages(prior),
         { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
       ]
@@ -390,11 +415,133 @@ export class AgentOrchestrator {
       appendChatLog(this.deps.baseDir, {
         sessionId: sid,
         action: 'send',
-        modelId: routing.modelId,
-        runtimeId: routing.runtimeId,
+        modelId: routing.modelId!,
+        runtimeId: routing.runtimeId!,
         injected: { workspace: !!workspaceContext, mcp: !!mcpContext, skills: !!skillsContext, webSearch: !!webContext },
-        detail: `task=${classification.kind} conf=${classification.confidence.toFixed(2)} routing=${routing.reason} history=${prior.length}→${messages.length}`,
+        detail: `task=${classification.kind} conf=${classification.confidence.toFixed(2)} routing=${routing.reason} history=${prior.length}→${messages.length} base=${baseSnapshot?.modelId ?? 'none'}`,
       })
+
+      // ── PHASE 5c: base → tool-model fan-out → base (reload for formatted response) ──
+      // User intent: the initially selected model is the "base" book-end.
+      // 1) baseSnapshot is the anchor (what the user picked).
+      // 2) For tasks needing tools/agents, the base decides which tool models
+      //    to call. Here we derive that list deterministically via scoring of
+      //    tool-capable candidates (LLM-planned JSON can replace this later
+      //    without changing the load→dispatch→reload lifecycle).
+      // 3) Each tool model is loaded (evicting the prior), dispatched, then
+      //    self-evicts logically via noteEndQuiet before the next load.
+      // 4) The base is re-loaded last so the formatted synthesis always comes
+      //    from the user's chosen model, even if intermediates used others.
+      let toolContextForFinal: string | null = null
+      const needsMultiModel = classification.kind === 'tool-use' || classification.kind === 'agent' || classification.kind === 'coding'
+      if (needsMultiModel && baseSnapshot && !controller.signal.aborted) {
+        // Derive tool model list: top scoring tool/coding-capable models
+        // distinct from base, up to 2. Honors VRAM pressure via checkBeforeLoad.
+        const toolCands = models
+          .filter((m) => m.available && m.modelId !== baseSnapshot.modelId && (m.capabilities?.includes('tool-use' as never) || m.capabilities?.includes('coding' as never) || m.capabilities?.includes('reasoning' as never)))
+          .slice(0, 8)
+        // Re-score for tool-use
+        const needCaps = capabilitiesForTask('tool-use')
+        const scoredTools = toolCands
+          .map((m) => {
+            const caps = m.capabilities ?? []
+            const hits = needCaps.filter((c) => (caps as string[]).includes(c)).length
+            return { m, hits, len: m.contextLength ?? 0 }
+          })
+          .sort((a, b) => b.hits - a.hits || b.len - a.len)
+          .slice(0, 2)
+          .map((x) => x.m)
+        // Also respect resource blocking — drop blocked candidates
+        const toolModelList: Array<{ modelId: string; runtimeId: string }> = []
+        for (const tm of scoredTools) {
+          try {
+            const p = await this.deps.resources.checkBeforeLoad({ id: tm.modelId as never, displayName: tm.modelId, source: 'custom', format: 'unknown' } as never, { ctxLen: classification.contextLengthNeeded })
+            if (!p.blocking) toolModelList.push({ modelId: tm.modelId, runtimeId: tm.runtimeId })
+          } catch { toolModelList.push({ modelId: tm.modelId, runtimeId: tm.runtimeId }) }
+        }
+        // If base chose to delegate, run each tool model as an isolated load→dispatch
+        if (toolModelList.length > 0) {
+          this.emit(sid, 'task:prompting', { taskKind: classification.kind, detail: `base ${baseSnapshot.modelId} planned ${toolModelList.length} tool model(s): ${toolModelList.map((t) => t.modelId).join(', ')}` })
+          const toolOutputs: string[] = []
+          for (let idx = 0; idx < toolModelList.length; idx++) {
+            if (controller.signal.aborted) break
+            const tm = toolModelList[idx]!
+            const tmEntry = this.deps.workbench.describeRuntime(tm.runtimeId)
+            if (!tmEntry || !tmEntry.enabled) continue
+            this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: tm.modelId, runtimeId: tm.runtimeId, detail: `loading tool model ${tm.modelId} (${idx + 1}/${toolModelList.length})` })
+            // Load tool model (evicts base/other tool — single resident invariant)
+            let tmEndpoint: string
+            let tmInstanceId: string | null = null
+            try {
+              const inst = (this.deps.models as unknown as { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy
+                ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(tm.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: tm.runtimeId })
+                : await this.deps.models.load(tm.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: tm.runtimeId } as never)
+              const h = await this.deps.models.health(inst.id as never).catch(() => ({ ok: false, error: 'health-check-failed' }))
+              if (!h.ok) throw new Error(`tool instance unhealthy (${h.error})`)
+              tmEndpoint = this.deps.models.baseUrl(inst.id as never)
+              try { (this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(inst.id); tmInstanceId = String(inst.id) } catch {}
+              this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: tm.modelId, runtimeId: tm.runtimeId, detail: `tool model ready — dispatching` })
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e)
+              this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: tm.modelId, runtimeId: tm.runtimeId, detail: msg, error: msg })
+              continue
+            }
+            // Dispatch tool model on a focused sub-prompt derived from the user request
+            this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: idx, toolName: tm.modelId, detail: `dispatching ${tm.modelId}` })
+            const toolPrompt: import('@shared/types/ports').LlmChatMessage[] = [
+              { role: 'system', content: `You are a specialized tool model (${tm.modelId}). Solve ONLY your sub-task for the user request: "${content.slice(0, 300)}". Return concise, factual output.` },
+              { role: 'user', content },
+            ]
+            let tText = ''
+            try {
+              for await (const chunk of this.deps.llm.streamChat({ endpoint: tmEndpoint!, model: remoteModelId(tm.modelId), messages: toolPrompt, timeoutMs: Math.max(tmEntry.timeoutMs, 60_000), stream: true, signal: controller.signal })) {
+                if (controller.signal.aborted) break
+                if (chunk.type === 'text-delta' && chunk.text) { tText += chunk.text; this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: chunk.text.slice(0, 400), toolName: tm.modelId }) }
+                if (chunk.type === 'done') break
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e)
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: idx, toolName: tm.modelId, detail: `tool ${tm.modelId} failed: ${msg}` })
+              this.noteEndQuiet(tmInstanceId)
+              continue
+            }
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${tm.modelId}-${Date.now()}` as never, content: tText.slice(0, 8000) }) } catch {}
+            this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: idx, toolName: tm.modelId, detail: `tool ${tm.modelId} returned ${tText.length} chars` })
+            this.noteEndQuiet(tmInstanceId)
+            // Self-dispatch from load: metrics closed, next load will evict this resident
+            if (tText.trim()) toolOutputs.push(`[${tm.modelId}]\n${tText.trim()}`)
+          }
+          if (toolOutputs.length > 0) toolContextForFinal = toolOutputs.join('\n\n---\n\n')
+          // Reload base last — formatted response must come from the user's chosen model
+          if (!controller.signal.aborted) {
+            const baseEntry = this.deps.workbench.describeRuntime(baseSnapshot.runtimeId)
+            if (baseEntry && baseEntry.enabled) {
+              this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, detail: `reloading base ${baseSnapshot.modelId} for formatted response` })
+              try {
+                const inst = (this.deps.models as unknown as { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy
+                  ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(baseSnapshot.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: baseSnapshot.runtimeId })
+                  : await this.deps.models.load(baseSnapshot.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: baseSnapshot.runtimeId } as never)
+                const h = await this.deps.models.health(inst.id as never).catch(() => ({ ok: false, error: 'health-check-failed' }))
+                if (!h.ok) throw new Error(`base reload unhealthy (${h.error})`)
+                ownedEndpoint = this.deps.models.baseUrl(inst.id as never)
+                try { (this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(inst.id); ownedInstanceForMetrics = String(inst.id) } catch {}
+                // Re-anchor routing/entry to base for the final stream and completion event
+                ;(routing as { modelId: string; runtimeId: string }).modelId = baseSnapshot.modelId
+                ;(routing as { runtimeId: string }).runtimeId = baseSnapshot.runtimeId
+                entry = baseEntry
+                this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, detail: 'base reloaded — ready for formatted response' })
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e)
+                this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, detail: `base reload failed: ${msg}`, error: msg })
+              }
+            }
+          }
+          // Inject tool outputs into the message that the final base will format
+          if (toolContextForFinal) {
+            messages.push({ role: 'user', content: `Tool results for synthesis (from dispatched models):\n${toolContextForFinal.slice(0, 8000)}\n\nUsing the tool results above, provide the final formatted answer for the original request: "${content.slice(0, 300)}"` })
+          }
+        }
+      }
 
       // ── PHASE 6: agent execution loop (LLM stream + optional tool steps) ──
       // For now, single LLM step with honest step:start/end events. Tool loop seam
@@ -402,18 +549,20 @@ export class AgentOrchestrator {
       if (classification.reasoningRequired || opts?.reasoning) {
         this.emit(sid, 'task:thinking', {
           taskKind: classification.kind,
-          modelId: routing.modelId,
-          runtimeId: routing.runtimeId,
+          modelId: routing.modelId!,
+          runtimeId: routing.runtimeId!,
           detail: 'thinking through the request…',
         })
       }
-      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: 'llm generation' })
+      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'llm generation' })
+      // eslint-disable-next-line no-console
+      console.log(`[SOVARA][CHAT] -> stream sid=${sid} endpoint=${ownedEndpoint ?? entry!.endpoint} model=${remoteModelId(routing.modelId!)} toolCtx=${toolContextForFinal ? toolContextForFinal.length : 0} msgs=${messages.length}`)
 
       // Owned sidecar serves on its own loopback port; third-party runtimes
       // serve on their registered endpoint. Either way this is REAL streaming
       // through LlmPort — no canned text anywhere on this path.
-      const endpoint = ownedEndpoint ?? entry.endpoint
-      const model = remoteModelId(routing.modelId)
+      const endpoint = ownedEndpoint ?? entry!.endpoint
+      const model = remoteModelId(routing.modelId!)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)
       let streamed = true
       let text = ''
@@ -474,12 +623,12 @@ export class AgentOrchestrator {
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled' })
           this.noteEndQuiet(ownedInstanceForMetrics)
-          return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
+          return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
         }
         const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
-        this.log(routing.runtimeId, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: routing.runtimeId, latencyMs: Date.now() - startedAll })
-        this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: safe, error: safe })
+        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
+        this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: safe, error: safe })
         this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
         this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `failed: ${safe}` })
         this.noteEndQuiet(ownedInstanceForMetrics)
@@ -522,12 +671,11 @@ export class AgentOrchestrator {
             try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, content: toolText }) } catch {}
             if (toolText && !controller.signal.aborted) {
               // Second LLM step with tool context — honest agent loop continuation
-              this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: 'llm generation (with tool context)' })
+              this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'llm generation (with tool context)' })
               const followMessages: import('@shared/types/ports').LlmChatMessage[] = [
                 ...messages,
                 { role: 'assistant', content: text },
-                { role: 'system', content: `Tool web_search result (untrusted external content):\n${toolText.slice(0, 3000)}` },
-                { role: 'user', content: 'Using the tool result above, provide the final answer concisely.' },
+                { role: 'user', content: `Tool web_search result (untrusted external content):\n${toolText.slice(0, 3000)}\n\nUsing the tool result above, provide the final answer concisely.` },
               ]
               let secondText = ''
               try {
@@ -559,7 +707,7 @@ export class AgentOrchestrator {
                 } else {
                   this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: 'cancelled during tool follow-up' })
                   this.noteEndQuiet(ownedInstanceForMetrics)
-                  return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
+                  return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
                 }
               }
             }
@@ -572,14 +720,14 @@ export class AgentOrchestrator {
 
       if (controller.signal.aborted) {
         this.noteEndQuiet(ownedInstanceForMetrics)
-        return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId, endpoint, model, streamed, userSeq)
+        return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
       }
 
       if (text.trim() === '') {
         const msg = 'invalid-response: the local model returned an empty reply'
         this.noteEndQuiet(ownedInstanceForMetrics)
-        this.log(routing.runtimeId, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: routing.runtimeId, latencyMs: Date.now() - startedAll })
+        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
         this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
         throw new AgentOrchestratorError('llm-failed', msg)
@@ -592,8 +740,8 @@ export class AgentOrchestrator {
       if (detected) {
         this.emit(sid, 'artifact:writing', {
           taskKind: classification.kind,
-          modelId: routing.modelId,
-          runtimeId: routing.runtimeId,
+          modelId: routing.modelId!,
+          runtimeId: routing.runtimeId!,
           fileName: detected.fileName,
           detail: `generating ${detected.fileName}…`,
         })
@@ -614,8 +762,8 @@ export class AgentOrchestrator {
             text += `\n\n📄 Generated file: **${path.basename(made.path)}** — saved to ${made.path}`
             this.emit(sid, 'artifact:ready', {
               taskKind: classification.kind,
-              modelId: routing.modelId,
-              runtimeId: routing.runtimeId,
+              modelId: routing.modelId!,
+              runtimeId: routing.runtimeId!,
               fileName: path.basename(made.path),
               artifactPath: made.path,
               artifactKind: detected.kind,
@@ -627,7 +775,7 @@ export class AgentOrchestrator {
           appendChatLog(this.deps.baseDir, {
             sessionId: sid, action: 'error', outcome: 'error',
             error: `artifact generation failed: ${e instanceof Error ? e.message : String(e)}`,
-            modelId: model, runtimeId: routing.runtimeId,
+            modelId: model, runtimeId: routing.runtimeId!,
           })
         }
       }
@@ -658,12 +806,12 @@ export class AgentOrchestrator {
         })
         ownedInstanceForMetrics = null
       }
-      this.log(routing.runtimeId, endpoint, model, startedAll, 200, 'ok', streamed)
+      this.log(routing.runtimeId!, endpoint, model, startedAll, 200, 'ok', streamed)
       appendChatLog(this.deps.baseDir, {
         sessionId: sid,
         action: 'done',
         modelId: model,
-        runtimeId: routing.runtimeId,
+        runtimeId: routing.runtimeId!,
         outcome: 'ok',
         promptTokens: tokenUsage.promptTokens,
         completionTokens: tokenUsage.completionTokens,
@@ -671,15 +819,15 @@ export class AgentOrchestrator {
         latencyMs: Date.now() - startedAll,
         detail: `agent steps=1 task=${classification.kind} routing=${routing.reason}`,
       })
-      this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
+      this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
       this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
 
       // Optional: persist execution summary for audit
       try {
         await this.deps.persistence.appendEvent(sessionId, 'agent/trace', {
           kind: classification.kind,
-          modelId: routing.modelId,
-          runtimeId: routing.runtimeId,
+          modelId: routing.modelId!,
+          runtimeId: routing.runtimeId!,
           steps: 1,
           durationMs: Date.now() - startedAll,
           streamed,
@@ -750,32 +898,32 @@ export class AgentOrchestrator {
           } catch { return { level: 'ok' as const } }
         },
       })
-      if (!routing.modelId || !routing.runtimeId) throw new AgentOrchestratorError('no-model-available', `No compatible model for "${classification.kind}". ${routing.reason}`)
+      if (!routing.modelId! || !routing.runtimeId!) throw new AgentOrchestratorError('no-model-available', `No compatible model for "${classification.kind}". ${routing.reason}`)
       const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: routing.modelId as never, displayName: routing.modelId, source: 'custom', format: 'unknown' } as never,
+        { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) throw new AgentOrchestratorError('resource-blocked', `resource-pressure: ${pressure.reason ?? 'load refused'}`)
-      let entry = this.deps.workbench.describeRuntime(routing.runtimeId)
+      let entry = this.deps.workbench.describeRuntime(routing.runtimeId!)
       if (!entry || !entry.enabled) throw new AgentOrchestratorError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
       if (routing.switched) {
-        await this.deps.workbench.selectModel(routing.runtimeId, routing.modelId)
-        entry = this.deps.workbench.describeRuntime(routing.runtimeId)!
+        await this.deps.workbench.selectModel(routing.runtimeId!, routing.modelId!)
+        entry = this.deps.workbench.describeRuntime(routing.runtimeId!)!
       }
-      this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramTotalMB: resources.vram.totalMB, progress: 10, detail: 'Reserving VRAM...' })
+      this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramTotalMB: resources.vram.totalMB, progress: 10, detail: 'Reserving VRAM...' })
       // Owned runtime: blocking VRAM load. Remote runtimes own their
       // lifecycle — no sidecar spawn, proceed straight to ready.
       let regenOwnedEndpoint: string | null = null
-      const regenIsOwned = entry.endpoint === 'local' || entry.id === 'local' || routing.runtimeId === 'local'
+      const regenIsOwned = entry!.endpoint === 'local' || entry.id === 'local' || routing.runtimeId! === 'local'
       if (regenIsOwned) {
-        this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramTotalMB: resources.vram.totalMB, progress: 35, detail: 'Loading GGUF into VRAM...' })
+        this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramTotalMB: resources.vram.totalMB, progress: 35, detail: 'Loading GGUF into VRAM...' })
         const models = this.deps.models as ModelRuntimePort & {
           ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
         }
         const inst = models.ensureHealthy
-          ? await models.ensureHealthy(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
-          : await this.deps.models.load(routing.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId })
-        this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramTotalMB: resources.vram.totalMB, progress: 75, detail: 'Verifying health...' })
+          ? await models.ensureHealthy(routing.modelId! as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId! })
+          : await this.deps.models.load(routing.modelId! as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId! })
+        this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramTotalMB: resources.vram.totalMB, progress: 75, detail: 'Verifying health...' })
         const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
         if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
         regenOwnedEndpoint = this.deps.models.baseUrl(inst.id)
@@ -783,7 +931,7 @@ export class AgentOrchestrator {
         throw new AgentOrchestratorError('cancelled', 'cancelled')
       }
       const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
-      this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, vramUsedMB: snapAfter.models.totalVramUsedMB, vramTotalMB: snapAfter.vram.totalMB, detail: routing.reason, progress: 100 })
+      this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramUsedMB: snapAfter.models.totalVramUsedMB, vramTotalMB: snapAfter.vram.totalMB, detail: routing.reason, progress: 100 })
       if (controller.signal.aborted) throw new AgentOrchestratorError('cancelled', 'cancelled')
 
       const prior = await this.deps.persistence.getEvents(sessionId)
@@ -802,17 +950,20 @@ export class AgentOrchestrator {
       try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch {}
 
       const reasoningSystem = classification.reasoningRequired || opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+      const systemBlocksReg = [
+        CHAT_SYSTEM_PROMPT,
+        ...(reasoningSystem ? [reasoningSystem] : []),
+        ...(workspaceContext ? [workspaceContext] : []),
+        ...(mcpContext ? [mcpContext] : []),
+        ...(skillsContext ? [skillsContext] : []),
+      ]
       const messages: import('@shared/types/ports').LlmChatMessage[] = [
-        { role: 'system', content: CHAT_SYSTEM_PROMPT },
-        ...(reasoningSystem ? [{ role: 'system' as const, content: reasoningSystem }] : []),
-        ...(workspaceContext ? [{ role: 'system' as const, content: workspaceContext }] : []),
-        ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
-        ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
+        { role: 'system', content: systemBlocksReg.join('\n\n') },
         ...toRequestMessages(prior),
       ]
-      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId, runtimeId: routing.runtimeId })
-      const endpoint = regenOwnedEndpoint ?? entry.endpoint
-      const model = remoteModelId(routing.modelId)
+      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId! })
+      const endpoint = regenOwnedEndpoint ?? entry!.endpoint
+      const model = remoteModelId(routing.modelId!)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)
       let text = ''
       let reasoningBuffer = ''
@@ -846,13 +997,13 @@ export class AgentOrchestrator {
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled' })
           const ev = await this.deps.persistence.appendEvent(sessionId, 'assistant/cancelled', { reason: 'cancelled' })
-          this.log(routing.runtimeId, endpoint, model, startedAll, undefined, 'cancelled', streamed)
+          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'cancelled', streamed)
           this.deps.emit({ sessionId: sid, kind: 'assistant-cancelled', seq: ev.seq })
           this.emit(sid, 'task:cancelled', { taskKind: classification.kind })
           return { ok: true, assistantSeq: ev.seq, routing, classification }
         }
         const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
-        this.log(routing.runtimeId, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
+        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
         this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
         throw new AgentOrchestratorError('llm-failed', safe)
@@ -866,7 +1017,7 @@ export class AgentOrchestrator {
       }
       if (text.trim() === '') {
         const msg = 'invalid-response: the local model returned an empty reply'
-        this.log(routing.runtimeId, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
+        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
         this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
         throw new AgentOrchestratorError('llm-failed', msg)
@@ -875,8 +1026,8 @@ export class AgentOrchestrator {
       const tokenUsage = usage ?? { promptTokens: Math.ceil(promptText.length / 4), completionTokens: Math.ceil(text.length / 4), totalTokens: Math.ceil((promptText.length + text.length) / 4) }
       try { this.deps.persistence.insertTokenUsage({ sessionId: sid, model, promptTokens: tokenUsage.promptTokens, completionTokens: tokenUsage.completionTokens, totalTokens: tokenUsage.totalTokens }) } catch {}
       const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
-      this.log(routing.runtimeId, endpoint, model, startedAll, 200, 'ok', streamed)
-      this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
+      this.log(routing.runtimeId!, endpoint, model, startedAll, 200, 'ok', streamed)
+      this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
       this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
       return { ok: true, assistantSeq, routing, classification }
     } finally {

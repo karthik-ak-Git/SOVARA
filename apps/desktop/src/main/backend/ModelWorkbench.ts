@@ -185,6 +185,11 @@ export class ModelWorkbench {
   /** Snapshot reads — no network. Probe first via probeRuntime. */
   listModels(runtimeId?: string): DiscoveredModel[] {
     this.ensureLocalLibraryRuntime()
+    // Prune ghosts: any local model whose GGUF no longer exists is removed
+    // from the snapshot so the dropdown never shows a hard-coded stale entry.
+    // The user's explicit active selection is kept until end-of-chat (sticky),
+    // but the list itself is always the live detected set.
+    this.pruneMissingFromLocalSnapshot()
     const entries = runtimeId ? [this.config.getRuntime(runtimeId)?.entry].filter((e): e is ModelRuntimeEntry => Boolean(e)) : this.config.listRuntimes()
     if (runtimeId && entries.length === 0) throw new ModelWorkbenchError('unknown runtime')
     const out: DiscoveredModel[] = []
@@ -192,6 +197,8 @@ export class ModelWorkbench {
       const snap = this.config.getRuntime(entry.id)
       if (!snap) continue
       for (const m of snap.lastModels) {
+        // Extra safety: skip any residual entry that cannot be resolved now
+        if (entry.id === 'local' && !this.isModelLive(m.modelId)) continue
         out.push({
           modelId: m.modelId,
           displayName: m.displayName,
@@ -204,6 +211,29 @@ export class ModelWorkbench {
       }
     }
     return out
+  }
+
+  private isModelLive(modelId: string): boolean {
+    try {
+      if (!this.models?.resolveModelPath) return true // adapter without path check — don't prune
+      this.models.resolveModelPath(modelId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private pruneMissingFromLocalSnapshot(): void {
+    try {
+      if (!this.models) return
+      const snap = this.config.getRuntime('local')
+      if (!snap || snap.lastModels.length === 0) return
+      const kept = snap.lastModels.filter((m) => this.isModelLive(m.modelId))
+      if (kept.length === snap.lastModels.length) return
+      const err = kept.length === 0 ? 'no GGUF models in the Sovara library' : null
+      this.config.saveProbeSnapshot('local', kept, err)
+      appendLlamaLog(this.baseDir, 'prune-ghosts', { before: snap.lastModels.length, after: kept.length, removed: snap.lastModels.filter((m) => !kept.some((k) => k.modelId === m.modelId)).map((m) => m.modelId) })
+    } catch { /* never block listing */ }
   }
 
   /** Ensure the library's local files appear as a runtime so Chat orchestration (ARCHITECTURE_PHASE1 §6) can select them without a probe. */
@@ -230,7 +260,18 @@ export class ModelWorkbench {
     try {
       // Avoid importing modelDownloads (circular) — scan via RuntimeConfigStore registry + filesystem heuristic
       const rows = this.config.listRegistryRows()
-      if (rows.length > 0) return rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: r.displayName || r.rfilename }))
+      if (rows.length > 0) {
+        const fromRows = rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: r.displayName || r.rfilename }))
+        // Filter ghosts: keep only GGUFs that are still resolvable on disk
+        const filtered = fromRows.filter((m) => this.isModelLive(m.modelId))
+        if (filtered.length > 0) return filtered
+        if (fromRows.length > 0 && filtered.length === 0) {
+          // All registry rows are ghosts — fall through to filesystem scan so we
+          // still surface LM Studio / Sovara folder GGUFs instead of empty.
+        } else {
+          return fromRows
+        }
+      }
       // Fallback: check AppBackend library dir via config's library path setting, or default data dir
       let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
       if (!libDir) {
@@ -269,9 +310,23 @@ export class ModelWorkbench {
   }
 
   async selectModel(runtimeId: string, modelId: string, opts?: { fit?: boolean }): Promise<ActiveModelState> {
-    const snap = this.config.getRuntime(runtimeId)
+    // Always prune stale ghosts before any selection decision
+    this.pruneMissingFromLocalSnapshot()
+    let snap = this.config.getRuntime(runtimeId)
     if (!snap) throw new ModelWorkbenchError('unknown runtime')
     if (!snap.entry.enabled) throw new ModelWorkbenchError('runtime is disabled')
+    // Live check first — if the file is truly missing, give the library hint
+    // and ensure the ghost is gone from the list; sticky selection is still
+    // kept (tracked) until the user picks a new available model.
+    if (snap.entry.id === 'local' && !this.isModelLive(modelId)) {
+      // Re-prune in case the missing id was the one being selected
+      this.pruneMissingFromLocalSnapshot()
+      snap = this.config.getRuntime(runtimeId) ?? snap
+      const stillKnown = snap.lastModels.some((m) => m.modelId === modelId)
+      if (!stillKnown) {
+        throw new ModelWorkbenchError(`model-not-found: "${modelId}" is not in the Sovara library (Library -> download a GGUF first) — removed from list`)
+      }
+    }
     const known = snap.lastModels.some((m) => m.modelId === modelId)
     if (!known) throw new ModelWorkbenchError('unknown model: probe the runtime first')
     // Resource boundary is real: a blocking verdict refuses the select.
@@ -293,7 +348,12 @@ export class ModelWorkbench {
         appendLlamaLog(this.baseDir, 'select-ready', { modelId, runtimeId })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        // Selection stays (retry possible); availability reflects the failure.
+        // If the GGUF truly vanished, prune it from the snapshot so it
+        // never reappears as a hard-coded list entry; user selection stays
+        // tracked (sticky till end-of-chat) but the list is live-only.
+        if (/model-not-found/i.test(msg)) {
+          try { this.pruneMissingFromLocalSnapshot() } catch {}
+        }
         throw new ModelWorkbenchError(msg)
       }
     }

@@ -118,6 +118,8 @@ export interface ClassifiedLoadFailure {
 }
 
 export interface ModelRuntimePort {
+  /** Resolve modelId → absolute GGUF path; throws model-not-found when missing. Optional because remote runtimes don't support it. */
+  resolveModelPath?(modelId: string): string
   listLocalModels(): Promise<LocalModel[]>
   load(modelId: ModelId, opts: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance>
   unload(instanceId: InstanceId): Promise<void>

@@ -202,14 +202,19 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
                 <span className="library-detect-title">Detected locations</span>
                 <button type="button" className="settings-action-btn" style={{ fontSize: 11 }} onClick={() => void refreshConnected()}>Refresh logs</button>
               </div>
+              {detectLocations.filter((l) => !l.exists).length > 0 && !detectLoading && !detectError ? (
+                <div className="library-detect-empty" style={{ color: '#a3a3a3', fontSize: 11 }}>
+                  {detectLocations.filter((l) => !l.exists).length} location{detectLocations.filter((l) => !l.exists).length !== 1 ? 's' : ''} not found — hidden from list
+                </div>
+              ) : null}
               {detectLoading ? (
                 <div className="library-detect-empty">Scanning drives…</div>
               ) : detectError ? (
                 <div className="library-detect-empty" style={{ color: '#c0392b' }}>{detectError}<br/><span style={{ fontSize: 11, opacity: 0.7 }}>Logs shown below. Files: %APPDATA%/Sovara/logs/detection.log + runtime.log</span></div>
-              ) : detectLocations.length === 0 ? (
-                <div className="library-detect-empty">No candidates found.</div>
+              ) : detectLocations.filter((l) => l.exists).length === 0 ? (
+                <div className="library-detect-empty">No valid locations found.</div>
               ) : (
-                detectLocations.map((loc) => (
+                detectLocations.filter((loc) => loc.exists).map((loc) => (
                   <div key={loc.path} className="library-detect-row">
                     <div className="library-detect-icon">
                       {loc.kind === 'ollama' ? <Bot size={14} /> : <Cpu size={14} />}
@@ -221,21 +226,17 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
                       <div className="library-detect-path">{loc.path}</div>
                     </div>
                     <div className="library-detect-meta">
-                      {loc.exists ? (
-                        <span className="library-detect-count">
+                      <span className="library-detect-count">
                         {loc.kind === 'ollama'
                           ? `${loc.modelCount} model${loc.modelCount !== 1 ? 's' : ''} installed`
                           : `${loc.modelCount} weight${loc.modelCount !== 1 ? 's' : ''} found`}
                       </span>
-                      ) : (
-                        <span className="library-model-chip library-model-chip--missing">Not found</span>
-                      )}
                     </div>
                     <div className="settings-row-right">
                       <button
                         type="button"
                         className="settings-action-btn"
-                        disabled={!loc.exists || applyingPath !== null}
+                        disabled={applyingPath !== null}
                         onClick={() => void handleApplyLocation(loc.path)}
                       >
                         {applyingPath === loc.path ? 'Applying…' : 'Apply'}

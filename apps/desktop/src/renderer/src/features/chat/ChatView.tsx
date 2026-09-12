@@ -197,6 +197,9 @@ export function ChatView({
     if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable')) {
       return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
     }
+    if (lower.includes('invalid-response') || lower.includes('runtime answered 500') || lower.includes('runtime answered 502') || lower.includes('runtime answered 503')) {
+      return { title: 'Model failed to generate', hint: `${err} — The local server returned an error. This often means the GGUF is incompatible with this llama.cpp build, context is too large, or the model file is corrupted. Try a different quant (e.g. Q4_K_M) or lower context to 2048, then reload the model.`, action: 'models' }
+    }
     if (lower.includes('model could not be loaded') || lower.includes('model-load-failed') || lower.includes('failed')) {
       if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }
       return { title: 'Model could not be loaded', hint: err, action: 'models' }
@@ -316,6 +319,38 @@ export function ChatView({
               </svg>
             </div>
             <h2 className="sv-empty-title">What can I help with?</h2>
+            {actionable ? (
+              <div className="sv-error" role="alert" aria-label="Chat error" style={{ maxWidth: 560, width: '100%', marginTop: 8 }}>
+                <div style={{ fontWeight: 600 }}>{actionable.title}</div>
+                <div style={{ fontSize: 13, opacity: 0.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{actionable.hint}</div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  {actionable.action === 'models' ? (
+                    <button type="button" className="sv-btn sv-btn-primary" style={{ padding: '4px 10px', fontSize: 12 }} onClick={onOpenModels}>Open Models</button>
+                  ) : null}
+                  {onDismissError ? (
+                    <button type="button" className="sv-btn sv-btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={onDismissError}>Dismiss</button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {showExecution && executionLabel ? (
+              <div style={{ padding: '8px 0', fontSize: 12, color: '#8A8279', display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 560, width: '100%' }} role="status" aria-live="polite">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span aria-hidden>
+                    {exec.phase === 'loading' || exec.phase === 'planning' ? <Loader2 size={14} className="spin" /> :
+                     exec.phase === 'tool' ? <Wrench size={14} /> :
+                     exec.phase === 'reading' ? <FileSearch size={14} /> :
+                     exec.phase === 'prompting' ? <ListChecks size={14} /> :
+                     exec.phase === 'selecting' ? <Route size={14} /> :
+                     exec.phase === 'thinking' || exec.phase === 'streaming' ? <Brain size={14} /> :
+                     exec.phase === 'artifact' ? <FileDown size={14} /> :
+                     exec.phase === 'error' ? <XCircle size={14} /> :
+                     exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
+                  </span>
+                  <span>{executionLabel}</span>
+                </div>
+              </div>
+            ) : null}
             <Composer {...composerProps} />
           </div>
         ) : (

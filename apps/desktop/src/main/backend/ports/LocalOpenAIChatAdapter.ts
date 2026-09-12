@@ -77,6 +77,23 @@ export function classifyChatError(e: unknown): ChatInferenceError {
   return new ChatInferenceError('stream-error', 'stream-error: the local runtime interrupted the reply')
 }
 
+async function checkStatusWithBody(res: Response): Promise<void> {
+  if (res.status === 401) {
+    throw new ChatInferenceError('unauthorized', 'unauthorized: the local server rejected the request')
+  }
+  if (res.status === 404) {
+    throw new ChatInferenceError('model-not-found', 'model-not-found: the server has no such model')
+  }
+  if (res.status >= 200 && res.status < 300) return
+  let bodySnippet = ''
+  try {
+    const t = await res.text()
+    if (t) bodySnippet = t.slice(0, 400).replace(/\s+/g, ' ').trim()
+  } catch { /* ignore */ }
+  const suffix = bodySnippet ? ` — ${bodySnippet}` : ''
+  throw new ChatInferenceError('invalid-response', `invalid-response: runtime answered ${res.status}${suffix}`)
+}
+
 function checkStatus(status: number): void {
   if (status === 401) {
     throw new ChatInferenceError('unauthorized', 'unauthorized: the local server rejected the request')
@@ -146,7 +163,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     }
     const { res } = opened
     try {
-      checkStatus(res.status)
+      await checkStatusWithBody(res)
     } catch (e) {
       try {
         await res.body?.cancel()
