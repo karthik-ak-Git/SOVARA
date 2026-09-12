@@ -345,7 +345,7 @@ export function Composer({
               ? 'Generating local model response… (Esc to stop)'
               : disabled
                 ? 'Waiting for local model to become ready…'
-                : 'Reply to Claude or drop files here... (Press Shift+Enter for new line)'
+                : 'Reply to Sovora or drop files here... (Press Shift+Enter for new line)'
           }
           value={value}
           onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
@@ -457,7 +457,7 @@ export function Composer({
 
       {/* Legal / Ergonomics Sub-footer — Stitch */}
       <div className="stitch-composer-subfooter">
-        <span className="stitch-composer-subfooter-note">Claude can make mistakes. Verify critical code and research.</span>
+        <span className="stitch-composer-subfooter-note">Sovora can make mistakes. Verify critical code and research.</span>
         <span className="stitch-composer-subfooter-keys">⌘K jump to chat • ⌘T new tab</span>
       </div>
       <div className="composer-bionic-footer stitch-exec-row">

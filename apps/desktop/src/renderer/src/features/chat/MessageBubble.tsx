@@ -87,7 +87,7 @@ function formatTime(ts?: number): string {
 /**
  * MessageBubble — full Stitch replica row.
  * User: avatar + name/time + white rounded-2xl bubble.
- * Assistant: terracotta avatar + Claude header + ReasoningBlock + Newsreader prose + ArtifactCards.
+ * Assistant: terracotta avatar + Sovora header + ReasoningBlock + Newsreader prose + ArtifactCards.
  * All handlers/testids preserved; purely presentational rewrite.
  */
 export function MessageBubble({
@@ -260,7 +260,7 @@ export function MessageBubble({
       </div>
       <div className="stitch-turn-body stitch-assistant-body">
         <div className="stitch-turn-meta stitch-assistant-meta">
-          <span className="stitch-turn-name">Claude</span>
+          <span className="stitch-turn-name">Sovora</span>
           {modelBadge ? <span className="stitch-model-badge">{modelBadge}</span> : null}
           {thoughtLabel ? <span className="stitch-turn-time">{thoughtLabel}</span> : null}
         </div>

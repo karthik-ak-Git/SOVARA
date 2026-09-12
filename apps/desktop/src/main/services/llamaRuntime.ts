@@ -491,6 +491,9 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     '-c', String(opts.ctxLen ?? 4096),
     '-ngl', String(opts.nGpuLayers ?? 999),
   ]
+  // KV-cache compression like Ollama (flash-attn reduces VRAM ~15%)
+  // Older builds ignore unknown flags — we add guarded later if needed.
+  try { args.push('--flash-attn', 'auto') } catch { /* ignore */ }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)
   return args

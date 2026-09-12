@@ -13,7 +13,9 @@
     "build:win": "electron-vite build && electron-builder --win --x64",
     "build:win:dir": "electron-vite build && electron-builder --win --x64 --dir",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "llama:download": "node-llama-cpp download --gpu cuda --arch x64 || npx --yes node-llama-cpp download --gpu cuda || true",
+    "postinstall": "npm run llama:download || true"
   },
   "dependencies": {
     "lucide-react": "0.511.0",

@@ -567,6 +567,18 @@ export class ChatService {
     if (!this.deps.models) {
       throw new ChatServiceError('runtime-unavailable', 'Local runtime unavailable in this context. Open Models and install the Sovara local runtime.')
     }
+    // Auto-provision sidecar if missing (like Ollama first-run) — never
+    // hard-fail with "not installed" when we can download the pinned build.
+    try {
+      const { getLlamaServerPath, ensureLlamaRuntime } = await import('../services/llamaRuntime')
+      if (!getLlamaServerPath(this.deps.baseDir)) {
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: 'local runtime not installed — provisioning pinned build...' })
+        await ensureLlamaRuntime(this.deps.baseDir)
+      }
+    } catch (e) {
+      // provisioning is best-effort; loadInner will surface runner-missing if it still fails
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `runtime provision check failed: ${e instanceof Error ? e.message.slice(0,120) : String(e)}` })
+    }
     const pressure = await this.deps.resources.checkBeforeLoad(
       { id: modelId as never, displayName: modelId, source: 'sovara', format: 'gguf' },
       {}

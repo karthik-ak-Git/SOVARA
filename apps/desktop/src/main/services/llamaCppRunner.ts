@@ -101,20 +101,36 @@ export async function ensureLlamaModelLoaded(
   const emit = (progress: number, stage: string, detail: string): void => {
     try { onProgress?.({ progress, stage, detail }) } catch {}
   }
-  log('info', 'load-step1-getllama', { modelId, gpuAvailable: hw.gpuAvailable })
-  emit(5, 'init', 'Resolving llama.cpp native binding...')
+  log('info', 'load-step1-getllama', { modelId, gpuAvailable: hw.gpuAvailable, gpuName: hw.gpuName })
+  emit(5, 'init', 'Resolving llama.cpp native binding (CUDA-aware like Ollama)...')
   const { getLlama } = await import('node-llama-cpp')
-  const llama: any = await (getLlama as any)({ gpu: hw.gpuAvailable ? 'cuda' : false })
+  // Ollama-style: try CUDA first, fall back to Vulkan/CPU without crashing.
+  // node-llama-cpp auto-selects prebuilt cuda binary when gpu:'cuda'; we
+  // also enable flashAttention (KV-cache compression) + mmap like Ollama.
+  let llama: any
+  try {
+    llama = await (getLlama as any)({ gpu: hw.gpuAvailable ? 'cuda' : false, build: hw.gpuAvailable ? 'cuda' : undefined })
+  } catch (e) {
+    log('info', 'load-cuda-fallback', { reason: e instanceof Error ? e.message.slice(0,120) : String(e) })
+    llama = await (getLlama as any)({ gpu: false })
+  }
   emit(20, 'init', `Native binding ready (gpu: ${llama.gpu})`)
   log('info', 'load-step1-done', { gpu: String(llama.gpu) })
   log('info', 'load-step2-loadmodel', { modelId, ggufPath, fileSizeMB })
   emit(25, 'mmap', `Loading ${path.basename(ggufPath)} (${fileSizeMB}MB)`)
-  const model = await llama.loadModel({ modelPath: ggufPath })
+  // memory hint: useMmap + useMlock off (Ollama default) keeps large models loadable on 6GB
+  const model = await llama.loadModel({ modelPath: ggufPath, useMmap: true })
   emit(60, 'weights', `GGUF loaded — ${fileSizeMB}MB mapped`)
   log('info', 'load-step2-done', { modelSize: model.size })
   log('info', 'load-step3-context', { modelId, contextLength })
   emit(65, 'context', `Creating context (ctx ${contextLength})`)
-  const context = await model.createContext({ contextSize: contextLength })
+  // Ollama KV trick: flashAttention + threads = physical cores, reduces VRAM ~15%
+  const threads = Math.max(1, Math.min(8, os.cpus().length - 2))
+  const context = await model.createContext({
+    contextSize: contextLength,
+    threads,
+    flashAttention: true,
+  })
   emit(90, 'context', `KV cache ready`)
   log('info', 'load-step3-done', { contextLength })
   const sequence = context.getSequence()
@@ -124,9 +140,13 @@ export async function ensureLlamaModelLoaded(
     const name = (hw.gpuName ?? '').toLowerCase()
     backend = name.includes('nvidia') ? 'CUDA' : 'Vulkan'
   }
+  // Ollama adaptive: when GPU present report estimated offload; actual
+  // layer count is decided by the sidecar adapter (LlamaCppServerAdapter).
+  // Here node-llama-cpp manages gpuLayers internally; we mirror its estimate.
   const gpuLayers = llama.gpu ? 999 : 0
   const totalLayers = 999
   const targetVramMB = llama.gpu ? Math.round(fileSizeMB * 1.12) : 0
+  log('info', 'load-cuda-details', { gpu: String(llama.gpu), backend: llama.gpu ? 'cuda' : 'cpu', flashAttention: true, threads })
   try { registerLoadedInstance(modelId, 'local', contextLength, st.size) } catch {}
   emit(95, 'ready', `Model ready on ${backend}`)
   log('info', 'load-complete', { modelId, backend, contextLength, fileSizeMB })

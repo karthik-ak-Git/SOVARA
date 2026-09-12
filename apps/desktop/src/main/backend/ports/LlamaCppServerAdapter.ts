@@ -410,10 +410,48 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         appendLlamaLog(this.baseDir, 'load-fit-plan', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
       }
     }
+    // ── Ollama-style adaptive fallback: auto → fit → cpu ──────────────
+    // When gpuMode==='auto' (Chat default) and full estimate exceeds total,
+    // don't hard-refuse. Try partial offload sized to this GPU, then CPU
+    // fallback when even partial doesn't fit — exactly how Ollama runs a
+    // 27B Q1 on a 6GB card (some layers on GPU, rest on RAM/CPU, slower).
+    let autoFallback: 'none' | 'fit' | 'cpu' = 'none'
+    if (!forceCpu && gpuMode === 'auto' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+      const fit = (() => {
+        try { return planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 }) } catch { return null }
+      })()
+      if (fit) {
+        ngl = fit.fitLayers
+        estimatedVramMB = fit.estimatedMB
+        partialOffload = true
+        autoFallback = 'fit'
+        appendLlamaLog(this.baseDir, 'load-auto-fit', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB, vramTotalMB: gpu.totalMB })
+      } else {
+        // Even minimum offload doesn't fit — fall through to CPU (RAM) if plausible.
+        const needRamMB = plan.estimatedMB // rough RAM need (same weights+KV)
+        const totalRamMB = Math.round((await import('node:os')).default.totalmem() / (1024 * 1024))
+        if (needRamMB <= totalRamMB * 0.88) {
+          ngl = 0
+          estimatedVramMB = 0 // no VRAM claimed
+          autoFallback = 'cpu'
+          appendLlamaLog(this.baseDir, 'load-auto-cpu', { modelId, reason: 'no fit layers fit, falling to CPU', totalRamMB, needRamMB })
+        } else {
+          const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
+          const altHint = alternatives.length > 0
+            ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
+            : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
+          const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${plan.estimatedMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} and even partial offload does not fit.${altHint}`
+          appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB: plan.estimatedMB, vramTotalMB: gpu.totalMB }, 'error')
+          throw new Error(msg)
+        }
+      }
+    }
+
     await this.withGlobalMutex(async () => {
-      // Honest capacity gate against REAL total VRAM (not a simulated 8GB).
-      // Skipped for explicit CPU placement (no VRAM claimed).
-      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+      // Honest capacity gate — skipped when we already auto-fell back to CPU,
+      // or when caller explicitly asked for cpu/fit/explicit-ngl. Only the
+      // non-auto path still hard-refuses full-offload.
+      if (autoFallback === 'none' && !forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
         const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
         const altHint = alternatives.length > 0
           ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
@@ -439,8 +477,10 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     })
 
     // Structured runtime selection (spec §5) — GGUF → llama.cpp only.
+    // When auto-fallback chose CPU, force CPU path even though GPU exists.
+    const isAutoCpu = autoFallback === 'cpu'
     const exe = this.exePath()
-    const useCuda = !forceCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0)
+    const useCuda = !forceCpu && !isAutoCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0)
     const selection = selectRuntimeForModel({
       format: 'gguf',
       exePath: exe,
@@ -456,7 +496,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     appendLlamaLog(this.baseDir, 'load-start', {
       modelId, modelPath, fileSizeMB: Math.round(fileSize / (1024 * 1024)),
       estimatedVramMB, plan, ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
-      offloadedLayers: ngl, partialOffload, vramFreeBeforeMB: vramBefore ?? 'unknown',
+      offloadedLayers: ngl, partialOffload, autoFallback, vramFreeBeforeMB: vramBefore ?? 'unknown',
     })
 
     const port = await this.deps.findPort()
@@ -540,6 +580,39 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         return this.finishLoad(t2, { modelId, modelPath, fileSize, estimatedVramMB, plan, ctxLen, vramBefore, t0 })
       }
       if (c.kind === 'oom') throw new Error(`oom: "${path.basename(modelPath)}" exhausted GPU memory during load -- pick a smaller quant or lower context (no automatic -ngl reduction applied)`)
+      // CUDA runtime missing → retry once on CPU (Ollama fallback)
+      if (c.kind === 'backend-failure' && ngl !== 0) {
+        appendLlamaLog(this.baseDir, 'load-cuda-fallback-cpu', { modelId, error: raw.slice(0,200) })
+        const cpuPort = await this.deps.findPort()
+        const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias })
+        const cpuEndpoint = `http://127.0.0.1:${cpuPort}/v1`
+        // exe already verified; same binary runs CPU when -ngl 0 but some
+        // builds need cpu exe path — we reuse same exe with 0 layers.
+        let cpuProc: ChildProcess
+        try {
+          const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
+          cpuProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, logDir })
+        } catch (e2) {
+          throw new Error(`model-load-failed: CPU fallback spawn failed (${e2 instanceof Error ? e2.message : String(e2)})`)
+        }
+        const cpuTracked: TrackedInstance = { ...tracked, port: cpuPort, endpoint: cpuEndpoint, proc: cpuProc, pid: cpuProc.pid, offloadedLayers: 0, partialOffload: false, hardwareDevice: 'cpu', configuration: { ctxLen, nGpuLayers: 0, nParallel: 1, alias } }
+        this.instances.set(key, cpuTracked)
+        cpuProc.once('exit', (code, signal) => {
+          const cur = this.instances.get(key)
+          if (!cur || cur.state === 'EVICTING') return
+          cur.state = 'FAILED'; cur.status = statusFor('FAILED'); cur.health = 'unhealthy'
+          cur.failureReason = 'runner-crash'; cur.lastError = `cpu fallback exited (code=${code ?? 'unknown'} signal=${signal ?? 'none'})`
+        })
+        try {
+          await this.deps.waitReady(cpuPort, 240_000)
+        } catch (e2) {
+          await killServer(cpuProc).catch(() => {})
+          this.instances.delete(key)
+          const raw2 = e2 instanceof Error ? e2.message : String(e2)
+          throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready on CPU fallback (${raw2.slice(0,200)})`)
+        }
+        return this.finishLoad(cpuTracked, { modelId, modelPath, fileSize, estimatedVramMB: 0, plan, ctxLen, vramBefore, t0 })
+      }
       throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready (${raw.slice(0, 200)})`)
     }
 
