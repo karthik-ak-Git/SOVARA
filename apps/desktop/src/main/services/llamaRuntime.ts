@@ -29,6 +29,9 @@ import { ensureDir, getSovaraDataDir } from '../storage/paths'
 // ── Pinned owned-runtime build ──────────────────────────────────────────
 // Pinned deliberately, never floating: every install resolves the same
 // bytes. Bump by changing these two lines + the extraction smoke test.
+// BUNDLED like Ollama: the cuda-12.4 zip already contains cudart64_12.dll,
+// cublas64_12.dll, cublasLt64_12.dll — no system CUDA Toolkit needed.
+// We spawn with PATH=exeDir so Windows finds the bundled DLLs (see spawnLlamaServer).
 export const LLAMA_BUILD = 'b10900'
 export const LLAMA_CUDA_ASSET = `llama-${LLAMA_BUILD}-bin-win-cuda-12.4-x64.zip`
 export const LLAMA_DOWNLOAD_URL =
@@ -117,7 +120,10 @@ export function getLlamaServerPath(baseDir?: string): string | null {
 
 export function getLlamaVersion(exePath: string, timeoutMs = 15_000): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(exePath, ['--version'], { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
+    // Use bundled PATH so --version can load cudart even without system CUDA
+    const exeDir = path.dirname(exePath)
+    const env = { ...process.env, PATH: `${exeDir};${process.env.PATH ?? ''}` }
+    execFile(exePath, ['--version'], { timeout: timeoutMs, windowsHide: true, env } as any, (err, stdout, stderr) => {
       if (err) return resolve(null)
       const first = String(stdout || stderr || '').split('\n').map((s) => s.trim()).filter(Boolean)[0]
       resolve(first ? first.slice(0, 160) : null)
@@ -627,7 +633,17 @@ export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
   const logPath = path.join(logDir, `llama-${safeAlias}-${opts.port}.log`)
   const stream = fs.createWriteStream(logPath, { flags: 'a' })
   stream.write(`\n=== spawn ${new Date().toISOString()} exe=${opts.exePath} args=${JSON.stringify(args)} ===\n`)
-  const child = spawn(opts.exePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  // Ollama-style bundled CUDA: exe lives beside cudart64_12.dll, cublas64_12.dll, etc.
+  // We MUST prepend that dir to PATH so Windows finds the bundled DLLs without a system CUDA install.
+  // Without this, llama-server fails with "cudart not found" even though the zip contains it.
+  const exeDir = path.dirname(opts.exePath)
+  const bundledEnv = { ...process.env, PATH: `${exeDir};${process.env.PATH ?? ''}` }
+  // Also verify bundled DLLs exist for diagnostics
+  try {
+    const dlls = fs.readdirSync(exeDir).filter(f => f.toLowerCase().endsWith('.dll')).slice(0,6)
+    stream.write(`[bundled] exeDir=${exeDir} dlls=${dlls.join(',')}\n`)
+  } catch { /* ignore */ }
+  const child = spawn(opts.exePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: bundledEnv })
   child.stdout?.on('data', (d) => { try { stream.write(`[out] ${String(d)}`) } catch { /* ignore */ } })
   child.stderr?.on('data', (d) => { try { stream.write(`[err] ${String(d)}`) } catch { /* ignore */ } })
   child.once('exit', (code, signal) => {
