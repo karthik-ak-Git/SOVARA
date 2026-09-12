@@ -150,10 +150,17 @@ export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
   return apiFetch('/api/sessions/archived')
 }
 
+export interface ChatAttachmentView {
+  name: string
+  type: string
+  size: number
+  data: string
+}
+
 export async function sendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean; reasoning?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   // Long-lived request: resolves when generation completes and the single
   // durable assistant event is persisted. Deltas arrive via onSessionEvents.

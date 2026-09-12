@@ -50,6 +50,13 @@ function scoreModel(
   else if (task.kind === 'chat') { score += 10; reasons.push('chat fallback') }
   else { score -= 10; reasons.push('capability miss') }
 
+  // Vision requirement (image attached): vision-capable models win by a wide
+  // margin; text-only models are still eligible as a graceful fallback.
+  if (task.requiresVision) {
+    if (capabilities.includes('vision')) { score += 30; reasons.push('vision match') }
+    else { score -= 25; reasons.push('no vision support') }
+  }
+
   // Context length must satisfy need
   if (contextLength >= task.contextLengthNeeded) { score += 15; reasons.push('ctx fits') }
   else { score -= 20; reasons.push(`ctx short ${contextLength}<${task.contextLengthNeeded}`) }

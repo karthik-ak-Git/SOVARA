@@ -118,7 +118,23 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     const url = chatCompletionsUrl(request.endpoint)
     const body = {
       model: request.model,
-      messages: request.messages.map((m) => ({ role: m.role, content: m.content })),
+      // Text-only messages stay plain strings; messages carrying vision parts
+      // serialize to OpenAI content blocks. Text-only runtimes never receive
+      // images — the orchestrator attaches them only for vision-capable picks.
+      messages: request.messages.map((m) =>
+        !m.images || m.images.length === 0
+          ? { role: m.role, content: m.content }
+          : {
+            role: m.role,
+            content: [
+              ...(m.content ? [{ type: 'text' as const, text: m.content }] : []),
+              ...m.images.map((img) => ({
+                type: 'image_url' as const,
+                image_url: { url: `data:${img.mime};base64,${img.base64}` },
+              })),
+            ],
+          }
+      ),
       stream: request.stream,
     }
 

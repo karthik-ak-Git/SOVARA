@@ -30,18 +30,37 @@ function needsReasoning(text: string, explicit?: boolean): boolean {
   return false
 }
 
-function estimateContextNeeded(text: string): number {
+function estimateContextNeeded(text: string, extraChars = 0): number {
   // chars → tokens ~4 chars/token, plus history budget
-  const tokens = Math.ceil(text.length / 4) + 2048 // history + system
+  const tokens = Math.ceil((text.length + extraChars) / 4) + 2048 // history + system
   return Math.max(2048, Math.min(131072, tokens))
 }
 
-export function classifyTask(content: string, hints?: { reasoning?: boolean; webSearch?: boolean }): TaskClassification {
+export function classifyTask(
+  content: string,
+  hints?: { reasoning?: boolean; webSearch?: boolean; hasImage?: boolean; attachmentChars?: number }
+): TaskClassification {
   const text = (content ?? '').trim()
   const len = text.length
+  const attachmentChars = Math.max(0, Math.floor(hints?.attachmentChars ?? 0))
+  const needsVision = hints?.hasImage === true
 
-  if (len === 0) {
+  if (len === 0 && !needsVision) {
     return { kind: 'chat', confidence: 1, requiredCapabilities: ['chat'], contextLengthNeeded: 2048, reasoningRequired: false, reason: 'empty→chat fallback' }
+  }
+
+  // Image attached → vision-capable model required; kind follows the question.
+  if (needsVision) {
+    const base = classifyTask(text, { reasoning: hints?.reasoning, webSearch: hints?.webSearch })
+    const requiredCapabilities = Array.from(new Set([...base.requiredCapabilities, 'vision']))
+    return {
+      ...base,
+      requiredCapabilities,
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
+      requiresVision: true,
+      confidence: Math.min(0.9, base.confidence + 0.05),
+      reason: `${base.reason} + image attachment→vision`,
+    }
   }
 
   // Explicit toggles dominate
@@ -51,7 +70,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind,
       confidence: 0.85,
       requiredCapabilities: kind === 'coding' ? ['coding', 'reasoning'] : ['reasoning'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: true,
       reason: 'explicit reasoning toggle',
     }
@@ -63,7 +82,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'tool-use',
       confidence: 0.8,
       requiredCapabilities: ['tool-use'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: needsReasoning(text, hints?.reasoning),
       reason: 'webSearch hint / tool pattern',
     }
@@ -74,7 +93,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'summarization',
       confidence: 0.75,
       requiredCapabilities: ['summarization'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: false,
       reason: 'summarization keywords',
     }
@@ -86,7 +105,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'analysis',
       confidence: 0.78,
       requiredCapabilities: ['analysis'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: true,
       reason: 'analysis keywords',
     }
@@ -100,7 +119,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'coding',
       confidence,
       requiredCapabilities: ['coding'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: needsReasoning(text),
       reason: 'code patterns / fences',
     }
@@ -112,7 +131,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'agent',
       confidence: 0.7,
       requiredCapabilities: ['tool-use', 'reasoning'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: true,
       reason: 'multi-step agent signal',
     }
@@ -124,7 +143,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
       kind: 'reasoning',
       confidence: 0.68,
       requiredCapabilities: ['reasoning'],
-      contextLengthNeeded: estimateContextNeeded(text),
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: true,
       reason: 'reasoning keywords',
     }
@@ -135,7 +154,7 @@ export function classifyTask(content: string, hints?: { reasoning?: boolean; web
     kind: 'chat',
     confidence: 0.9,
     requiredCapabilities: ['chat'],
-    contextLengthNeeded: estimateContextNeeded(text),
+    contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
     reasoningRequired: needsReasoning(text),
     reason: 'default chat',
   }

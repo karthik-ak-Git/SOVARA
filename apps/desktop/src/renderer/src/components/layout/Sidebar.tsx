@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
   MessageSquare,
-  Database,
-  Globe,
-  Library,
   Cpu,
-  Bot,
-  Sparkles,
-  Link2,
   Settings,
   FolderOpen,
   Plus,
@@ -16,7 +10,6 @@ import {
   MoreHorizontal,
   Trash2,
   Shield,
-  type LucideIcon,
 } from 'lucide-react'
 
 export type NavId =
@@ -29,23 +22,6 @@ export type NavId =
   | 'skills'
   | 'connections'
   | 'settings'
-
-interface NavItem {
-  id: NavId
-  label: string
-  icon: LucideIcon
-}
-
-const PRIMARY_NAV: NavItem[] = [
-  { id: 'chat', label: 'Chat', icon: MessageSquare },
-  { id: 'models', label: 'Models', icon: Database },
-  { id: 'explore', label: 'Explorer', icon: Globe },
-  { id: 'library', label: 'Library', icon: Library },
-  { id: 'runtime', label: 'Runtime', icon: Cpu },
-  { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'connections', label: 'Connections', icon: Link2 },
-]
 
 interface ProjectItem {
   id: string
@@ -331,26 +307,6 @@ export function Sidebar({
         <span className="sidebar-search-key">/</span>
       </div>
 
-      {/* Core Nav Views */}
-      <div className="nav-section sidebar-nav-items">
-        {PRIMARY_NAV.map((item) => {
-          const Icon = item.icon
-          const isActive = activeId === item.id
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={`nav-item ${isActive ? 'active' : ''}`}
-              aria-current={isActive ? 'page' : undefined}
-              onClick={() => onNavigate(item.id)}
-            >
-              <Icon size={15} aria-hidden className="nav-icon" />
-              <span className="nav-text">{item.label}</span>
-            </button>
-          )
-        })}
-      </div>
-
       <div className="sidebar-divider" />
 
       {/* Projects section */}
@@ -463,4 +419,4 @@ export function Sidebar({
   )
 }
 
-export const NAV_ITEMS = PRIMARY_NAV
+

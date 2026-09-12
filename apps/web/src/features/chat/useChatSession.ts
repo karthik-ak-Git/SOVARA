@@ -52,7 +52,7 @@ async function maybeNotifyCompletion(sessionTitle: string, sessionFocused: boole
  * - Model status is fetched on mount + on demand (no polling, no keystroke
  *   probing). Duplicate submission is blocked while a send is in flight.
  */
-export type ChatPhase = 'idle' | 'streaming' | 'planning' | 'loading' | 'tool'
+export type ChatPhase = 'idle' | 'streaming' | 'planning' | 'reading' | 'prompting' | 'thinking' | 'loading' | 'tool' | 'artifact'
 
 export interface AgentExecutionState {
   taskKind: import('@shared/types/task').TaskKind | null
@@ -65,6 +65,12 @@ export interface AgentExecutionState {
   toolName?: string
   error?: string
   stepIndex?: number
+  /** Attachment file name for the reading stage. */
+  fileName?: string
+  /** Generated artifact absolute path (artifact:ready). */
+  artifactPath?: string
+  /** Generated artifact kind: 'pdf' | 'xlsx' | 'docx' | 'code'. */
+  artifactKind?: string
 }
 
 export function useChatSession() {
@@ -142,6 +148,40 @@ export function useChatSession() {
         setPhase('planning')
         return
       }
+      if (ev.kind === 'task:reading') {
+        if (!isSelected) return
+        setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'reading', fileName: ev.fileName, detail: ev.detail })
+        setPhase('reading')
+        return
+      }
+      if (ev.kind === 'task:prompting') {
+        if (!isSelected) return
+        setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'prompting', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail })
+        setPhase('prompting')
+        return
+      }
+      if (ev.kind === 'task:thinking') {
+        if (!isSelected) return
+        setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'thinking', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail })
+        setPhase('thinking')
+        return
+      }
+      if (ev.kind === 'artifact:writing' || ev.kind === 'artifact:ready') {
+        if (!isSelected) return
+        setExecution((prev) => ({
+          ...prev,
+          taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? prev.taskKind,
+          phase: 'artifact',
+          modelId: ev.modelId ?? prev.modelId,
+          runtimeId: ev.runtimeId ?? prev.runtimeId,
+          fileName: ev.fileName ?? prev.fileName,
+          artifactPath: ev.artifactPath ?? prev.artifactPath,
+          artifactKind: ev.artifactKind ?? prev.artifactKind,
+          detail: ev.detail ?? prev.detail,
+        }))
+        setPhase('artifact')
+        return
+      }
       if (ev.kind === 'model:selecting') {
         if (!isSelected) return
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'selecting', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail })
@@ -209,13 +249,18 @@ export function useChatSession() {
       }
       if (ev.kind === 'reasoning-delta' && ev.text) {
         if (!isSelected) return
-        setPhase('streaming')
+        setPhase((p) => (p === 'thinking' ? p : 'streaming'))
+        setExecution((prev) => (prev.phase === 'thinking' ? prev : { ...prev, phase: 'streaming' }))
         setStreamingReasoning((t) => t + (ev.text ?? ''))
       } else if (ev.kind === 'assistant-delta' && ev.text) {
         if (!isSelected) return
         setPhase('streaming')
         setStreamingText((t) => t + (ev.text ?? ''))
-        setExecution((prev) => (prev.phase === 'loading' || prev.phase === 'planning' ? { ...prev, phase: 'streaming' } : prev))
+        setExecution((prev) =>
+          prev.phase === 'loading' || prev.phase === 'planning' || prev.phase === 'reading' || prev.phase === 'prompting' || prev.phase === 'thinking'
+            ? { ...prev, phase: 'streaming' }
+            : prev
+        )
       } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
         if (isSelected) {
           setStreamingText('')
@@ -328,7 +373,7 @@ export function useChatSession() {
   }, [refreshSessions, sessions, switchSession])
 
   const handleSend = useCallback(
-    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean }): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
       // Empty-state send (screenshot case: "hi" typed with no conversation

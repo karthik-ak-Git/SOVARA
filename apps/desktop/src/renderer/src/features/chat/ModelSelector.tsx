@@ -3,6 +3,12 @@ import { Search, Check, ChevronDown, Wrench, Brain } from 'lucide-react'
 import { Popover } from './Popover'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
+function formatCtx(n?: number): string {
+  if (n === undefined) return ''
+  if (n >= 1000) return `${Math.round(n / 1000)}k`
+  return String(n)
+}
+
 interface ModelSelectorProps {
   active: ActiveModelState
   models: DiscoveredModel[]
@@ -29,8 +35,12 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
     ? runtimes.find((r) => r.id === selectedModel.runtimeId)?.displayName ?? selectedModel.runtimeId
     : null
 
+  const ctxLabel = selectedModel?.contextLength ? formatCtx(selectedModel.contextLength) : null
+
   const modelLabel = selectedModel
-    ? `${selectedModel.displayName} ${runtimeName ? `on ${runtimeName}` : ''}`
+    ? ctxLabel
+      ? `${selectedModel.displayName} · ${ctxLabel}`
+      : selectedModel.displayName
     : 'No model'
 
   const statusLabel = active.available ? 'Ready' : 'Unavailable'
@@ -76,14 +86,14 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
         className="model-pill"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Model selector: ${modelLabel}, ${statusLabel}. Click to change model.`}
+        aria-label={`Model: ${modelLabel}, ${statusLabel}. Click to change model.`}
         onClick={() => setOpen((o) => !o)}
       >
+        <span className="model-pill-label">{modelLabel}</span>
+        <span className={`model-pill-status badge badge--${statusVariant}`}>{statusLabel}</span>
         <span className="model-pill-icon" aria-hidden>
           <ChevronDown size={14} />
         </span>
-        <span className="model-pill-label">{modelLabel}</span>
-        <span className={`model-pill-status badge badge--${statusVariant}`}>{statusLabel}</span>
       </button>
 
       <Popover
@@ -139,6 +149,7 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
                     <span className="model-popover-item-name">{m.displayName}</span>
                     <span className="model-popover-item-meta muted small">
                       {rt?.displayName ?? m.runtimeId}
+                      {m.contextLength ? ` · ${formatCtx(m.contextLength)}` : ''}
                       {m.available ? (
                         <Check size={12} aria-label="Available" className="model-popover-check" />
                       ) : (

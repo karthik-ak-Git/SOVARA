@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { MessageBubble, type ArtifactInfo } from './MessageBubble'
 import { deriveMessages, type SessionEventLike } from './conversation'
 
@@ -22,8 +23,9 @@ interface MessageListProps {
 const STICK_THRESHOLD_PX = 80
 
 /**
- * MessageList — Stitch chat stream.
- * Centered 54rem column, gap-8 turns. Auto-stick to bottom while streaming.
+ * MessageList — SOVARA chat stream (commit 257ec52 style).
+ * Centered column, auto-stick to bottom while streaming,
+ * scroll-to-bottom FAB when scrolled up.
  */
 export function MessageList({
   events,
@@ -50,15 +52,17 @@ export function MessageList({
     stickRef.current = distance <= STICK_THRESHOLD_PX
   }
 
-  useEffect(() => {
+  const scrollToBottom = (): void => {
     const el = scrollRef.current
-    if (!el) return
-    if (stickRef.current) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = el.scrollHeight
+  }
+
+  useEffect(() => {
+    if (stickRef.current) scrollToBottom()
   }, [messages.length, thinking, streamingText, streamingReasoning])
 
   useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    scrollToBottom()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -66,7 +70,7 @@ export function MessageList({
     return (
       <div
         ref={scrollRef}
-        className="stitch-stream"
+        className="sv-message-list"
         role="log"
         aria-label="Conversation messages"
         aria-live="polite"
@@ -118,16 +122,34 @@ export function MessageList({
   )
 
   return (
-    <div
-      ref={scrollRef}
-      className="stitch-stream"
-      role="log"
-      aria-label="Conversation messages"
-      aria-live="polite"
-      onScroll={handleScroll}
-      tabIndex={0}
-    >
-      {content}
+    <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div
+        ref={scrollRef}
+        className="sv-message-list"
+        role="log"
+        aria-label="Conversation messages"
+        aria-live="polite"
+        onScroll={handleScroll}
+        tabIndex={0}
+      >
+        {content}
+      </div>
+      {!stickRef.current ? (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          aria-label="Scroll to bottom"
+          style={{
+            position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)',
+            width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--stitch-border, #E8E4DE)',
+            background: '#FFFFFF', boxShadow: '0 2px 8px rgba(60,50,40,0.12)',
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'var(--stitch-muted, #8A8279)', zIndex: 10,
+          }}
+        >
+          <ChevronDown size={16} />
+        </button>
+      ) : null}
     </div>
   )
 }

@@ -146,9 +146,28 @@ export interface LlmChunk {
   /** Token usage from the API response (available on 'done' chunk). */
   usage?: LlmUsage
 }
+/** Image part for vision-capable runtimes (OpenAI-compatible image_url). */
+export interface LlmImagePart {
+  /** Original file name (advisory, never sent to the model). */
+  name?: string
+  /** MIME type, e.g. 'image/png'. */
+  mime: string
+  /** Raw base64 payload (no data: prefix). */
+  base64: string
+  /** Pixel width when known (advisory, for token estimation). */
+  width?: number
+  /** Pixel height when known (advisory, for token estimation). */
+  height?: number
+}
 export interface LlmChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /**
+   * Optional vision payload. Adapters that serve text-only models MUST
+   * ignore it; OpenAI-compatible adapters serialize it as image_url parts.
+   * Never persisted — history replays text only.
+   */
+  images?: LlmImagePart[]
 }
 export interface LlmChatRequest {
   /** Loopback base URL, revalidated by the adapter at request time. */

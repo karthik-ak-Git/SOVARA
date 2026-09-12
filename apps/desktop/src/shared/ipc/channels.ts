@@ -20,6 +20,7 @@ export const IPC_CHANNELS = {
   'sessions:unarchive': { type: 'invoke' as const },
   'sessions:listArchived': { type: 'invoke' as const },
   'chat:send': { type: 'invoke' as const },
+  'artifacts:open': { type: 'invoke' as const },
   'chat:cancel': { type: 'invoke' as const },
   'chat:regenerate': { type: 'invoke' as const },
   'chat:editResend': { type: 'invoke' as const },

@@ -45,10 +45,10 @@ export function MessageActions({
   // User actions: Copy + Edit
   // Assistant actions: Copy + Regenerate (only on latest)
   return (
-    <div className="message-actions" role="toolbar" aria-label={`${role} message actions`}>
+    <div className="sv-message-actions" role="toolbar" aria-label={`${role} message actions`}>
       <button
         type="button"
-        className="message-action-btn"
+        className="sv-message-action"
         onClick={handleCopy}
         aria-label="Copy message"
         title="Copy"
@@ -60,7 +60,7 @@ export function MessageActions({
       {role === 'user' && onEdit ? (
         <button
           type="button"
-          className="message-action-btn"
+          className="sv-message-action"
           onClick={onEdit}
           aria-label="Edit and resend"
           title="Edit"
@@ -73,7 +73,7 @@ export function MessageActions({
       {role === 'assistant' && canRegenerate && onRegenerate ? (
         <button
           type="button"
-          className="message-action-btn"
+          className="sv-message-action"
           onClick={onRegenerate}
           aria-label="Regenerate response"
           title="Regenerate"

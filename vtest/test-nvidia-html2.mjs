@@ -1,0 +1,23 @@
+import fs from 'node:fs';
+import os from 'node:os';
+const MODEL_PATH = `C:\\Users\\Atina\\.lmstudio\\models\\lmstudio-community\\NVIDIA-Nemotron-3-Nano-4B-GGUF\\NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf`;
+console.log(`[test2] model ${MODEL_PATH} exists ${fs.existsSync(MODEL_PATH)}`);
+const {getLlama, LlamaChatSession} = await import('node-llama-cpp');
+let llama;
+try { llama = await getLlama({gpu: 'vulkan'}); console.log(`gpu vulkan ok ${llama.gpu}`); } catch(e){ console.log('vulkan fail', e.message); llama = await getLlama({gpu:false}); }
+const model = await llama.loadModel({modelPath: MODEL_PATH, useMmap:true});
+console.log(`model loaded`);
+const ctx = await model.createContext({contextSize:4096, threads: Math.max(1, os.cpus().length-2), flashAttention:true});
+const seq = ctx.getSequence();
+const session = new LlamaChatSession({contextSequence: seq, systemPrompt: 'You are a HTML generator. Output only HTML.'});
+const prompt = `Generate a complete single-file HTML portfolio for Alex Rivera. Dark modern theme, hero with name, skills grid (6 cards), projects (3 cards), contact form. Inline CSS only. Start with <!DOCTYPE html> end with </html>. No markdown.`;
+console.log(`[prompt] sending...`);
+const t0=Date.now();
+const html = await session.prompt(prompt, {maxTokens:2048, temperature:0.6});
+console.log(`\n--- GENERATED HTML len=${html.length} in ${((Date.now()-t0)/1000).toFixed(1)}s ---\n`);
+console.log(html.slice(0,1200));
+const out=`C:\\Users\\Atina\\AppData\\Local\\Temp\\opencode\\nvidia-generated.html`;
+fs.writeFileSync(out, html, 'utf8');
+console.log(`\n[wrote] ${out}`);
+if(html.includes('<!DOCTYPE html>')) console.log('[ok] html valid');
+else console.log('[warn] missing doctype');

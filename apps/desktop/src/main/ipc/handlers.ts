@@ -4,7 +4,10 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
+import { getSessionsDir } from '../storage/paths'
+import path from 'node:path'
+import fs from 'node:fs'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
@@ -145,7 +148,7 @@ export function registerIpcHandlers(): void {
       throw new Error(`invalid chat payload: ${parsed.error.message}`)
     }
     const sid = brand<'SessionId'>(parsed.data.sessionId)
-    console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch} reasoning=${!!parsed.data.reasoning}`)
+    console.log(`[SOVARA][IPC] chat:send sid=${parsed.data.sessionId} len=${parsed.data.content.length} webSearch=${!!parsed.data.webSearch} reasoning=${!!parsed.data.reasoning} attachments=${parsed.data.attachments?.length ?? 0}`)
     try {
       // Agent orchestration surface: task → router → runtime → stream.
       // Deltas stream back on `events:session`; invoke resolves when the
@@ -154,8 +157,9 @@ export function registerIpcHandlers(): void {
       // Prefer orchestrator when available (Phase 1+ seam). Falls back to
       // legacy ChatService for tests that mock ChatService directly.
       const target: { execute?: Function; send?: Function } = (backend as unknown as { orchestrator?: { execute: Function } }).orchestrator ?? backend.chat
+      const sendOpts = { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning, attachments: parsed.data.attachments }
       const res = await (target.execute
-        ? (target as { execute: (sid: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+        ? (target as { execute: (sid: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, sendOpts)
         : (target as { send: (sid: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).send(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning }))
       console.log(`[SOVARA][IPC] chat:send ok sid=${parsed.data.sessionId} userSeq=${res.userSeq} assistantSeq=${res.assistantSeq}`)
       return res
@@ -169,6 +173,32 @@ export function registerIpcHandlers(): void {
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
       if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       throw new Error(raw)
+    }
+  })
+
+  // ── Generated artifacts: open with the OS default app. The path must
+  // resolve inside the sessions root (no traversal, no symlinks out) and
+  // carry an artifact extension — anything else is refused honestly. ──
+  ipcMain.handle('artifacts:open', async (_e, raw: unknown) => {
+    const parsed = zArtifactOpen.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid artifacts:open payload: ${parsed.error.message}`)
+    try {
+      const root = path.resolve(getSessionsDir())
+      const resolved = path.resolve(root, path.relative(root, path.resolve(parsed.data.path)))
+      let real = resolved
+      try {
+        real = fs.realpathSync(resolved)
+      } catch {
+        throw new Error('artifact not found')
+      }
+      if (real !== root && !real.startsWith(root + path.sep)) throw new Error('artifact path not allowed')
+      if (!fs.statSync(real).isFile()) throw new Error('artifact not found')
+      const allowed = ['.pdf', '.xlsx', '.docx', '.txt', '.md', '.csv', '.json', '.py', '.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.sh', '.sql', '.rs', '.go', '.java']
+      if (!allowed.includes(path.extname(real).toLowerCase())) throw new Error('artifact type not allowed')
+      await shell.openPath(real)
+      return { ok: true, path: real }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not open artifact')
     }
   })
 
@@ -224,9 +254,10 @@ export function registerIpcHandlers(): void {
         (backend as unknown as { orchestrator?: unknown }).orchestrator ?? backend.chat
       // orchestrator exposes editAndResend, chat exposes editAndResend
       const fn = (target as { editAndResend?: Function; editResend?: Function }).editAndResend ?? (target as { editResend?: Function }).editResend
+      const resendOpts = { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning, attachments: parsed.data.attachments }
       const res = fn
-        ? await (fn as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
-        : await (target as unknown as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning })
+        ? await (fn as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
+        : await (target as unknown as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, resendOpts)
       console.log(`[SOVARA][IPC] chat:editResend ok sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
       return res
     } catch (e) {

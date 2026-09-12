@@ -23,6 +23,8 @@ export interface TaskClassification {
   contextLengthNeeded: number
   /** Whether reasoning/thinking mode is required or beneficial. */
   reasoningRequired: boolean
+  /** True when image attachments are present — router strongly prefers vision-capable models. */
+  requiresVision?: boolean
   /** Human-readable reason for debugging / audit. */
   reason: string
 }

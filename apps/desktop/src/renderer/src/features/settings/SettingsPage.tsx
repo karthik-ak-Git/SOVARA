@@ -5,7 +5,7 @@ import {
   RotateCcw, ChevronRight, Check, Cloud, ArrowLeft,
   Upload, Download, File, FolderOpen, Folder, ExternalLink, Sparkles, AlertTriangle
 } from 'lucide-react'
-import { getTotalUsage, getUsageByModel, getRecentUsage, getRecentLogs, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type RecentUsageRow, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView } from '@/lib/client/api'
+import { getTotalUsage, getUsageByModel, getRecentUsage, getRecentLogs, getAppInfo, getSystemInfo, listArchivedSessions, unarchiveSession, scanSkills, toggleSkillsSource, listBionicSkills, addBionicSkill, removeBionicSkill, listDetailedSkills, importSkillFromUrl, getAppSettings, setAppSettings, checkForUpdatesNow, listDiscoveredModels, listTools, dispatchTool, getPythonSetupStatus, ensurePythonSetup, listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, pickFolder, type TokenUsage, type ModelUsage, type RecentUsageRow, type SessionHeaderView, type SkillsSource, type BionicSkillView, type AppSettingsState, type UpdateCheckView, type ToolDefinitionView, type PythonStatusView, type McpServerView, type AppInfoView, type SystemInfoView } from '@/lib/client/api'
 import type { DiscoveredModel } from '@shared/types/models'
 import { LibraryPage } from '../library/LibraryPage'
 import { ExplorePage } from '../explore/ExplorePage'
@@ -284,6 +284,11 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   const [apiRecentLogs, setApiRecentLogs] = useState<Record<string, string[]>>({})
   const [apiLogsLoaded, setApiLogsLoaded] = useState(false)
 
+  // Runtime — host system (cpus/mem/disk) + app info, loaded when tab is active
+  const [systemInfo, setSystemInfo] = useState<SystemInfoView | null>(null)
+  const [appInfo, setAppInfo] = useState<AppInfoView | null>(null)
+  const [runtimeLoaded, setRuntimeLoaded] = useState(false)
+
   // Sessions — renameAfterFork is persisted via appSettings, not local state
   // ponytail: no local mirror, single source is appSettings + applyPatch (consumer reads via getAppSettings when fork lands)
   const [archivedSessions, setArchivedSessions] = useState<SessionHeaderView[]>([])
@@ -478,6 +483,22 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
     void loadLogs()
     const id = setInterval(loadLogs, 3000)
     return () => clearInterval(id)
+  }, [activeSection])
+
+  // Load runtime + app info when runtime tab is active
+  useEffect(() => {
+    if (activeSection !== 'runtime') return
+    const loadRuntime = async (): Promise<void> => {
+      try {
+        const [sys, info] = await Promise.all([getSystemInfo(), getAppInfo()])
+        setSystemInfo(sys)
+        setAppInfo(info)
+      } catch {
+      } finally {
+        setRuntimeLoaded(true)
+      }
+    }
+    void loadRuntime()
   }, [activeSection])
 
   // Load skills sources + Bionic + detailed per-source when skills tab is active — real fetch, not mock
@@ -1894,6 +1915,46 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                 </div>
               </div>
             </div>
+          </div>
+        )
+      }
+
+      case 'runtime': {
+        const percentFree = systemInfo && systemInfo.totalMemMB > 0 ? Math.round((systemInfo.freeMemMB / systemInfo.totalMemMB) * 100) : null
+        return (
+          <div className="settings-content">
+            <h2 className="settings-section-title">Runtime</h2>
+            <p className="usage-subtitle">Host system + runtime details for this Sovara instance.</p>
+            <div className="settings-group">
+              <div className="settings-group-header">System</div>
+              <div className="settings-card">
+                {systemInfo ? (
+                  <>
+                    <InfoRow label="CPU cores" value={`${systemInfo.cpus} logical cores`} badge={appInfo?.platform} />
+                    <InfoRow label="Total memory" value={`${(systemInfo.totalMemMB / 1024).toFixed(1)} GB`} />
+                    <InfoRow label="Free memory" value={`${(systemInfo.freeMemMB / 1024).toFixed(1)} GB`} badge={percentFree !== null ? `${percentFree}% free` : undefined} />
+                    <InfoRow label="Home directory" value={systemInfo.homedir} />
+                    <InfoRow label="User data" value={systemInfo.userData} />
+                  </>
+                ) : (
+                  <div className="settings-card--empty">
+                    <span className="muted">{runtimeLoaded ? 'Failed to load system info.' : 'Loading system info…'}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            {appInfo ? (
+              <div className="settings-group">
+                <div className="settings-group-header">Application</div>
+                <div className="settings-card">
+                  <InfoRow label="Version" value={appInfo.version} badge={appInfo.name} />
+                  <InfoRow label="Electron" value={appInfo.electron ?? '—'} />
+                  <InfoRow label="Runtime" value={appInfo.runtime} />
+                  <InfoRow label="Node" value={appInfo.node} />
+                  <InfoRow label="Platform" value={`${appInfo.platform} (${appInfo.arch})`} />
+                </div>
+              </div>
+            ) : null}
           </div>
         )
       }

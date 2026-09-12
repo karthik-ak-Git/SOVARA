@@ -48,6 +48,10 @@ export function getAttachmentsDir(sessionId: string, baseDir?: string): string {
   return path.join(getSessionDir(sessionId, baseDir), 'attachments')
 }
 
+export function getArtifactsDir(sessionId: string, baseDir?: string): string {
+  return path.join(getSessionDir(sessionId, baseDir), 'artifacts')
+}
+
 export function getMcpDir(baseDir?: string): string {
   return path.join(getSovaraDataDir(baseDir), 'mcp')
 }

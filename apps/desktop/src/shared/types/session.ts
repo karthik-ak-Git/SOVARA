@@ -13,6 +13,8 @@ export type SessionEventType =
   | 'agent/trace'
   | 'tool/result'
   | 'tool/call'
+  | 'attachment/added'
+  | 'artifact/created'
   | 'system/resource-blocked'
 
 export type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }

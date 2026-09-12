@@ -114,12 +114,24 @@ export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
   return ipcInvoke('sessions:listArchived')
 }
 
+export interface ChatAttachmentView {
+  name: string
+  type: string
+  size: number
+  /** data: URL (base64) as produced by FileReader.readAsDataURL. */
+  data: string
+}
+
 export async function sendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean; reasoning?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   return ipcInvoke('chat:send', { sessionId, content, ...opts })
+}
+
+export async function openArtifact(filePath: string): Promise<{ ok: boolean; path: string }> {
+  return ipcInvoke('artifacts:open', { path: filePath })
 }
 
 export async function cancelChatMessage(sessionId: string): Promise<{ cancelled: boolean }> {
@@ -133,7 +145,7 @@ export async function regenerateChatMessage(sessionId: string, opts?: { reasonin
 export async function editAndResendChatMessage(
   sessionId: string,
   content: string,
-  opts?: { webSearch?: boolean; reasoning?: boolean }
+  opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
   return ipcInvoke('chat:editResend', { sessionId, content, ...opts })
 }
@@ -256,6 +268,18 @@ export interface SystemResourcesView {
 
 export async function getSystemResources(): Promise<SystemResourcesView> {
   return ipcInvoke('system:getResources')
+}
+
+export interface SystemInfoView {
+  cpus: number
+  totalMemMB: number
+  freeMemMB: number
+  homedir: string
+  userData: string
+}
+
+export async function getSystemInfo(): Promise<SystemInfoView> {
+  return ipcInvoke('app:getSystem')
 }
 
 export type ExecMode = 'off' | 'ask' | 'review' | 'allow'

@@ -64,7 +64,7 @@ export function MessageList({
     return (
       <div
         ref={scrollRef}
-        className="stitch-stream"
+        className="sv-message-list"
         role="log"
         aria-label="Conversation messages"
         aria-live="polite"
@@ -118,7 +118,7 @@ export function MessageList({
   return (
     <div
       ref={scrollRef}
-      className="stitch-stream"
+      className="sv-message-list"
       role="log"
       aria-label="Conversation messages"
       aria-live="polite"

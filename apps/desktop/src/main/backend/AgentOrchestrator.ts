@@ -9,14 +9,20 @@
  * `execute(request)` contract behind AppBackend.
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
 import type { SessionId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimePort, ToolPort } from '@shared/types/ports'
+import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimePort, ToolPort, LlmImagePart } from '@shared/types/ports'
 import type { ModelWorkbench } from './ModelWorkbench'
 import { classifyTask } from './TaskClassifier'
 import { routeModel } from './ModelRouter'
+import { resolveCapabilities } from '@shared/types/modelCapabilities'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
+import { getArtifactsDir } from '../storage/paths'
+import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
+import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
 
 export class AgentOrchestratorError extends Error {
@@ -103,7 +109,7 @@ export class AgentOrchestrator {
   async execute(
     sessionId: SessionId,
     content: string,
-    opts?: { webSearch?: boolean; reasoning?: boolean }
+    opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: IncomingAttachment[] }
   ): Promise<{ ok: true; userSeq: number; assistantSeq: number; routing: ModelRoutingDecision; classification: TaskClassification }> {
     const sid = String(sessionId)
     const startedAll = Date.now()
@@ -119,7 +125,34 @@ export class AgentOrchestrator {
     try {
       // ── PHASE 1: task classification (real, not faked) ──
       this.emit(sid, 'task:start', { taskKind: 'chat', detail: 'request received' })
-      const classification = classifyTask(content, { reasoning: opts?.reasoning, webSearch: opts?.webSearch })
+
+      // ── PHASE 1b: attachment intake — decode + extract BEFORE classify so
+      // the classifier sees image presence and attachment size for routing ──
+      const incoming = (opts?.attachments ?? []).slice(0, 5)
+      for (const a of incoming) {
+        if (controller.signal.aborted) break
+        this.emit(sid, 'task:reading', { taskKind: 'chat', fileName: a.name, detail: `Reading ${a.name}…` })
+      }
+      const attached = processAttachments(incoming, { sessionId: sid, baseDir: this.deps.baseDir })
+      if (attached.files.length > 0) {
+        try {
+          await this.deps.persistence.appendEvent(sessionId, 'attachment/added', {
+            files: attached.files.map((f) => ({
+              name: f.name, mime: f.mime, size: f.size, kind: f.kind, storedPath: f.storedPath,
+              chars: f.text.length, truncated: f.truncated, note: f.note,
+              width: f.imageWidth, height: f.imageHeight,
+            })),
+          })
+        } catch { /* audit best-effort */ }
+        this.emit(sid, 'task:reading', { taskKind: 'chat', detail: attached.manifestLine })
+      }
+
+      const classification = classifyTask(content, {
+        reasoning: opts?.reasoning,
+        webSearch: opts?.webSearch,
+        hasImage: attached.hasImage,
+        attachmentChars: attached.totalChars,
+      })
       this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: classification.reason })
 
       // ── PHASE 2: model routing (smart, resource-aware) ──
@@ -251,6 +284,27 @@ export class AgentOrchestrator {
         throw new AgentOrchestratorError('model-load-failed', msg)
       }
 
+      // ── PHASE 4b: vision check — does the routed model actually see pixels?
+      // resolveCapabilities is the ONLY capability source (registry or
+      // adapter-advertised); text-only winners get metadata, never fake sight.
+      const routedModel = models.find((m) => m.modelId === routing.modelId && m.runtimeId === routing.runtimeId)
+      const routedCaps = resolveCapabilities(
+        routing.modelId,
+        routedModel?.capabilities,
+        routedModel?.contextLength ?? classification.contextLengthNeeded
+      )
+      const visionCapable = routedCaps.capabilities.includes('vision')
+      const visionImages: LlmImagePart[] = []
+      for (const f of attached.files) {
+        if (f.kind !== 'image' || !f.imageBase64 || !visionCapable) continue
+        visionImages.push({
+          name: f.name,
+          mime: f.mime,
+          base64: f.imageBase64,
+          ...(f.imageWidth != null && f.imageHeight != null ? { width: f.imageWidth, height: f.imageHeight } : {}),
+        })
+      }
+
       if (controller.signal.aborted) {
         this.emit(sid, 'task:cancelled', { taskKind: classification.kind, detail: 'cancelled before persistence' })
         throw new AgentOrchestratorError('cancelled', 'cancelled')
@@ -281,10 +335,24 @@ export class AgentOrchestrator {
         try { webContext = await this.deps.webSearch(content) } catch { webContext = null }
       }
 
-      // Persist user event first (source of truth, never after LLM)
+      // ── PHASE 5b: prompt assembly state (honest stage for the send animation) ──
+      const attachmentContext = buildAttachmentContext(attached.files, visionCapable)
+      this.emit(sid, 'task:prompting', {
+        taskKind: classification.kind,
+        modelId: routing.modelId,
+        runtimeId: routing.runtimeId,
+        detail: attached.files.length > 0
+          ? `assembling prompt — ${attached.files.length} attachment(s), vision ${visionCapable ? 'on' : 'off'}`
+          : 'assembling prompt — history + workspace context',
+      })
+
+      // Persist user event first (source of truth, never after LLM).
+      // The attachment manifest rides with the message so the timeline shows
+      // what was sent; extracted content travels as system context below.
+      const userContent = attached.manifestLine ? `${attached.manifestLine}\n\n${content}` : content
       let userSeq = -1
       try {
-        userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq
+        userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content: userContent })).seq
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'could not persist your message'
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
@@ -314,8 +382,9 @@ export class AgentOrchestrator {
         ...(mcpContext ? [{ role: 'system' as const, content: mcpContext }] : []),
         ...(skillsContext ? [{ role: 'system' as const, content: skillsContext }] : []),
         ...(webContext ? [{ role: 'system' as const, content: webContext }] : []),
+        ...attachmentContext.map((c) => ({ role: 'system' as const, content: c })),
         ...toRequestMessages(prior),
-        { role: 'user', content },
+        { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
       ]
 
       appendChatLog(this.deps.baseDir, {
@@ -330,6 +399,14 @@ export class AgentOrchestrator {
       // ── PHASE 6: agent execution loop (LLM stream + optional tool steps) ──
       // For now, single LLM step with honest step:start/end events. Tool loop seam
       // is prepared: if a tool is needed, we emit tool:start/delta/end and loop.
+      if (classification.reasoningRequired || opts?.reasoning) {
+        this.emit(sid, 'task:thinking', {
+          taskKind: classification.kind,
+          modelId: routing.modelId,
+          runtimeId: routing.runtimeId,
+          detail: 'thinking through the request…',
+        })
+      }
       this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId, runtimeId: routing.runtimeId, detail: 'llm generation' })
 
       // Owned sidecar serves on its own loopback port; third-party runtimes
@@ -508,11 +585,59 @@ export class AgentOrchestrator {
         throw new AgentOrchestratorError('llm-failed', msg)
       }
 
+      // ── Required-output artifact: the user asked for a FILE (pdf / excel /
+      // word / code). Derive it from the final reply, persist an audit event,
+      // and append the saved path to the reply so the timeline keeps it. ──
+      const detected = detectOutputFormat(content)
+      if (detected) {
+        this.emit(sid, 'artifact:writing', {
+          taskKind: classification.kind,
+          modelId: routing.modelId,
+          runtimeId: routing.runtimeId,
+          fileName: detected.fileName,
+          detail: `generating ${detected.fileName}…`,
+        })
+        try {
+          const dir = getArtifactsDir(sid, this.deps.baseDir)
+          fs.mkdirSync(dir, { recursive: true })
+          const target = uniqueArtifactPath(dir, detected.fileName)
+          const made = generateArtifactFile(detected.kind, target, text, content)
+          if (made) {
+            try {
+              await this.deps.persistence.appendEvent(sessionId, 'artifact/created', {
+                kind: detected.kind,
+                fileName: path.basename(made.path),
+                path: made.path,
+                bytes: made.bytes,
+              })
+            } catch { /* audit best-effort */ }
+            text += `\n\n📄 Generated file: **${path.basename(made.path)}** — saved to ${made.path}`
+            this.emit(sid, 'artifact:ready', {
+              taskKind: classification.kind,
+              modelId: routing.modelId,
+              runtimeId: routing.runtimeId,
+              fileName: path.basename(made.path),
+              artifactPath: made.path,
+              artifactKind: detected.kind,
+              detail: `saved ${path.basename(made.path)} (${made.bytes.toLocaleString()} bytes)`,
+            })
+          }
+        } catch (e) {
+          // Artifact failure never destroys the chat reply — it stands alone.
+          appendChatLog(this.deps.baseDir, {
+            sessionId: sid, action: 'error', outcome: 'error',
+            error: `artifact generation failed: ${e instanceof Error ? e.message : String(e)}`,
+            modelId: model, runtimeId: routing.runtimeId,
+          })
+        }
+      }
+
       const promptText = messages.map((m) => m.content).join(' ')
+      const visionTokenEstimate = messages.reduce((n, m) => n + (m.images?.length ?? 0) * 1024, 0)
       const tokenUsage = usage ?? {
-        promptTokens: Math.ceil(promptText.length / 4),
+        promptTokens: Math.ceil(promptText.length / 4) + visionTokenEstimate,
         completionTokens: Math.ceil(text.length / 4),
-        totalTokens: Math.ceil((promptText.length + text.length) / 4),
+        totalTokens: Math.ceil((promptText.length + text.length) / 4) + visionTokenEstimate,
       }
       try {
         this.deps.persistence.insertTokenUsage({
@@ -759,7 +884,7 @@ export class AgentOrchestrator {
     }
   }
 
-  async editAndResend(sessionId: SessionId, content: string, opts?: { webSearch?: boolean; reasoning?: boolean }): Promise<{ ok: true; userSeq: number; assistantSeq: number; routing: ModelRoutingDecision; classification: TaskClassification }> {
+  async editAndResend(sessionId: SessionId, content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: IncomingAttachment[] }): Promise<{ ok: true; userSeq: number; assistantSeq: number; routing: ModelRoutingDecision; classification: TaskClassification }> {
     const text = content.trim()
     if (!text) throw new AgentOrchestratorError('persistence-failed', 'cannot resend empty message')
     return this.execute(sessionId, text, opts)
@@ -819,6 +944,18 @@ export class AgentOrchestrator {
       streamed,
     })
   }
+}
+
+/** First-free path inside dir for an artifact name (stem, stem-2, stem-3, …). */
+function uniqueArtifactPath(dir: string, fileName: string): string {
+  const safe = sanitizeFileName(fileName, 'sovara-output')
+  const ext = path.extname(safe)
+  const stem = path.basename(safe, ext) || 'sovara-output'
+  let candidate = path.join(dir, `${stem}${ext}`)
+  for (let i = 2; i < 1000 && fs.existsSync(candidate); i++) {
+    candidate = path.join(dir, `${stem}-${i}${ext}`)
+  }
+  return candidate
 }
 
 function outcomeOf(e: unknown): 'timeout' | 'refused' | 'blocked' | 'invalid-response' | 'http-error' | 'error' {

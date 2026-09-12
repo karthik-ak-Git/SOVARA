@@ -56,6 +56,11 @@ function formatFileSize(bytes: number): string {
   return `${bytes}B`
 }
 
+/**
+ * Composer — SOVARA chat composer (commit 257ec52 visual style).
+ * sv-composer layout with all existing functionality preserved:
+ * file attachments, web search, mic, model selector, permission control.
+ */
 export function Composer({
   value,
   onChange,
@@ -89,7 +94,6 @@ export function Composer({
   const streaming = busy && (phase === 'streaming' || phase === 'planning' || phase === 'loading' || phase === 'tool')
   const showStop = streaming && onCancel
 
-  // Rough token estimate (4 chars per token)
   const estimatedTokens = value.trim() ? Math.round(value.trim().length / 4) : 0
   const contextMaxTokens = 8192
 
@@ -107,7 +111,6 @@ export function Composer({
     wasDisabled.current = disabled
   }, [disabled])
 
-  // Cleanup audio on unmount
   useEffect(() => {
     return () => {
       processorRef.current?.disconnect()
@@ -119,7 +122,6 @@ export function Composer({
   const handleMicClick = useCallback(async () => {
     if (micLoading) return
 
-    // If currently recording → stop and transcribe
     if (micActive) {
       setMicActive(false)
       setMicLoading(true)
@@ -131,27 +133,17 @@ export function Composer({
       const ctx = audioCtxRef.current
       const stream = streamRef.current
       if (ctx) {
-        try {
-          await ctx.close()
-        } catch {
-          /* ignore */
-        }
+        try { await ctx.close() } catch { /* ignore */ }
         audioCtxRef.current = null
       }
       stream?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
 
       const totalLen = chunks.reduce((s, c) => s + c.length, 0)
-      if (totalLen < 800) {
-        setMicLoading(false)
-        return
-      }
+      if (totalLen < 800) { setMicLoading(false); return }
       const nativePcm = new Float32Array(totalLen)
       let off = 0
-      for (const c of chunks) {
-        nativePcm.set(c, off)
-        off += c.length
-      }
+      for (const c of chunks) { nativePcm.set(c, off); off += c.length }
 
       const inRate = ctx?.sampleRate ?? 48000
       let pcm16k: Float32Array
@@ -198,30 +190,21 @@ export function Composer({
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       })
       streamRef.current = stream
       pcmChunksRef.current = []
-
       const audioCtx = new AudioContext()
       audioCtxRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
       const processor = audioCtx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
-      processor.onaudioprocess = (e) => {
-        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
-      }
+      processor.onaudioprocess = (e) => { pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0))) }
       source.connect(processor)
       const gain = audioCtx.createGain()
       gain.gain.value = 0
       processor.connect(gain)
       gain.connect(audioCtx.destination)
-
       setMicActive(true)
     } catch (err) {
       console.error('[Composer] Microphone access denied:', err)
@@ -230,10 +213,7 @@ export function Composer({
   }, [micActive, micLoading, value, onChange])
 
   const submit = (): void => {
-    if (showStop) {
-      onCancel?.()
-      return
-    }
+    if (showStop) { onCancel?.(); return }
     const content = value.trim()
     if (content.length === 0 || disabled) return
     const atts = attachments.length > 0 ? attachments : undefined
@@ -251,11 +231,7 @@ export function Composer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key !== 'Enter') return
-    if (showStop && !e.shiftKey) {
-      e.preventDefault()
-      onCancel?.()
-      return
-    }
+    if (showStop && !e.shiftKey) { e.preventDefault(); onCancel?.(); return }
     if (e.shiftKey) {
       e.preventDefault()
       const el = e.currentTarget
@@ -263,10 +239,7 @@ export function Composer({
       const end = el.selectionEnd ?? value.length
       const next = `${value.slice(0, start)}\n${value.slice(end)}`
       onChange(next.slice(0, MAX_LENGTH))
-      requestAnimationFrame(() => {
-        el.selectionStart = start + 1
-        el.selectionEnd = start + 1
-      })
+      requestAnimationFrame(() => { el.selectionStart = start + 1; el.selectionEnd = start + 1 })
       return
     }
     e.preventDefault()
@@ -277,194 +250,137 @@ export function Composer({
     const files = e.target.files
     if (!files) return
     const maxSize = 10 * 1024 * 1024
-    const allowed = [
-      'application/pdf',
-      'image/png',
-      'image/jpeg',
-      'image/gif',
-      'image/webp',
-      'text/plain',
-      'text/markdown',
-      'text/csv',
-      'application/json',
-    ]
+    const allowed = ['application/pdf','image/png','image/jpeg','image/gif','image/webp','text/plain','text/markdown','text/csv','application/json']
     for (const file of Array.from(files)) {
       if (file.size > maxSize) continue
       if (!allowed.includes(file.type) && !file.name.endsWith('.md') && !file.name.endsWith('.txt')) continue
       const reader = new FileReader()
-      reader.onload = (): void => {
-        const data = reader.result as string
-        setAttachments((prev) => [...prev, { name: file.name, type: file.type || 'text/plain', size: file.size, data }])
-      }
+      reader.onload = (): void => { setAttachments((prev) => [...prev, { name: file.name, type: file.type || 'text/plain', size: file.size, data: reader.result as string }]) }
       reader.readAsDataURL(file)
     }
     e.target.value = ''
   }, [])
 
-  const removeAttachment = useCallback((idx: number): void => {
-    setAttachments((prev) => prev.filter((_, i) => i !== idx))
-  }, [])
+  const removeAttachment = useCallback((idx: number): void => { setAttachments((prev) => prev.filter((_, i) => i !== idx)) }, [])
 
   return (
-    <div className="stitch-composer-dock" aria-label="Composer workspace">
-      <div className="stitch-composer-card">
-        {/* Attached Files Ribbon — Stitch active pill */}
-        <div className="stitch-attach-ribbon">
-          {attachments.map((a, i) => (
-            <div key={`${a.name}-${i}`} className="stitch-attach-pill">
-              <FileText size={15} aria-hidden />
-              <span className="stitch-attach-name">{a.name}</span>
-              <span className="stitch-attach-size">{formatFileSize(a.size)}</span>
-              <button
-                type="button"
-                className="stitch-attach-remove"
-                onClick={() => removeAttachment(i)}
-                aria-label={`Remove ${a.name}`}
-              >
-                <X size={12} />
-              </button>
+    <div className="sv-composer" aria-label="Composer workspace">
+      <div className="sv-composer-inner">
+        <div className="sv-composer-card">
+          {/* Attached Files Ribbon */}
+          {attachments.length > 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8, overflowX: 'auto' }}>
+              {attachments.map((a, i) => (
+                <div key={`${a.name}-${i}`} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '4px 10px', borderRadius: 8, fontSize: 12,
+                  background: 'var(--stitch-surface-container, #F0EDE8)', color: 'var(--stitch-ink, #1A1614)',
+                  whiteSpace: 'nowrap',
+                }}>
+                  <FileText size={14} style={{ color: 'var(--stitch-terracotta, #C65D3B)' }} aria-hidden />
+                  <span style={{ fontWeight: 500, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
+                  <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, color: 'var(--stitch-muted, #8A8279)' }}>{formatFileSize(a.size)}</span>
+                  <button type="button" onClick={() => removeAttachment(i)} aria-label={`Remove ${a.name}`}
+                    style={{ width: 16, height: 16, borderRadius: 4, border: 'none', background: 'transparent', color: 'var(--stitch-muted, #8A8279)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-          <button
-            type="button"
-            className="stitch-attach-context-btn"
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach context file"
-          >
-            <Plus size={13} />
-            <span>Attach Context</span>
-          </button>
-        </div>
+          ) : null}
 
-        {/* Text Input Area — Stitch: expandable, no inner scrollbar until 200px */}
-        <textarea
-          ref={areaRef}
-          className="stitch-composer-input"
-          placeholder={
-            streaming
-              ? 'Generating local model response… (Esc to stop)'
-              : disabled
-                ? 'Waiting for local model to become ready…'
-                : 'Reply to Sovora or drop files here... (Press Shift+Enter for new line)'
-          }
-          value={value}
-          onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
-          onKeyDown={handleKeyDown}
-          maxLength={MAX_LENGTH}
-          disabled={disabled}
-          aria-label="Message input"
-          rows={2}
-          data-testid="composer-input"
-        />
+          {/* Text Input */}
+          <textarea
+            ref={areaRef}
+            className="sv-composer-input"
+            placeholder={
+              streaming
+                ? 'Generating local model response… (Esc to stop)'
+                : disabled
+                  ? 'Waiting for local model to become ready…'
+                  : 'Reply to Sovora or drop files here... (Press Shift+Enter for new line)'
+            }
+            value={value}
+            onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
+            onKeyDown={handleKeyDown}
+            maxLength={MAX_LENGTH}
+            disabled={disabled}
+            aria-label="Message input"
+            rows={2}
+            data-testid="composer-input"
+          />
 
-        {/* Composer Bottom Toolbar — Stitch left/right controls */}
-        <div className="stitch-composer-toolbar">
-          <div className="stitch-composer-left">
-            <button
-              type="button"
-              className="stitch-model-badge"
-              onClick={() => onOpenSettings?.()}
-              title="Switch model"
-              aria-label="Switch model"
-            >
-              <span className="stitch-model-badge-icon" aria-hidden>✦</span>
-              <span>{active.displayName ?? 'No model'}</span>
-            </button>
-            <button
-              type="button"
-              className="stitch-icon-btn"
-              aria-label="Attach file"
-              title="Attach code, documents, or screenshots"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip size={18} aria-hidden />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="sr-only"
-              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json,.csv"
-              multiple
-              onChange={handleFileSelect}
-              aria-label="Select files to attach"
-            />
-            <button
-              type="button"
-              className={`stitch-search-btn${webSearch ? ' active' : ''}`}
-              aria-label={webSearch ? 'Web search on' : 'Web search off'}
-              title={webSearch ? 'Web search enabled' : 'Toggle web search'}
-              onClick={() => setWebSearch((v) => !v)}
-            >
-              <Globe size={15} aria-hidden />
-              <span>Search Web</span>
-            </button>
-            <button
-              type="button"
-              className={`stitch-icon-btn mic-btn ${micActive ? 'recording' : ''} ${micLoading ? 'loading' : ''}`}
-              aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
-              title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Dictate prompt via voice'}
-              onClick={handleMicClick}
-              disabled={micLoading}
-            >
-              {micLoading ? <Loader2 size={18} aria-hidden className="spin" /> : <Mic size={18} aria-hidden />}
-            </button>
-            <span className="stitch-composer-hidden-model">
-              <ModelSelector
-                active={active}
-                models={models}
-                runtimes={runtimes}
-                onSelect={(rid, mid) => {
-                  onSelectModel?.(rid, mid)
-                }}
-                reasoningEnabled={reasoningEnabled}
-                onReasoningToggle={onReasoningToggle}
-                onOpenSettings={onOpenSettings}
-              />
-            </span>
-          </div>
-
-          <div className="stitch-composer-right">
-            <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
-            {showStop ? (
-              <button
-                type="button"
-                className="stitch-send-btn active"
-                onClick={() => onCancel?.()}
-                aria-label="Stop generating"
-                title="Stop generating (Esc)"
-                data-testid="stop-button"
-              >
-                <Square size={14} aria-hidden />
+          {/* Toolbar */}
+          <div className="sv-composer-row">
+            <div className="sv-composer-left">
+              <button type="button" className="sv-btn sv-btn-ghost"
+                onClick={() => onOpenSettings?.()} title="Switch model" aria-label="Switch model"
+                style={{ gap: 4, fontSize: 12 }}>
+                <span style={{ color: 'var(--stitch-terracotta, #C65D3B)' }} aria-hidden>✦</span>
+                <span>{active.displayName ?? 'No model'}</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                className={`stitch-send-btn ${canSend ? 'active' : ''}`}
-                onClick={submit}
-                disabled={!canSend}
-                aria-label="Send message"
-                title="Send prompt (⌘ + Enter)"
-                data-testid="send-button"
-              >
-                <span className="stitch-send-label">Send</span>
-                <ArrowUp size={16} aria-hidden />
-                <span className="stitch-send-key">⌘⏎</span>
+              <button type="button" className="sv-btn sv-btn-ghost"
+                aria-label="Attach file" title="Attach code, documents, or screenshots"
+                onClick={() => fileInputRef.current?.click()}>
+                <Paperclip size={16} aria-hidden />
               </button>
-            )}
+              <input ref={fileInputRef} type="file" className="sr-only"
+                accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json,.csv" multiple
+                onChange={handleFileSelect} aria-label="Select files to attach" />
+              <button type="button"
+                className={`sv-btn sv-btn-ghost${webSearch ? ' sv-btn-active' : ''}`}
+                aria-label={webSearch ? 'Web search on' : 'Web search off'}
+                title={webSearch ? 'Web search enabled' : 'Toggle web search'}
+                onClick={() => setWebSearch((v) => !v)}
+                style={{ gap: 4, fontSize: 12 }}>
+                <Globe size={14} aria-hidden />
+                <span>Search Web</span>
+              </button>
+              <button type="button"
+                className={`sv-btn sv-btn-ghost${micActive ? ' sv-btn-active' : ''}`}
+                aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
+                title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Dictate prompt via voice'}
+                onClick={handleMicClick} disabled={micLoading}>
+                {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
+              </button>
+              <span style={{ display: 'none' }}>
+                <ModelSelector active={active} models={models} runtimes={runtimes}
+                  onSelect={(rid, mid) => { onSelectModel?.(rid, mid) }}
+                  reasoningEnabled={reasoningEnabled} onReasoningToggle={onReasoningToggle} onOpenSettings={onOpenSettings} />
+              </span>
+            </div>
+            <div className="sv-composer-right">
+              <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
+              {showStop ? (
+                <button type="button" className="sv-btn sv-btn-stop"
+                  onClick={() => onCancel?.()} aria-label="Stop generating"
+                  title="Stop generating (Esc)" data-testid="stop-button">
+                  <Square size={14} aria-hidden />
+                </button>
+              ) : (
+                <button type="button"
+                  className={`sv-btn sv-btn-primary${!canSend ? ' sv-btn-disabled' : ''}`}
+                  onClick={submit} disabled={!canSend}
+                  aria-label="Send message" title="Send prompt (Enter)" data-testid="send-button">
+                  <span>Send</span>
+                  <ArrowUp size={14} aria-hidden />
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Legal / Ergonomics Sub-footer — Stitch */}
-      <div className="stitch-composer-subfooter">
-        <span className="stitch-composer-subfooter-note">Sovora can make mistakes. Verify critical code and research.</span>
-        <span className="stitch-composer-subfooter-keys">⌘K jump to chat • ⌘T new tab</span>
-      </div>
-      <div className="composer-bionic-footer stitch-exec-row">
-        <PermissionControl mode={execMode} onChange={onExecModeChange} />
-        <span className="composer-footer-note muted small">
-          Sovora runs sovereign &amp; local • {execMode === 'allow' ? 'Full access — commands run directly' : execMode}
-        </span>
+        {/* Sub-footer */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 8px 0', fontSize: 12, color: 'var(--stitch-muted, #8A8279)' }}>
+          <span>Sovora can make mistakes. Verify critical code and research.</span>
+          <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, opacity: 0.8 }}>⌘K jump to chat • ⌘T new tab</span>
+        </div>
+        <div style={{ padding: '4px 8px 0' }}>
+          <PermissionControl mode={execMode} onChange={onExecModeChange} />
+          <span style={{ fontSize: 11, color: 'var(--stitch-muted, #8A8279)', marginLeft: 6 }}>
+            Sovora runs sovereign &amp; local • {execMode === 'allow' ? 'Full access — commands run directly' : execMode}
+          </span>
+        </div>
       </div>
     </div>
   )

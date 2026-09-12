@@ -87,10 +87,10 @@ function formatTime(ts?: number): string {
 }
 
 /**
- * MessageBubble — full Stitch replica row.
- * User: avatar + name/time + white rounded-2xl bubble.
- * Assistant: terracotta avatar + Sovora header + ReasoningBlock + Newsreader prose + ArtifactCards.
- * All handlers/testids preserved; purely presentational rewrite.
+ * MessageBubble — SOVARA chat bubble (commit 257ec52 style).
+ * User: right-aligned white bubble.
+ * Assistant: left-aligned with terracotta avatar + Newsreader prose.
+ * All handlers/testids preserved; visual layer uses sv-* CSS classes.
  */
 export function MessageBubble({
   id,
@@ -125,11 +125,11 @@ export function MessageBubble({
 
   if (loading) {
     return (
-      <div key={id} data-testid="assistant-typing" data-role="assistant" className="stitch-turn" aria-live="polite" aria-label="Assistant is typing">
-        <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
-          <Sparkles size={18} />
+      <div key={id} data-testid="assistant-typing" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is typing">
+        <div className="sv-message-avatar sv-message-avatar--assistant" aria-hidden>
+          <Sparkles size={16} />
         </div>
-        <div className="stitch-thinking-dots" aria-hidden>
+        <div className="sv-thinking-dots" aria-hidden>
           <span /> <span /> <span />
         </div>
       </div>
@@ -138,11 +138,11 @@ export function MessageBubble({
 
   if (thinking) {
     return (
-      <div key={id} data-testid="assistant-thinking" data-role="assistant" className="stitch-turn" aria-live="polite" aria-label="Assistant is thinking">
-        <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
-          <Sparkles size={18} />
+      <div key={id} data-testid="assistant-thinking" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is thinking">
+        <div className="sv-message-avatar sv-message-avatar--assistant" aria-hidden>
+          <Sparkles size={16} />
         </div>
-        <div className="stitch-thinking-dots" aria-hidden>
+        <div className="sv-thinking-dots" aria-hidden>
           <span /> <span /> <span />
         </div>
       </div>
@@ -151,24 +151,22 @@ export function MessageBubble({
 
   if (isEditing && isUser && onEditAndResend) {
     return (
-      <article key={id} data-testid="message-user-editing" data-role={role} className="stitch-turn" aria-label="Edit your message">
-        <div className="stitch-avatar stitch-avatar--user" aria-hidden>
-          <PersonStanding size={18} />
-        </div>
-        <div className="stitch-turn-body">
+      <article key={id} data-testid="message-user-editing" data-role={role} className="sv-message sv-message--user" aria-label="Edit your message">
+        <div className="sv-message-bubble sv-message-user">
           <textarea
-            className="bubble-edit-input"
+            className="sv-composer-input"
             value={editDraft}
             onChange={(e) => setEditDraft(e.target.value.slice(0, 32_000))}
             rows={3}
             autoFocus
             aria-label="Edit message"
             data-testid="edit-input"
+            style={{ minHeight: 60, padding: 0 }}
           />
-          <div className="bubble-edit-actions">
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
             <button
               type="button"
-              className="btn btn-sm"
+              className="sv-btn sv-btn-primary"
               onClick={() => {
                 const next = editDraft.trim()
                 if (!next) return
@@ -182,7 +180,7 @@ export function MessageBubble({
             </button>
             <button
               type="button"
-              className="btn btn-sm btn-ghost"
+              className="sv-btn sv-btn-ghost"
               onClick={() => {
                 setEditDraft(content)
                 setIsEditing(false)
@@ -206,27 +204,21 @@ export function MessageBubble({
         key={id}
         data-testid={streaming ? 'message-streaming' : 'message-user'}
         data-role="user"
-        className="stitch-turn"
+        className="sv-message sv-message--user"
         aria-label="Your message"
       >
-        <div className="stitch-avatar stitch-avatar--user" aria-hidden>
-          <PersonStanding size={18} />
-        </div>
-        <div className="stitch-turn-body">
-          <div className="stitch-turn-meta">
-            <span className="stitch-turn-name">You</span>
-            {timeLabel ? <span className="stitch-turn-time">{timeLabel}</span> : null}
+        <div className="sv-message-bubble sv-message-user">
+          <div className="sv-message-meta">
+            <span className="sv-message-name">You</span>
+            {timeLabel ? <span className="sv-message-time">{timeLabel}</span> : null}
           </div>
-          <div className="stitch-user-bubble">
-            {parsedParts.map((part, index) =>
-              part.type === 'text' ? (
-                <p key={`${id}-text-${index}`} className="bubble-text">
-                  {part.text}
-                </p>
-              ) : null,
-            )}
-          </div>
-          <span className="bubble-meta muted small" />
+          {parsedParts.map((part, index) =>
+            part.type === 'text' ? (
+              <p key={`${id}-text-${index}`} style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {part.text}
+              </p>
+            ) : null,
+          )}
           {!streaming ? (
             <MessageActions
               role={role}
@@ -242,7 +234,7 @@ export function MessageBubble({
               busy={busy}
             />
           ) : null}
-          {copied ? <span className="stitch-copied-hint"><Check size={12} /> Copied</span> : null}
+          {copied ? <span className="sv-copied-hint"><Check size={10} /> Copied</span> : null}
         </div>
       </article>
     )
@@ -253,18 +245,18 @@ export function MessageBubble({
       key={id}
       data-testid={streaming ? 'message-streaming' : 'message-assistant'}
       data-role="assistant"
-      className="stitch-turn"
+      className="sv-message sv-message--assistant"
       aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : 'Assistant response'}
       aria-live={streaming ? 'polite' : undefined}
     >
-      <div className="stitch-avatar stitch-avatar--assistant" aria-hidden>
-        <Sparkles size={18} />
+      <div className="sv-message-avatar sv-message-avatar--assistant" aria-hidden>
+        <Sparkles size={16} />
       </div>
-      <div className="stitch-turn-body stitch-assistant-body">
-        <div className="stitch-turn-meta stitch-assistant-meta">
-          <span className="stitch-turn-name">Sovora</span>
-          {modelBadge ? <span className="stitch-model-badge">{modelBadge}</span> : null}
-          {thoughtLabel ? <span className="stitch-turn-time">{thoughtLabel}</span> : null}
+      <div className="sv-message-bubble sv-message-assistant">
+        <div className="sv-message-meta">
+          <span className="sv-message-name">Sovora</span>
+          {modelBadge ? <span className="sv-message-model-badge">{modelBadge}</span> : null}
+          {thoughtLabel ? <span className="sv-message-time">{thoughtLabel}</span> : null}
         </div>
 
         {hasReasoning ? (
@@ -289,18 +281,16 @@ export function MessageBubble({
             )
           }
           return part.text.trim() ? (
-            <div key={`${id}-text-${index}`} className="stitch-prose">
-              <p className="bubble-text">
-                {part.text}
-                {streaming && index === parsedParts.length - 1 ? <span className="stream-caret" aria-hidden="true" /> : null}
-              </p>
-            </div>
+            <p key={`${id}-text-${index}`}>
+              {part.text}
+              {streaming && index === parsedParts.length - 1 ? <span className="sv-stream-caret" aria-hidden="true" /> : null}
+            </p>
           ) : null
         })}
 
-        {cancelled ? <span className="bubble-meta muted small">Stopped — no reply was generated.</span> : null}
+        {cancelled ? <span style={{ fontSize: 12, color: 'var(--stitch-muted, #8A8279)' }}>Stopped — no reply was generated.</span> : null}
         {timeLabel ? (
-          <span className="bubble-meta muted small">
+          <span style={{ fontSize: 11, color: 'var(--stitch-muted, #8A8279)' }}>
             <time dateTime={timestamp ? new Date(timestamp).toISOString() : undefined}>{timeLabel}</time>
           </span>
         ) : null}
@@ -316,7 +306,7 @@ export function MessageBubble({
             busy={busy}
           />
         ) : null}
-        {copied ? <span className="stitch-copied-hint"><Copy size={12} /> Copied</span> : null}
+        {copied ? <span className="sv-copied-hint"><Copy size={10} /> Copied</span> : null}
       </div>
     </article>
   )

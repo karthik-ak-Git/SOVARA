@@ -21,6 +21,9 @@ export type ChatStreamKind =
   // Agent orchestration — honest, backend-driven
   | 'task:start'
   | 'task:planning'
+  | 'task:reading'
+  | 'task:prompting'
+  | 'task:thinking'
   | 'model:selecting'
   | 'model:loading'
   | 'model:ready'
@@ -31,6 +34,8 @@ export type ChatStreamKind =
   | 'tool:delta'
   | 'tool:end'
   | 'model:unloading'
+  | 'artifact:writing'
+  | 'artifact:ready'
   | 'task:complete'
   | 'task:error'
   | 'task:cancelled'
@@ -58,4 +63,10 @@ export interface ChatStreamEvent {
   detail?: string
   /** Progress 0-100 for model:loading and prompting */
   progress?: number
+  /** Attachment file name for task:reading */
+  fileName?: string
+  /** Generated artifact absolute path for artifact:ready */
+  artifactPath?: string
+  /** Generated artifact kind: 'pdf' | 'xlsx' | 'docx' | 'code' */
+  artifactKind?: string
 }

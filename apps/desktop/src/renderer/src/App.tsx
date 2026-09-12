@@ -22,6 +22,7 @@ import {
   getExecMode,
   setExecMode,
   getAppSettings,
+  openArtifact,
   type ProjectView,
   type ExecMode,
 } from '@/lib/client/api'
@@ -183,17 +184,30 @@ export function App(): React.JSX.Element {
 
   const handleSend = useCallback(
     (content: string, attachments?: FileAttachment[], opts?: { webSearch?: boolean }): void => {
-      let enrichedContent = content
-      if (attachments && attachments.length > 0) {
-        const fileSummary = attachments.map((a) => `[Attached: ${a.name} (${a.type})]`).join(' ')
-        enrichedContent = `${fileSummary}\n\n${content}`
-      }
-      const sendOpts: { webSearch?: boolean; reasoning?: boolean } = { ...opts }
+      // Attachments travel to main over IPC (validated by zChatSend); the
+      // backend persists them, extracts their content, and adds an honest
+      // manifest line to the timeline itself. Never stringify-away the bytes.
+      const forward = (attachments ?? []).slice(0, 5).map((a) => ({
+        name: a.name,
+        type: a.type,
+        size: a.size,
+        data: a.data,
+      }))
+      const sendOpts: { webSearch?: boolean; reasoning?: boolean; attachments?: typeof forward } = { ...opts }
       if (reasoningEnabled) sendOpts.reasoning = true
-      void chat.handleSend(enrichedContent, sendOpts)
+      if (forward.length > 0) sendOpts.attachments = forward
+      void chat.handleSend(content, sendOpts)
     },
     [chat, reasoningEnabled]
   )
+
+  const handleOpenArtifact = useCallback((filePath: string): void => {
+    void openArtifact(filePath).catch((e) => {
+      // Surface open failures honestly via the chat error path is overkill;
+      // log for diagnostics — the timeline keeps the saved path regardless.
+      console.error('[App] openArtifact failed:', e instanceof Error ? e.message : String(e))
+    })
+  }, [])
 
   const handleRegenerate = useCallback((): void => {
     void chat.handleRegenerate(reasoningEnabled ? { reasoning: true } : undefined)
@@ -334,6 +348,7 @@ export function App(): React.JSX.Element {
             onSelectModel={(rid, mid) => {
               void workbench.handleSelect(rid, mid).then(() => chat.refreshModelStatus())
             }}
+            onOpenArtifactFile={handleOpenArtifact}
             projectName={activeProjectName}
             artifactsPanelOpen={artifactsOpen}
             onToggleArtifacts={setArtifactsOpen}

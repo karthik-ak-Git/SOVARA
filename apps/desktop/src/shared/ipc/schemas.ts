@@ -27,12 +27,27 @@ export const zSessionArchive = z
   .object({ sessionId: zSessionId })
   .strict()
 
+/**
+ * Chat attachment carried over IPC as a data: URL (base64). Bounded so a
+ * multi-file send can never exhaust the IPC channel: max 5 files, each
+ * raw payload ≤ 20MB (≈15MB of file bytes after base64).
+ */
+export const zChatAttachment = z
+  .object({
+    name: z.string().min(1).max(256),
+    mime: z.string().min(1).max(128),
+    size: z.number().int().min(0).max(15 * 1024 * 1024),
+    data: z.string().min(1).max(20 * 1024 * 1024),
+  })
+  .strict()
+
 export const zChatSend = z
   .object({
     sessionId: z.string().min(1).max(128),
     content: z.string().min(1).max(32_000),
     webSearch: z.boolean().optional(),
-    reasoning: z.boolean().optional()
+    reasoning: z.boolean().optional(),
+    attachments: z.array(zChatAttachment).max(5).optional(),
   })
   .strict()
 
@@ -50,7 +65,13 @@ export const zChatEditResend = z
     content: z.string().min(1).max(32_000),
     webSearch: z.boolean().optional(),
     reasoning: z.boolean().optional(),
+    attachments: z.array(zChatAttachment).max(5).optional(),
   })
+  .strict()
+
+/** Open a generated artifact with the OS default app. Main validates the path. */
+export const zArtifactOpen = z
+  .object({ path: z.string().min(1).max(2048) })
   .strict()
 
 export const zModelsProbe = z.string().min(1).max(64)

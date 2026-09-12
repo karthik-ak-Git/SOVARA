@@ -1,0 +1,90 @@
+# Builds the Sovara Windows installer (NSIS .exe, x64) in the cloud.
+#
+# Triggers:
+#   - push to main/master ......... build + upload the .exe as a run artifact
+#   - pull_request ................ build only (validates the packaging)
+#   - tags like v0.1.0 ............ build + attach the .exe to a GitHub Release
+#   - workflow_dispatch ........... manual run from the Actions tab
+#
+# The .exe is unsigned (no code-signing certificate configured) — Windows
+# SmartScreen will show an "unknown publisher" prompt on first install.
+# To ship signed builds, add a certificate and wire CSC_* secrets.
+
+name: Build Windows (.exe)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        # postinstall downloads the pinned llama.cpp CUDA build (needed to
+        # bundle the local runtime; non-fatal if the CDN is unreachable).
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter @sovara/desktop typecheck
+
+      - name: Unit tests (packaging-relevant)
+        run: pnpm --filter @sovara/desktop exec vitest run tests/attachments.artifacts.test.ts tests/chat.inference.test.ts tests/ipc.validation.test.ts tests/agent.orchestrator.test.ts
+
+      - name: Build Windows installer (.exe)
+        run: pnpm build:win
+
+      - name: List installer output
+        run: Get-ChildItem -LiteralPath apps/desktop/dist | Select-Object Name, Length
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sovara-Windows-x64
+          path: apps/desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    # On version tags (v*) attach the cloud-built .exe to a GitHub Release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Sovara-Windows-x64
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

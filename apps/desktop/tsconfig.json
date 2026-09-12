@@ -17,7 +17,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
       "@shared/*": ["./src/shared/*"],
-      "@/*": ["../web/src/*"]
+      "@/*": ["./src/renderer/src/*"]
     },
     "outDir": "out",
     "skipLibCheck": true,

@@ -552,10 +552,16 @@ describe('Commit 7 — ChatService', () => {
 
 describe('Commit 7 — IPC contracts', () => {
   it('chat payloads stay minimal: no URL/headers/body fields', () => {
-    expect(Object.keys(zChatSend.shape).sort()).toEqual(['content', 'sessionId', 'webSearch', 'reasoning'].sort())
+    expect(Object.keys(zChatSend.shape).sort()).toEqual(['content', 'sessionId', 'webSearch', 'reasoning', 'attachments'].sort())
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi' }).success).toBe(true)
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi', endpoint: 'http://x' }).success).toBe(false)
     expect(zChatSend.safeParse({ sessionId: 's', content: 'hi', headers: {} }).success).toBe(false)
+    expect(
+      zChatSend.safeParse({ sessionId: 's', content: 'hi', attachments: [{ name: 'a.txt', mime: 'text/plain', size: 3, data: 'data:text/plain;base64,YWJj' }] }).success
+    ).toBe(true)
+    expect(
+      zChatSend.safeParse({ sessionId: 's', content: 'hi', attachments: [{ name: 'a.txt', mime: 'text/plain', size: 3 }] }).success
+    ).toBe(false)
     expect(zChatCancel.safeParse({ sessionId: 's' }).success).toBe(true)
     expect(zChatCancel.safeParse({}).success).toBe(false)
     expect(zChatCancel.safeParse({ sessionId: '' }).success).toBe(false)
