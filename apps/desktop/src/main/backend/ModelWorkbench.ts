@@ -281,7 +281,7 @@ export class ModelWorkbench {
       // Fallback: check AppBackend library dir + any registered external dirs
       let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
       if (!libDir) {
-        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('../storage/paths'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
+        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
       }
       const external = (()=>{ try { return (this.config as unknown as { getExternalModelDirs?: ()=>string[] }).getExternalModelDirs?.() ?? [] } catch { return [] } })()
       const dirs = [libDir, ...external]

@@ -214,28 +214,29 @@ export class AppBackend {
   registerExternalModelDir(dir: string): string[] {
     const { statSync } = require('node:fs')
     const abs = require('node:path').resolve(dir.trim())
-    if (!abs || !statSync(abs).isDirectory()) throw new Error('external path is not a directory')
+    if (!abs) throw new Error('external path is not a directory')
+    try { if (!statSync(abs).isDirectory()) throw new Error('not a directory') } catch (e) { throw new Error(e instanceof Error ? e.message : 'external path is not a directory') }
     const list = this.runtimeConfig.addExternalModelDir(abs)
-    // index external ggufs into registry + snapshot so they appear instantly
     const externals = require('../services/modelDownloads').scanLibraryFiles(abs)
+    console.info(`[registerExternal] scanning ${abs} -> ${externals.length} files`)
     for (const f of externals) {
       try {
         const id = require('../config/RuntimeConfigStore').downloadRowId('external', f.path.toLowerCase(), 'main', f.file)
-        this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: 'local', rfilename: f.file, localPath: f.path, displayName: f.file, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
-      } catch {}
+        this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: abs, rfilename: f.file, localPath: f.path, displayName: f.file, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
+      } catch (e) { console.error('[registerExternal] upsert failed', e) }
     }
-    // refresh local runtime snapshot so chat dropdown shows them immediately
     try {
-      const ggufs = externals.filter((e: {path:string})=> e.path.toLowerCase().endsWith('.gguf')).slice(0,40).map((e: {file:string})=> ({ modelId: e.file.replace(/\.gguf$/i,''), displayName: e.file }))
+      const filtered = externals.filter((e: {path:string})=> !e.path.toLowerCase().includes('mmproj'))
+      const ggufs = filtered.slice(0,40).map((e: {file:string})=> ({ modelId: e.file.replace(/\.gguf$/i,''), displayName: e.file }))
       if (ggufs.length) {
-        const existing = this.workbench.listRegistryRows().filter(r=> r.installStatus!=='missing').map(r=> ({ modelId: r.rfilename.replace(/\.gguf$/i,''), displayName: r.displayName }))
-        const merged = [...new Map([...existing, ...ggufs].map(m=> [m.modelId.toLowerCase(), m] as const)).values()]
-        // ensure local runtime exists then update its snapshot
         this.workbench.listRuntimes()
+        const existing = (()=>{ try { return this.runtimeConfig.listRegistryRows().filter(r=> r.installStatus!=='missing').map(r=> ({ modelId: r.rfilename.replace(/\.gguf$/i,''), displayName: r.displayName })) } catch { return [] } })()
+        const merged = [...new Map([...existing, ...ggufs].map(m=> [m.modelId.toLowerCase(), m] as const)).values()]
         const cfg = this.runtimeConfig as unknown as { saveProbeSnapshot: (id:string,m:Array<{modelId:string;displayName:string}>,e:string|null)=>void }
         cfg.saveProbeSnapshot('local', merged, null)
+        console.info(`[registerExternal] snapshot local -> ${merged.length} models`)
       }
-    } catch {}
+    } catch (e) { console.error('[registerExternal] snapshot failed', e) }
     return list
   }
   getExternalModelDirs(): string[] { return this.runtimeConfig.getExternalModelDirs() }

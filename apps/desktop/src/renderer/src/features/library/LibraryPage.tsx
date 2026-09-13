@@ -143,17 +143,19 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
 
   const handleApplyLocation = useCallback(async (locPath: string): Promise<void> => {
     setApplyingPath(locPath)
+    setDetectError(null)
     try {
       const { registerExternalDir } = await import('@/lib/client/api')
       const res = await registerExternalDir(locPath)
       if (res.ok) {
         setDetectOpen(false)
         setDetectLocations([])
-        void refresh()
-        void refreshConnected()
-      }
-    } catch { /* show error elsewhere */ }
-    finally { setApplyingPath(null) }
+        await refresh()
+        await refreshConnected()
+      } else throw new Error('register failed')
+    } catch (e) {
+      setDetectError(e instanceof Error ? e.message : String(e))
+    } finally { setApplyingPath(null) }
   }, [refresh, refreshConnected])
 
   const handleDelete = useCallback(async (entryPath: string): Promise<void> => {
@@ -250,32 +252,9 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
           ) : null}
         </div>
 
-        {/* Connected models (orchestrated runtimes §6) */}
+        {/* Logs — dummy Connected models removed per user request (models not actually loaded) */}
         <div className="settings-card" style={{ marginTop: 12 }}>
-          <div className="library-detect-header">
-            <span className="library-detect-title">Connected models</span>
-            <span className="muted small">{connectedRuntimes.length} runtime{connectedRuntimes.length!==1?'s':''} · {connectedModels.length} model{connectedModels.length!==1?'s':''} · active: {activeModel.selection ? `${activeModel.selection.modelId} ${activeModel.available ? '(Ready)' : '(Unavailable)'}` : 'none'}</span>
-          </div>
-          {connectedModels.length===0 ? (
-            <div className="library-detect-empty">No connected models — add a runtime in Settings → Models or drop a .gguf into the library folder. Library files appear as <em>Local Library</em> runtime.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0' }}>
-              {connectedModels.map(m => {
-                const rt = connectedRuntimes.find(r=>r.id===m.runtimeId)
-                const isActive = activeModel.selection?.modelId===m.modelId && activeModel.selection?.runtimeId===m.runtimeId
-                return (
-                  <div key={`${m.runtimeId}:${m.modelId}`} className="library-detect-row" style={{ borderLeft: isActive ? '3px solid #22c55e' : undefined }}>
-                    <div className="library-detect-icon"><HardDrive size={14} /></div>
-                    <div className="library-detect-body">
-                      <div className="library-detect-name">{m.displayName} {isActive ? <span className="library-model-chip library-model-chip--installed">Active</span> : null} {!m.available ? <span className="library-model-chip library-model-chip--missing">Unavailable</span> : null}</div>
-                      <div className="library-detect-path">{m.modelId} · {rt?.displayName ?? m.runtimeId}</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          <div className="library-detect-header" style={{ marginTop: 8, cursor: 'pointer' }} onClick={()=>setLogsOpen(o=>!o)}>
+          <div className="library-detect-header" style={{ cursor: 'pointer' }} onClick={()=>setLogsOpen(o=>!o)}>
             <span className="library-detect-title">Logs (orchestrated chat §11)</span>
             <span className="muted small">{logsOpen ? 'hide' : 'show'} — detection.log · runtime.log</span>
           </div>
