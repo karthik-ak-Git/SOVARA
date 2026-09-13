@@ -244,8 +244,8 @@ export class AppBackend {
         } catch {}
       } catch (e) { console.error('[registerExternal] upsert failed', e) }
     }
-     // purge legacy flat GLM ghost that causes "no GGUF at .../GLM-4.6V-Flash-Q4_K_M.gguf"
-     try { const db2=(this as unknown as {db: SovaraDb}).db; if(db2){ db2.exec("DELETE FROM model_registry WHERE local_path LIKE '%/GLM-4.6V-Flash-Q4_K_M.gguf' AND local_path NOT LIKE '%lmstudio-community%'"); } } catch {}
+      // purge legacy flat GLM ghost that causes "no GGUF at .../GLM-4.6V-Flash-Q4_K_M.gguf"
+     try { const db2=(this as unknown as {db: unknown}).db as { exec: (sql:string)=>void } | undefined; if(db2){ db2.exec("DELETE FROM model_registry WHERE local_path LIKE '%/GLM-4.6V-Flash-Q4_K_M.gguf' AND local_path NOT LIKE '%lmstudio-community%'"); } } catch {}
      try { this.runtimeConfig.setAppSetting('root_model','no-default'); const sel=this.runtimeConfig.getActiveSelection(); if(sel?.modelId?.includes('GLM-4.6V-Flash')) this.runtimeConfig.clearActiveSelection(); } catch {}
       try {
        const filtered = externals.filter((e: {path:string})=> !e.path.toLowerCase().includes('mmproj'))

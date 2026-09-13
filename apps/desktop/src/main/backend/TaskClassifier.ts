@@ -7,8 +7,10 @@
 import type { TaskClassification, TaskKind } from '@shared/types/task'
 
 const CODING_PATTERNS = [
-  /```/, /function\s+\w+\s*\(/, /class\s+\w+/, /import\s+.*from/, /const\s+\w+\s*=/, /def\s+\w+\s*\(/, /SELECT\s+.*FROM/i, /\b(bug|refactor|implement|code|typescript|python|rust|function|API)\b/i
+  /```/, /function\s+\w+\s*\(/, /class\s+\w+/, /import\s+.*from/, /const\s+\w+\s*=/, /def\s+\w+\s*\(/, /SELECT\s+.*FROM/i, /\b(bug|refactor|implement|code|typescript|python|rust|function|API)\b/i,
 ]
+// Global intent: any workspace artifact creation — not hard-coded per page name
+const BUILD_INTENT_RE = /\b(build|create|make|generate|scaffold|write)\b/i
 const ANALYSIS_PATTERNS = [
   /\b(analyze|review|audit|explain.*architecture|what.*wrong|problems|issues|diagnos)\b/i,
   /\b(architecture|design|performance|security|refactor)\b.*\b(why|how|what)\b/i,
@@ -31,9 +33,9 @@ function needsReasoning(text: string, explicit?: boolean): boolean {
 }
 
 function estimateContextNeeded(text: string, extraChars = 0): number {
-  // chars → tokens ~4 chars/token, plus history budget
-  const tokens = Math.ceil((text.length + extraChars) / 4) + 2048 // history + system
-  return Math.max(2048, Math.min(131072, tokens))
+  const tokens = Math.ceil((text.length + extraChars) / 4) + 2048
+  // request 2375 > n_ctx 2304 fix: clamp to at least 4096 so llama-server -c covers prompt
+  return Math.max(4096, Math.min(131072, tokens))
 }
 
 export function classifyTask(
@@ -111,8 +113,8 @@ export function classifyTask(
     }
   }
 
-  // Coding
-  if (CODING_PATTERNS.some((re) => re.test(text)) && (text.includes('```') || len > 100)) {
+  // Coding — global build intent without per-artifact hardcode: "build me X" -> needs workspace tools
+  if ((CODING_PATTERNS.some((re) => re.test(text)) && (text.includes('```') || len > 20)) || (BUILD_INTENT_RE.test(text) && len > 8)) {
     // Single large code block → coding
     const confidence = text.includes('```') ? 0.82 : 0.65
     return {

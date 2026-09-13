@@ -265,11 +265,10 @@ export class AgentOrchestrator {
             this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM, using partial offload`)
             ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
           } else {
-            // Even partial doesn't fit — run on CPU (no error, honor user selection completely)
             const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
-            this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM even partial, falling to CPU (RAM fit)`)
-            this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `running ${routing.modelId!} on CPU — slower` })
-            ;(routing as unknown as Record<string, unknown>).gpuMode = 'cpu'
+            const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much VRAM'} and even partial offload does not fit (GPU 6144MB). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this GPU.`
+            this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
+            throw new AgentOrchestratorError('resource-blocked', errMsg)
           }
         }
         // Mark switched so workbench persists selection if needed and lifecycle uses correct gpuMode
@@ -1021,11 +1020,23 @@ export class AgentOrchestrator {
         ...(mcpContext ? [mcpContext] : []),
         ...(skillsContext ? [skillsContext] : []),
       ]
-      const messages: import('@shared/types/ports').LlmChatMessage[] = [
+      let messages: import('@shared/types/ports').LlmChatMessage[] = [
         { role: 'system', content: systemBlocksReg.join('\n\n') },
         ...toRequestMessages(prior),
       ]
-      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId! })
+      // Compact if prompt would exceed ctx (2375 > 2304 case): history truncation before stream
+      const ctxNeed = classification.contextLengthNeeded
+      if (messages.reduce((n, m) => n + m.content.length, 0) > ctxNeed * 3) {
+        const sys = messages[0]
+        const rest = messages.slice(1)
+        let chars = rest.reduce((n, m) => n + m.content.length, 0)
+        const maxChars = Math.max(800, ctxNeed * 2.5)
+        while (rest.length > 2 && chars > maxChars) { chars -= rest.shift()!.content.length }
+        messages = [sys, ...rest]
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `compacted history ${prior.length}→${rest.length} for ctx ${ctxNeed}` })
+      } else {
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId! })
+      }
       const endpoint = regenOwnedEndpoint ?? entry!.endpoint
       const model = remoteModelId(routing.modelId!)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)

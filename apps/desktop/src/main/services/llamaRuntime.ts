@@ -400,13 +400,30 @@ export function planPartialFit(args: {
   try {
     const nParallel = Math.max(1, Math.floor(args.nParallel ?? 1))
     const info = readGgufModelInfo(args.modelPath)
-    if (!info || info.blockCount < 1) return null
     const resolvedCtx = args.ctxLen || 4096
-    const kvCacheMB = kvCacheMBFromInfo(info, resolvedCtx, nParallel)
-      ?? planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
     const weightsMB = Math.max(64, Math.round(args.fileSizeBytes / (1024 * 1024)))
     const workspaceMB = Math.round(weightsMB * 0.05)
     const overheadMB = args.overheadMB ?? 256
+    // Arch-aware when header readable; generic 32-layer fallback when not (vision GGUFs etc.) — enforces rule: some layers on GPU, remainder on CPU
+    if (!info || info.blockCount < 1) {
+      const fallbackBlocks = 32
+      const kvCacheMB = planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
+      const perLayerMB = weightsMB / fallbackBlocks
+      const budgetMB = args.totalMB - overheadMB - kvCacheMB - workspaceMB
+      const fitLayers = Math.min(fallbackBlocks, Math.floor(budgetMB / perLayerMB))
+      const minLayers = Math.max(4, Math.ceil(fallbackBlocks * 0.2))
+      if (fitLayers < minLayers) return null
+      return {
+        fitLayers,
+        totalLayers: fallbackBlocks,
+        estimatedMB: Math.round(fitLayers * perLayerMB) + kvCacheMB + workspaceMB + overheadMB,
+        kvCacheMB,
+        perLayerMB,
+        archAware: false,
+      }
+    }
+    const kvCacheMB = kvCacheMBFromInfo(info, resolvedCtx, nParallel)
+      ?? planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
     const perLayerMB = weightsMB / info.blockCount
     if (!(perLayerMB > 0)) return null
     const budgetMB = args.totalMB - overheadMB - kvCacheMB - workspaceMB

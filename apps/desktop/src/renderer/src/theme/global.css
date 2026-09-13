@@ -4808,6 +4808,10 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .stitch-artifact-code {
   margin: 0; padding: 12px; max-height: 384px; overflow: auto;
   background: #2F312E; color: #F2F1ED; font: 12px/1.6 ui-monospace, Menlo, monospace;
+  border: none;
+}
+.stitch-artifact-code code {
+  background: transparent; border: none; padding: 0; border-radius: 0; font: inherit; color: inherit;
 }
 
 /* Suggestion chips */

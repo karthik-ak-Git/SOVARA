@@ -87,6 +87,7 @@ export function toRequestMessages(
     turns.push({ role: e.type === 'user/message' ? 'user' : 'assistant', content })
   }
   // Bound from the tail: newest context wins, oldest drops first.
+  // Compact history when tokens exceed ctx: keep last turns, drop oldest until chars fit ~ctx*3 (rough 1 token ~3-4 chars)
   const bounded = turns.slice(-MAX_HISTORY_MESSAGES)
   let chars = bounded.reduce((n, m) => n + m.content.length, 0)
   while (bounded.length > 1 && chars > MAX_HISTORY_CHARS) {
@@ -94,6 +95,24 @@ export function toRequestMessages(
     chars -= dropped?.content.length ?? 0
   }
   return bounded
+}
+
+function compactForCtx(messages: LlmChatMessage[], nCtx: number): LlmChatMessage[] {
+  const maxChars = Math.max(800, nCtx * 3) // keep ~75% of ctx for prompt, rest for completion
+  let chars = messages.reduce((n, m) => n + m.content.length, 0)
+  const out = [...messages]
+  // Never drop system (0) or last user (tail); drop oldest history first (index 1..)
+  while (out.length > 2 && chars > maxChars) {
+    const dropIdx = 1
+    chars -= out[dropIdx].content.length
+    out.splice(dropIdx, 1)
+  }
+  // If still over, truncate the oldest remaining non-system message content
+  if (chars > maxChars && out.length > 2) {
+    const excess = chars - maxChars
+    out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
+  }
+  return out
 }
 
 export function remoteModelId(qualified: string): string {
