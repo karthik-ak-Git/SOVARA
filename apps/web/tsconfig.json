@@ -24,6 +24,6 @@
       "@sovara-main/*": ["../desktop/src/main/*"]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "../desktop/src/shared/**/*", "../desktop/src/main/backend/**/*", "../desktop/src/main/services/**/*", "../desktop/src/main/storage/**/*", "../desktop/src/main/config/**/*", "../desktop/src/main/network/**/*", "../desktop/src/main/logging/**/*"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "../desktop/src/shared/**/*"],
   "exclude": ["node_modules"]
 }
