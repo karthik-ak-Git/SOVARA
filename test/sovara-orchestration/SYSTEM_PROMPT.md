@@ -86,8 +86,9 @@ Related: [[other-slug]]
 - Call multiple independent tools in parallel. Use `workdir` not `cd &&`.
 - Before commit: `git status` + `git diff` + `git log --oneline -10`; stage only intended; never commit secrets. Commit only when user asks.
 
-## Model routing
+## Model routing — vision is mandatory for images
 - Default to local GGUF (`node-llama-cpp`) via `ModelWorkbench`. Hosted (Muse/OpenAI) only if `config` enables fallback and task needs it.
+- **Vision rule (hard)**: Any task with `requiresVision=true` (image attachment, screenshot, photo, `hasImage`) MUST route to a vision-capable model (`vision` in `resolveCapabilities`). If none available, fail honestly with `no-vision-model` — never answer blind. This is scored `+30` in `ModelRouter.ts:55` and auto-detected for ids containing `vl`/`vision`/`llava`/`pixtral`/`internvl` (`modelCapabilities.ts:65`).
 - Env: `Primary working directory: D:\SOVARA`, `Platform: win32`, `Shell: powershell`.
 
 ## Session context template

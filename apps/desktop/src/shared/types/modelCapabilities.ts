@@ -62,14 +62,18 @@ export function resolveCapabilities(
     }
   }
   const lower = modelId.toLowerCase()
+  // Vision models are tagged by id even when registry entry lacks 'vision' — e.g. qwen2-vl, llava, pixtral
+  const looksVision = /(?:\bvl\b|vision|llava|pixtral|bakllava|qwen.*vl|internvl|moondream)/i.test(lower)
   for (const p of MODEL_CAPABILITY_REGISTRY) {
     if (lower.includes(p.family)) {
       const caps = [...p.capabilities] as ModelCapability[]
+      if (looksVision && !caps.includes('vision')) caps.push('vision')
       if ((contextLength ?? p.defaultContextLength) >= 16384 && !caps.includes('long-context')) caps.push('long-context')
       return { capabilities: caps, profile: p, contextLength: contextLength ?? p.defaultContextLength }
     }
   }
-  // Unknown family → minimal, honest
+  // Unknown family — if it looks like vision, grant vision+chat honestly
+  if (looksVision) return { capabilities: ['vision', 'chat'], profile: null, contextLength: contextLength ?? 8192 }
   return { capabilities: ['chat'], profile: null, contextLength: contextLength ?? 4096 }
 }
 
