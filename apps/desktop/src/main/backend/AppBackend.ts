@@ -222,8 +222,21 @@ export class AppBackend {
     console.info(`[registerExternal] scanning ${abs} -> ${externals.length} files`)
     for (const f of externals) {
       try {
+        // Derive HF repo from folder like "Qwen__Qwen3-0.6B" -> "Qwen/Qwen3-0.6B" or "lmstudio-community/GLM-4.6V-Flash-GGUF"
+        const parts = f.path.split(/[/\\]/)
+        const idx = parts.findIndex(p=> p.includes('__'))
+        let repo = abs
+        if (idx>=0) repo = parts[idx].replace('__','/') // Qwen/Qwen3-0.6B
+        else {
+          // try parent folder under lmstudio root (e.g. lmstudio-community)
+          const rel = f.path.replace(abs+require('node:path').sep,'')
+          const top = rel.split(/[/\\]/)[0]
+          if (top && top!=='..') repo = top.includes('-GGUF') ? `lmstudio-community/${top}` : top
+        }
         const id = downloadRowId('external', f.path.toLowerCase(), 'main', f.file)
-        this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: abs, rfilename: f.file, localPath: f.path, displayName: f.file, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
+        this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: repo, rfilename: f.file, localPath: f.path, displayName: `${repo} — ${f.file}`, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
+        // Build sidecar JSON next to the gguf (can't overwrite lmstudio folder, so write <file>.json)
+        try { const fs=require('node:fs'); const jsonPath=f.path.replace(/\.gguf$/i,'.json'); if(!fs.existsSync(jsonPath)){ fs.writeFileSync(jsonPath, JSON.stringify({ repository: repo, rfilename: f.file, localPath: f.path, displayName: `${repo} — ${f.file}`, sizeBytes: f.sizeBytes, source: 'lmstudio-external', huggingFaceUrl: repo.includes('/')?`https://huggingface.co/${repo}`:`https://huggingface.co/models?search=${encodeURIComponent(repo)}` }, null, 2)) } } catch {}
         // cleanup old flat-path row from earlier build (C:\...\models/FILE.gguf without subfolder)
         try {
           const staleId = downloadRowId('external', f.file.toLowerCase(), 'main', f.file)
@@ -231,10 +244,13 @@ export class AppBackend {
         } catch {}
       } catch (e) { console.error('[registerExternal] upsert failed', e) }
     }
-    try {
-      const filtered = externals.filter((e: {path:string})=> !e.path.toLowerCase().includes('mmproj'))
-      const ggufs = filtered.slice(0,40).map((e: {file:string})=> ({ modelId: e.file.replace(/\.gguf$/i,''), displayName: e.file }))
-      if (ggufs.length) {
+     // purge legacy flat GLM ghost that causes "no GGUF at .../GLM-4.6V-Flash-Q4_K_M.gguf"
+     try { const db2=(this as unknown as {db: SovaraDb}).db; if(db2){ db2.exec("DELETE FROM model_registry WHERE local_path LIKE '%/GLM-4.6V-Flash-Q4_K_M.gguf' AND local_path NOT LIKE '%lmstudio-community%'"); } } catch {}
+     try { this.runtimeConfig.setAppSetting('root_model','no-default'); const sel=this.runtimeConfig.getActiveSelection(); if(sel?.modelId?.includes('GLM-4.6V-Flash')) this.runtimeConfig.clearActiveSelection(); } catch {}
+      try {
+       const filtered = externals.filter((e: {path:string})=> !e.path.toLowerCase().includes('mmproj'))
+       const ggufs = filtered.slice(0,40).map((e: {file:string})=> ({ modelId: e.file.replace(/\.gguf$/i,''), displayName: e.file }))
+       if (ggufs.length) {
         this.workbench.listRuntimes()
         const existing = (()=>{ try { return this.runtimeConfig.listRegistryRows().filter(r=> r.installStatus!=='missing').map(r=> ({ modelId: r.rfilename.replace(/\.gguf$/i,''), displayName: r.displayName })) } catch { return [] } })()
         const merged = [...new Map([...existing, ...ggufs].map(m=> [m.modelId.toLowerCase(), m] as const)).values()]

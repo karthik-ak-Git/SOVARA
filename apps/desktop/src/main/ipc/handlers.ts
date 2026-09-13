@@ -451,23 +451,18 @@ export function registerIpcHandlers(): void {
   // ── Usage stats ──
   ipcMain.handle('usage:getTotal', async () => {
     const res = getBackend().ports.persistence.getTotalUsage()
-    console.log(`[SOVARA][IPC] usage:getTotal → ${res.totalTokens} tokens`)
     return res
   })
 
   ipcMain.handle('usage:getByModel', async () => {
-    const res = getBackend().ports.persistence.getUsageByModel()
-    console.log(`[SOVARA][IPC] usage:getByModel → ${res.length} models`)
-    return res
+    return getBackend().ports.persistence.getUsageByModel()
   })
 
   ipcMain.handle('usage:getRecent', async (_e, raw: unknown) => {
     const parsed = zUsageGetRecent.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid usage:getRecent payload: ${parsed.error.message}`)
     const limit = parsed.data.limit ?? 20
-    const rows = getBackend().ports.persistence.getRecentUsage?.(limit) ?? []
-    console.log(`[SOVARA][IPC] usage:getRecent limit=${limit} → ${rows.length} rows`)
-    return rows
+    return getBackend().ports.persistence.getRecentUsage?.(limit) ?? []
   })
 
   // ── Window controls (frameless window) ──
@@ -655,6 +650,21 @@ export function registerIpcHandlers(): void {
       const dirs = getBackend().registerExternalModelDir(parsed.data.path)
       return { ok: true, path: parsed.data.path, externalDirs: dirs, libraryDir: getBackend().getLibraryDir() }
     } catch (e) { throw new Error(e instanceof Error ? e.message : 'could not register external directory') }
+  })
+  ipcMain.handle('library:revealInFolder', async (_e, raw: unknown) => {
+    const p = typeof raw === 'string' ? raw : (raw as { path?: string })?.path
+    if (!p) throw new Error('missing path')
+    const { shell } = await import('electron')
+    const fs = await import('node:fs')
+    try { if (fs.statSync(p).isDirectory()) { shell.openPath(p); return { ok: true } } } catch {}
+    shell.showItemInFolder(p)
+    return { ok: true }
+  })
+  ipcMain.handle('library:getModelCard', async (_e, raw: unknown) => {
+    const p = typeof raw === 'string' ? raw : (raw as { path?: string })?.path
+    const all = await getBackend().scanLibrary()
+    const found = all.find(m => m.path === p)
+    return found ?? null
   })
 
   ipcMain.handle('library:detectLocations', async () => {
@@ -850,10 +860,7 @@ export function registerIpcHandlers(): void {
     if (kind==='all' || kind==='runtime') out.runtime = tail(path.join(dir,'runtime.log'), 30)
     if (kind==='all' || kind==='app') out.app = tail(path.join(dir,'app.log'), 30)
     if (kind==='all' || kind==='chat') out.chat = tail(path.join(dir,'chat.log'), 50)
-    if (kind==='all' || kind==='chat') {
-      // also include terminal-visible chat errors as parsed JSON lines
-      try { console.log(`[SOVARA][IPC] logs:getRecent kind=${kind} chat=${out.chat?.length ?? 0} entries`) } catch {}
-    }
+    void kind
     return out
   })
 

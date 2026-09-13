@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, type ReactElement } from 'react'
 import {
   ArrowLeft, Search, Folder, Radar,
-  HardDrive, Trash2, Bot, Cpu
+  HardDrive, Trash2, Bot, Cpu, ExternalLink, FolderOpen, FileText
 } from 'lucide-react'
 import {
   listLibraryModels, getLibraryDirectory, setLibraryDirectory,
@@ -162,10 +162,38 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
     try {
       await deleteLibraryModel(entryPath)
       setModels((prev) => prev.filter((m) => m.path !== entryPath))
-    } catch {
-      // ignore — row stays
-    }
+      void refreshConnected()
+    } catch { /* ignore */ }
+  }, [refreshConnected])
+
+  const handleReveal = useCallback(async (entryPath: string): Promise<void> => {
+    try {
+      const sov = (window as unknown as { sovara?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).sovara ?? (window as unknown as { api?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).api
+      if (sov) await sov.invoke('library:revealInFolder', entryPath) // highlights the actual .gguf file
+    } catch (e) { console.error('[library] reveal file failed', e) }
   }, [])
+
+  const handleOpenCard = useCallback(async (model: LibraryModel): Promise<void> => {
+    try {
+      const sov = (window as unknown as { sovara?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).sovara ?? (window as unknown as { api?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).api
+      // Card click → show the model FOLDER (contains the .json sidecar built on Use), not the file
+      const folder = model.path.replace(/[/\\][^/\\]+$/, '')
+      if (sov) await sov.invoke('library:revealInFolder', folder)
+    } catch (e) { console.error('[library] open folder failed', e) }
+  }, [])
+
+  const hfUrl = useCallback((name: string): string => {
+    // repository may be "Qwen/Qwen3-0.6B" or "lmstudio-community/GLM-4.6V-Flash-GGUF" or absolute win path
+    const isPath = /^[A-Z]:[\\/]/i.test(name) || name.includes(':\\')
+    if (!isPath && name.includes('/')) return `https://huggingface.co/${name}`
+    // try derive from file's parent: e.g. "C:\\...\\Qwen__Qwen3-0.6B\\file.gguf" already mapped, else search
+    return `https://huggingface.co/models?search=${encodeURIComponent(name.replace(/__/g,'/'))}`
+  }, [])
+  const cardStyleFor = useCallback((m: LibraryModel): { hf: string; cardUrl: string; hasJsonCard: boolean } => {
+    const hasJsonCard = !/^[A-Z]:[\\/]/i.test(m.name) // if name is a real repo, Explore JSON card exists; win-path means synthesized card
+    const repo = hasJsonCard ? m.name : m.path.split(/[/\\]/).find(p=> p.includes('__'))?.replace('__','/') ?? m.name
+    return { hf: hfUrl(repo), cardUrl: hasJsonCard ? `#/model/${encodeURIComponent(m.name)}/modelcards` : `#/model/${encodeURIComponent(repo)}/modelcards`, hasJsonCard }
+  }, [hfUrl])
 
   return (
     <div className="settings-content">
@@ -322,28 +350,29 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
         ) : (
           <div className="library-model-list">
             {filteredModels.map((model) => (
-              <div key={model.path} className="library-model-row">
-                <LibraryModelIcon />
-                <div className="library-model-body">
-                  <div className="library-model-name">{model.file}</div>
-                  <div className="library-model-meta">
-                    <span className="library-model-chip">{formatBytes(model.sizeBytes)}</span>
-                    <span className="library-model-chip">{model.name}</span>
-                    {model.installStatus ? <InstallStatusChip status={model.installStatus} /> : null}
-                  </div>
-                  <div className="library-model-sub" title={model.path}>
-                    {new Date(model.modifiedAt).toLocaleDateString()} · {model.path}
+              <div key={model.path} className="library-model-row" style={{ flexDirection:'column', alignItems:'stretch', padding:12, gap:8, border:'1px solid var(--border)', borderRadius:10 }}>
+                <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                  <LibraryModelIcon />
+                  <div className="library-model-body" style={{flex:1}}>
+                    <div className="library-model-name">{model.file}</div>
+                    <div className="library-model-meta">
+                      <span className="library-model-chip">{formatBytes(model.sizeBytes)}</span>
+                      <span className="library-model-chip">{model.name}</span>
+                      {model.installStatus ? <InstallStatusChip status={model.installStatus} /> : null}
+                    </div>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="settings-action-btn"
-                  title="Delete model file"
-                  aria-label={`Delete ${model.file}`}
-                  onClick={() => void handleDelete(model.path)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                <div className="library-model-sub" style={{fontSize:11, opacity:0.7}} title={model.path}>
+                  {(() => { const c = cardStyleFor(model); return (<>
+                    <div>Location: {model.path}</div>
+                    <div>{new Date(model.modifiedAt).toLocaleDateString()} · <a href={c.hf} target="_blank" rel="noreferrer" style={{color:'var(--accent)'}}><ExternalLink size={10} style={{display:'inline'}}/> {c.hf}</a> · <a href={c.cardUrl} style={{color:'var(--accent)'}}>/model/modelcards{c.hasJsonCard ? '' : ' (synthesized)'}</a></div>
+                  </>)})()}
+                </div>
+                <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                  <button type="button" className="settings-action-btn" title="Open model card & reveal in Explorer" onClick={() => void handleOpenCard(model)}><FileText size={12}/> Card</button>
+                  <button type="button" className="settings-action-btn" title="Reveal in file explorer" onClick={() => void handleReveal(model.path)}><FolderOpen size={12}/> Reveal</button>
+                  <button type="button" className="settings-action-btn" style={{color:'#c0392b'}} title="Delete model" onClick={() => void handleDelete(model.path)}><Trash2 size={12}/> Delete</button>
+                </div>
               </div>
             ))}
           </div>

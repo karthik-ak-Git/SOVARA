@@ -83,6 +83,8 @@ export const IPC_CHANNELS = {
   'library:detectLocations': { type: 'invoke' as const },
   'library:setDirectory': { type: 'invoke' as const },
   'library:registerExternal': { type: 'invoke' as const },
+  'library:revealInFolder': { type: 'invoke' as const },
+  'library:getModelCard': { type: 'invoke' as const },
   'library:download': { type: 'invoke' as const },
   'library:cancelDownload': { type: 'invoke' as const },
   'library:pauseDownload': { type: 'invoke' as const },
