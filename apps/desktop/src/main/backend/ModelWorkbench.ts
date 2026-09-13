@@ -419,12 +419,12 @@ export class ModelWorkbench {
     if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)
     if (!snap || !snap.entry.enabled) return { selection: sel, available: false }
-    let found = snap.lastModels.find((m) => m.modelId === sel.modelId)
+    let found = snap.lastModels.find((m) => m.modelId === sel!.modelId)
     // Fuzzy fallback for Qwen/Qwen3-0.6B vs Qwen3-0.6B-Q4_K_M style ids
     if (!found) {
-      const needle = String(sel.modelId).split('/').pop()?.replace(/\.gguf$/i,'').toLowerCase() ?? ''
+      const needle = String(sel!.modelId).split('/').pop()?.replace(/\.gguf$/i,'').toLowerCase() ?? ''
       found = needle ? snap.lastModels.find(m => m.modelId.toLowerCase().includes(needle) || m.displayName.toLowerCase().includes(needle)) : undefined
-      if (found) { try { this.config.setActiveSelection({ runtimeId: sel.runtimeId, modelId: found.modelId }); sel = found.modelId as unknown as typeof sel; } catch {} }
+      if (found) { try { this.config.setActiveSelection({ runtimeId: sel!.runtimeId, modelId: found.modelId }); sel = found.modelId as unknown as typeof sel; } catch {} }
     }
     // Local runtime: available if file exists, even if snapshot had lastError (probe not re-run after Use)
     const isLocal = snap.entry.id === 'local'
