@@ -493,7 +493,7 @@ export function ChatView({
             {activeArtifact ? (
               artifactTab === 'preview' ? (
                 activeArtifact.language.toLowerCase() === 'html' || activeArtifact.language.toLowerCase() === 'svg' ? (
-                  <iframe srcDoc={activeArtifact.code} title={activeArtifact.title} sandbox="allow-scripts" style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }} />
+                  <iframe srcDoc={activeArtifact.code.includes('<form') ? activeArtifact.code.replace('</body>', '<script>document.addEventListener("submit",e=>{e.preventDefault();const fd=new FormData(e.target);const d={};fd.forEach((v,k)=>d[k]=v);console.log("Login attempt:",JSON.stringify(d));const p=document.createElement("p");p.textContent="Demo — "+JSON.stringify(d);e.target.after(p)},true);</script></body>') : activeArtifact.code} title={activeArtifact.title} sandbox="allow-scripts allow-forms allow-same-origin" style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }} />
                 ) : (
                   <div style={{ padding: 12 }}>
                     <p style={{ fontSize: 12, color: '#8A8279' }}>Preview of <strong>{activeArtifact.title}</strong></p>

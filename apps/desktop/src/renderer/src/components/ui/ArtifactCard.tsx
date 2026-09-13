@@ -28,6 +28,9 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
     }
   }
 
+  const previewDoc = code.includes('<form')
+    ? code.replace('</body>', '<script>document.addEventListener("submit",e=>{e.preventDefault();const fd=new FormData(e.target);const d={};fd.forEach((v,k)=>d[k]=v);console.log("Login attempt:",JSON.stringify(d));const p=document.createElement("p");p.textContent="Demo login — no server. Data: "+JSON.stringify(d);p.style.cssText="margin-top:12px;padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font:12px monospace";e.target.after(p)},true);</script></body>')
+    : code
   return (
     <div className="stitch-artifact-card" role="region" aria-label={`Artifact ${title}`}>
       <div className="stitch-artifact-header">
@@ -85,9 +88,9 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
       {tab === 'preview' && isHtml ? (
         <div className="stitch-artifact-preview">
           <iframe
-            srcDoc={code}
+            srcDoc={previewDoc}
             title={title}
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-forms allow-same-origin"
             style={{ width: '100%', height: '220px', border: 'none', background: '#ffffff', borderRadius: '4px' }}
           />
         </div>
