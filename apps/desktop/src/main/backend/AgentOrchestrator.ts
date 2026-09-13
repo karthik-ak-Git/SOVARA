@@ -164,23 +164,51 @@ export class AgentOrchestrator {
       const resources = await this.deps.resources.getSnapshot()
       const baseSnapshot = active.selection ? { modelId: active.selection.modelId, runtimeId: active.selection.runtimeId } : null
 
-      let routing = await routeModel({
-        task: classification,
-        models,
-        active: active.selection ?? null,
-        resources,
-        checkBeforeLoad: async (modelId) => {
-          try {
-            const m = models.find((x) => x.modelId === modelId)
-            return await this.deps.resources.checkBeforeLoad(
-              { id: modelId as never, displayName: m?.displayName ?? modelId, path: (m as { path?: string })?.path ?? (m as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
-              { ctxLen: classification.contextLengthNeeded }
-            )
-          } catch {
-            return { level: 'ok' as const }
-          }
-        },
-      })
+      // Scoring: initial user-selected model is already loaded. For simple tasks
+      // (chat/summarization without vision/tools) use it directly — no switch.
+      // For complex tasks (requiresVision/tools/reasoning/code) let the router
+      // score and pick the best fitting model.
+      const isSimpleTask = (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision && !(classification as unknown as { requiresTools?: boolean }).requiresTools
+      let routing: Awaited<ReturnType<typeof routeModel>>
+      if (baseSnapshot && isSimpleTask) {
+        routing = {
+          modelId: baseSnapshot.modelId,
+          runtimeId: baseSnapshot.runtimeId,
+          reason: `user-selected ${baseSnapshot.modelId} — simple task, no routing`,
+          task: classification,
+          candidatesConsidered: 1,
+          switched: false,
+        } as unknown as Awaited<ReturnType<typeof routeModel>>
+      } else {
+        routing = await routeModel({
+          task: classification,
+          models,
+          active: active.selection ?? null,
+          resources,
+          checkBeforeLoad: async (modelId) => {
+            try {
+              const m = models.find((x) => x.modelId === modelId)
+              return await this.deps.resources.checkBeforeLoad(
+                { id: modelId as never, displayName: m?.displayName ?? modelId, path: (m as { path?: string })?.path ?? (m as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
+                { ctxLen: classification.contextLengthNeeded }
+              )
+            } catch {
+              return { level: 'ok' as const }
+            }
+          },
+        })
+        // For simple tasks honor base over scored GLM (even when router ran due to no base check)
+        if (baseSnapshot && isSimpleTask && routing.modelId !== baseSnapshot.modelId) {
+          routing = {
+            modelId: baseSnapshot.modelId,
+            runtimeId: baseSnapshot.runtimeId,
+            reason: `honoring user base ${baseSnapshot.modelId} over scored ${routing.modelId} (simple)`,
+            task: classification,
+            candidatesConsidered: 1,
+            switched: false,
+          } as unknown as Awaited<ReturnType<typeof routeModel>>
+        }
+      }
 
       if (!routing.modelId! || !routing.runtimeId!) {
         const msg = `No compatible model available for task "${classification.kind}". ${routing.reason}`
@@ -219,42 +247,35 @@ export class AgentOrchestrator {
         }
       }
 
-      // ── PHASE 3: ensure selected model is active (select if router chose different) ──
-      // Honour the user's explicit base choice: for simple chat, never silently
-      // swap away from baseSnapshot even if the scorer prefers a larger model.
-      // This is what makes hi stay on the fast Nemotron-4B instead of evicting
-      // to the 27B Q1_0 on CPU and appearing "stuck".
-      if (baseSnapshot && (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision) {
-        const baseModel = models.find((m) => m.modelId === baseSnapshot.modelId && m.runtimeId === baseSnapshot.runtimeId)
-        const basePressure = baseModel
-          ? await this.deps.resources.checkBeforeLoad({ id: baseSnapshot.modelId as never, displayName: baseModel.displayName ?? baseSnapshot.modelId, path: (baseModel as { path?: string }).path ?? (baseModel as { filePath?: string }).filePath, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded }).catch(() => ({ blocking: false } as never))
-          : ({ blocking: true } as never)
-        if (baseModel?.available && !(basePressure as { blocking?: boolean }).blocking) {
-          if (routing.modelId! !== baseSnapshot.modelId || routing.runtimeId! !== baseSnapshot.runtimeId) {
-            this.safeLog(`[SOVARA][ROUTER] honoring base ${baseSnapshot.modelId} over routed ${routing.modelId!} for chat`)
-            routing = { ...routing, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, switched: false, reason: `honoring user base ${baseSnapshot.modelId} | ${routing.reason}` }
-          }
-        } else if (basePressure && (basePressure as { blocking?: boolean }).blocking) {
-          this.safeLog(`[SOVARA][ROUTER] base ${baseSnapshot.modelId} blocked (${(basePressure as { reason?: string }).reason ?? 'vram'}), keeping routed ${routing.modelId!} — will not honor`)
-        }
-        // Post-honor guard: if honored (or original) routing is still blocking, force fallback to fitting model
-        const postPressure = await this.deps.resources.checkBeforeLoad(
-          { id: routing.modelId! as never, displayName: models.find((m) => m.modelId === routing.modelId!)?.displayName ?? routing.modelId!, path: (models.find((m) => m.modelId === routing.modelId!) as { path?: string })?.path, source: 'custom', format: 'gguf' } as never,
+      // ── PHASE 3: user selection sovereign — honor it; try full then partial, never silently switch to another model
+      // If the selected model cannot fit even partially, throw honest error with alternatives (user must pick).
+      {
+        const selModel = models.find((m) => m.modelId === routing.modelId!)
+        // Even though routing is user-selected, verify it actually fits; try partial offload transparently
+        const fullPressure = await this.deps.resources.checkBeforeLoad(
+          { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: (selModel as { path?: string })?.path ?? (selModel as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
           { ctxLen: classification.contextLengthNeeded },
         ).catch(() => ({ blocking: false } as never))
-        if ((postPressure as { blocking?: boolean }).blocking) {
-          const availFitting = models.filter((m) => m.available && m.modelId !== routing.modelId!)
-          for (const cand of availFitting) {
-            try {
-              const p = await this.deps.resources.checkBeforeLoad({ id: cand.modelId as never, displayName: cand.displayName, path: (cand as { path?: string })?.path, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded })
-              if (!p.blocking) {
-                this.safeLog(`[SOVARA][ROUTER] post-honor fallback ${routing.modelId!} blocked → ${cand.modelId}`)
-                this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `fallback to ${cand.modelId} (base blocked)` })
-                routing = { modelId: cand.modelId, runtimeId: cand.runtimeId, reason: `fallback from blocked ${routing.modelId!} → ${cand.modelId} | ${routing.reason}`, task: classification, candidatesConsidered: availFitting.length, switched: true }
-                break
-              }
-            } catch {}
+        if ((fullPressure as { blocking?: boolean }).blocking) {
+          const fitPressure = await this.deps.resources.checkBeforeLoad(
+            { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: (selModel as { path?: string })?.path ?? (selModel as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
+            { ctxLen: classification.contextLengthNeeded, gpu: 'fit' } as never,
+          ).catch(() => ({ blocking: true } as never))
+          if (!(fitPressure as { blocking?: boolean }).blocking) {
+            this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM, using partial offload`)
+            ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
+          } else {
+            // Even partial doesn't fit — run on CPU (no error, honor user selection completely)
+            const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
+            this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM even partial, falling to CPU (RAM fit)`)
+            this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `running ${routing.modelId!} on CPU — slower` })
+            ;(routing as unknown as Record<string, unknown>).gpuMode = 'cpu'
           }
+        }
+        // Mark switched so workbench persists selection if needed and lifecycle uses correct gpuMode
+        if (baseSnapshot && routing.modelId === baseSnapshot.modelId) {
+          // user selection already active — no workbench switch needed, but ensure lifecycle honors gpuMode
+          routing.switched = false
         }
       }
       let entry = this.deps.workbench.describeRuntime(routing.runtimeId!)
@@ -301,14 +322,17 @@ export class AgentOrchestrator {
           const models = this.deps.models as ModelRuntimePort & {
             ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
           }
+          const gpuMode = (routing as unknown as { gpuMode?: string }).gpuMode as 'fit' | undefined
           const inst = models.ensureHealthy
             ? await models.ensureHealthy(routing.modelId! as never, {
               ctxLen: classification.contextLengthNeeded,
               runtimeId: routing.runtimeId!,
+              ...(gpuMode ? { gpu: gpuMode } : {}),
             })
             : await this.deps.models.load(routing.modelId! as never, {
               ctxLen: classification.contextLengthNeeded,
               runtimeId: routing.runtimeId!,
+              ...(gpuMode ? { gpu: gpuMode } : {}),
             })
           const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
           if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)

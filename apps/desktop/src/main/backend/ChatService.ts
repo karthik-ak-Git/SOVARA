@@ -19,7 +19,7 @@ import type { ModelWorkbench } from './ModelWorkbench'
 
 /** Minimal local system prompt. Main-only: never renderer-provided. */
 export const CHAT_SYSTEM_PROMPT =
-  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Answer concisely and directly.'
+  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Always respond in English only. Answer concisely and directly in English.'
 
 const MAX_HISTORY_MESSAGES = 50
 const MAX_HISTORY_CHARS = 24_000

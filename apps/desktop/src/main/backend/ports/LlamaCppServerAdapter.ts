@@ -468,11 +468,10 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         autoFallback = 'fit'
         appendLlamaLog(this.baseDir, 'load-auto-fit', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB, vramTotalMB: gpu.totalMB })
       } else {
-        // Even minimum offload doesn't fit — CPU fallback is slow and often timeouts (130s invalid-response on 9B Q4). Only allow CPU for small models <=4GB.
+        // Even minimum offload doesn't fit — fall to CPU if RAM allows (removes hard error for user-selected models)
         const needRamMB = plan.estimatedMB
         const totalRamMB = Math.round((await import('node:os')).default.totalmem() / (1024 * 1024))
-        const isSmallForCpu = fileSize < 4 * 1024 * 1024 * 1024
-        if (isSmallForCpu && needRamMB <= totalRamMB * 0.75) {
+        if (needRamMB <= totalRamMB * 0.75) {
           ngl = 0
           estimatedVramMB = 0
           autoFallback = 'cpu'

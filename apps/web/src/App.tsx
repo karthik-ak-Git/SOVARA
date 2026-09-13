@@ -8,6 +8,7 @@ import { useModelWorkbench } from './features/models/useModelWorkbench'
 import { ChatView } from './features/chat/ChatView'
 import type { FileAttachment } from './features/chat/Composer'
 import { CreateProjectModal } from './components/modals/CreateProjectModal'
+import { SystemConnect } from './features/system/SystemConnect'
 import { ModelsPage } from './features/models/ModelsPage'
 import { ExplorePage } from './features/explore/ExplorePage'
 import { LibraryPage } from './features/library/LibraryPage'
@@ -372,7 +373,7 @@ export function App(): React.JSX.Element {
 
         {activeNav === 'connections' ? <ConnectionsPage onBack={() => setActiveNav('chat')} /> : null}
 
-        {activeNav === 'settings' ? <SettingsPage onBack={() => setActiveNav('chat')} /> : null}
+        {activeNav === 'settings' ? <><SystemConnect /><SettingsPage onBack={() => setActiveNav('chat')} /></> : null}
 
         <CreateProjectModal
           open={projectModalOpen}
