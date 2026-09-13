@@ -436,16 +436,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('tools:dispatch', async (_e, raw: unknown) => {
     const parsed = zToolDispatch.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid tools:dispatch payload: ${parsed.error.message}`)
+    const args = parsed.data.args as Record<string, unknown> & { _forceApprove?: boolean }
     const mode = getBackend().getExecMode()
+    const force = args._forceApprove === true
     const verdict = gateDispatch(mode, parsed.data.name)
-    if (!verdict.allowed) {
-      return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message }
+    if (!verdict.allowed && !force) {
+      return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message, toolName: parsed.data.name, toolArgs: parsed.data.args }
     }
+    const cleanArgs = { ...args }; delete (cleanArgs as Record<string,unknown>)._forceApprove
     const result = await getBackend().ports.tools.dispatch(
       parsed.data.name,
-      parsed.data.args as Record<string, unknown>
+      cleanArgs
     )
-    return { ok: true, autoApproved: verdict.autoApproved, result }
+    return { ok: true, autoApproved: verdict.autoApproved || force, result }
   })
 
   // ── Usage stats ──
