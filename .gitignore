@@ -56,6 +56,8 @@ screenshots/
 *.webp
 *.ico
 
-# Test folder traces
-test/
+# Test folder traces (keep orchestration prompt lab)
+test/*
+!test/sovara-orchestration/
+!test/sovara-orchestration/**
 .opencode
