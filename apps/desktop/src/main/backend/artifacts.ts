@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createZip } from './minizip'
 
-export type ArtifactKind = 'pdf' | 'xlsx' | 'docx' | 'code'
+export type ArtifactKind = 'pdf' | 'xlsx' | 'docx' | 'code' | 'drawing'
 
 export interface DetectedOutput {
   kind: ArtifactKind
@@ -68,6 +68,9 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
   if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(head)}.xlsx`, explicitName: false }
   const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,60}\b(word|docx?|document file)\b/i.test(head) || /\bword (file|document|export|download)\b/i.test(head)
   if (wantsDocx) return { kind: 'docx', fileName: `${slugify(head)}.docx`, explicitName: false }
+  // Image / drawing: user wants a visual generated — produce an HTML+SVG drawing artifact
+  const wantsDrawing = /\b(generate|create|make|draw|render|produce|build)\b[^.\n]{0,60}\b(drawing|diagram|image|picture|illustration|sketch|canvas|svg|chart visual)\b/i.test(head) || /\b(draw|sketch) (me )?(a |an )?[^.\n]{0,30}(diagram|image|picture|chart)\b/i.test(head)
+  if (wantsDrawing) return { kind: 'drawing', fileName: `${slugify(head)}.html`, explicitName: false }
   // 3. Code file with an explicit language + save/write verb (chat fences alone don't count —
   //    the artifact panel already surfaces those; a FILE needs a named target).
   const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(head)
@@ -293,6 +296,10 @@ export function generateArtifactFile(kind: ArtifactKind, filePath: string, assis
   } else if (kind === 'docx') {
     const title = userContent.trim().split('\n')[0]?.slice(0, 120) ?? 'Sovara document'
     writeDocxFile(filePath, title, markdownToParagraphs(text))
+  } else if (kind === 'drawing') {
+    const title = userContent.trim().split('\n')[0]?.slice(0, 80) ?? 'Sovara drawing'
+    const html = `<!doctype html><meta charset="utf-8"><title>${escapeXml(title)}</title><style>body{margin:0;display:grid;place-items:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5;font-family:system-ui}svg{max-width:90vw;max-height:80vh;background:#fff;border-radius:12px}</style><svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" rx="16" fill="#fff"/><text x="400" y="40" text-anchor="middle" font-size="18" font-family="system-ui" fill="#111">${escapeXml(title)}</text><text x="400" y="260" text-anchor="middle" font-size="14" fill="#555">${escapeXml(text.slice(0,120))}</text></svg><p style="max-width:700px;padding:16px;white-space:pre-wrap">${escapeXml(text)}</p>`
+    fs.writeFileSync(filePath, html, 'utf8')
   } else {
     const ext = path.extname(filePath).slice(1).toLowerCase()
     const block = extractCodeBlock(text, ext || undefined)
