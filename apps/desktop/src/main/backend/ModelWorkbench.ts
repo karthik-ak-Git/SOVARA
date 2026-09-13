@@ -222,10 +222,19 @@ export class ModelWorkbench {
     if (this.isMmprojId(modelId)) return false // projector shard — never a runnable selection
     try {
       if (!this.models?.resolveModelPath) return true // adapter without path check — don't prune
-      this.models.resolveModelPath(modelId)
+      // Direct check + fuzzy contains fallback (handles Qwen/Qwen3-0.6B vs Qwen3-0.6B-Q4_K_M.gguf)
+      try { this.models.resolveModelPath(modelId); return true } catch {}
+      const last = String(modelId).split('/').pop()?.replace(/\.gguf$/i,'').toLowerCase() ?? ''
+      if (last.length >= 4) {
+        const files = (this.models as unknown as { scanGgufFiles?: () => string[] })?.scanGgufFiles?.() ?? []
+        if (Array.isArray(files) && files.some(f => f.toLowerCase().includes(last))) return true
+      }
+      if (this.isMmprojId(modelId)) return false
+      // Last resort: don't prune on fuzzy — allow selection attempt to try fuzzy resolve
       return true
     } catch {
-      return false
+      if (this.isMmprojId(modelId)) return false
+      return true
     }
   }
 
@@ -335,7 +344,37 @@ export class ModelWorkbench {
         throw new ModelWorkbenchError(`model-not-found: "${modelId}" is not in the Sovara library (Library -> download a GGUF first) — removed from list`)
       }
     }
-    const known = snap.lastModels.some((m) => m.modelId === modelId)
+    let known = snap.lastModels.some((m) => m.modelId === modelId)
+    if (!known) {
+      const needle = String(modelId).split('/').pop()?.replace(/\.gguf$/i,'').toLowerCase() ?? ''
+      const hit = needle.length >= 2 ? snap.lastModels.find(m => m.modelId.toLowerCase().includes(needle) || needle.includes(m.modelId.toLowerCase().replace(/\.gguf$/i,'')) || m.displayName.toLowerCase().includes(needle)) : undefined
+      if (hit) {
+        modelId = hit.modelId
+        known = true
+      } else {
+        try {
+          const fresh = this.loadLocalLibrarySnapshot()
+          if (fresh.length) { this.config.saveProbeSnapshot(snap.entry.id, fresh, null); snap = this.config.getRuntime(runtimeId) ?? snap }
+          known = snap.lastModels.some(m => m.modelId === modelId || (needle && m.modelId.toLowerCase().includes(needle)))
+          if (known) {
+            const hit2 = snap.lastModels.find(m => m.modelId === modelId || m.modelId.toLowerCase().includes(needle))
+            if (hit2) modelId = hit2.modelId
+          }
+        } catch {}
+        // Last resort: if file exists on disk, accept selection regardless of snapshot (snapshot was stale/empty)
+        if (!known && this.isModelLive(modelId)) {
+          console.warn(`[workbench] accepting live file not in snapshot: ${modelId}`)
+          known = true
+        }
+        if (!known && needle) {
+          try {
+            const avail = this.models ? await this.models.listLocalModels() : []
+            const hit3 = avail.find(a => a.displayName.toLowerCase().includes(needle) || String(a.id).toLowerCase().includes(needle))
+            if (hit3) { modelId = String(hit3.id); known = true; this.config.saveProbeSnapshot(snap.entry.id, avail.map(a=>({modelId:String(a.id), displayName:a.displayName})), null); snap = this.config.getRuntime(runtimeId) ?? snap }
+          } catch {}
+        }
+      }
+    }
     if (!known) throw new ModelWorkbenchError('unknown model: probe the runtime first')
     // Resource boundary is real: a blocking verdict refuses the select.
     const pressure = await this.resources.checkBeforeLoad(
@@ -354,6 +393,15 @@ export class ModelWorkbench {
 
   getActiveModel(): ActiveModelState {
     let sel = this.config.getActiveSelection()
+    // If active selection is a stale flat LMStudio id (pre-fix: "GLM-4.6V-Flash-Q4_K_M" without nested path), clear it so dropdown is user-driven
+    if (sel && (sel.modelId === 'GLM-4.6V-Flash-Q4_K_M' || sel.modelId === 'GLM-4.6V-Flash-Q4_K_M.gguf')) {
+      try { this.config.clearActiveSelection() } catch {}
+      try { this.config.setAppSetting('root_model', 'no-default') } catch {}
+      sel = null
+    }
+    // Root model must never override an explicit user selection — only used when sel is null
+    // If root was set to the stale flat GLM, reset it
+    try { const root = this.config.getAppSetting('root_model'); if (root && root.includes('GLM-4.6V-Flash')) this.config.setAppSetting('root_model', 'no-default') } catch {}
     // Auto-migrate stale mmproj selection (vision projector shard) to a real LLM
     if (sel && this.isMmprojId(sel.modelId)) {
       const snap0 = this.config.getRuntime(sel.runtimeId)
@@ -371,8 +419,19 @@ export class ModelWorkbench {
     if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)
     if (!snap || !snap.entry.enabled) return { selection: sel, available: false }
-    const found = snap.lastModels.find((m) => m.modelId === sel.modelId)
-    if (!found || snap.lastError !== null) return { selection: sel, available: false }
+    let found = snap.lastModels.find((m) => m.modelId === sel.modelId)
+    // Fuzzy fallback for Qwen/Qwen3-0.6B vs Qwen3-0.6B-Q4_K_M style ids
+    if (!found) {
+      const needle = String(sel.modelId).split('/').pop()?.replace(/\.gguf$/i,'').toLowerCase() ?? ''
+      found = needle ? snap.lastModels.find(m => m.modelId.toLowerCase().includes(needle) || m.displayName.toLowerCase().includes(needle)) : undefined
+      if (found) { try { this.config.setActiveSelection({ runtimeId: sel.runtimeId, modelId: found.modelId }); sel = found.modelId as unknown as typeof sel; } catch {} }
+    }
+    // Local runtime: available if file exists, even if snapshot had lastError (probe not re-run after Use)
+    const isLocal = snap.entry.id === 'local'
+    const live = found ? this.isModelLive(found.modelId) : false
+    if (!found || (!live && snap.lastError !== null) ) return { selection: sel, available: false }
+    if (isLocal && live) { /* force available */ }
+    else if (snap.lastError !== null) return { selection: sel, available: false }
     return {
       selection: sel,
       available: true,

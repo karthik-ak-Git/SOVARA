@@ -21,12 +21,13 @@ import { isExecMode, type ExecMode } from '../services/execPermissions'
 import { listMcpServers, addMcpServer, removeMcpServer, toggleMcpServer, probeMcpServer, getMcpDirPath, ensureMcpDir, installMcpFromUrl, type McpServer } from '../services/mcpStore'
 import { loadEnabledSkillsContent } from '../services/skillsScanner'
 import {
-  resolveLibraryDir, setLibraryDir, scanLibrary, startDownload, startModelSetDownload,
+  resolveLibraryDir, setLibraryDir, scanLibrary, scanLibraryFiles, startDownload, startModelSetDownload,
   cancelDownload, pauseDownload, resumeDownload, getActiveDownloads, isDownloaded, deleteLibraryEntry,
   getFileStatus, reconcileLibrary, resolveModelFolder,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
 import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
+import { downloadRowId } from '../config/RuntimeConfigStore'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -217,12 +218,17 @@ export class AppBackend {
     if (!abs) throw new Error('external path is not a directory')
     try { if (!statSync(abs).isDirectory()) throw new Error('not a directory') } catch (e) { throw new Error(e instanceof Error ? e.message : 'external path is not a directory') }
     const list = this.runtimeConfig.addExternalModelDir(abs)
-    const externals = require('../services/modelDownloads').scanLibraryFiles(abs)
+    const externals = scanLibraryFiles(abs)
     console.info(`[registerExternal] scanning ${abs} -> ${externals.length} files`)
     for (const f of externals) {
       try {
-        const id = require('../config/RuntimeConfigStore').downloadRowId('external', f.path.toLowerCase(), 'main', f.file)
+        const id = downloadRowId('external', f.path.toLowerCase(), 'main', f.file)
         this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: abs, rfilename: f.file, localPath: f.path, displayName: f.file, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
+        // cleanup old flat-path row from earlier build (C:\...\models/FILE.gguf without subfolder)
+        try {
+          const staleId = downloadRowId('external', f.file.toLowerCase(), 'main', f.file)
+          if (staleId !== id) { const r = this.runtimeConfig.getRegistryRow(staleId); if (r && r.localPath.toLowerCase() !== f.path.toLowerCase()) this.runtimeConfig.removeRegistryRow(staleId) }
+        } catch {}
       } catch (e) { console.error('[registerExternal] upsert failed', e) }
     }
     try {

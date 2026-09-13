@@ -241,6 +241,14 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     for (const file of this.scanGgufFiles()) {
       if (candidates.has(path.basename(file).toLowerCase())) return file
     }
+    // Fuzzy fallback: modelId like "Qwen/Qwen3-0.6B" should match "Qwen3-0.6B-Q4_K_M.gguf"
+    const needle = last.replace(/\.gguf$/i,'').toLowerCase()
+    if (needle.length >= 4) {
+      for (const file of this.scanGgufFiles()) {
+        const base = path.basename(file).toLowerCase()
+        if (base.includes(needle) || needle.includes(base.replace(/\.gguf$/i,''))) return file
+      }
+    }
     throw new Error(`model-not-found: "${clean}" is not in the Sovara library (Library -> download a GGUF first)`)
   }
 

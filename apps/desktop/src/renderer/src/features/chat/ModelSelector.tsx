@@ -8,6 +8,13 @@ function formatCtx(n?: number): string {
   if (n >= 1000) return `${Math.round(n / 1000)}k`
   return String(n)
 }
+function prettyName(raw: string): string {
+  let s = raw.trim().replace(/\.gguf$/i,'')
+  // lmstudio-community/GLM-4.6V-Flash-Q4_K_M -> GLM 4.6V Flash Q4_K_M
+  s = s.split('/').pop() ?? s
+  // keep quant tokens intact, just add spaces around dashes for readability but not for Q4_K_M
+  return s.replace(/[-_]/g, ' ').replace(/\s+/g,' ').trim() || raw
+}
 
 interface ModelSelectorProps {
   active: ActiveModelState
@@ -39,8 +46,8 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
 
   const modelLabel = selectedModel
     ? ctxLabel
-      ? `${selectedModel.displayName} · ${ctxLabel}`
-      : selectedModel.displayName
+      ? `${prettyName(selectedModel.displayName)} · ${ctxLabel}`
+      : prettyName(selectedModel.displayName)
     : 'No model'
 
   const statusLabel = active.available ? 'Ready' : 'Unavailable'
@@ -146,7 +153,7 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
                     tabIndex={0}
                     data-active={isActive || undefined}
                   >
-                    <span className="model-popover-item-name">{m.displayName}</span>
+                    <span className="model-popover-item-name" title={m.displayName}>{prettyName(m.displayName)}</span>
                     <span className="model-popover-item-meta muted small">
                       {rt?.displayName ?? m.runtimeId}
                       {m.contextLength ? ` · ${formatCtx(m.contextLength)}` : ''}
