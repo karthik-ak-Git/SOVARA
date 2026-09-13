@@ -469,9 +469,12 @@ export class AgentOrchestrator {
         ...(webContext ? [webContext] : []),
         ...attachmentContext,
       ]
+      // RAG: don't send full history — retrieve only relevant turns via semantic search
+      const { retrieveRelevant } = await import('./rag/semanticSearch')
+      const ragPrior = retrieveRelevant(prior, content, { maxChunks: 6, maxChars: 12000 })
       const messages: import('@shared/types/ports').LlmChatMessage[] = [
         { role: 'system', content: systemBlocks.join('\n\n') },
-        ...toRequestMessages(prior),
+        ...toRequestMessages(ragPrior),
         { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
       ]
 
@@ -634,8 +637,45 @@ export class AgentOrchestrator {
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
       // Real streaming (owned sidecar or remote runtime — same protocol)
+      // Chunk large prompts: process till end, then synthesize for exact results
+      const CHUNK_THRESHOLD = 9000
+      const shouldChunk = content.length > CHUNK_THRESHOLD
+      let chunkMode = false
+      if (shouldChunk) {
+        const { chunkText } = await import('./rag/chunker')
+        const chunks = chunkText(content, { chunkSize: 6000, overlap: 400, maxChunks: 12 })
+        if (chunks.length > 1) {
+          chunkMode = true
+          this.emit(sid, 'step:start', { taskKind: classification.kind, detail: `chunking ${content.length} chars into ${chunks.length} parts` })
+          const partials:string[]=[]
+          for (let ci=0; ci<chunks.length; ci++){
+            const ch = chunks[ci]!
+            const chunkMessages = [
+              { role: 'system' as const, content: systemBlocks.join('\n\n') + `\n\n[Chunk ${ci+1}/${chunks.length} of original prompt — answer this part, will be synthesized.]` },
+              ...toRequestMessages((await import('./rag/semanticSearch')).retrieveRelevant(prior, ch.text, {maxChunks:4})),
+              { role: 'user' as const, content: ch.text }
+            ]
+            let part=''
+            for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: chunkMessages, timeoutMs, stream:true, signal: controller.signal })){
+              if (ck.type==='text-delta' && ck.text) part+=ck.text
+              if (ck.type==='done') break
+            }
+            partials.push(part); this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: `\n[chunk ${ci+1}/${chunks.length}]\n`+part.slice(0,500) })
+          }
+          // Final synthesis pass over partials
+          const synthMessages = [
+            { role: 'system' as const, content: systemBlocks.join('\n\n') + '\n\nSynthesize the chunk answers below into one exact final answer for the original request. Do not omit any chunk.' },
+            { role: 'user' as const, content: `Original request: ${content.slice(0,400)}\n\nChunk answers:\n${partials.map((p,i)=>`[Chunk ${i+1}]\n${p}`).join('\n---\n').slice(0,12000)}` }
+          ]
+          for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: synthMessages, timeoutMs, stream:true, signal: controller.signal })){
+            if (ck.type==='text-delta' && ck.text) { text+=ck.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ck.text }) }
+            if (ck.type==='done' && ck.usage) usage=ck.usage
+            if (ck.type==='done') break
+          }
+        }
+      }
       let orchFirstTokenAt: number | null = null
-      try {
+      if (!chunkMode) try {
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
           model,

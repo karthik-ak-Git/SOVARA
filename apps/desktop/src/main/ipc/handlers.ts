@@ -448,7 +448,7 @@ export function registerIpcHandlers(): void {
       parsed.data.name,
       cleanArgs
     )
-    return { ok: true, autoApproved: verdict.autoApproved || force, result }
+    return { ok: true, autoApproved: (verdict.allowed ? verdict.autoApproved : false) || force, result }
   })
 
   // ── Usage stats ──
