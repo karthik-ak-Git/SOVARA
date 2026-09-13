@@ -89,13 +89,33 @@ export class ToolStubAdapter implements ToolPort {
     return this.web
   }
 
+  private readonly circuit = new Map<string,{ fails:number; openedAt:number|null }>()
+  private checkCircuit(name:string): string|null {
+    const s=this.circuit.get(name)
+    if(s && s.openedAt && Date.now()-s.openedAt < 60000 && s.fails>=3) return JSON.stringify({ error:'circuit-open', tool:name, hint:'3 consecutive fails — paused 60s' })
+    return null
+  }
+  private noteResult(name:string, ok:boolean){
+    const s=this.circuit.get(name) ?? {fails:0, openedAt:null}
+    if(ok){ s.fails=0; s.openedAt=null } else { s.fails++; if(s.fails>=3) s.openedAt=Date.now() }
+    this.circuit.set(name,s)
+  }
+
   async dispatch(name: string, args: Record<string, unknown>): Promise<string> {
+    const blocked = this.checkCircuit(name)
+    if(blocked) return blocked
+    const t0=Date.now()
     try {
-      if (name === 'web_search') return await this.dispatchSearch(args)
-      if (name === 'web_fetch') return await this.dispatchFetch(args)
-      if (name.startsWith('mcp_')) return await this.dispatchMcp(name, args)
-      return JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
+      let out:string
+      if (name === 'web_search') out = await this.dispatchSearch(args)
+      else if (name === 'web_fetch') out = await this.dispatchFetch(args)
+      else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
+      else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
+      this.noteResult(name, !out.includes('"error"'))
+      try{ const { appendRuntimeLog } = await import('../../logging/runtimeLog'); appendRuntimeLog('',{ time:Date.now(), runtimeId:'tools', method:'tools/call', target:name, latencyMs:Date.now()-t0, outcome: out.includes('"error"')?'error':'ok', modelId:name, streamed:false } as never)}catch{}
+      return out
     } catch (e) {
+      this.noteResult(name,false)
       const code = (e as { code?: string }).code ?? (e instanceof CrawlUnavailableError ? 'WEB_SIDECAR_DOWN' : undefined)
       return JSON.stringify({
         error: e instanceof Error ? e.message : String(e),
