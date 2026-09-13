@@ -550,6 +550,31 @@ export class RuntimeConfigStore {
     this.db.setMeta(key, value)
   }
 
+  getExternalModelDirs(): string[] {
+    try {
+      const raw = this.db.getMeta('external_model_dirs')
+      if (!raw) return []
+      const v = JSON.parse(raw) as unknown
+      if (!Array.isArray(v)) return []
+      return v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).slice(0, 20)
+    } catch { return [] }
+  }
+  addExternalModelDir(dir: string): string[] {
+    const abs = dir.trim()
+    if (!abs) throw new Error('directory must not be empty')
+    const list = this.getExternalModelDirs()
+    const norm = abs.toLowerCase()
+    if (!list.some((d) => d.toLowerCase() === norm)) list.push(abs)
+    this.db.setMeta('external_model_dirs', JSON.stringify(list))
+    return list
+  }
+  removeExternalModelDir(dir: string): string[] {
+    const norm = dir.trim().toLowerCase()
+    const list = this.getExternalModelDirs().filter((d) => d.toLowerCase() !== norm)
+    this.db.setMeta('external_model_dirs', JSON.stringify(list))
+    return list
+  }
+
   close(): void {
     this.db.close()
   }

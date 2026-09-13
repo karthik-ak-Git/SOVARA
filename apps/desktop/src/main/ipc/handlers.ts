@@ -13,7 +13,7 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
 import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -646,7 +646,15 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('library:getDirectory', async () => {
-    return { path: getBackend().getLibraryDir() }
+    return { path: getBackend().getLibraryDir(), externalDirs: getBackend().getExternalModelDirs() }
+  })
+  ipcMain.handle('library:registerExternal', async (_e, raw: unknown) => {
+    const parsed = zLibraryRegisterExternal.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid library:registerExternal payload: ${parsed.error.message}`)
+    try {
+      const dirs = getBackend().registerExternalModelDir(parsed.data.path)
+      return { ok: true, path: parsed.data.path, externalDirs: dirs, libraryDir: getBackend().getLibraryDir() }
+    } catch (e) { throw new Error(e instanceof Error ? e.message : 'could not register external directory') }
   })
 
   ipcMain.handle('library:detectLocations', async () => {

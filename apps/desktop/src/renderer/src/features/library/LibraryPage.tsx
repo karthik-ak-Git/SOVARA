@@ -144,17 +144,17 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
   const handleApplyLocation = useCallback(async (locPath: string): Promise<void> => {
     setApplyingPath(locPath)
     try {
-      const res = await setLibraryDirectory(locPath)
+      const { registerExternalDir } = await import('@/lib/client/api')
+      const res = await registerExternalDir(locPath)
       if (res.ok) {
-        setDirectory(res.path)
         setDetectOpen(false)
         setDetectLocations([])
         void refresh()
+        void refreshConnected()
       }
-    } finally {
-      setApplyingPath(null)
-    }
-  }, [refresh])
+    } catch { /* show error elsewhere */ }
+    finally { setApplyingPath(null) }
+  }, [refresh, refreshConnected])
 
   const handleDelete = useCallback(async (entryPath: string): Promise<void> => {
     try {
@@ -237,9 +237,10 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
                         type="button"
                         className="settings-action-btn"
                         disabled={applyingPath !== null}
+                        title="Register models from this folder without changing Sovara's own directory"
                         onClick={() => void handleApplyLocation(loc.path)}
                       >
-                        {applyingPath === loc.path ? 'Applying…' : 'Apply'}
+                        {applyingPath === loc.path ? 'Registering…' : 'Use'}
                       </button>
                     </div>
                   </div>
@@ -351,8 +352,8 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
                     <span className="library-model-chip">{model.name}</span>
                     {model.installStatus ? <InstallStatusChip status={model.installStatus} /> : null}
                   </div>
-                  <div className="library-model-sub">
-                    {new Date(model.modifiedAt).toLocaleDateString()}
+                  <div className="library-model-sub" title={model.path}>
+                    {new Date(model.modifiedAt).toLocaleDateString()} · {model.path}
                   </div>
                 </div>
                 <button

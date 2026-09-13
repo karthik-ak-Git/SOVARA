@@ -205,6 +205,11 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       const extra = this.config?.getAppSetting('lmstudio_models_dir')
       if (extra && fs.existsSync(extra) && !out.includes(extra)) out.push(extra)
     } catch {}
+    try {
+      for (const d of (this.config as unknown as { getExternalModelDirs?: () => string[] })?.getExternalModelDirs?.() ?? []) {
+        if (d && fs.existsSync(d) && !out.includes(d)) out.push(d)
+      }
+    } catch {}
     return out
   }
 

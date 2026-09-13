@@ -195,6 +195,7 @@ export const zExploreGetRecommendations = z
 export const zLibrarySetDirectory = z
   .object({ path: z.string().max(512).default('') })
   .strict()
+export const zLibraryRegisterExternal = z.object({ path: z.string().min(1).max(1024) }).strict()
 
 const zDownloadPart = z
   .object({

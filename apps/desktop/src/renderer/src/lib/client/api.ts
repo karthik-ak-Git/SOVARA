@@ -586,6 +586,9 @@ export async function detectLibraryLocations(): Promise<DetectedModelLocation[]>
 export async function setLibraryDirectory(path = ''): Promise<{ ok: boolean; path: string }> {
   return ipcInvoke('library:setDirectory', { path })
 }
+export async function registerExternalDir(path: string): Promise<{ ok: boolean; path: string; externalDirs: string[]; libraryDir: string }> {
+  return ipcInvoke('library:registerExternal', { path })
+}
 
 export async function deleteLibraryModel(path: string): Promise<{ ok: boolean }> {
   return ipcInvoke('library:delete', { path })

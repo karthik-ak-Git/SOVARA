@@ -278,11 +278,13 @@ export class ModelWorkbench {
           return fromRows
         }
       }
-      // Fallback: check AppBackend library dir via config's library path setting, or default data dir
+      // Fallback: check AppBackend library dir + any registered external dirs
       let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
       if (!libDir) {
-        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
+        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('../storage/paths'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
       }
+      const external = (()=>{ try { return (this.config as unknown as { getExternalModelDirs?: ()=>string[] }).getExternalModelDirs?.() ?? [] } catch { return [] } })()
+      const dirs = [libDir, ...external]
       const { readdirSync } = require('node:fs') as typeof import('node:fs')
       const { join } = require('node:path') as typeof import('node:path')
       const scan = (dir: string, acc: string[]): void => {
@@ -295,8 +297,8 @@ export class ModelWorkbench {
         } catch {}
       }
       const ggufs: string[] = []
-      scan(libDir, ggufs)
-      return ggufs.slice(0, 20).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: f }))
+      for (const d of dirs) scan(d, ggufs)
+      return ggufs.slice(0, 40).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: f }))
     } catch { return [] }
   }
 

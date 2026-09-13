@@ -165,16 +165,19 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
   return out.sort((a, b) => b.modifiedAt - a.modifiedAt)
 }
 
-export function scanLibrary(root: string, rows?: readonly ModelRegistryRow[]): LibraryEntry[] {
-  const files = scanLibraryFiles(root)
-  if (!rows || rows.length === 0) return files
+export function scanLibrary(root: string, rows?: readonly ModelRegistryRow[], extraRoots: string[] = []): LibraryEntry[] {
+  const allFiles = [...scanLibraryFiles(root), ...extraRoots.flatMap((r) => scanLibraryFiles(r))]
+  const files = allFiles
+  if (!rows || rows.length === 0) return files.sort((a,b)=>b.modifiedAt-a.modifiedAt)
 
   const byDisk = new Map(files.map((e) => [resolve(e.path), e] as const))
   const out: LibraryEntry[] = []
   const seen = new Set<string>()
 
   for (const row of rows) {
-    if (!row.localPath || !isUnder(root, row.localPath)) continue
+    const underPrimary = row.localPath ? isUnder(root, row.localPath) : false
+    const underExtra = row.localPath ? extraRoots.some((er) => isUnder(er, row.localPath)) : false
+    if (!row.localPath || (!underPrimary && !underExtra)) continue
     const key = resolve(row.localPath)
     if (seen.has(key)) continue
     seen.add(key)
