@@ -1,3 +1,7 @@
+// Silence Node 22 ExperimentalWarning for node:sqlite (used in db.ts)
+process.on('warning', (w: Error & { name?: string }) => {
+  if (w?.name === 'ExperimentalWarning' && String(w.message).includes('SQLite')) return
+})
 import { app, BrowserWindow } from 'electron'
 import { createMainWindow } from './window'
 import { registerIpcHandlers } from './ipc/handlers'
@@ -5,6 +9,7 @@ import { disposeBackend } from './backendComposition'
 import { initPythonEnv } from './services/pythonEnv'
 import { initVoiceServer } from './services/voiceServer'
 import { initCrawlServer } from './services/crawlServer'
+import { startCompanionServer, stopCompanionServer } from './services/companionServer'
 
 // Single-instance lock — second launch focuses existing window
 const gotLock = app.requestSingleInstanceLock()
@@ -26,6 +31,8 @@ app.whenReady().then(async () => {
   initPythonEnv()
   initVoiceServer()
   initCrawlServer()
+  // Serve __sovara/ping on 127.0.0.1:51841 for the Vercel-hosted web app.
+  startCompanionServer()
   mainWindow = await createMainWindow()
 
   app.on('activate', () => {
@@ -45,6 +52,7 @@ app.on('before-quit', async (event) => {
   // Allow async dispose before quit — prevent half-flushed state
   event.preventDefault()
   try {
+    stopCompanionServer()
     await disposeBackend()
   } finally {
     app.exit(0)

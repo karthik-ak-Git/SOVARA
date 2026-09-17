@@ -61,3 +61,6 @@ test/*
 !test/sovara-orchestration/
 !test/sovara-orchestration/**
 .opencode
+
+# Local UI draft — do not commit
+sovara-newui/
