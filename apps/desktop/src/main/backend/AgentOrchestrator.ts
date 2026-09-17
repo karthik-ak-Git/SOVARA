@@ -59,7 +59,7 @@ export interface AgentOrchestratorDeps {
 }
 
 const CHAT_SYSTEM_PROMPT =
-  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Answer concisely and directly.'
+  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Answer concisely and directly.\n\nDIAGRAM RULE (mandatory): If the user asks for any diagram, drawing, architecture, flowchart, sequence, ER, or visual — you MUST use the diagram-design skill. Output a single self-contained HTML file with inline SVG (no external JS, no matplotlib, no mermaid). Use the SOVARA sovereign skin (dark, system fonts). Do NOT use python plotting. Keep diagrams static (animation=none) unless explicitly requested. The response MUST contain the HTML in a ```html code block so it renders as preview.'
 
 function toRequestMessages(events: Array<{ seq: number; time: number; type: string; data: unknown }>): import('@shared/types/ports').LlmChatMessage[] {
   const turns: import('@shared/types/ports').LlmChatMessage[] = []
@@ -363,8 +363,40 @@ export class AgentOrchestrator {
           this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
           throw new AgentOrchestratorError('resource-blocked', msg)
         }
-        this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
-        throw new AgentOrchestratorError('model-load-failed', msg)
+        // Sovereign fallback: owned sidecar blocked (spawn UNKNOWN / MOTW /
+        // WDAC) → try LM Studio / Ollama loopback before failing. The user's
+        // GGUFs already live in .lmstudio/models, so LM Studio can serve them
+        // with zero reinstall when our binary is quarantined.
+        if (isOwnedRuntime && /spawn unknown|could not start|blocked|not installed|unknown/i.test(msg)) {
+          const fb = await this.tryExternalFallback(sid, classification, routing.modelId!)
+          if (fb) {
+            this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `owned sidecar blocked — fallback to ${fb.displayName} (${fb.modelId})` })
+            routing.modelId = fb.modelId
+            routing.runtimeId = fb.runtimeId
+            routing.reason = `${routing.reason} | fallback: owned blocked → ${fb.displayName}`
+            entry = this.deps.workbench.describeRuntime(fb.runtimeId)!
+            // External runtimes own their lifecycle — no sidecar spawn.
+            ownedEndpoint = null
+            ownedInstanceForMetrics = null
+            const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
+            this.emit(sid, 'model:ready', {
+              taskKind: classification.kind,
+              modelId: routing.modelId!,
+              runtimeId: routing.runtimeId!,
+              vramUsedMB: snapAfter.models.totalVramUsedMB,
+              vramTotalMB: snapAfter.vram.totalMB,
+              detail: `fallback ready via ${fb.displayName}`,
+            })
+            // Fall through to inference with the external endpoint below.
+          } else {
+            const hint = `${msg} — Owned sidecar blocked and no LM Studio/Ollama server answered. Fix: Models → Unblock & Retry (MOTW), or start LM Studio server on :1234 (Server tab → Start), or Ollama on :11434, then Test + Select.`
+            this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: hint, error: hint })
+            throw new AgentOrchestratorError('model-load-failed', hint)
+          }
+        } else {
+          this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
+          throw new AgentOrchestratorError('model-load-failed', msg)
+        }
       }
 
       // ── PHASE 4b: vision check — does the routed model actually see pixels?
@@ -418,6 +450,19 @@ export class AgentOrchestrator {
         try { webContext = await this.deps.webSearch(content) } catch { webContext = null }
       }
 
+      // ── OCR fallback for images when model has no vision/mmproj (e.g. baidu.Unlimited-OCR GGUF) ──
+      // Unlimited-OCR via sidecar is the best model — run it and inject text so non-vision GGUF still reads the image
+      if (!visionCapable) {
+        for (const f of attached.files) {
+          if (f.kind === 'image' && f.imageBase64 && !f.text) {
+            try {
+              const { ocrImage } = await import('../services/voiceServer')
+              const r = await ocrImage(f.imageBase64, 'rapidocr')
+              if (r?.text) { f.text = r.text; f.note = null }
+            } catch {}
+          }
+        }
+      }
       // ── PHASE 5b: prompt assembly state (honest stage for the send animation) ──
       const attachmentContext = buildAttachmentContext(attached.files, visionCapable)
       this.emit(sid, 'task:prompting', {
@@ -1154,6 +1199,46 @@ export class AgentOrchestrator {
     const text = content.trim()
     if (!text) throw new AgentOrchestratorError('persistence-failed', 'cannot resend empty message')
     return this.execute(sessionId, text, opts)
+  }
+
+  /**
+   * External fallback when the owned sidecar is quarantined: probe LM Studio
+   * then Ollama (loopback, 3s each). Returns the first reachable model, or
+   * null when neither server answers. Never throws — caller decides.
+   */
+  private async tryExternalFallback(
+    _sid: string,
+    _classification: TaskClassification,
+    wantedModelId: string
+  ): Promise<{ modelId: string; runtimeId: string; displayName: string } | null> {
+    try {
+      const wb = this.deps.workbench as unknown as {
+        probeRuntime?: (id: string) => Promise<{ reachable: boolean; models: Array<{ modelId: string; displayName: string }> }>
+        listModels?: (runtimeId?: string) => Array<{ modelId: string; displayName: string; runtimeId: string; available: boolean }>
+      }
+      for (const rid of ['lmstudio', 'ollama']) {
+        try {
+          const probe = await wb.probeRuntime?.(rid)
+          if (probe && probe.reachable && probe.models.length > 0) {
+            // Prefer a model whose id contains the wanted basename (same GGUF family)
+            const needle = wantedModelId.split('/').pop()?.replace(/\.gguf$/i, '').toLowerCase() ?? ''
+            const hit = (needle ? probe.models.find((m) => m.displayName.toLowerCase().includes(needle.slice(0, 12)) || m.modelId.toLowerCase().includes(needle.slice(0, 12))) : undefined) ?? probe.models[0]!
+            try { await (this.deps.workbench as unknown as { selectModel: (r: string, m: string) => Promise<unknown> }).selectModel(rid, hit.modelId) } catch { /* selection best-effort */ }
+            return { modelId: hit.modelId, runtimeId: rid, displayName: hit.displayName }
+          }
+        } catch { /* next candidate */ }
+      }
+      // Last resort: already-probed snapshot without a fresh probe
+      try {
+        const known = wb.listModels?.()
+        const ext = (known ?? []).filter((m) => (m.runtimeId === 'lmstudio' || m.runtimeId === 'ollama') && m.available)
+        if (ext.length > 0) {
+          const first = ext[0]!
+          return { modelId: first.modelId, runtimeId: first.runtimeId, displayName: first.displayName }
+        }
+      } catch { /* ignore */ }
+    } catch { /* ignore */ }
+    return null
   }
 
   private emit(sessionId: string, kind: ChatStreamEvent['kind'], extra: Partial<ChatStreamEvent> = {}): void {

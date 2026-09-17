@@ -387,6 +387,9 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
+        // optimistic placeholder so UI feels instant even before session create
+        const optimisticSeq = Date.now()
+        setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
         try {
           const h = await createSession(`Session ${sessions.length + 1}`, null)
           await refreshSessions()
@@ -394,7 +397,6 @@ export function useChatSession() {
           const seq = ++loadSeq.current
           setSelectedId(h.id)
           selectedRef.current = h.id
-          setEvents([])
           await refreshEvents(h.id, seq)
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e))
@@ -409,10 +411,14 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
+        // optimistic user message — appears in <100ms, before IPC roundtrip
+        const optimisticSeq = Date.now()
+        setEvents((prev) => [...prev, { seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
       }
+      // clear draft immediately for perceived latency
+      setDraft('')
       try {
         await sendChatMessage(targetId, text, opts)
-        setDraft('')
         // The user may have switched sessions while the long-lived invoke
         // was in flight — never render another session's events here.
         // (The event subscription refreshes the right view on completion.)
@@ -427,6 +433,11 @@ export function useChatSession() {
         setStreamingReasoning('')
         setError(e instanceof Error ? e.message : String(e))
         setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+        // on error, refresh to reconcile optimistic with durable state
+        if (selectedRef.current === targetId) {
+          const seq = ++loadSeq.current
+          void refreshEvents(targetId, seq)
+        }
       } finally {
         setBusy(false)
         setPhase('idle')

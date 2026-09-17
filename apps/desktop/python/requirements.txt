@@ -5,3 +5,8 @@ waitress==3.0.2
 numpy>=1.26.0
 requests>=2.31.0
 crawl4ai>=0.7.0
+# OCR — unlimited models, best quality (RapidOCR + HF TrOCR/Paddle fallback)
+rapidocr_onnxruntime>=1.4.0
+pillow>=10.0.0
+huggingface_hub>=0.25.0
+onnxruntime>=1.18.0

@@ -286,9 +286,100 @@ def is_silence(audio: np.ndarray) -> bool:
     return rms < SILENCE_RMS_THRESHOLD
 
 
+# ── OCR (unlimited models) — mirrors test/infer.py Unlimited-OCR via SGLang ──
+# Default best = baidu/Unlimited-OCR (document parsing, image+PDF). Fallback = rapidocr (offline).
+# infer.py pattern: SGLang OpenAI-compat at 127.0.0.1:10000, prompt="document parsing.", image as data URL.
+_ocr_engines: dict[str, object] = {}
+_ocr_default = "baidu/Unlimited-OCR"
+UNLIMITED_OCR_MODEL_DIR = "baidu/Unlimited-OCR"
+SGLANG_URL = "http://127.0.0.1:10000"
+SGLANG_MODEL = "Unlimited-OCR"
+
+def _get_ocr(model_id: str = "rapidocr"):
+    """Lazy-load OCR engine by name. Unlimited — any HF id or 'rapidocr' allowed."""
+    if model_id in _ocr_engines:
+        return _ocr_engines[model_id]
+    mid = model_id.lower().strip() or "rapidocr"
+    if mid in ("rapidocr", "default", "best"):
+        from rapidocr_onnxruntime import RapidOCR
+        eng = RapidOCR()
+        _ocr_engines[mid] = eng
+        print(f"[ocr] Loaded RapidOCR ({mid})", flush=True)
+        return eng
+    # HF TrOCR/Paddle generic — download unlimited via huggingface_hub
+    try:
+        from huggingface_hub import snapshot_download
+        from pathlib import Path as _P
+        cache = _P.home() / ".cache" / "sovara" / "ocr" / mid.replace("/", "__")
+        snapshot_download(repo_id=model_id, local_dir=str(cache), local_dir_use_symlinks=False)
+        # wrap as RapidOCR if onnx else fallback to transformers TrOCR
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+        from PIL import Image
+        proc = TrOCRProcessor.from_pretrained(str(cache))
+        m = VisionEncoderDecoderModel.from_pretrained(str(cache))
+        eng = (proc, m)
+        _ocr_engines[mid] = eng
+        print(f"[ocr] Loaded HF OCR {model_id} -> {cache}", flush=True)
+        return eng
+    except Exception as e:
+        print(f"[ocr] Failed to load {model_id}: {e}", flush=True)
+        raise
+
+def _run_ocr(image_bytes: bytes, model_id: str = "baidu/Unlimited-OCR"):
+    """How to use — matches test/infer.py: image -> base64 data URL -> SGLang /v1/chat/completions."""
+    import base64
+    mid = (model_id or _ocr_default).strip()
+    ml = mid.lower()
+    # Unlimited-OCR via SGLang if requested (best for document parsing, unlimited pages/models)
+    if ml in ("unlimited-ocr", "baidu/unlimited-ocr", "unlimited", "best", "default"):
+        import requests as _req
+        b64 = base64.b64encode(image_bytes).decode()
+        # infer.py: {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}} + text "document parsing."
+        mime = "image/png"
+        if image_bytes[:2] == b'\xff\xd8':
+            mime = "image/jpeg"
+        payload = {
+            "model": SGLANG_MODEL,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "document parsing."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+            ]}],
+            "temperature": 0,
+            "stream": False,
+        }
+        try:
+            r = _req.post(f"{SGLANG_URL}/v1/chat/completions", json=payload, timeout=120)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"] or ""
+            return {"text": text, "lines": text.splitlines(), "confidences": [1.0]*len(text.splitlines()), "model": mid}
+        except Exception as e:
+            print(f"[ocr] Unlimited-OCR SGLang failed, fallback to RapidOCR: {e}", flush=True)
+            mid = "rapidocr"
+            ml = "rapidocr"
+    from PIL import Image
+    import io as _io
+    img = Image.open(_io.BytesIO(image_bytes)).convert("RGB")
+    if ml in ("rapidocr", "default", "best"):
+        eng = _get_ocr("rapidocr")
+        result, _ = eng(np.array(img))
+        texts, confs = [], []
+        if result:
+            for _, txt, c in result:
+                texts.append(txt); confs.append(float(c))
+        return {"text": "\n".join(texts), "lines": texts, "confidences": confs, "model": "rapidocr"}
+    # Any other HF id — unlimited download
+    proc, m = _get_ocr(mid)
+    pixel_values = proc(images=img, return_tensors="pt").pixel_values
+    import torch
+    with torch.no_grad():
+        ids = m.generate(pixel_values)
+    text = proc.batch_decode(ids, skip_special_tokens=True)[0]
+    return {"text": text, "lines": [text], "confidences": [1.0], "model": mid}
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "model": model_name, "ready": model is not None})
+    return jsonify({"status": "ok", "model": model_name, "ready": model is not None, "ocr_models": list(_ocr_engines.keys()), "ocr_ready": True})
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -356,6 +447,63 @@ def transcribe():
         "duration": len(audio) / 16000,
         "transcribeTime": elapsed,
     })
+
+
+@app.route("/ocr", methods=["POST"])
+def ocr():
+    t0 = time.time()
+    ct = request.content_type or ""
+    model_id = request.args.get("model") or request.form.get("model") or "rapidocr"
+    if "application/json" in ct:
+        data = request.get_json() or {}
+        model_id = data.get("model") or model_id
+        if "image_base64" not in data:
+            return jsonify({"error": "missing image_base64"}), 400
+        import base64
+        raw = base64.b64decode(data["image_base64"])
+    else:
+        # multipart or raw bytes
+        if "file" in request.files:
+            raw = request.files["file"].read()
+            model_id = request.form.get("model") or model_id
+        else:
+            raw = request.get_data()
+            if not raw:
+                return jsonify({"error": "missing image bytes"}), 400
+    try:
+        out = _run_ocr(raw, model_id)
+        out["ocrTime"] = time.time() - t0
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ocr/models", methods=["GET"])
+def ocr_models():
+    # curate best OCR models — unlimited download by name (as in request: allow any model name)
+    best = [
+        {"id": "baidu/Unlimited-OCR", "name": "Unlimited-OCR (best, document parsing — via SGLang, see test/infer.py)", "installed": False},
+        {"id": "rapidocr", "name": "RapidOCR (offline fallback, fast)", "installed": "rapidocr" in _ocr_engines},
+        {"id": "microsoft/trocr-base-printed", "name": "TrOCR Base Printed"},
+        {"id": "microsoft/trocr-large-printed", "name": "TrOCR Large Printed"},
+        {"id": "microsoft/trocr-base-handwritten", "name": "TrOCR Handwritten"},
+        {"id": "naver-clova-ix/donut-base", "name": "Donut (document OCR)"},
+        {"id": "PaddlePaddle/paddleocr", "name": "PaddleOCR"},
+    ]
+    return jsonify({"models": best, "loaded": list(_ocr_engines.keys()), "default": _ocr_default})
+
+
+@app.route("/ocr/download", methods=["POST"])
+def ocr_download():
+    data = request.get_json() or {}
+    mid = (data.get("model") or "").strip()
+    if not mid:
+        return jsonify({"error": "model required"}), 400
+    try:
+        _get_ocr(mid)
+        return jsonify({"ok": True, "model": mid})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":

@@ -117,6 +117,7 @@ export async function listArchivedSessions(): Promise<SessionHeaderView[]> {
 export interface ChatAttachmentView {
   name: string
   type: string
+  mime?: string
   size: number
   /** data: URL (base64) as produced by FileReader.readAsDataURL. */
   data: string
@@ -127,7 +128,13 @@ export async function sendChatMessage(
   content: string,
   opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: ChatAttachmentView[] }
 ): Promise<{ ok: boolean; userSeq: number; assistantSeq: number }> {
-  return ipcInvoke('chat:send', { sessionId, content, ...opts })
+  const normalized = opts?.attachments?.map((a) => ({
+    name: a.name,
+    mime: (a as any).mime ?? a.type ?? 'application/octet-stream',
+    size: a.size,
+    data: a.data,
+  }))
+  return ipcInvoke('chat:send', { sessionId, content, webSearch: opts?.webSearch, reasoning: opts?.reasoning, ...(normalized ? { attachments: normalized } : {}) })
 }
 
 export async function openArtifact(filePath: string): Promise<{ ok: boolean; path: string }> {
@@ -209,6 +216,27 @@ export interface LocalRuntimeInstallResult {
 
 export async function ensureLocalRuntime(): Promise<LocalRuntimeInstallResult> {
   return ipcInvoke('models:ensureRuntime', {})
+}
+
+export interface RuntimeDiagnoseView {
+  exePath: string | null
+  runtimeDir: string
+  legacyDir: string | null
+  exists: boolean
+  sizeMB: number | null
+  hasMotw: boolean
+  version: string | null
+  dlls: string[]
+  pathHasAt: boolean
+  recommendation: string
+}
+
+export async function diagnoseLocalRuntime(): Promise<RuntimeDiagnoseView> {
+  return ipcInvoke('models:diagnoseRuntime')
+}
+
+export async function unblockLocalRuntime(): Promise<{ unblocked: boolean; detail: string; dir: string; diag: RuntimeDiagnoseView }> {
+  return ipcInvoke('models:unblockRuntime')
 }
 
 export type RegistryInstallStatus = 'installed' | 'missing' | 'unregistered'

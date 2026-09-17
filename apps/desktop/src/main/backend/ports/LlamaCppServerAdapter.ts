@@ -564,11 +564,21 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     try {
       const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
       proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: ngl, alias, logDir })
+      // Catch async spawn errors (Windows WDAC emits 'error' not throw). If spawn failed, surface immediately.
+      await new Promise<void>((resolve, reject) => {
+        const onErr = (err: Error) => { proc.off('spawn', onSpawn); reject(err) }
+        const onSpawn = () => { proc.off('error', onErr); resolve() }
+        proc.once('error', onErr)
+        proc.once('spawn', onSpawn)
+        // If already spawned (no error in next tick), resolve
+        setTimeout(() => { proc.off('error', onErr); proc.off('spawn', onSpawn); resolve() }, 250)
+      })
     } catch (e) {
       this.instances.delete(key)
       const raw = e instanceof Error ? e.message : String(e)
       const c = classifyLoadFailure(raw)
-      throw new Error(c.kind === 'runner-missing' ? raw : `model-load-failed: could not start the local runtime (${raw})`)
+      if (c.kind === 'runner-missing') throw new Error(raw)
+      throw new Error(`model-load-failed: could not start the local runtime (${raw}) — If Windows blocked the binary, allow-list the Sovara runtime folder in Windows Security > Virus & threat protection > Manage controlled folder access, or reinstall via Models > Install local runtime, then retry.`)
     }
     tracked.proc = proc
     tracked.pid = proc.pid

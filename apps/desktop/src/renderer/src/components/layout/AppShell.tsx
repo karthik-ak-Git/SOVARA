@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { Sidebar, type NavId } from './Sidebar'
@@ -34,6 +36,7 @@ interface Props {
   splitOpen?: boolean
   onShare?: () => void
   hardwareStatus?: string
+  contextPanel?: ReactNode
 }
 
 export function AppShell({
@@ -68,6 +71,7 @@ export function AppShell({
   splitOpen = false,
   onShare,
   hardwareStatus,
+  contextPanel,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -91,7 +95,7 @@ export function AppShell({
         onShare={onShare}
         hardwareStatus={hardwareStatus}
       />
-      <div className="layout">
+      <div className="layout" style={{ minHeight: 0, flex: 1, display: 'flex' } as React.CSSProperties}>
         {sidebarOpen && !hideSidebar ? (
           <Sidebar
             activeId={activeNav}
@@ -112,9 +116,10 @@ export function AppShell({
             onSelectChat={onSelectChat}
           />
         ) : null}
-        <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content">
+        <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' } as React.CSSProperties}>
           {children}
         </main>
+        {contextPanel ?? null}
       </div>
     </div>
   )

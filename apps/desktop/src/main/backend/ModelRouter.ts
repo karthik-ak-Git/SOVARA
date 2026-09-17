@@ -78,6 +78,12 @@ function scoreModel(
   // Prefer available models (should be filtered already)
   if (m.available) score += 5
 
+  // Honor explicit user selection — strong bias if active matches (user picked in UI)
+  // This prevents auto-switching away from Unlimited-OCR when user explicitly chose it
+  // Will still be overruled only if resource-blocked in routeModel loop
+  // (applied in routeModel via active param; score bump here if needed)
+  // handled in routeModel scoring below
+
   // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
   const vramFree = resources.vram.freeMB
   const vramTotal = resources.vram.totalMB
@@ -105,7 +111,16 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
     }
   }
 
-  const scored = available.map((m) => scoreModel(m, task, ctx.resources))
+  let scored = available.map((m) => scoreModel(m, task, ctx.resources))
+  // Honor explicit selection: +50 bias so user's chosen model wins unless blocked for VRAM
+  if (active) {
+    for (const s of scored) {
+      if (s.model.modelId === active.modelId && s.model.runtimeId === active.runtimeId) {
+        s.score += 50
+        s.reason += ', user selected'
+      }
+    }
+  }
   // Sort by score desc, then context length desc, then displayName for stability
   scored.sort((a, b) => b.score - a.score || b.contextLength - a.contextLength || a.model.displayName.localeCompare(b.model.displayName))
 

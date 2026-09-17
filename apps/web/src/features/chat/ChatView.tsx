@@ -25,6 +25,8 @@ import {
   ListChecks,
   FileDown,
   FileText,
+  Sparkles,
+  MoreHorizontal,
 } from 'lucide-react'
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
@@ -214,7 +216,7 @@ export function ChatView({
   }
   const actionable = getActionableError(error)
 
-  const showExecution = exec.phase !== 'idle' && exec.phase !== 'done'
+  const showExecution = exec.phase !== 'idle' && exec.phase !== 'done' && exec.phase !== 'error' && streaming
   const executionLabel = (() => {
     switch (exec.phase) {
       case 'reading': return exec.fileName ? `Reading ${exec.fileName}…` : 'Reading attachments…'
@@ -272,19 +274,22 @@ export function ChatView({
     ? discoveredModels.find((m) => m.modelId === activeModel.selection!.modelId && m.runtimeId === activeModel.selection!.runtimeId)?.displayName ?? activeModel.displayName ?? activeModel.selection.modelId
     : 'No Model Selected'
 
+  const activeTitle = selectedId ? _sessions.find((s) => s.id === selectedId)?.title ?? 'New chat' : 'New chat'
+  const eyebrowProject = projectName ?? 'SOVARA'
   return (
     <section className="sv-chat-main" aria-label="Chat">
       {/* Main chat area */}
       {showEmpty ? (
         <div className="sv-empty-state" role="status" aria-label="Start a conversation">
           <div className="sv-empty-hero">
-            <div className="sv-empty-icon" aria-hidden>
-              <MessageSquare size={28} strokeWidth={1.5} />
+            <div className="sv-empty-icon empty-mark" aria-hidden>
+              <Sparkles size={20} aria-hidden />
             </div>
-            <h1 className="sv-empty-title">What can I help with?</h1>
-            <p className="sv-empty-sub">
-              {model.available
-                ? 'Ask anything — replies stream from your local model directly on your hardware.'
+            <div className="eyebrow">WORKSPACE / {eyebrowProject}</div>
+            <h1 className="sv-empty-title">What will you work on?</h1>
+            <p className="sv-empty-sub" style={{ color: 'var(--muted-2)', fontSize: 12 }}>
+              Private, local-first intelligence for your workspace. {model.available
+                ? 'Replies stream from your local model directly on your hardware.'
                 : 'No model runtime available — connect or load a local model from Models to start chatting.'}
             </p>
             {!model.available ? (
@@ -332,9 +337,9 @@ export function ChatView({
             <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy} busy={busy} phase={phase}
               active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
               execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
-              onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} />
+              onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} projectName={projectName} />
           </div>
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--stitch-muted, #8A8279)', display: 'flex', gap: 6 }}>
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--stitch-muted, #8A8279)', display: 'flex', gap: 6, justifyContent: 'center' }}>
             <span>Shift+Enter for newline • Enter to send • Esc to stop</span>
             <span aria-hidden>·</span>
             <span>Sovereign &amp; Private • No cloud telemetry</span>
@@ -342,7 +347,25 @@ export function ChatView({
         </div>
       ) : (
         <div className="sv-chat-active-wrap">
-          <SessionBadge label={`TODAY • ${projectName ? `Project ${projectName}` : 'Sovora Sovereign Workspace'}`} />
+          <div className="conversation-top">
+            <div>
+              <div className="eyebrow">WORKSPACE / {eyebrowProject}</div>
+              <h1>{activeTitle}</h1>
+            </div>
+            {showExecution ? (
+              <div className="header-pipeline" aria-label="Task pipeline" role="status" aria-live="polite">
+                {STAGE_ORDER.map((s, i) => (
+                  <span key={s.key} className={`sovara-stage${i < activeStage ? ' is-done' : ''}${i === activeStage ? ' is-active' : ''}`}>
+                    <span className="sovara-stage-dot" aria-hidden />
+                    {s.label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div style={{ padding: '8px 44px 0' }}>
+            <SessionBadge label={`TODAY • ${projectName ? `Project ${projectName}` : 'Sovora Sovereign Workspace'}`} />
+          </div>
 
           {actionable ? (
             <div style={{ margin: '12px 24px', padding: '12px 14px', borderRadius: 10, border: '1px solid var(--stitch-danger, #C04040)', background: 'var(--stitch-danger-bg, #FFF5F5)' }} role="alert">
@@ -362,52 +385,6 @@ export function ChatView({
             </div>
           ) : null}
 
-          {showExecution && executionLabel ? (
-            <div style={{ padding: '10px 24px', fontSize: 12, color: 'var(--stitch-muted, #8A8279)', borderBottom: '1px solid var(--stitch-border, #E8E4DE)', display: 'flex', flexDirection: 'column', gap: 6 }} role="status" aria-live="polite">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span aria-hidden>
-                  {exec.phase === 'loading' || exec.phase === 'planning' ? <Loader2 size={14} className="spin" /> :
-                   exec.phase === 'tool' ? <Wrench size={14} /> :
-                   exec.phase === 'reading' ? <FileSearch size={14} /> :
-                   exec.phase === 'prompting' ? <ListChecks size={14} /> :
-                   exec.phase === 'selecting' ? <Route size={14} /> :
-                   exec.phase === 'thinking' || exec.phase === 'streaming' ? <Brain size={14} /> :
-                   exec.phase === 'artifact' ? <FileDown size={14} /> :
-                   exec.phase === 'error' ? <XCircle size={14} /> :
-                   exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
-                </span>
-                <span>{executionLabel}</span>
-                {taskKindBadge ? <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--stitch-terracotta-bg, #FDF1ED)', color: 'var(--stitch-terracotta, #C65D3B)' }}>{taskKindBadge}</span> : null}
-                {exec.phase === 'artifact' && exec.artifactPath ? (
-                  <button type="button" className="sv-btn sv-btn-ghost" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => onOpenArtifactFile(exec.artifactPath as string)}>Open file</button>
-                ) : null}
-              </div>
-              {activeStage >= 0 ? (
-                <div className="sovara-stages" aria-hidden>
-                  {STAGE_ORDER.map((s, i) => (
-                    <span key={s.key} className={`sovara-stage${i < activeStage ? ' is-done' : ''}${i === activeStage ? ' is-active' : ''}`} title={s.label}>
-                      <span className="sovara-stage-dot" />
-                      <span className="sovara-stage-label">{s.label}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {showVramBar ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'var(--stitch-border, #E8E4DE)' }}>
-                    <div style={{ height: '100%', borderRadius: 2, background: 'var(--stitch-terracotta, #C65D3B)',
-                      width: `${Math.min(100, Math.round(((exec.vramUsedMB ?? 0) / (exec.vramTotalMB ?? 8192)) * 100))}%` }} />
-                  </div>
-                  <span>VRAM {typeof exec.vramUsedMB === 'number' ? `${(exec.vramUsedMB / 1024).toFixed(1)}` : '0.0'} / {(exec.vramTotalMB ?? 8192) / 1024} GB</span>
-                </div>
-              ) : null}
-              {exec.detail ? <div>{exec.detail}</div> : null}
-              {exec.phase === 'loading' ? (
-                <button type="button" className="sv-btn sv-btn-ghost" style={{ fontSize: 12, padding: '4px 8px', width: 'fit-content' }} onClick={onCancel}>Cancel</button>
-              ) : null}
-            </div>
-          ) : null}
-
           {generatedFiles.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 24px' }} aria-label="Generated files">
               {generatedFiles.map((f) => (
@@ -423,11 +400,11 @@ export function ChatView({
 
           <MessageList
             events={events}
-            thinking={busy && streamingText === '' && streamingReasoning === '' && (exec.phase === 'streaming' || exec.phase === 'thinking')}
+            thinking={busy && streamingText === '' && streamingReasoning === '' && (exec.phase === 'streaming' || exec.phase === 'thinking' || exec.phase === 'planning' || exec.phase === 'loading')}
             streamingText={streamingText}
-            streamingReasoning={streamingReasoning}
+            streamingReasoning={streamingReasoning || (busy && (exec.phase === 'thinking' || exec.phase === 'planning') && exec.detail ? exec.detail : '')}
             streamingModelBadge={activeModel.displayName ?? undefined}
-            streamingThoughtLabel={streaming ? 'Thinking…' : undefined}
+            streamingThoughtLabel={streaming ? 'Thinking…' : exec.phase === 'thinking' ? 'Thinking…' : exec.phase === 'loading' ? 'Loading…' : undefined}
             onCopy={onCopy}
             onRegenerate={onRegenerate}
             onEditAndResend={onEditAndResend}
@@ -455,7 +432,7 @@ export function ChatView({
             <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy} busy={busy} phase={phase}
               active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
               execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
-              onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} />
+              onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} projectName={projectName} />
           </div>
         </div>
       )}

@@ -376,8 +376,6 @@ export function useChatSession() {
     async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
-      // Empty-state send (screenshot case: "hi" typed with no conversation
-      // selected) must auto-create a session instead of silently no-op'ing.
       let targetId = selectedId
       if (!targetId) {
         setBusy(true)
@@ -386,6 +384,8 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
+        const optimisticSeq = Date.now()
+        setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
         try {
           const h = await createSession(`Session ${sessions.length + 1}`, null)
           await refreshSessions()
@@ -393,7 +393,6 @@ export function useChatSession() {
           const seq = ++loadSeq.current
           setSelectedId(h.id)
           selectedRef.current = h.id
-          setEvents([])
           await refreshEvents(h.id, seq)
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e))
@@ -408,28 +407,38 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
+        const optimisticSeq = Date.now()
+        setEvents((prev) => [...prev, { seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
       }
-      try {
-        await sendChatMessage(targetId, text, opts)
-        setDraft('')
-        // The user may have switched sessions while the long-lived invoke
-        // was in flight — never render another session's events here.
-        // (The event subscription refreshes the right view on completion.)
-        if (selectedRef.current === targetId) {
-          const seq = ++loadSeq.current
-          await refreshEvents(targetId, seq)
-        }
-        await refreshSessions()
-      } catch (e) {
-        // Keep the draft so nothing successfully-persisted is faked.
-        setStreamingText('')
-        setStreamingReasoning('')
-        setError(e instanceof Error ? e.message : String(e))
-        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-      } finally {
-        setBusy(false)
-        setPhase('idle')
-      }
+      setDraft('')
+      // Fire-and-forget: do NOT await sendChatMessage. It is a long-lived
+      // HTTP request that resolves when generation ends; SSE delta events
+      // (assistant-delta, reasoning-delta, model:loading, tool:*, etc.)
+      // are the reactive channel that updates streamingText / execution
+      // state in real-time. Awaiting it here would block the event loop and
+      // prevent React from re-rendering until the request completes, making
+      // the stream invisible to the user.
+      sendChatMessage(targetId, text, opts)
+        .then(() => {
+          setDraft('')
+          if (selectedRef.current === targetId) {
+            const seq = ++loadSeq.current
+            void refreshEvents(targetId, seq)
+          }
+          void refreshSessions()
+        })
+        .finally(() => {
+          setBusy(false)
+          setPhase('idle')
+        })
+        .catch((e: unknown) => {
+          if (selectedRef.current !== targetId) return
+          setStreamingText('')
+          setStreamingReasoning('')
+          setError(e instanceof Error ? e.message : String(e))
+          setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+        })
+      // SSE subscription drives all reactive UI updates (streamingText, streamingReasoning).
     },
     [selectedId, busy, sessions.length, refreshEvents, refreshSessions]
   )
@@ -451,22 +460,27 @@ export function useChatSession() {
     setStreamingText('')
     setStreamingReasoning('')
     setError(null)
-    try {
-      await regenerateChatMessage(selectedId, opts)
-      if (selectedRef.current === selectedId) {
-        const seq = ++loadSeq.current
-        await refreshEvents(selectedId, seq)
-      }
-      await refreshSessions()
-    } catch (e) {
-      setStreamingText('')
-      setStreamingReasoning('')
-      setError(e instanceof Error ? e.message : String(e))
-      setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-    } finally {
-      setBusy(false)
-      setPhase('idle')
-    }
+    // Fire-and-forget: SSE subscription handles reactive streaming state.
+    regenerateChatMessage(selectedId, opts)
+      .then(() => {
+        if (selectedRef.current === selectedId) {
+          const seq = ++loadSeq.current
+          void refreshEvents(selectedId, seq)
+        }
+        void refreshSessions()
+      })
+      .finally(() => {
+        setBusy(false)
+        setPhase('idle')
+      })
+      .catch((e: unknown) => {
+        if (selectedRef.current !== selectedId) return
+        setStreamingText('')
+        setStreamingReasoning('')
+        setError(e instanceof Error ? e.message : String(e))
+        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+      })
+    return
   }, [selectedId, busy, refreshEvents, refreshSessions])
 
   const handleEditAndResend = useCallback(
@@ -479,22 +493,27 @@ export function useChatSession() {
       setStreamingText('')
       setStreamingReasoning('')
       setError(null)
-      try {
-        await editAndResendChatMessage(selectedId, text, opts)
-        if (selectedRef.current === selectedId) {
-          const seq = ++loadSeq.current
-          await refreshEvents(selectedId, seq)
-        }
-        await refreshSessions()
-      } catch (e) {
-        setStreamingText('')
-        setStreamingReasoning('')
-        setError(e instanceof Error ? e.message : String(e))
-        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-      } finally {
-        setBusy(false)
-        setPhase('idle')
-      }
+      // Fire-and-forget: SSE subscription handles reactive streaming state.
+      editAndResendChatMessage(selectedId, text, opts)
+        .then(() => {
+          if (selectedRef.current === selectedId) {
+            const seq = ++loadSeq.current
+            void refreshEvents(selectedId, seq)
+          }
+          void refreshSessions()
+        })
+        .finally(() => {
+          setBusy(false)
+          setPhase('idle')
+        })
+        .catch((e: unknown) => {
+          if (selectedRef.current !== selectedId) return
+          setStreamingText('')
+          setStreamingReasoning('')
+          setError(e instanceof Error ? e.message : String(e))
+          setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+        })
+      return
     },
     [selectedId, busy, refreshEvents, refreshSessions]
   )

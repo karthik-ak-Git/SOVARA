@@ -29,6 +29,8 @@ export const IPC_CHANNELS = {
   'models:probeRuntime': { type: 'invoke' as const },
   /** One-time owned-runtime install (pinned llama.cpp CUDA build). */
   'models:ensureRuntime': { type: 'invoke' as const },
+  'models:diagnoseRuntime': { type: 'invoke' as const },
+  'models:unblockRuntime': { type: 'invoke' as const },
   // Commit 6 — workbench facet (registry/probe/select; legacy trio above untouched)
   'models:listRuntimes': { type: 'invoke' as const },
   'models:addRuntime': { type: 'invoke' as const },
@@ -121,6 +123,11 @@ export const IPC_CHANNELS = {
   // Voice transcription (local faster-whisper)
   'voice:transcribe': { type: 'invoke' as const },
   'voice:status': { type: 'invoke' as const },
+  // OCR — unlimited models, best quality
+  'ocr:recognize': { type: 'invoke' as const },
+  'ocr:status': { type: 'invoke' as const },
+  'ocr:listModels': { type: 'invoke' as const },
+  'ocr:downloadModel': { type: 'invoke' as const },
   'logs:getRecent': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },

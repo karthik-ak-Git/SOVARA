@@ -279,6 +279,16 @@ export const zVoiceTranscribe = z
   })
   .strict()
 
+export const zOcrRecognize = z
+  .object({
+    image: z.string().min(1), // base64
+    filename: z.string().min(1).max(256).optional(),
+    model: z.string().min(1).max(256).optional(), // unlimited: any HF id or rapidocr
+  })
+  .strict()
+
+export const zOcrDownload = z.object({ model: z.string().min(1).max(256) }).strict()
+
 export const zMcpAdd = z
   .object({
     name: z.string().min(1).max(80),

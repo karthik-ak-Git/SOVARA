@@ -306,6 +306,39 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('models:diagnoseRuntime', async () => {
+    try {
+      const { diagnoseLlamaExecutable } = await import('../services/llamaRuntime')
+      return await diagnoseLlamaExecutable(undefined)
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'diagnose failed')
+    }
+  })
+
+  ipcMain.handle('models:unblockRuntime', async () => {
+    try {
+      const { getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, diagnoseLlamaExecutable, migrateLegacyRuntime, getLlamaServerPath } = await import('../services/llamaRuntime')
+      // 1) Migrate legacy @-path → %LOCALAPPDATA%\Sovara (fixes spawn UNKNOWN from @)
+      const mig = await migrateLegacyRuntime(undefined)
+      // 2) Unblock BOTH dirs (legacy may still be the live exe until reinstall)
+      const dir = getLlamaRuntimeDir(undefined)
+      const un = await unblockRuntimeDir(dir)
+      try {
+        const legacyDir = getLegacyLlamaRuntimeDir(undefined)
+        if (legacyDir) await unblockRuntimeDir(legacyDir).catch(() => ({ unblocked: false, detail: '' }))
+      } catch { /* ignore */ }
+      // Unblock whichever exe is actually resolved too
+      const liveExe = getLlamaServerPath(undefined)
+      if (liveExe) {
+        try { await unblockRuntimeDir(liveExe.substring(0, liveExe.lastIndexOf('\\')) || dir) } catch { /* ignore */ }
+      }
+      const diag = await diagnoseLlamaExecutable(undefined)
+      return { ...un, dir, migrated: mig.migrated, migrateDetail: mig.detail, diag }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'unblock failed')
+    }
+  })
+
   // ── Commit 6 workbench facet — explicit channels, strict schemas ──
   ipcMain.handle('models:listRuntimes', async () => {
     return getBackend().workbench.listRuntimes()

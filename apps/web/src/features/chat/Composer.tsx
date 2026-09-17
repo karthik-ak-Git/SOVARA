@@ -14,6 +14,9 @@ import {
   Folder,
   Sparkles,
   Shield,
+  ShieldCheck,
+  ChevronDown,
+  Hash,
 } from 'lucide-react'
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
@@ -42,6 +45,7 @@ interface ComposerProps {
   onReasoningToggle?: (enabled: boolean) => void
   onSelectModel?: (runtimeId: string, modelId: string) => void
   onOpenSettings?: () => void
+  projectName?: string | null
 }
 
 export interface FileAttachment {
@@ -77,6 +81,7 @@ export function Composer({
   onReasoningToggle,
   onSelectModel,
   onOpenSettings,
+  projectName,
 }: ComposerProps): ReactElement {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -360,7 +365,7 @@ export function Composer({
           placeholder={
             streaming ? 'Sovora is thinking… (Esc to stop)' :
             disabled ? 'Waiting…' :
-            'Message Sovora…'
+            'Ask anything, / for commands, @ for context...'
           }
           value={value}
           onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
@@ -386,15 +391,18 @@ export function Composer({
                 <Plus size={16} aria-hidden />
               </button>
               {attachMenuOpen ? (
-                <div className="sv-dropdown" style={{ bottom: '100%', left: 0, marginBottom: 6, minWidth: 160 }} role="menu" aria-label="Attachment options">
-                  <button type="button" role="menuitem" className="sv-dropdown-item" onClick={() => { setAttachMenuOpen(false); fileInputRef.current?.click() }}>
-                    <Paperclip size={14} aria-hidden /> Attach files…
+                <div className="plus-menu" role="menu" aria-label="Attachment options">
+                  <button type="button" role="menuitem" onClick={() => { setAttachMenuOpen(false); fileInputRef.current?.click() }}>
+                    <FileText size={15} aria-hidden /> Attach files
                   </button>
-                  <button type="button" role="menuitem" className="sv-dropdown-item" onClick={() => { setAttachMenuOpen(false); folderInputRef.current?.click() }}>
-                    <Folder size={14} aria-hidden /> Attach folder…
+                  <button type="button" role="menuitem" onClick={() => { setAttachMenuOpen(false); folderInputRef.current?.click() }}>
+                    <Folder size={15} aria-hidden /> Attach folder
                   </button>
-                  <button type="button" role="menuitem" className="sv-dropdown-item" onClick={() => { setAttachMenuOpen(false); onOpenSettings?.() }}>
-                    <Sparkles size={14} aria-hidden /> Use skill
+                  <button type="button" role="menuitem" onClick={() => { setAttachMenuOpen(false); onOpenSettings?.() }}>
+                    <Sparkles size={15} aria-hidden /> Use skill
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => setAttachMenuOpen(false)}>
+                    <Hash size={15} aria-hidden /> Add context
                   </button>
                 </div>
               ) : null}
@@ -457,11 +465,12 @@ export function Composer({
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 0' }}>
+      <div className="composer-meta">
+        <button type="button" className="composer-meta-btn" onClick={() => onOpenSettings?.()}><Folder size={13} aria-hidden />{projectName ?? 'SOVARA'}<ChevronDown size={12} aria-hidden /></button>
+        <button type="button" className="composer-meta-btn"><span className="branch-icon">⑂</span> main</button>
+        <span className="meta-spacer" />
         <PermissionControl mode={execMode} onChange={onExecModeChange} />
-        <span style={{ fontSize: 11, color: '#8A8279' }}>
-          Sovora runs sovereign &amp; local • {execMode === 'allow' ? 'Full access' : execMode === 'ask' ? 'Ask before running' : 'Read-only'}
-        </span>
+        <span className="composer-meta-private"><ShieldCheck size={13} aria-hidden /> Local &amp; private</span>
       </div>
     </div>
   )

@@ -81,6 +81,14 @@ function MetricBar({ label, value, max, unit }: { label: string; value?: number;
   )
 }
 
+function OffloadBadge({ nLayers, totalLayers }: { nLayers?: number; totalLayers?: number }) {
+  if (nLayers === undefined) return <span className="instance-meta-item" style={{ color:'#8A8279' }}>Offload: unknown</span>
+  const isFull = nLayers === 999 || (totalLayers !== undefined && nLayers >= totalLayers)
+  const label = isFull ? 'Full GPU offload' : nLayers === 0 ? 'CPU only' : `Partial GPU (${nLayers} layers)`
+  const cls = isFull ? 'instance-offload--full' : nLayers === 0 ? 'instance-offload--cpu' : 'instance-offload--partial'
+  return <span className={`instance-meta-item instance-offload ${cls}`} title={`Offloaded layers: ${nLayers}${totalLayers ? ` / ${totalLayers}` : ''}`}>{label}</span>
+}
+
 function InstanceCard({ instance, onUnload }: { instance: ModelInstance; onUnload: (id: string) => void }) {
   const [confirming, setConfirming] = useState(false)
   const m = instance.metrics
@@ -125,7 +133,8 @@ function InstanceCard({ instance, onUnload }: { instance: ModelInstance; onUnloa
         {instance.pid ? <span className="instance-meta-item">PID: {instance.pid}</span> : null}
         {instance.hardwareDevice ? <span className="instance-meta-item">Backend: {instance.hardwareDevice}</span> : null}
         {instance.endpoint ? <span className="instance-meta-item" title={instance.endpoint}>Endpoint: {instance.endpoint.replace('http://127.0.0.1:', ':')}</span> : null}
-        {instance.configuration?.nGpuLayers !== undefined ? <span className="instance-meta-item">Offload: {instance.configuration.nGpuLayers === 999 ? 'full' : instance.configuration.nGpuLayers} layers</span> : instance.offloadedLayers !== undefined ? <span className="instance-meta-item">Offload: {instance.offloadedLayers} layers</span> : null}
+        <OffloadBadge nLayers={instance.configuration?.nGpuLayers ?? instance.offloadedLayers} totalLayers={undefined} />
+        {instance.configuration?.nGpuLayers !== undefined ? <span className="instance-meta-item" title="GPU layers">GPU layers: {instance.configuration.nGpuLayers === 999 ? 'all' : instance.configuration.nGpuLayers}</span> : null}
         {(instance.activeRequests ?? 0) > 0 ? <span className="instance-meta-item">Active requests: {instance.activeRequests}</span> : null}
         {instance.health && instance.health !== 'unknown' ? <span className="instance-meta-item">Health: {instance.health}</span> : null}
       </div>

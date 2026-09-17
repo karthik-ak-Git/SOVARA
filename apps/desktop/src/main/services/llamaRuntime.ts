@@ -82,8 +82,28 @@ export function appendLlamaLog(
 
 // ── Paths ───────────────────────────────────────────────────────────────
 
+/**
+ * Runtime dir — %LOCALAPPDATA%\Sovara\runtime (no @, no Roaming).
+ * The old dir under Electron userData (…\@sovara\desktop\runtime) contains '@'
+ * which trips Windows CreateProcess via Node spawn → UNKNOWN. We migrate
+ * forward: new installs go to Local; lookups check new first, then legacy.
+ */
 export function getLlamaRuntimeDir(baseDir?: string): string {
+  if (baseDir) return path.join(getSovaraDataDir(baseDir), 'runtime', 'llama.cpp', LLAMA_BUILD)
+  try {
+    const local = process.env['LOCALAPPDATA']
+    if (local) return path.join(local, 'Sovara', 'runtime', 'llama.cpp', LLAMA_BUILD)
+  } catch { /* fall through */ }
   return path.join(getSovaraDataDir(baseDir), 'runtime', 'llama.cpp', LLAMA_BUILD)
+}
+
+export function getLegacyLlamaRuntimeDir(baseDir?: string): string | null {
+  try {
+    const legacy = path.join(getSovaraDataDir(baseDir), 'runtime', 'llama.cpp', LLAMA_BUILD)
+    return legacy === getLlamaRuntimeDir(baseDir) ? null : legacy
+  } catch {
+    return null
+  }
 }
 
 function findExeRecursive(dir: string, depth = 0): string | null {
@@ -107,15 +127,118 @@ function findExeRecursive(dir: string, depth = 0): string | null {
   return null
 }
 
-/** Absolute llama-server.exe when provisioned, else null (never throws). */
+/** Absolute llama-server.exe when provisioned, else null (never throws). Checks new dir first, then legacy @-path for migration. */
 export function getLlamaServerPath(baseDir?: string): string | null {
   try {
     const dir = getLlamaRuntimeDir(baseDir)
-    if (!fs.existsSync(dir)) return null
-    return findExeRecursive(dir)
+    if (fs.existsSync(dir)) {
+      const hit = findExeRecursive(dir)
+      if (hit) return hit
+    }
+    const legacy = getLegacyLlamaRuntimeDir(baseDir)
+    if (legacy && fs.existsSync(legacy)) {
+      const hit = findExeRecursive(legacy)
+      if (hit) return hit
+    }
+    return null
   } catch {
     return null
   }
+}
+
+/** Does a file carry a Mark-of-the-Web (downloaded from internet → blocked)? */
+export function hasZoneIdentifier(filePath: string): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    // ADS read: dir /r or powershell Get-Content -Stream. Use fs open with colon — throws if absent.
+    const fd = fs.openSync(`${filePath}:Zone.Identifier`, 'r')
+    fs.closeSync(fd)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Remove MOTW from a runtime dir so Windows stops blocking the exe (spawn UNKNOWN / 4551). */
+export function unblockRuntimeDir(dir: string, timeoutMs = 60_000): Promise<{ unblocked: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve({ unblocked: true, detail: 'non-windows, nothing to unblock' })
+    const ps = [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `try { Get-ChildItem -LiteralPath '${dir.replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue; 'ok' } catch { 'fail:' + $_.Exception.Message }`,
+    ]
+    execFile('powershell.exe', ps, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) return resolve({ unblocked: false, detail: String(stderr || err.message).slice(0, 300) })
+      const out = String(stdout || '').trim().slice(0, 100)
+      resolve({ unblocked: out.startsWith('ok'), detail: out || 'done' })
+    })
+  })
+}
+
+export interface LlamaDiagnose {
+  exePath: string | null
+  runtimeDir: string
+  legacyDir: string | null
+  exists: boolean
+  sizeMB: number | null
+  hasMotw: boolean
+  version: string | null
+  dlls: string[]
+  pathHasAt: boolean
+  recommendation: string
+}
+
+/**
+ * Migrate legacy @-path runtime (…\@sovara\desktop\runtime) to the clean
+ * %LOCALAPPDATA%\Sovara path. Copies recursively, then unblocks. Returns the
+ * new exe path when migration happened, else null. Never throws.
+ */
+export async function migrateLegacyRuntime(baseDir?: string): Promise<{ migrated: boolean; exePath: string | null; detail: string }> {
+  try {
+    if (baseDir) return { migrated: false, exePath: getLlamaServerPath(baseDir), detail: 'test baseDir, skip migration' }
+    const legacy = getLegacyLlamaRuntimeDir(undefined)
+    const fresh = getLlamaRuntimeDir(undefined)
+    if (!legacy || legacy === fresh) return { migrated: false, exePath: getLlamaServerPath(undefined), detail: 'no legacy dir' }
+    if (!fs.existsSync(legacy) || !findExeRecursive(legacy)) return { migrated: false, exePath: getLlamaServerPath(undefined), detail: 'legacy empty' }
+    if (fs.existsSync(fresh) && findExeRecursive(fresh)) return { migrated: false, exePath: getLlamaServerPath(undefined), detail: 'fresh already installed' }
+    ensureDir(fresh)
+    // Copy via powershell (handles long paths + preserves binaries)
+    await new Promise<void>((resolve, reject) => {
+      const ps = ['-NoProfile', '-NonInteractive', '-Command', `Copy-Item -LiteralPath '${legacy.replace(/'/g, "''")}' -Destination '${fresh.replace(/'/g, "''")}' -Recurse -Force`]
+      execFile('powershell.exe', ps, { timeout: 120_000, windowsHide: true }, (err, _o, stderr) => {
+        if (err) reject(new Error(String(stderr || err.message).slice(0, 300)))
+        else resolve()
+      })
+    })
+    const un = await unblockRuntimeDir(fresh)
+    appendLlamaLog(undefined, 'runtime-migrate', { from: legacy, to: fresh, unblocked: un.unblocked })
+    return { migrated: true, exePath: getLlamaServerPath(undefined), detail: `migrated legacy → ${fresh} (${un.detail})` }
+  } catch (e) {
+    return { migrated: false, exePath: getLlamaServerPath(baseDir), detail: e instanceof Error ? e.message.slice(0, 200) : String(e) }
+  }
+}
+
+/** Full pre-flight diagnosis for ModelsPage + error cards (never throws). */
+export async function diagnoseLlamaExecutable(baseDir?: string): Promise<LlamaDiagnose> {
+  const runtimeDir = getLlamaRuntimeDir(baseDir)
+  const legacyDir = getLegacyLlamaRuntimeDir(baseDir)
+  const exePath = getLlamaServerPath(baseDir)
+  const pathHasAt = (exePath ?? runtimeDir).includes('@')
+  let sizeMB: number | null = null
+  let hasMotw = false
+  let dlls: string[] = []
+  if (exePath) {
+    try { sizeMB = Math.round(fs.statSync(exePath).size / (1024 * 1024)) } catch { /* ignore */ }
+    try { hasMotw = hasZoneIdentifier(exePath) } catch { /* ignore */ }
+    try { dlls = fs.readdirSync(path.dirname(exePath)).filter((f) => f.toLowerCase().endsWith('.dll')).slice(0, 8) } catch { /* ignore */ }
+  }
+  const version = exePath ? await getLlamaVersion(exePath, 10_000) : null
+  let recommendation = 'ok'
+  if (!exePath) recommendation = 'not-installed: open Models → Install local runtime'
+  else if (hasMotw) recommendation = 'blocked-motw: click Unblock & Retry (Unblock-File), or reinstall'
+  else if (!version) recommendation = 'blocked-or-missing-deps: Windows refused --version. Allow-list the Sovara runtime folder in Windows Security, install VC++ Redist, then reinstall. Workaround: start LM Studio server (port 1234) and use it instead.'
+  else if (pathHasAt) recommendation = 'migrate: exe lives under an @-path — reinstall to move it to %LOCALAPPDATA%\\Sovara (no @)'
+  return { exePath, runtimeDir, legacyDir, exists: Boolean(exePath), sizeMB, hasMotw, version, dlls, pathHasAt, recommendation }
 }
 
 export function getLlamaVersion(exePath: string, timeoutMs = 15_000): Promise<string | null> {
@@ -455,6 +578,7 @@ export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'run
   if (/cancelled/.test(lower)) return { kind: 'cancelled', recoverable: false, message: msg }
   if (/model-not-found|invalid model|no gguf|empty model id|not in the sovara library/i.test(msg)) return { kind: 'invalid-model', recoverable: false, message: msg }
   if (/not installed|local runtime not installed|runner.*missing|llama-server.*not found/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
+  if (/could not start.*spawn UNKNOWN|spawn UNKNOWN|windows blocked|w dac|controlled folder|allow-list/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
   if (/did not become ready|readiness|timed out waiting/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
   if (/cuda.*out of memory|out of memory|oom|insufficient.*vram|memory.*exhausted|alloc.*fail/i.test(msg)) return { kind: 'oom', recoverable: false, message: msg }
   if (/eaddrinuse|address already in use|port.*in use|no free port/i.test(msg)) return { kind: 'startup-failure', recoverable: true, message: msg }
@@ -595,7 +719,7 @@ export async function ensureLlamaRuntime(
     appendLlamaLog(baseDir, 'runtime-ready', { path: existing, version: version ?? 'unknown', downloaded: false })
     return { path: existing, version, downloaded: false }
   }
-  appendLlamaLog(baseDir, 'runtime-download-start', { url: LLAMA_DOWNLOAD_URL, asset: LLAMA_CUDA_ASSET })
+  appendLlamaLog(baseDir, 'runtime-download-start', { url: LLAMA_DOWNLOAD_URL, asset: LLAMA_CUDA_ASSET, dir })
   try { onProgress?.({ phase: 'downloading', receivedBytes: 0, totalBytes: null }) } catch { /* ignore */ }
   const zipPath = path.join(dir, LLAMA_CUDA_ASSET)
   const partPath = `${zipPath}.part`
@@ -608,11 +732,19 @@ export async function ensureLlamaRuntime(
     await extractZip(zipPath, dir)
     appendLlamaLog(baseDir, 'runtime-extract-done', { dir })
     try { fs.unlinkSync(zipPath) } catch { /* keep the zip when unsure */ }
+    // Windows marks downloads from the internet (MOTW) → spawn UNKNOWN / 4551.
+    // Unblock immediately after extract, before the --version self-check.
+    try { onProgress?.({ phase: 'unblocking', receivedBytes: received, totalBytes: total }) } catch { /* ignore */ }
+    const un = await unblockRuntimeDir(dir)
+    appendLlamaLog(baseDir, 'runtime-unblock', { unblocked: un.unblocked, detail: un.detail })
     const exe = getLlamaServerPath(baseDir)
     if (!exe) throw new Error('archive extracted but llama-server.exe was not found')
     try { onProgress?.({ phase: 'verifying', receivedBytes: received, totalBytes: total }) } catch { /* ignore */ }
     const version = await getLlamaVersion(exe)
-    if (!version) throw new Error('downloaded llama-server.exe failed its --version self-check')
+    if (!version) {
+      const diag = await diagnoseLlamaExecutable(baseDir)
+      throw new Error(`downloaded llama-server.exe failed its --version self-check (MOTW=${diag.hasMotw}, dlls=[${diag.dlls.join(',')}]). Windows is blocking it — allow-list ${dir} in Windows Security, install the VC++ Redistributable, then reinstall. Workaround: start LM Studio (port 1234) and add it as a runtime.`)
+    }
     appendLlamaLog(baseDir, 'runtime-ready', { path: exe, version, downloaded: true })
     try { onProgress?.({ phase: 'ready', receivedBytes: received, totalBytes: total }) } catch { /* ignore */ }
     return { path: exe, version, downloaded: true }
@@ -644,23 +776,51 @@ export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
     nGpuLayers: opts.nGpuLayers,
     alias: opts.alias,
   })
+  if (!opts.exePath || !fs.existsSync(opts.exePath)) {
+    throw new Error(`local runtime not installed — open Models and choose "Install local runtime" (missing ${opts.exePath ?? 'llama-server.exe'}). Workaround: start LM Studio server on :1234 or Ollama on :11434 and select that runtime instead.`)
+  }
+  // Pre-flight --version check to catch Windows App Control / antivirus blocking before opaque spawn UNKNOWN
   const logDir = opts.logDir ?? path.join(os.tmpdir(), 'sovara-llama-logs')
   ensureDir(logDir)
   const safeAlias = (opts.alias ?? 'model').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64)
   const logPath = path.join(logDir, `llama-${safeAlias}-${opts.port}.log`)
   const stream = fs.createWriteStream(logPath, { flags: 'a' })
   stream.write(`\n=== spawn ${new Date().toISOString()} exe=${opts.exePath} args=${JSON.stringify(args)} ===\n`)
+  // Early MOTW warning (logged, not fatal — spawn will still be attempted)
+  try {
+    if (hasZoneIdentifier(opts.exePath)) {
+      stream.write(`[motw] Zone.Identifier present — Windows may block spawn with UNKNOWN. Run Unblock-File or Models → Unblock & Retry.\n`)
+    }
+  } catch { /* ignore */ }
   // Ollama-style bundled CUDA: exe lives beside cudart64_12.dll, cublas64_12.dll, etc.
-  // We MUST prepend that dir to PATH so Windows finds the bundled DLLs without a system CUDA install.
-  // Without this, llama-server fails with "cudart not found" even though the zip contains it.
   const exeDir = path.dirname(opts.exePath)
   const bundledEnv = { ...process.env, PATH: `${exeDir};${process.env.PATH ?? ''}` }
-  // Also verify bundled DLLs exist for diagnostics
   try {
     const dlls = fs.readdirSync(exeDir).filter(f => f.toLowerCase().endsWith('.dll')).slice(0,6)
     stream.write(`[bundled] exeDir=${exeDir} dlls=${dlls.join(',')}\n`)
+    // Quick execute permission probe — catches Controlled Folder / WDAC before spawn
+    try { fs.accessSync(opts.exePath, fs.constants.X_OK) } catch {}
   } catch { /* ignore */ }
-  const child = spawn(opts.exePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: bundledEnv })
+  let child: ChildProcess
+  try {
+    child = spawn(opts.exePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: bundledEnv })
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e)
+    const code = (e as NodeJS.ErrnoException)?.code ?? ''
+    const hint = /UNKNOWN/i.test(raw) || code === 'UNKNOWN'
+      ? ' Windows blocked llama-server.exe (MOTW / WDAC / Controlled Folder / Antivirus) OR the path contains @. Fix: Models → Unblock & Retry, or reinstall (moves to %LOCALAPPDATA%\\Sovara with no @), or allow-list the folder in Windows Security. Workaround: start LM Studio (:1234) and select it.'
+      : ''
+    stream.write(`[spawn-error] code=${code} ${raw}${hint}\n`)
+    try { stream.end() } catch {}
+    throw new Error(`could not start the local runtime: spawn ${code || 'FAILED'}${hint} — exe=${opts.exePath}`)
+  }
+  // Surface spawn-time errors (ENOENT / EACCES / UNKNOWN) that otherwise emit only on 'error' event
+  child.once('error', (err) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    const code = (err as NodeJS.ErrnoException).code ?? ''
+    const hint = code === 'UNKNOWN' || /UNKNOWN/i.test(msg) ? ' — Windows blocked the binary (MOTW / WDAC / Controlled folder / Antivirus) or @-path. Models → Unblock & Retry, or use LM Studio (:1234) instead.' : ''
+    stream.write(`[spawn-async-error] code=${code} msg=${msg}${hint}\n`)
+  })
   child.stdout?.on('data', (d) => { try { stream.write(`[out] ${String(d)}`) } catch { /* ignore */ } })
   child.stderr?.on('data', (d) => { try { stream.write(`[err] ${String(d)}`) } catch { /* ignore */ } })
   child.once('exit', (code, signal) => {

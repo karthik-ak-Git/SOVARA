@@ -17,6 +17,7 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { AgentsPage } from './features/agents/AgentsPage'
 import { SkillsPage } from './features/skills/SkillsPage'
 import { ConnectionsPage } from './features/connections/ConnectionsPage'
+import { ContextPanel } from './features/chat/ContextPanel'
 import {
   createProject,
   listProjects,
@@ -46,7 +47,7 @@ export function App(): React.JSX.Element {
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [execMode, setExecModeState] = useState<ExecMode>('ask')
-  const [reasoningEnabled, setReasoningEnabled] = useState(false)
+  const [reasoningEnabled, setReasoningEnabled] = useState(true)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
 
   const chat = useChatSession()
@@ -214,12 +215,21 @@ export function App(): React.JSX.Element {
 
   const handleCopy = useCallback((_content: string): void => {}, [])
 
+  // Inline-only: do NOT navigate to full Models/Runtime page from chat buttons.
+  // Model & runtime are selected directly via Composer's ModelSelector popover (inline).
+  // The dedicated pages remain reachable only via explicit sidebar navigation.
   const handleOpenModels = useCallback((): void => {
-    setActiveNav('models')
+    // Keep user in chat — focus the composer model pill instead of routing.
+    document.querySelector<HTMLElement>('[data-testid="model-pill"]')?.click()
+    // If pill not rendered yet, fallback to composer input focus
+    if (!document.querySelector('[data-testid="model-pill"]')) {
+      document.querySelector<HTMLElement>('[data-testid="composer-input"]')?.focus()
+    }
   }, [])
 
   const handleOpenExplorer = useCallback((): void => {
-    setActiveNav('explore')
+    // Keep chat visible — explorer is sidebar-only
+    console.log('[App] explorer inline suppressed')
   }, [])
 
   const projectChats = (projectId: string): Array<{ id: string; title: string }> =>
@@ -253,6 +263,10 @@ export function App(): React.JSX.Element {
   }, [workbench.resources])
 
   const [artifactsOpen, setArtifactsOpen] = useState(false)
+  const [contextOpen, setContextOpen] = useState(true)
+  // Artifact viewer and Session context share the right rail — opening one closes the other
+  useEffect(() => { if (artifactsOpen) setContextOpen(false) }, [artifactsOpen])
+  useEffect(() => { if (contextOpen && artifactsOpen) setArtifactsOpen(false) }, [contextOpen])
 
   const handleOpenArtifact = useCallback((filePath: string): void => {
     // Web: artifacts are served from the local file system via /api path.
@@ -309,9 +323,23 @@ export function App(): React.JSX.Element {
         hardwareStatus={hardwareStatus}
         artifactsOpen={artifactsOpen}
         onToggleArtifacts={() => setArtifactsOpen((v) => !v)}
-        splitOpen={artifactsOpen}
-        onToggleSplit={() => setArtifactsOpen((v) => !v)}
+        splitOpen={contextOpen}
+        onToggleSplit={() => setContextOpen((v) => !v)}
         onShare={handleShareSession}
+        contextPanel={
+          activeNav === 'chat' && contextOpen ? (
+            <ContextPanel
+              sessionTitle={chat.sessions.find((s) => s.id === chat.selectedId)?.title ?? 'Untitled'}
+              projectName={activeProjectName}
+              modelName={activeModelDisplay ?? 'No Model'}
+              modelStatus={workbench.active.available ? 'Ready' : 'Offline'}
+              onClose={() => setContextOpen(false)}
+              execution={chat.execution}
+              streamingReasoning={chat.streamingReasoning}
+              busy={chat.busy}
+            />
+          ) : undefined
+        }
       >
         {activeNav === 'chat' ? (
           <ChatView

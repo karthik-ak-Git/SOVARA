@@ -65,7 +65,28 @@ export class ModelWorkbench {
 
   listRuntimes(): ModelRuntimeEntry[] {
     this.ensureLocalLibraryRuntime()
+    this.ensureExternalRuntimes()
     return this.config.listRuntimes()
+  }
+
+  /**
+   * Sovereign fallback: LM Studio (:1234) and Ollama (:11434) are the
+   * escape hatch when the owned sidecar is blocked by WDAC/antivirus
+   * (spawn UNKNOWN). Entries are stable-id, disabled-by-default-safe:
+   * created once, never duplicated, user probes to activate.
+   */
+  private ensureExternalRuntimes(): void {
+    try {
+      const want: Array<{ id: string; displayName: string; type: 'lmstudio' | 'ollama'; endpoint: string }> = [
+        { id: 'lmstudio', displayName: 'LM Studio (local)', type: 'lmstudio', endpoint: 'http://127.0.0.1:1234/v1' },
+        { id: 'ollama', displayName: 'Ollama (local)', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1' },
+      ]
+      for (const w of want) {
+        if (!this.config.getRuntime(w.id)) {
+          this.config.upsertRuntime({ id: w.id, displayName: w.displayName, type: w.type, endpoint: w.endpoint, enabled: true, timeoutMs: 8000 })
+        }
+      }
+    } catch { /* never block listing */ }
   }
 
   /** Read-only entry lookup for inference-time resolution (no network). */
@@ -185,6 +206,7 @@ export class ModelWorkbench {
   /** Snapshot reads — no network. Probe first via probeRuntime. */
   listModels(runtimeId?: string): DiscoveredModel[] {
     this.ensureLocalLibraryRuntime()
+    this.ensureExternalRuntimes()
     // Prune ghosts: any local model whose GGUF no longer exists is removed
     // from the snapshot so the dropdown never shows a hard-coded stale entry.
     // The user's explicit active selection is kept until end-of-chat (sticky),

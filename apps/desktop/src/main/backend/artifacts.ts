@@ -60,21 +60,28 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
     if (ext === 'doc' || ext === 'docx') return { kind: 'docx', fileName: sanitizeFileName(raw.replace(/\.doc$/i, '.docx'), 'sovara-output.docx'), explicitName: true }
     if (CODE_EXTS.includes(ext)) return { kind: 'code', fileName: sanitizeFileName(raw, `sovara-output.${ext}`), explicitName: true }
   }
-  // 2. Generate/export/save verb aimed at a document kind.
-  const head = text.slice(0, 400)
-  const wantsPdf = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,60}\b(pdf|a pdf|as pdf|into pdf)\b/i.test(head) || /\bpdf (file|document|report|export|download)\b/i.test(head)
-  if (wantsPdf) return { kind: 'pdf', fileName: `${slugify(head)}.pdf`, explicitName: false }
-  const wantsXlsx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,60}\b(excel|spreadsheet|xlsx?|workbook)\b/i.test(head) || /\bexcel (file|sheet|export|download|report)\b/i.test(head)
-  if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(head)}.xlsx`, explicitName: false }
-  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,60}\b(word|docx?|document file)\b/i.test(head) || /\bword (file|document|export|download)\b/i.test(head)
-  if (wantsDocx) return { kind: 'docx', fileName: `${slugify(head)}.docx`, explicitName: false }
-  // Image / drawing: user wants a visual generated — produce an HTML+SVG drawing artifact
-  const wantsDrawing = /\b(generate|create|make|draw|render|produce|build)\b[^.\n]{0,60}\b(drawing|diagram|image|picture|illustration|sketch|canvas|svg|chart visual)\b/i.test(head) || /\b(draw|sketch) (me )?(a |an )?[^.\n]{0,30}(diagram|image|picture|chart)\b/i.test(head)
-  if (wantsDrawing) return { kind: 'drawing', fileName: `${slugify(head)}.html`, explicitName: false }
-  // 3. Code file with an explicit language + save/write verb (chat fences alone don't count —
-  //    the artifact panel already surfaces those; a FILE needs a named target).
-  const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(head)
+  // 2. Generate/export/save verb aimed at a document kind — scan FULL prompt, not just 400ch head.
+  // Broadened so "write a pdf report", "create excel sheet", "build a word doc", "draw a diagram"
+  // anywhere in the prompt reliably triggers artifact generation.
+  const scan = text.toLowerCase()
+  const wantsPdf = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(pdf|a pdf|as pdf|into pdf)\b/i.test(text) || /\bpdf (file|document|report|export|download)\b/i.test(text) || (/\b(pdf)\b/i.test(scan) && /\b(report|invoice|resume|document|file)\b/i.test(scan))
+  if (wantsPdf) return { kind: 'pdf', fileName: `${slugify(text.slice(0,120))}.pdf`, explicitName: false }
+  const wantsXlsx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(excel|spreadsheet|xlsx?|workbook|sheet)\b/i.test(text) || /\b(excel|spreadsheet) (file|sheet|export|download|report|table)\b/i.test(text) || /\b(table|data).*\b(excel|xlsx|spreadsheet)\b/i.test(text)
+  if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(text.slice(0,120))}.xlsx`, explicitName: false }
+  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file)\b/i.test(text) || /\bword (file|document|export|download)\b/i.test(text)
+  if (wantsDocx) return { kind: 'docx', fileName: `${slugify(text.slice(0,120))}.docx`, explicitName: false }
+  // Image / drawing: broader — any diagram/drawing/image request
+  const wantsDrawing = /\b(generate|create|make|draw|render|produce|build|design)\b[^.\n]{0,80}\b(drawing|diagram|image|picture|illustration|sketch|canvas|svg|chart visual|flow ?chart|architecture|wireframe)\b/i.test(text) || /\b(draw|sketch) (me )?(a |an )?[^.\n]{0,40}(diagram|image|picture|chart|flowchart)\b/i.test(text)
+  if (wantsDrawing) return { kind: 'drawing', fileName: `${slugify(text.slice(0,120))}.html`, explicitName: false }
+  // 3. Code file — broaden: any explicit code/write request should produce a file even without filename
+  const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(text)
   if (codeFileM) return { kind: 'code', fileName: sanitizeFileName(codeFileM[1]!.trim(), 'script.txt'), explicitName: true }
+  // Generic code generation without filename — e.g. "write a python script to...", "build a react component", "create a html page"
+  const wantsCode = /\b(write|create|generate|build|make)\b[^.\n]{0,60}\b(python|javascript|typescript|react|html|css|code|script|component|function|app|page)\b/i.test(text) && /\b(code|script|component|function|page|app)\b/i.test(scan)
+  if (wantsCode) {
+    const ext = /python|\.py\b/i.test(text) ? 'py' : /typescript|\.ts\b/i.test(text) ? 'ts' : /react|jsx|tsx/i.test(text) ? 'tsx' : /html/i.test(text) ? 'html' : 'txt'
+    return { kind: 'code', fileName: `${slugify(text.slice(0,60))}.${ext}`, explicitName: false }
+  }
   return null
 }
 

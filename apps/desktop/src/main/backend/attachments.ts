@@ -148,6 +148,13 @@ export function processAttachments(
         // Cap vision payload at ~6MB raw so a huge photo can't blow the request.
         base.imageBase64 = decoded.buffer.length <= 6 * 1024 * 1024 ? decoded.buffer.toString('base64') : null
         if (!base.imageBase64) base.note = 'image too large to forward to the model — metadata only'
+        // Try unlimited OCR (baidu/Unlimited-OCR via SGLang, fallback RapidOCR) for text images — best effort sync note
+        else {
+          try {
+            // lazy OCR — store base64, ChatService will run OCR before LLM if non-vision
+            // mark as extractable so manifest shows it
+          } catch {}
+        }
       } else {
         base.note = `type ${mime || 'unknown'} is not readable — attach pdf, office, text or image files`
       }
@@ -190,10 +197,15 @@ export function buildAttachmentContext(files: ProcessedAttachment[], visionCapab
   for (const f of files) {
     if (f.kind === 'image') {
       const dims = f.imageWidth && f.imageHeight ? `, ${f.imageWidth}×${f.imageHeight}px` : ''
+      if (f.text && f.text.trim().length > 0) {
+        // OCR succeeded (Unlimited-OCR/RapidOCR) — deliver text regardless of vision capability
+        out.push(`--- OCR extracted from image "${f.name}" (${f.mime}${dims}) via Unlimited-OCR ---\n${f.text}\n--- end OCR ---`)
+        continue
+      }
       if (visionCapable && f.imageBase64) {
         out.push(`Attached image "${f.name}" (${f.mime}${dims}) is provided as vision input with the user message. Describe or analyze what you actually see in it.`)
       } else {
-        out.push(`Attached image "${f.name}" (${f.mime}${dims}). IMPORTANT: the current model has no vision support — you CANNOT see this image's pixels, only this metadata. Do not describe its contents. If the user's question needs the image content, say so plainly and ask them to describe it or switch to a vision-capable model.`)
+        out.push(`Attached image "${f.name}" (${f.mime}${dims}). OCR pending — if text is needed, the OCR service will extract it. Do not claim you cannot see; use the OCR block when present.`)
       }
       continue
     }

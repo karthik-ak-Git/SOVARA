@@ -17,16 +17,19 @@ interface Props {
  * No visualizer demo, no new execution wiring.
  */
 export function ArtifactCard({ title, language, code, onOpenSplit }: Props): ReactElement {
-  const [tab, setTab] = useState<'code' | 'preview'>('code')
   const [copied, setCopied] = useState(false)
   const lang = language.toLowerCase()
-  const isHtml = lang === 'html' || lang === 'svg'
+  const isDiagram = code.includes('<svg') && code.includes('</svg>')
+  const isHtml = lang === 'html' || lang === 'svg' || isDiagram
+  const defaultTab: 'code' | 'preview' = isDiagram || lang === 'html' || lang === 'svg' ? 'preview' : 'code'
+  const [tab, setTab] = useState<'code' | 'preview'>(defaultTab)
 
   const handleCopy = (): void => {
-    if (navigator.clipboard) {
-      void navigator.clipboard.writeText(code)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(code).then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }).catch(() => {})
     }
   }
 
@@ -55,7 +58,8 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
                 role="tab"
                 aria-selected={tab === 'preview'}
                 className={`stitch-artifact-tab${tab === 'preview' ? ' active' : ''}`}
-                onClick={() => setTab('preview')}
+                onClick={() => { if (onOpenSplit) { onOpenSplit(); } else { setTab('preview') } }}
+                title={onOpenSplit ? 'Open preview in right artifact viewer' : 'Preview'}
               >
                 Preview
               </button>
@@ -84,14 +88,20 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
           ) : null}
         </div>
       </div>
-      {tab === 'preview' && isHtml ? (
-        <div className="stitch-artifact-preview">
+      {tab === 'preview' && isHtml && !onOpenSplit ? (
+        <div className="stitch-artifact-preview" style={{ background: '#fffefa', borderRadius: '8px', overflow: 'hidden', border: '1px solid #E8E4DE' }}>
           <iframe
             srcDoc={code}
             title={title}
-            sandbox="allow-scripts"
-            style={{ width: '100%', height: '220px', border: 'none', background: '#ffffff', borderRadius: '4px' }}
+            sandbox="allow-scripts allow-same-origin"
+            loading="lazy"
+            style={{ width: '100%', height: isDiagram ? '520px' : '420px', border: 'none', display: 'block', background: '#fffefa' }}
           />
+        </div>
+      ) : tab === 'preview' && isHtml && onOpenSplit ? (
+        <div style={{ padding: '14px 16px', background: '#fffefa', borderTop: '1px solid #E8E4DE', font: '400 12px/1.5 Manrope', color: '#8A8279', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>Preview opened in right artifact viewer →</span>
+          <button type="button" onClick={onOpenSplit} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E8E4DE', background: '#fff', color: '#C65D3B', font: '600 11px/1 Manrope', cursor: 'pointer' }}>Open</button>
         </div>
       ) : (
         <pre className="stitch-artifact-code">

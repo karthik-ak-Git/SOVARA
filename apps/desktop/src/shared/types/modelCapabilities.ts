@@ -41,6 +41,9 @@ export const MODEL_CAPABILITY_REGISTRY: CapabilityProfile[] = [
   { family: 'starcoder', capabilities: ['coding'], defaultContextLength: 8192, strength: 3, paramsBucket: 'medium' },
   { family: 'yi', capabilities: ['chat', 'analysis'], defaultContextLength: 4096, strength: 2, paramsBucket: 'medium' },
   { family: 'mixtral', capabilities: ['chat', 'coding', 'analysis', 'tool-use'], defaultContextLength: 32768, strength: 4, paramsBucket: 'xlarge' },
+  { family: 'unlimited-ocr', capabilities: ['chat', 'analysis'], defaultContextLength: 8192, strength: 3, paramsBucket: 'medium' },
+  { family: 'trocr', capabilities: ['vision', 'chat'], defaultContextLength: 4096, strength: 2, paramsBucket: 'small' },
+  { family: 'donut', capabilities: ['vision', 'chat', 'analysis'], defaultContextLength: 4096, strength: 3, paramsBucket: 'medium' },
 ]
 
 /**
@@ -62,8 +65,8 @@ export function resolveCapabilities(
     }
   }
   const lower = modelId.toLowerCase()
-  // Vision models are tagged by id even when registry entry lacks 'vision' — e.g. qwen2-vl, llava, pixtral
-  const looksVision = /(?:\bvl\b|vision|llava|pixtral|bakllava|qwen.*vl|internvl|moondream)/i.test(lower)
+  // Vision models are tagged by id even when registry entry lacks 'vision' — e.g. qwen2-vl, llava, pixtral, unlimited-ocr
+  const looksVision = /(?:\bvl\b|vision|llava|pixtral|bakllava|qwen.*vl|internvl|moondream|trocr|donut)/i.test(lower)
   for (const p of MODEL_CAPABILITY_REGISTRY) {
     if (lower.includes(p.family)) {
       const caps = [...p.capabilities] as ModelCapability[]

@@ -20,6 +20,7 @@ export interface BionicSkill {
 const SKILL_SOURCES: Array<{ name: string; relPath: string }> = [
   { name: 'Claude Code', relPath: '.claude/skills' },
   { name: 'Other Agents', relPath: '.agents/skills' },
+  { name: 'OpenCode', relPath: '.opencode/skills' },
 ]
 
 function getEnabledMapRaw(store?: { getAppSetting: (k: string) => string | null }): Record<string, boolean> {

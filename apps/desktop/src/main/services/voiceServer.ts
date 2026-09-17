@@ -19,6 +19,9 @@ let startPromise: Promise<void> | null = null
 const PORT = 51820
 const HEALTH_URL = `http://127.0.0.1:${PORT}/health`
 const TRANSCRIBE_URL = `http://127.0.0.1:${PORT}/transcribe`
+const OCR_URL = `http://127.0.0.1:${PORT}/ocr`
+const OCR_MODELS_URL = `http://127.0.0.1:${PORT}/ocr/models`
+const OCR_DOWNLOAD_URL = `http://127.0.0.1:${PORT}/ocr/download`
 
 function getPythonDir(): string {
   // app.getAppPath() returns the project root in dev, asar in prod
@@ -102,20 +105,30 @@ export async function startVoiceServer(): Promise<void> {
       })
 
       server.on('exit', (code) => {
-        console.log(`[voice] Server exited with code ${code}`)
+        const blocked = code === 1
+        if (blocked) console.warn(`[voice] Server exited with code ${code} — likely blocked by Windows App Control / antivirus (surya blocked ctranslate2). Voice/OCR disabled, chat unaffected.`)
+        else console.log(`[voice] Server exited with code ${code}`)
         server = null
         ready = false
       })
 
       server.on('error', (err) => {
-        console.error('[voice] Server spawn error:', err.message)
+        console.warn('[voice] Server spawn error (voice disabled, chat unaffected):', err.message)
         server = null
         ready = false
       })
 
-      await waitForServer()
+      await waitForServer().catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('timeout')) {
+          console.warn('[voice] Voice server not ready within timeout — voice/OCR disabled, chat continues normally. Reason: ctranslate2 blocked by App Control policy (File blocked). Allow-list Python site-packages or disable Controlled Folder check.')
+        }
+        throw e
+      })
     } catch (err) {
-      console.error('[voice] Failed to start server:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      // Downgrade to warn — voice is optional, must never break chat
+      console.warn('[voice] Voice/OCR unavailable (chat unaffected):', msg.slice(0, 300))
     } finally {
       starting = false
     }
@@ -168,6 +181,22 @@ export async function transcribeAudio(
     duration: number
     transcribeTime: number
   }>
+}
+
+export async function ocrImage(imageBase64: string, model = 'rapidocr') {
+  if (!ready) { await startVoiceServer(); if (!ready) throw new Error('Voice/OCR server not available') }
+  const { res } = await postLoopback(`${OCR_URL}?model=${encodeURIComponent(model)}`, { image_base64: imageBase64, model }, { timeoutMs: 120_000 })
+  if (!res.ok) throw new Error(`OCR failed (${res.status}): ${await res.text()}`)
+  return await res.json() as { text: string; lines: string[]; confidences: number[]; model: string; ocrTime: number }
+}
+export async function listOcrModels() {
+  const r = await getLoopbackJson(OCR_MODELS_URL, { timeoutMs: 10_000 })
+  return r.json as { models: { id: string; name: string; installed?: boolean }[]; loaded: string[] }
+}
+export async function downloadOcrModel(model: string) {
+  const { res } = await postLoopback(OCR_DOWNLOAD_URL, { model }, { timeoutMs: 300_000 })
+  if (!res.ok) throw new Error(`Download failed: ${await res.text()}`)
+  return await res.json() as { ok: boolean; model: string }
 }
 
 /** Lazy start after app ready — non-blocking */

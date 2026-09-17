@@ -10,16 +10,19 @@
  * propagates. Cancel: in-flight HTTP aborts, one `assistant/cancelled`
  * marker event persists so the timeline explains itself.
  */
-import type { SessionId } from '@shared/types/branded'
+import { brand, type SessionId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmChatMessage, LlmPort, ModelRuntimePort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendRuntimeLog, appendChatLog, safeTarget } from '../logging/runtimeLog'
 import type { ModelWorkbench } from './ModelWorkbench'
+import { detectOutputFormat, generateArtifactFile } from './artifacts'
+import path from 'node:path'
+import fs from 'node:fs'
 
-/** Minimal local system prompt. Main-only: never renderer-provided. */
+/** Minimal local system prompt. Main-only: never renderer-provided. English + artifact + thinking streaming. */
 export const CHAT_SYSTEM_PROMPT =
-  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Always respond in English only. Answer concisely and directly in English.'
+  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Always respond in English only — never use Spanish or other languages; when generating HTML always use <html lang="en">. Answer concisely and directly in English. When the user requests a UI, dashboard, login page, or file (pdf/xlsx/docx/html), output the file content in a single fenced code block (```html, ```tsx, ```python) so the artifact pipeline can capture it for live preview. Always stream your private reasoning inside <thinking>...</thinking> tags before the final answer so the UI can display live thinking with time.'
 
 const MAX_HISTORY_MESSAGES = 50
 const MAX_HISTORY_CHARS = 24_000
@@ -386,8 +389,54 @@ export class ChatService {
       latencyMs: Date.now() - started,
       injected: { workspace: !!workspaceContext, mcp: !!mcpContext, skills: !!skillsContext, webSearch: !!webContext },
     })
+    // Required-output pipeline: user explicitly requested a file → build it and
+    // surface via artifact:* events BEFORE the durable reply completes.
+    this.maybeGenerateArtifact(sid, content, text)
     this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
     return { ok: true, userSeq, assistantSeq }
+  }
+
+  /**
+   * Build a required-output artifact when the USER instruction explicitly
+   * names a file (pdf / xlsx / docx / code / drawing). Pure chat returns null
+   * from detectOutputFormat → this is a no-op. Emits artifact:writing before
+   * generation and artifact:ready on success; a build failure never breaks
+   * the chat reply (the durable assistant message stands).
+   */
+  private async maybeGenerateArtifact(sid: string, userContent: string, assistantText: string): Promise<void> {
+    const requested = detectOutputFormat(userContent)
+    if (!requested) return
+    const base = this.deps.baseDir
+    const outDir = base ? path.join(base, 'artifacts', sid) : undefined
+    if (!outDir) return
+    try {
+      fs.mkdirSync(outDir, { recursive: true })
+    } catch {
+      return
+    }
+    const filePath = path.join(outDir, requested.fileName)
+    this.deps.emit({ sessionId: sid, kind: 'artifact:writing', fileName: requested.fileName, artifactKind: requested.kind })
+    try {
+      const res = generateArtifactFile(requested.kind, filePath, assistantText, userContent)
+      if (!res) {
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', outcome: 'skipped', detail: `artifact ${requested.kind}: no content to build` })
+        return
+      }
+      this.deps.emit({ sessionId: sid, kind: 'artifact:ready', fileName: requested.fileName, artifactKind: requested.kind, artifactPath: filePath })
+      // Persist an artifact/created event so the timeline's generated-files
+      // list (ChatView artifact/created handler) renders an "Open" entry.
+      try {
+        await this.deps.persistence.appendEvent(brand<'SessionId'>(sid), 'artifact/created', {
+          fileName: requested.fileName,
+          path: filePath,
+          kind: requested.kind,
+          bytes: res.bytes,
+        })
+      } catch {}
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'done', outcome: 'ready', detail: `artifact ${requested.kind} ${filePath} (${res.bytes}b)` })
+    } catch (e) {
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'failed', error: e instanceof Error ? e.message : 'artifact build failed', detail: requested.fileName })
+    }
   }
 
   /**

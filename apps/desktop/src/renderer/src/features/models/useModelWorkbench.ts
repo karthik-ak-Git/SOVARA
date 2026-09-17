@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   addRuntime,
+  diagnoseLocalRuntime,
   ensureLocalRuntime,
   getActiveModel,
   getSystemResources,
@@ -12,7 +13,9 @@ import {
   removeRuntime,
   selectModel,
   testRuntimeConnection,
+  unblockLocalRuntime,
   type LocalRuntimeStatus,
+  type RuntimeDiagnoseView,
   type SystemResourcesView,
 } from '@/lib/client/api'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry, RuntimeProbeResult } from '@shared/types/models'
@@ -36,6 +39,7 @@ export function useModelWorkbench() {
   // Owned runtime (Sovara's own llama.cpp sidecar — no Ollama/LM Studio needed)
   const [localRuntime, setLocalRuntime] = useState<LocalRuntimeStatus | null>(null)
   const [runtimeProgress, setRuntimeProgress] = useState<{ phase: string; receivedBytes: number; totalBytes: number | null } | null>(null)
+  const [diag, setDiag] = useState<RuntimeDiagnoseView | null>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
     const [rt, md, ac, libRaw] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
@@ -81,8 +85,13 @@ export function useModelWorkbench() {
         if (!cancelled) setLocalRuntime({ available: false })
       }
     })()
+    const id = setInterval(() => {
+      void getSystemResources().then(r => { if (!cancelled) setResources(r) }).catch(()=>{})
+      void probeLocalRuntime().then(s => { if (!cancelled) setLocalRuntime(s) }).catch(()=>{})
+    }, 5000)
     return () => {
       cancelled = true
+      clearInterval(id)
     }
   }, [refresh])
 
@@ -194,5 +203,30 @@ export function useModelWorkbench() {
 
   const dismissError = useCallback(() => setError(null), [])
 
-  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
+  const handleDiagnose = useCallback(async (): Promise<void> => {
+    try {
+      const d = await diagnoseLocalRuntime()
+      setDiag(d)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  const handleUnblock = useCallback(async (): Promise<void> => {
+    try {
+      setBusy('unblock')
+      setError(null)
+      const r = await unblockLocalRuntime()
+      setDiag(r.diag)
+      const status = await probeLocalRuntime().catch(() => ({ available: false }) as LocalRuntimeStatus)
+      setLocalRuntime(status)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }, [refresh])
+
+  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, handleDiagnose, handleUnblock, diag, localRuntime, runtimeProgress, refresh }
 }

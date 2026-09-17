@@ -12,10 +12,11 @@ function formatCtx(n?: number): string {
 }
 
 export function ModelsPage(): ReactElement {
-  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
+  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, handleDiagnose, handleUnblock, diag, localRuntime, runtimeProgress } =
     useModelWorkbench()
   const [name, setName] = useState('')
   const [endpoint, setEndpoint] = useState('http://127.0.0.1:1234/v1')
+  const blocked = /spawn unknown|blocked|not installed|could not start/i.test(error ?? '')
 
   const vramUnknown = resources !== null && resources.vram.totalMB === undefined
 
@@ -62,7 +63,7 @@ export function ModelsPage(): ReactElement {
             <Database size={16} aria-hidden />
             <span>Sovara Local Runtime</span>
           </div>
-          <div className="panel-hint muted small">llama.cpp sidecar · CUDA · owned by Sovara</div>
+          <div className="panel-hint muted small">llama.cpp sidecar · CUDA · owned by Sovara · %LOCALAPPDATA%\Sovara (no @)</div>
         </div>
         {localRuntime === null ? (
           <p className="muted small" role="status">Checking local runtime…</p>
@@ -70,31 +71,64 @@ export function ModelsPage(): ReactElement {
           <div className="active-model" role="status" data-testid="local-runtime-ready">
             <span className="badge badge--success">Installed</span>
             <span className="muted small">
-              {localRuntime.version ?? 'llama-server'} · loads GGUFs from your Library straight into GPU VRAM. Switching models unloads the previous one first.
+              {localRuntime.version ?? 'llama-server'} · {localRuntime.path ?? ''} · loads GGUFs from your Library straight into GPU VRAM.
             </span>
+            <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              <Button variant="ghost" onClick={() => void handleDiagnose()} disabled={busy !== null} aria-label="Diagnose local runtime">Diagnose</Button>
+              <Button variant="ghost" onClick={() => void handleUnblock()} disabled={busy !== null} aria-label="Unblock and retry">Unblock &amp; Retry</Button>
+            </div>
+            {diag ? (
+              <p className="muted small" role="status" style={{ marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                exe={diag.exePath ?? '—'} · {diag.sizeMB ?? '?'}MB · MOTW={diag.hasMotw ? 'YES (blocked)' : 'no'} · version={diag.version ?? '—'} · dlls=[{diag.dlls.join(',')}] · {diag.recommendation}
+              </p>
+            ) : null}
           </div>
         ) : (
           <div role="status" aria-label="Local runtime not installed">
             <p className="muted small">
-              Not installed. One-time download (~240MB pinned CUDA build) — afterwards Sovara runs fully offline and loads your Library GGUFs into VRAM itself.
+              Not installed or blocked. One-time download (~240MB pinned CUDA build) to %LOCALAPPDATA%\Sovara — afterwards Sovara runs fully offline. If Windows blocks it (spawn UNKNOWN / MOTW), use Unblock &amp; Retry or switch to LM Studio below.
             </p>
             {runtimeProgress ? (
               <p className="muted small" role="status" aria-label="Runtime install progress">
                 {runtimeProgress.phase}… {runtimeProgress.totalBytes ? `${Math.round((runtimeProgress.receivedBytes / runtimeProgress.totalBytes) * 100)}%` : `${Math.round(runtimeProgress.receivedBytes / 1048576)}MB`}
               </p>
             ) : (
-              <Button
-                variant="primary"
-                onClick={() => void handleEnsureRuntime()}
-                disabled={busy !== null}
-                aria-label="Install Sovara local runtime"
-              >
-                Install local runtime
-              </Button>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <Button
+                  variant="primary"
+                  onClick={() => void handleEnsureRuntime()}
+                  disabled={busy !== null}
+                  aria-label="Install Sovara local runtime"
+                >
+                  Install local runtime
+                </Button>
+                <Button variant="ghost" onClick={() => void handleDiagnose()} disabled={busy !== null} aria-label="Diagnose local runtime">Diagnose</Button>
+                <Button variant="ghost" onClick={() => void handleUnblock()} disabled={busy !== null} aria-label="Unblock and retry">Unblock &amp; Retry</Button>
+              </div>
             )}
+            {diag ? (
+              <p className="muted small" role="status" style={{ marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                dir={diag.runtimeDir} · legacy={diag.legacyDir ?? '—'} · MOTW={diag.hasMotw ? 'YES' : 'no'} · {diag.recommendation}
+              </p>
+            ) : null}
           </div>
         )}
       </Card>
+
+      {blocked ? (
+        <Card>
+          <div className="panel-head">
+            <div className="panel-title"><span>Fallback — use LM Studio / Ollama instead</span></div>
+            <div className="panel-hint muted small">No reinstall needed · your GGUFs already there</div>
+          </div>
+          <p className="muted small">Owned sidecar is blocked by Windows. Start LM Studio → Server tab → Start Server (:1234), or start Ollama (:11434), then Test + Select below. Chat auto-falls-back when the sidecar fails.</p>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Button variant="primary" onClick={() => void handleProbe('lmstudio')} disabled={busy !== null} aria-label="Test LM Studio">Test LM Studio (:1234)</Button>
+            <Button variant="ghost" onClick={() => void handleProbe('ollama')} disabled={busy !== null} aria-label="Test Ollama">Test Ollama (:11434)</Button>
+            <Button variant="ghost" onClick={() => void handleUnblock()} disabled={busy !== null} aria-label="Unblock owned runtime">Unblock owned &amp; Retry</Button>
+          </div>
+        </Card>
+      ) : null}
 
       {error ? (
         <div className="chat-error" role="alert" aria-label="Models error">
