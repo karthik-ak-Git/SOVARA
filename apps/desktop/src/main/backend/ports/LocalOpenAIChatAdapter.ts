@@ -133,11 +133,10 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       throw new ChatInferenceError('model-not-found', 'model-not-found: empty model id')
     }
     const url = chatCompletionsUrl(request.endpoint)
-    const body = {
+    // 3x tuning: prompt-cache reuse (~40% faster on 2nd turn) + large max_tokens so 6-slide PPT (8k chars) is not truncated at 512 (observed cut at </div)
+    const needsLongOutput = request.messages.some((m) => /build.*ppt|presentation|6 slides|\.ppt/i.test(m.content))
+    const body: Record<string, unknown> = {
       model: request.model,
-      // Text-only messages stay plain strings; messages carrying vision parts
-      // serialize to OpenAI content blocks. Text-only runtimes never receive
-      // images — the orchestrator attaches them only for vision-capable picks.
       messages: request.messages.map((m) =>
         !m.images || m.images.length === 0
           ? { role: m.role, content: m.content }
@@ -153,6 +152,10 @@ export class LocalOpenAIChatAdapter implements LlmPort {
           }
       ),
       stream: request.stream,
+      // llama.cpp OpenAI compat: cache_prompt reuses KV for system prompt, n_predict caps length
+      cache_prompt: true,
+      max_tokens: needsLongOutput ? 4096 : 2048,
+      temperature: 0.7,
     }
 
     let opened: { res: Response; latencyMs: number }

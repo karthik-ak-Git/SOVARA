@@ -529,11 +529,12 @@ export class AgentOrchestrator {
       // RAG: don't send full history — retrieve only relevant turns via semantic search
       const { retrieveRelevant } = await import('./rag/semanticSearch')
       const ragPrior = retrieveRelevant(prior, content, { maxChunks: 6, maxChars: 12000 })
-      const messages: import('@shared/types/ports').LlmChatMessage[] = [
+      let messages: import('@shared/types/ports').LlmChatMessage[] = [
         { role: 'system', content: systemBlocks.join('\n\n') },
         ...toRequestMessages(ragPrior),
         { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
       ]
+      let autoRetried = false // one automatic retry after compact on empty/stall
 
       appendChatLog(this.deps.baseDir, {
         sessionId: sid,
@@ -908,16 +909,112 @@ export class AgentOrchestrator {
 
       if (text.trim() === '') {
         // Reasoning-only stall: Qwen3.5 streams <think> for minutes then closes late or never.
-        // If we have buffered reasoning but no final answer, promote it instead of throwing empty.
         const reasoningFallback = reasoningBuffer.trim()
         if (reasoningFallback.length > 40) {
           text = reasoningFallback + '\n\n[Note: model returned only reasoning — promoted to answer. If truncated, retry with a shorter prompt or /compact.]'
         } else if (reasoningFallback.length > 0) {
           text = reasoningFallback
+        } else if (!autoRetried) {
+          // One automatic retry: compact aggressively and re-stream once, so the user sees the 6-slide PPT without manual /compact
+          autoRetried = true
+          const secs = Math.round((Date.now() - startedAll) / 1000)
+          const compactMsg = `Auto-compacted for empty retry — model ${model} returned no text after ${secs}s. Retrying once with compacted context.`
+          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `auto-retry compact empty after ${secs}s (attempt 2)` })
+          this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `empty after ${secs}s — retrying once with compacted history` })
+          // Rebuild compact messages: 3 chunks/6000 chars vs 6/12000, and drop duplicate last user if identical
+          try {
+            const { retrieveRelevant: rr2 } = await import('./rag/semanticSearch')
+            const ragCompact = rr2(prior, content, { maxChunks: 3, maxChars: 6000 })
+            messages = [
+              { role: 'system', content: systemBlocks.join('\n\n') },
+              ...toRequestMessages(ragCompact),
+              { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
+            ]
+          } catch { /* keep original messages on import failure */ }
+          // Reset stream state and re-arm stall guard
+          text = ''
+          reasoningBuffer = ''
+          inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+          streamed = true
+          usage = undefined
+          orchFirstTokenAt = null
+          firstTokenRef.value = null
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+          armStallGuard(firstTokenRef)
+          this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'retry llm generation (compacted)' })
+          try {
+            for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+              if (controller.signal.aborted) break
+              if (chunk.type === 'text-delta' && chunk.text) {
+                let delta = chunk.text
+                if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
+                  if (delta.includes('<thinking>') || delta.includes('<think>')) { inReasoning = true; delta = delta.replace(/<thinking>|<think>/g, '') }
+                  if (delta.includes('</thinking>') || delta.includes('</think>')) {
+                    const parts = delta.split(/<\/thinking>|<\/think>/)
+                    const tail = parts[0] ?? ''
+                    reasoningBuffer += tail
+                    if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
+                    if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
+                    inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
+                  }
+                  if (inReasoning) { reasoningBuffer += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
+                }
+                text += delta
+                if (orchFirstTokenAt === null) { orchFirstTokenAt = Date.now(); firstTokenRef.value = orchFirstTokenAt; if (stallTimer) { clearTimeout(stallTimer); stallTimer = null } }
+                this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
+              }
+              if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
+              if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+              if (chunk.type === 'done') break
+            }
+          } catch (e2) {
+            if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+            const raw2 = e2 instanceof Error ? e2.message : String(e2)
+            if (/stall-timeout/i.test(raw2)) {
+              const secs2 = Math.round((Date.now() - startedAll) / 1000)
+              const msg = `The model stalled again after ${secs2}s (retry). Context compacted twice — try a fresh session or a smaller model/quant.`
+              this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'timeout', streamed)
+              const seq2 = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
+              this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: seq2 })
+              this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `stall-retry failed after ${secs2}s`, stepIndex: 0 })
+              this.noteEndQuiet(ownedInstanceForMetrics)
+              return { ok: true, userSeq, assistantSeq: seq2, routing, classification }
+            }
+            if (controller.signal.aborted || (e2 instanceof ChatInferenceError && (e2 as ChatInferenceError).code === 'cancelled')) {
+              this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled on retry' })
+              this.noteEndQuiet(ownedInstanceForMetrics)
+              return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
+            }
+            const safe2 = e2 instanceof ChatInferenceError ? (e2 as ChatInferenceError).message : 'stream-error on retry'
+            this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e2), streamed)
+            const seq2 = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `Retry failed: ${safe2} — type /compact or start a new chat.` })).seq
+            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: seq2 })
+            this.noteEndQuiet(ownedInstanceForMetrics)
+            return { ok: true, userSeq, assistantSeq: seq2, routing, classification }
+          }
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `retry llm done — ${text.length} chars` })
+          if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
+          // Re-evaluate after retry
+          const fb2 = reasoningBuffer.trim()
+          if (text.trim() === '' && fb2.length > 40) text = fb2
+          else if (text.trim() === '' && fb2.length > 0) text = fb2
+          if (text.trim() !== '') {
+            // fall through to artifact generation below
+          } else {
+            const secs = Math.round((Date.now() - startedAll) / 1000)
+            const ack = `The model returned an empty reply again after ${secs}s even after auto-compact retry. Please start a fresh session or pick a smaller quant.`
+            this.noteEndQuiet(ownedInstanceForMetrics)
+            this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
+            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: ack, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
+            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
+            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+            this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty after retry ${secs}s`, stepIndex: 0 })
+            return { ok: true, userSeq, assistantSeq: seq, routing, classification }
+          }
         } else {
           const secs = Math.round((Date.now() - startedAll) / 1000)
-          const compactMsg = `Auto-compacted for empty reply — model ${model} returned no text after ${secs}s (streamed=${streamed}). Likely context overflow or reasoning stall.`
-          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
           const ack = `The model returned an empty reply after ${secs}s — context was auto-compacted. Try a shorter prompt, type /compact, or pick a smaller quant. If it repeats, check runtime health or restart the local server.`
           this.noteEndQuiet(ownedInstanceForMetrics)
           this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)

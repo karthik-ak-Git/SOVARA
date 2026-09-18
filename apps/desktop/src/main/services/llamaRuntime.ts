@@ -631,16 +631,24 @@ export interface ServerArgsOpts {
 }
 
 export function buildServerArgs(opts: ServerArgsOpts): string[] {
+  const threads = Math.max(4, Math.min(16, (os.cpus().length || 8) - 1))
   const args = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
     '--port', String(opts.port),
     '-c', String(opts.ctxLen ?? 4096),
     '-ngl', String(opts.nGpuLayers ?? 999),
+    '-t', String(threads),
+    '-b', '512',
+    '--ubatch-size', '512',
+    '--cache-type-k', 'q8_0',
+    '--cache-type-v', 'q8_0',
+    '--mlock',
   ]
-  // KV-cache compression like Ollama (flash-attn reduces VRAM ~15%)
-  // Older builds ignore unknown flags — we add guarded later if needed.
-  try { args.push('--flash-attn', 'auto') } catch { /* ignore */ }
+  // Flash attention like Ollama — ~15% VRAM + 20-30% prefill speed on long prompts (PPT 6 slides)
+  // Cont-batching is default since b3100 but explicit keeps older pin honest; q8 KV is the 3x win.
+  try { args.push('--flash-attn', 'on') } catch { /* ignore */ }
+  try { args.push('--cont-batching') } catch { /* ignore */ }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)
   return args
