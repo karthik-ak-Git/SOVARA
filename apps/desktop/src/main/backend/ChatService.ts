@@ -24,6 +24,8 @@ import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 import { classifyTask } from './TaskClassifier'
 import { routeModel } from './ModelRouter'
 import { getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
+import { encodeToPool, retrieveSlice } from '../services/unlimitedContext'
+import { AssistantStreamAccumulator } from './assistantStream'
 
 export { SOVARA_SYSTEM_PROMPT as CHAT_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
@@ -433,21 +435,11 @@ export class ChatService {
       endpoint = ready.endpoint
       model = ready.model
       ownedInstanceId = ready.instanceId
-    } else {
-      // 2. Resource advisory (must be before inference — respect VRAM/limits)
-      const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
-        {}
-      )
-      if (pressure.blocking) {
-        const msg = `resource-pressure: ${pressure.reason ?? 'inference refused'}`
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg, modelId: active.selection.modelId, runtimeId: entry.id })
-        throw new ChatServiceError('resource-pressure', msg)
-      }
-      await this.ensureModelLoaded(active.selection.modelId, entry.id)
-      endpoint = entry.endpoint
-      model = remoteModelId(active.selection.modelId)
-    }
+     } else {
+       await this.ensureModelLoaded(active.selection.modelId, entry.id)
+       endpoint = entry.endpoint
+       model = remoteModelId(active.selection.modelId)
+     }
 
     // 3. History + workspace already loaded above (prior, systemBlocks, systemCharsForBudget) — reuse for final budget
     // Recompute nCtx from actual resident instance (may have been reloaded to 8192 after the earlier estimate) or from estimate
@@ -460,8 +452,22 @@ export class ChatService {
         // nCtxForLoad is already 8192 — keep it; do not fall back to 4096
       }
     } catch {}
-    // Reuse prior and systemBlocks from above; recompute history with final nCtx budget
-    const historyMsgs = buildBudgetedHistory(prior, systemCharsForBudget, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
+     // Unlimited Context virtual memory: encode overflow beyond resident to disk pool, recover slice
+     let unlimitedSlice: string | null = null
+     try {
+       const allTurnsForPool = toRequestMessages(prior)
+       if (allTurnsForPool.length > 6) {
+         const overflow = allTurnsForPool.slice(0, -6)
+         if (overflow.length > 0) encodeToPool(this.deps.baseDir, sid, overflow)
+         unlimitedSlice = retrieveSlice(this.deps.baseDir, content, 2200)
+       } else {
+         unlimitedSlice = retrieveSlice(this.deps.baseDir, content, 1200)
+       }
+     } catch {}
+     // Keep resident window 8192, inject recovered slice as extra system block (cognitive workspace working buffer)
+     if (unlimitedSlice) systemBlocks.push(unlimitedSlice)
+     // Reuse prior and systemBlocks from above; recompute history with final nCtx budget
+     const historyMsgs = buildBudgetedHistory(prior, systemBlocks.join('\n\n').length, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
     let messages: LlmChatMessage[] = compactForCtx(
       [
         { role: 'system', content: systemBlocks.join('\n\n') },
@@ -499,6 +505,7 @@ export class ChatService {
     let streamed = true
     let firstTokenAt: number | null = null
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+    const acc = new AssistantStreamAccumulator()
     if (ownedInstanceId) this.noteStart(ownedInstanceId)
     try {
       let reasoningBuffer = ''
@@ -539,8 +546,9 @@ export class ChatService {
             }
           }
           text += delta
-          if (firstTokenAt === null) firstTokenAt = Date.now()
-          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
+           acc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: delta } })
+           if (firstTokenAt === null) firstTokenAt = Date.now()
+           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
         if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
@@ -730,19 +738,22 @@ export class ChatService {
       regenModel = remoteModelId(active.selection.modelId)
     }
 
-    // Build full history (already includes last user), plus system contexts
-    const workspaceContext = await this.resolveWorkspaceContext(sessionId)
-    const mcpContext = this.deps.getMcpContext?.() ?? null
-    let skillsContext: string | null = null
-    try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
-    const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
-    const systemBlocksReg = [
-      CHAT_SYSTEM_PROMPT,
-      ...(reasoningSystemReg ? [reasoningSystemReg] : []),
-      ...(workspaceContext ? [workspaceContext] : []),
-      ...(mcpContext ? [mcpContext] : []),
-      ...(skillsContext ? [skillsContext] : []),
-    ]
+     // Build full history (already includes last user), plus system contexts — with unlimited slice like send
+     const workspaceContext = await this.resolveWorkspaceContext(sessionId)
+     const mcpContext = this.deps.getMcpContext?.() ?? null
+     let skillsContext: string | null = null
+     try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
+     const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+     let unlimitedSliceReg: string | null = null
+     try { unlimitedSliceReg = retrieveSlice(this.deps.baseDir, lastContent, 2200) } catch {}
+     const systemBlocksReg = [
+       CHAT_SYSTEM_PROMPT,
+       ...(reasoningSystemReg ? [reasoningSystemReg] : []),
+       ...(workspaceContext ? [workspaceContext] : []),
+       ...(mcpContext ? [mcpContext] : []),
+       ...(skillsContext ? [skillsContext] : []),
+       ...(unlimitedSliceReg ? [unlimitedSliceReg] : []),
+     ]
     // Root fix: regenerate must end on a user turn — llama.cpp 400s on trailing assistant messages.
     // toRequestMessages(prior) ends with the previous assistant reply, so drop trailing assistants
     // and re-anchor on the last user message (with an explicit regenerate nudge).
@@ -772,6 +783,7 @@ export class ChatService {
     let streamed = true
     let regenFirstTokenAt: number | null = null
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+    const regenAcc = new AssistantStreamAccumulator()
     if (regenInstanceId) this.noteStart(regenInstanceId)
     try {
       for await (const chunk of this.deps.llm.streamChat({
@@ -783,10 +795,11 @@ export class ChatService {
         signal: controller.signal,
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
-          text += chunk.text
-          if (regenFirstTokenAt === null) regenFirstTokenAt = Date.now()
-          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
-        }
+           text += chunk.text
+           regenAcc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: chunk.text } })
+           if (regenFirstTokenAt === null) regenFirstTokenAt = Date.now()
+           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text })
+         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
         if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
         if (chunk.type === 'done') break
@@ -902,17 +915,7 @@ export class ChatService {
       // provisioning is best-effort; loadInner will surface runner-missing if it still fails
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `runtime provision check failed: ${e instanceof Error ? e.message.slice(0,120) : String(e)}` })
     }
-    // Sovereign: never block local load on select-time pressure — the adapter
-    // will LRU-evict + partial-fit + CPU fallback transparently. Only log.
-    try {
-      const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: modelId as never, displayName: modelId, source: 'sovara', format: 'gguf' },
-        { ctxLen: Math.max(8192, ctxLen ?? 8192) }
-      )
-      if (pressure.blocking) {
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `pressure warn (non-blocking, ctx=${Math.max(8192, ctxLen ?? 8192)}): ${pressure.reason ?? 'load refused check, will try evict+partial)'}` })
-      }
-    } catch { /* never block local load */ }
+     // Chat never checks fit — detection is Explorer-only (your request). Direct load; adapter handles evict/partial/CPU.
     appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `loading "${modelId}" into VRAM...` })
     // eslint-disable-next-line no-console
     console.log(`[SOVARA][CHAT] LOADING model=${modelId} runtime=${runtimeId}`)

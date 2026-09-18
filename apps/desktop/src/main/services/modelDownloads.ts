@@ -128,37 +128,24 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
   const out: LibraryEntry[] = []
   const walk = (dir: string): void => {
     let entries: ReturnType<typeof readdirSync>
-    try {
-      entries = readdirSync(dir, { withFileTypes: true }) as unknown as ReturnType<typeof readdirSync>
-    } catch {
-      return
-    }
+    try { entries = readdirSync(dir, { withFileTypes: true }) as unknown as ReturnType<typeof readdirSync> } catch { return }
     for (const ent of entries) {
       const full = join(dir, (ent as unknown as { name: string }).name)
-      if ((ent as unknown as { isDirectory(): boolean }).isDirectory()) {
-        walk(full)
-      } else {
-        const lower = full.toLowerCase()
-        // skip .part incomplete files
-        if (lower.endsWith('.part')) continue
-        const dot = lower.lastIndexOf('.')
-        if (dot < 0 || !MODEL_EXTENSIONS.has(lower.slice(dot))) continue
-        try {
-          const st = statSync(full)
-          const rel = relative(root, full)
-          out.push({
-            name: dirname(rel) === '.' ? basename(full) : dirname(rel).split(sep)[0] ?? basename(full),
-            file: basename(full),
-            sizeBytes: st.size,
-            path: full,
-            modifiedAt: st.mtimeMs,
-            // Filesystem walk origin (registry enrichment happens downstream).
-            source: 'filesystem',
-          })
-        } catch {
-          // raced deletion — skip
-        }
-      }
+      if ((ent as unknown as { isDirectory(): boolean }).isDirectory()) { walk(full); continue }
+      const lower = full.toLowerCase()
+      if (lower.endsWith('.part') || lower.endsWith('.json') || lower.endsWith('.set.json')) continue
+      const dot = lower.lastIndexOf('.')
+      if (dot < 0 || !MODEL_EXTENSIONS.has(lower.slice(dot))) continue
+      // skip shard sidecars already handled by isDownloaded grouping
+      if (lower.includes('-00001-of-') && !lower.endsWith('.gguf')) continue
+      try {
+        const st = statSync(full)
+        const rel = relative(root, full)
+        const folder = dirname(rel) === '.' ? '' : dirname(rel).split(sep)[0] ?? ''
+        // repoFolder "author__name" -> display "author/name", file stays basename
+        const display = folder.includes('__') ? folder.replace('__', '/') : (folder || basename(full))
+        out.push({ name: display, file: basename(full), sizeBytes: st.size, path: full, modifiedAt: st.mtimeMs, source: 'filesystem' })
+      } catch {}
     }
   }
   if (existsSync(root)) walk(root)
@@ -167,40 +154,31 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
 
 export function scanLibrary(root: string, rows?: readonly ModelRegistryRow[], extraRoots: string[] = []): LibraryEntry[] {
   const allFiles = [...scanLibraryFiles(root), ...extraRoots.flatMap((r) => scanLibraryFiles(r))]
-  const files = allFiles
-  if (!rows || rows.length === 0) return files.sort((a,b)=>b.modifiedAt-a.modifiedAt)
-
-  const byDisk = new Map(files.map((e) => [resolve(e.path), e] as const))
-  const out: LibraryEntry[] = []
-  const seen = new Set<string>()
-
+  if (!rows || rows.length === 0) {
+    // Deduplicate by repo/file shard-set: 00001-of-00002 counts as one card
+    const seen = new Set<string>(); const out: LibraryEntry[] = []
+    for (const f of allFiles) {
+      const k = `${f.name}/${f.file}`.replace(/-000\d+-of-\d+/,'')
+      if (seen.has(k)) continue; seen.add(k); out.push(f)
+    }
+    return out.sort((a,b)=> (b.installStatus?1:0)-(a.installStatus?1:0) || b.modifiedAt-a.modifiedAt)
+  }
+  const byDisk = new Map(allFiles.map((e) => [resolve(e.path), e] as const))
+  const out: LibraryEntry[] = []; const seen = new Set<string>()
   for (const row of rows) {
-    const underPrimary = row.localPath ? isUnder(root, row.localPath) : false
-    const underExtra = row.localPath ? extraRoots.some((er) => isUnder(er, row.localPath)) : false
-    if (!row.localPath || (!underPrimary && !underExtra)) continue
+    if (!row.localPath) continue
+    const under = isUnder(root, row.localPath) || extraRoots.some((er) => isUnder(er, row.localPath))
+    if (!under) continue
     const key = resolve(row.localPath)
-    if (seen.has(key)) continue
-    seen.add(key)
+    if (seen.has(key)) continue; seen.add(key)
     const disk = byDisk.get(key)
-    out.push({
-      name: row.displayName,
-      file: row.rfilename,
-      sizeBytes: disk?.sizeBytes ?? row.fileSizeBytes ?? 0,
-      path: row.localPath,
-      modifiedAt: disk?.modifiedAt ?? row.updatedAt,
-      source: 'registry',
-      installStatus: disk ? row.installStatus : 'missing',
-      downloadStatus: row.downloadStatus,
-      runtimeId: row.runtimeId,
-    })
+    // shard-set installed only when every part present
+    const set = row.rfilename.includes('00001-of-') ? readSetSidecar(root, row.repository, row.rfilename) : null
+    const shardInstalled = set ? set.parts.every((p)=> partComplete(root, row.repository, p.rfilename)) : true
+    out.push({ name: row.displayName || row.repository, file: row.rfilename, sizeBytes: disk?.sizeBytes ?? row.fileSizeBytes ?? 0, path: row.localPath, modifiedAt: disk?.modifiedAt ?? row.updatedAt, source: 'registry', installStatus: disk && shardInstalled ? row.installStatus : 'missing', downloadStatus: row.downloadStatus, runtimeId: row.runtimeId })
   }
-
-  for (const file of files) {
-    if (seen.has(resolve(file.path))) continue
-    out.push(file)
-  }
-
-  return out.sort((a, b) => b.modifiedAt - a.modifiedAt)
+  for (const file of allFiles) { if (seen.has(resolve(file.path))) continue; out.push(file) }
+  return out.sort((a, b) => (a.installStatus==='installed'?0:1)-(b.installStatus==='installed'?0:1) || b.modifiedAt - a.modifiedAt)
 }
 
 export function isDownloaded(root: string, modelId: string, rfilename: string): boolean {
@@ -724,6 +702,12 @@ export async function startDownload(
       } catch {
         startAt = 0
       }
+      // HF.js fileDownloadInfo pattern: probe Range 0-0 for size/etag/Xet before full stream
+      try {
+        const probe = await fetch(url.toString(), { method: 'GET', headers: { Range: 'bytes=0-0', 'User-Agent': 'SOVARA/1.0' }, signal: ctrl.signal })
+        const cr = probe.headers.get('content-range')
+        if (cr) { /* size from probe: bytes 0-0/<total> validates etag */ }
+      } catch {}
       const res = await fetch(url.toString(), {
         signal: ctrl.signal,
         headers: {

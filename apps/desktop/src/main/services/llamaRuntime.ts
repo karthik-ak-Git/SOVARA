@@ -687,30 +687,31 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     // n_parallel multiplies KV-cache cost for no real benefit.
     '--parallel', '1',
   ]
-  // Flash attention: -15% VRAM and +20-30% prefill on long prompts (Qwen3).
-  // Cont-batching is default since b3100 but explicit keeps older pin honest.
-  try { args.push('--flash-attn', 'on') } catch { /* ignore */ }
+  // Flash attention: -15% VRAM and +20-30% prefill on long prompts (Qwen3). Best-practice: always on with CUDA (b5000+). Keep auto so Vulkan/Metal fallback works.
+  // Best practice (2026-03 research): --flash-attn on + --cache-type-k/v q4_0 + -b 4096 + --parallel 1 is the proven fast path.
+  try { args.push('--flash-attn', 'auto') } catch { /* ignore */ }
   try { args.push('--cont-batching') } catch { /* ignore */ }
-  // Prefix caching — system prompt + tool descriptions are identical
-  // every turn; lookup-cache reuses the KV cache across requests instead
-  // of recomputing it. Largest perceived-speed win for chat workloads
-  // (40-60% faster second turn on same session).
-  try { args.push('--lookup-cache-static') } catch { /* ignore */ }
-  try { args.push('--lookup-cache-dynamic') } catch { /* ignore */ }
-  // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die
-  // memory hops during prompt processing (~10% win, no cost on single-die).
+  // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die memory hops (~10% win, no cost on single-die).
   try { if (process.platform !== 'win32') args.push('--numa', 'distribute') } catch { /* ignore */ }
-  // --fit on: let the server auto-distribute layers/KV across CUDA/CPU (GPU strategy guide 2026-02-23).
-  // Our manual planPartialFit stays as preflight estimate; --fit is the enforcer at spawn.
-  try { args.push('--fit', 'on', '--fit-ctx', '4096') } catch { /* ignore */ }
   // Native reasoning effort — maps thinkingLevel to server-side template budget (not just prompt tags).
   if (opts.reasoningEffort) {
     try { args.push('--reasoning-effort', opts.reasoningEffort) } catch { /* ignore */ }
   }
-  // Native server tools (localhost-only): read_file/file_glob_search/grep_search/exec_shell_command.
-  // This is what makes "read the codebase" a real tool-call instead of hallucinated <fs_list> text.
+  // Native server tools — ponytail: only for >=7B tool-capable models.
+  // 4B thinking models (Nemotron-3-Nano) hallucinate {"path":"coed base"} instead of real tool_calls → empty reply after 16s stall.
   if (opts.enableTools) {
-    try { args.push('--tools', 'read_file,file_glob_search,grep_search,exec_shell_command') } catch { /* ignore */ }
+    let fileMB = 0; try { fileMB = Math.round(fs.statSync(opts.modelPath).size/(1024*1024)) } catch {}
+    const isSmallThinking = fileMB > 0 && fileMB < 3500 // <~7B Q4 ~4GB → 4B Nano 2706 MB
+    if (isSmallThinking) {
+      // drop native tools, keep inline synthesized tools in AgentOrchestrator 1434
+    } else {
+      try { args.push('--tools', 'read_file,file_glob_search,grep_search,exec_shell_command') } catch { /* ignore */ }
+    }
+  }
+  // MTP 3x — from test/llama.cpp#22673, only when GGUF has MTP head (Qwen3.x-MTP). Detect by filename, <10% VRAM, n_parallel=1 required
+  const isMtpModel = /mtp/i.test(opts.modelPath)
+  if (isMtpModel) {
+    try { args.push('--spec-type', 'mtp', '--spec-draft-n-max', '3') } catch {}
   }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)

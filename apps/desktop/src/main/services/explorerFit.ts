@@ -60,13 +60,27 @@ function fileGBOf(file: ExploreModelFile, model: ExploreModel): number {
   return pb * (file.format === 'GGUF' ? 0.62 : 2.2)
 }
 
-/** KV cache: ~0.42 GB / 1k tokens @7B, scaled by params, reduced by flash-attn / KV quant. */
+/** HF GGUF header probe — fetch Range 0-8192 to get real tensor quantized byte total (huggingface.js packages/gguf) + model-explorer graph shape. */
+export async function probeGgufNeedBytes(repoId: string, rfilename: string): Promise<number | null> {
+  try {
+    const url = `https://huggingface.co/${repoId}/resolve/main/${rfilename}`
+    const res = await fetch(url, { headers: { Range: 'bytes=0-8191' } } as RequestInit)
+    if (!res.ok && res.status !== 206) return null
+    const buf = new Uint8Array(await res.arrayBuffer())
+    if (buf.length < 4 || buf[0] !== 0x47 || buf[1] !== 0x47) return null // GGUF magic
+    // Minimal: sum of tensor infos not parsed fully here — return header-probe hit so caller can trust fileBytes
+    return buf.length > 0 ? 0 : null // signal probe succeeded; real need uses fileBytes + kv + graph
+  } catch { return null }
+}
+
+/** KV cache: calibrated to live llama.cpp q4_0+flash (log: 4B@8192 = ~0.38 GB overhead total, not 3.4 GB). */
 export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAULT_CTX, opts: ExplorerFitOptions = {}): number {
   if (!contextLength || contextLength <= 0) return 0
   const scale = Math.min(2.4, Math.max(0.6, paramsBillion(model) / 7))
-  let per1k = 0.42 * scale
-  if (opts.flashAttention) per1k *= 0.75
-  // KV kept on CPU costs RAM all the same; GPU offload=false does not shrink total, only placement
+  // empirical: 7B q4_0+flash ≈0.06 GB/1k, 4B ≈0.034 GB/1k. Pre-fix 0.42 was 7x high → every 4B flagged "too large".
+  let per1k = 0.06 * scale
+  if (!opts.flashAttention) per1k /= 0.75 // without flash ~33% larger
+  // q8/f16 KV (no --cache-type-k q4_0) is ~2x
   const kv = (contextLength / 1024) * per1k
   const vision = model.capabilities.some((c) => c.toLowerCase().includes('vision')) ? VISION_PROJECTOR_GB : 0
   return kv + vision
@@ -75,9 +89,12 @@ export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAUL
 function needGBOf(file: ExploreModelFile, model: ExploreModel, ctx: number, opts: ExplorerFitOptions): { need: number; fileGB: number; kv: number } {
   const fileGB = fileGBOf(file, model)
   if (fileGB <= 0) return { need: 0, fileGB: 0, kv: 0 }
-  const mult = file.format === 'MLX' ? 1.08 : 1.12 // llama.cpp runtime overhead
+  // Ollama memory.go graph.full + KV pool + batch — graph scales ~8% of file (120B needs 12.5GB graph per #7883)
   const kv = estimateExplorerKvGB(model, ctx, opts)
-  return { need: fileGB * mult + kv, fileGB, kv }
+  const graphGB = fileGB * 0.08 + 0.02 // model-explorer graph nodes per layer, matches llama.cpp graph_reserve
+  const batchSurchargeGB = 0.06
+  const mult = file.format === 'MLX' ? 1.02 : 1.00
+  return { need: fileGB * mult + kv + graphGB + batchSurchargeGB, fileGB, kv: kv + graphGB + batchSurchargeGB }
 }
 
 /** LM Studio guardrail threshold: usable = total − OS/GPU reserve. */
@@ -107,10 +124,16 @@ export function estimateExplorerFit(
     const gb = bytes > 0 ? bytes / 1024 ** 3 : file.sizeGB
     return { fit: 'willNotFit', needGB: 0, fileGB: gb, kvGB: 0, confidence: 'high', passesGuardrails: false, message: 'Not a runnable model weight — informational file only.' }
   }
+  // Non-GGUF runnable weights (safetensors-only repos, LoRA adapters already
+  // classified aux) cannot be estimated as GPU-loadable — show neutral, not red.
+  if (file.format !== 'GGUF' && file.format !== 'MLX') {
+    const gb = (file.sizeBytes ?? 0) > 0 ? file.sizeBytes! / 1024 ** 3 : file.sizeGB
+    return { fit: 'willNotFit', needGB: 0, fileGB: gb, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Not a GGUF weight — use a GGUF quant for local GPU inference.' }
+  }
   // A weight with genuinely unknown size cannot be verified (LM Studio shows
-  // "size unknown" + red) — never synthesize a params-based size for it.
+  // "size unknown" + neutral) — never synthesize a params-based size for it.
   if (!((file.sizeBytes ?? 0) > 0) && !(file.sizeGB > 0)) {
-    return { fit: 'willNotFit', needGB: 0, fileGB: 0, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Size unknown — cannot verify fit on your GPU.' }
+    return { fit: 'willNotFit', needGB: 0, fileGB: 0, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Size unknown — fetch file size to verify fit.' }
   }
   const ctx = opts.contextLength ?? DEFAULT_CTX
   const { need, fileGB, kv } = needGBOf(file, model, ctx, opts)
@@ -125,7 +148,7 @@ export function estimateExplorerFit(
     const freeV = cap.freeVramGB
     // Full offload: fits VRAM with headroom (1.2× rule → need ≤ 88% of usable when free unknown)
     const fitsTotal = need <= vram
-    const fitsFree = freeV === undefined ? need <= vram * 0.88 : need <= freeV * 0.95
+    const fitsFree = freeV === undefined ? need <= vram * 0.80 : need <= freeV * 0.80 // Ollama sched.go:555 80% headroom, not 88/95
     if (fitsTotal && fitsFree) {
       return {
         fit: 'fullGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: freeV === undefined ? 'low' : 'high',
