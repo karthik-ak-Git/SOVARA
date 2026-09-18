@@ -50,8 +50,7 @@ export async function ensureHiddenNeedle3(baseDir?: string): Promise<{ path: str
   const candidates: Array<{ url: string; modelId: string; rfilename: string }> = [
     // Primary: Cactus-Compute/needle3 GGUF (when published)
     { url: 'https://huggingface.co/Cactus-Compute/needle3/resolve/main/needle3.Q4_K_M.gguf', modelId: HIDDEN_NEEDLE_MODEL_ID, rfilename: HIDDEN_NEEDLE_RFILENAME },
-    // Fallback: needle (26M) safetensors zip — not GGUF but we treat as hidden placeholder
-    // We use a small Qwen tool-use GGUF as hidden proxy that actually runs via llama.cpp
+    // Fallback: small Qwen tool-use GGUF as hidden proxy that actually runs via llama.cpp (500MB, hidden)
     { url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf', modelId: HIDDEN_NEEDLE_MODEL_ID, rfilename: HIDDEN_NEEDLE_RFILENAME },
   ]
   for (const cand of candidates) {

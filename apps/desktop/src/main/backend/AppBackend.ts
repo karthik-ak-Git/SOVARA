@@ -28,6 +28,7 @@ import {
 } from '../services/modelDownloads'
 import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
 import { downloadRowId } from '../config/RuntimeConfigStore'
+import { ensureHiddenNeedle3 } from '../services/hiddenModels'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -175,13 +176,7 @@ export class AppBackend {
       resources
     }
     // Hidden auto-router: Cactus-Compute/needle3 — download by default, invisible, tool-use.
-    // Runs in background, no UI emit, not in Library/Explorer.
-    void (async () => {
-      try {
-        const { ensureHiddenNeedle3 } = await import('../services/hiddenModels')
-        await ensureHiddenNeedle3(baseDir)
-      } catch {}
-    })()
+    void ensureHiddenNeedle3(baseDir).catch(() => {})
   }
 
   getInfo(): { name: string; version: string; electron: string; node: string; platform: NodeJS.Platform; arch: string } {

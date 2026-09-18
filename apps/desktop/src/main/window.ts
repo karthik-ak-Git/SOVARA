@@ -44,7 +44,7 @@ export async function createMainWindow(): Promise<BrowserWindow> {
   const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com https://cdn.simpleicons.org"
   const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co https://cdn.simpleicons.org data: https:"
   const activeCsp =
-    `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' ${HF_IMG}; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`
+    `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' ${HF_IMG}; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     callback({
