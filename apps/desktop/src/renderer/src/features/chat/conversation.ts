@@ -63,24 +63,48 @@ export function deriveMessages(events: SessionEventLike[]): ChatMessage[] {
       role: e.type === 'user/message' ? 'user' : 'assistant',
       content,
     }
+    // De-dupe internal repetition inside a single message (Qwen 9B at 7/32 layers repeats its own paragraph
+    // when KV is strained at 8192: "SOVARA doesn't have... SOVARA doesn't have..." — show once).
+    if (e.type === 'assistant/message' && content.length > 600) {
+      const firstPara = content.slice(0, 400)
+      const restIdx = content.indexOf(firstPara, 200)
+      if (restIdx > 200) {
+        // Find second occurrence of the opening sentence
+        const second = content.indexOf(firstPara.slice(0, 80), 400)
+        if (second > 400) {
+          // Truncate to first occurrence + tail after duplicate header
+          const beforeDup = content.slice(0, second).trimEnd()
+          // If rest after second is essentially the same as first 500 chars, drop it
+          if (content.slice(second, second + 500) === firstPara.slice(0, 500)) {
+            msg.content = beforeDup
+          } else if (content.length > 1200) {
+            // Fallback: if content is just two near-identical halves, keep the first half
+            const half = Math.floor(content.length / 2)
+            if (content.slice(0, 400) === content.slice(half, half + 400)) {
+              msg.content = content.slice(0, half).trim()
+            }
+          }
+        }
+      }
+      // Strip any lingering promotion note suffix (should no longer be emitted, but handle old events)
+      msg.content = msg.content.replace(/\n\n\[Note: model returned only reasoning[^\]]*\]$/, '').trim()
+    }
     if (e.type === 'assistant/message' && pendingReasoning) {
       // Dedupe: Orchestrator promotes reasoning→text when model returns only <think> (text empty)
       // That creates identical reasoning + message content → would render Thought + duplicate body.
-      // Detect and suppress reasoning when content already is (or starts with) the reasoning.
       const r = pendingReasoning.content.trim()
-      const c = content.trim()
+      const c = (msg.content ?? content).trim()
       const isDuplicate =
         r.length > 0 &&
         (c === r ||
           c.startsWith(r.slice(0, Math.min(200, r.length))) ||
           c.includes(r.slice(0, 120)))
-      // Also strip the "[Note: model returned only reasoning…]" suffix for comparison
       const cWithoutNote = c.replace(/\n\n\[Note: model returned only reasoning[^\]]*\]$/, '').trim()
       const isPromotedDuplicate = r.length > 0 && (cWithoutNote === r || cWithoutNote.startsWith(r.slice(0, 120)))
       if (!isDuplicate && !isPromotedDuplicate) {
         msg.reasoning = pendingReasoning.content
-      } else if (isPromotedDuplicate && cWithoutNote === r) {
-        // Keep only the note-free reasoning as content, hide the duplicate Thought block
+      } else if (isPromotedDuplicate) {
+        // Keep only the note-free content, hide the duplicate Thought block
         msg.content = cWithoutNote
       }
       pendingReasoning = null

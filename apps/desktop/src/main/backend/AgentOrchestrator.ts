@@ -1140,7 +1140,10 @@ export class AgentOrchestrator {
         // Use allReasoning (never cleared) — reasoningBuffer is cleared after persist, so fallback would be empty.
         const reasoningFallback = (allReasoning || reasoningBuffer).trim()
         if (reasoningFallback.length > 40) {
-          text = reasoningFallback + '\n\n[Note: model returned only reasoning — promoted to answer. If truncated, retry with a shorter prompt or /compact.]'
+          // Hide the debug note from user-visible content — emit as log only. Dedupe + note caused the
+          // "SOVARA doesn't have... SOVARA doesn't have... [Note: promoted]" duplication in the bubble.
+          text = reasoningFallback
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `promoted reasoning to answer (${reasoningFallback.length} chars, truncated note hidden)` })
         } else if (reasoningFallback.length > 0) {
           text = reasoningFallback
         } else if (!autoRetried) {

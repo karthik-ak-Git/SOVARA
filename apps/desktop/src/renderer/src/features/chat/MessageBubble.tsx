@@ -332,12 +332,84 @@ export function MessageBubble({
               />
             )
           }
-          return part.text.trim() ? (
-            <p key={`${id}-text-${index}`}>
-              {part.text}
+          if (!part.text.trim()) return null
+          // Minimal markdown for assistant text: **bold**, *italic*, `inline`, -/1. lists, > quote
+          // Keep it lightweight (no deps) and preserve whitespace for the model's **workspace**/**SOVARA runtime** etc.
+          const renderMarkdown = (raw: string) => {
+            const lines = raw.split('\n')
+            const out: React.ReactNode[] = []
+            let listBuf: string[] = []
+            let listType: 'ul' | 'ol' | null = null
+            const flushList = () => {
+              if (listBuf.length === 0) return
+              if (listType === 'ul') {
+                out.push(
+                  <ul key={`ul-${out.length}`} style={{ margin: '8px 0', paddingLeft: 20, listStyle: 'disc' }}>
+                    {listBuf.map((li, i) => (
+                      <li key={i} dangerouslySetInnerHTML={{ __html: inline(mdEscape(li)) }} />
+                    ))}
+                  </ul>
+                )
+              } else {
+                out.push(
+                  <ol key={`ol-${out.length}`} style={{ margin: '8px 0', paddingLeft: 20 }}>
+                    {listBuf.map((li, i) => (
+                      <li key={i} dangerouslySetInnerHTML={{ __html: inline(mdEscape(li)) }} />
+                    ))}
+                  </ol>
+                )
+              }
+              listBuf = []
+              listType = null
+            }
+            const mdEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            const inline = (s: string) =>
+              s
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`([^`]+?)`/g, '<code style="background:#f0ede7;padding:1px 4px;border-radius:4px;font:12px/1.2 ui-monospace">$1</code>')
+                .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:#C65D3B;text-decoration:underline">$1</a>')
+            for (const line of lines) {
+              const t = line.trim()
+              if (/^[-*]\s+/.test(t)) {
+                if (listType !== 'ul') { flushList(); listType = 'ul' }
+                listBuf.push(t.replace(/^[-*]\s+/, ''))
+                continue
+              }
+              if (/^\d+\.\s+/.test(t)) {
+                if (listType !== 'ol') { flushList(); listType = 'ol' }
+                listBuf.push(t.replace(/^\d+\.\s+/, ''))
+                continue
+              }
+              if (t.startsWith('> ')) {
+                flushList()
+                out.push(
+                  <blockquote key={`bq-${out.length}`} style={{ borderLeft: '2px solid #E8E4DE', margin: '8px 0', paddingLeft: 12, color: '#5a564f' }} dangerouslySetInnerHTML={{ __html: inline(mdEscape(t.slice(2))) }} />
+                )
+                continue
+              }
+              if (t.startsWith('### ')) {
+                flushList()
+                out.push(<h3 key={`h3-${out.length}`} style={{ font: '600 13px/1.4 Manrope', margin: '10px 0 4px' }} dangerouslySetInnerHTML={{ __html: inline(mdEscape(t.slice(4))) }} />)
+                continue
+              }
+              if (t === '') {
+                flushList()
+                out.push(<div key={`br-${out.length}`} style={{ height: 8 }} />)
+                continue
+              }
+              flushList()
+              out.push(<p key={`p-${out.length}`} style={{ margin: '6px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: inline(mdEscape(line)) }} />)
+            }
+            flushList()
+            return out.length ? out : [<p key="p0" style={{ margin: '6px 0', whiteSpace: 'pre-wrap' }} dangerouslySetInnerHTML={{ __html: inline(mdEscape(raw)) }} />]
+          }
+          return (
+            <div key={`${id}-text-${index}`} style={{ width: '100%' }}>
+              {renderMarkdown(part.text)}
               {streaming && index === parsedParts.length - 1 ? <span className="sv-stream-caret" aria-hidden="true" /> : null}
-            </p>
-          ) : null
+            </div>
+          )
         })}
 
         {cancelled ? <span style={{ fontSize: 12, color: 'var(--stitch-muted, #8A8279)' }}>Stopped — no reply was generated.</span> : null}
