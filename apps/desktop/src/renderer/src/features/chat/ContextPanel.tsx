@@ -171,6 +171,27 @@ export function ContextPanel({
         </div>
       </ContextSection>
 
+      {/* Harness-style whole-list todos — last todo/write wins, shown in Session context, referred every turn */}
+      {(() => {
+        const lastWrite = [...events].reverse().find(e => e.type === 'todo/write')
+        const todos = (lastWrite?.data as { todos?: Array<{ content: string; status: string }> })?.todos
+        if (!todos || todos.length === 0) return null
+        return (
+          <ContextSection title={`TODO · ${todos.filter(t=>t.status==='completed').length}/${todos.length}`}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {todos.map((t, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 11, lineHeight: 1.4, padding: '6px 8px', borderRadius: 7, background: t.status==='completed' ? '#f0f7f0' : t.status==='in_progress' ? '#fff4e6' : '#fff', border: `1px solid ${t.status==='completed' ? '#d6e8d6' : t.status==='in_progress' ? '#f0d9a8' : '#e7e3dc'}` }}>
+                  <span style={{ flexShrink: 0, marginTop: 1 }}>{t.status==='completed' ? '✓' : t.status==='in_progress' ? '●' : '○'}</span>
+                  <span style={{ color: t.status==='completed' ? '#6b705c' : '#2c2825', textDecoration: t.status==='completed' ? 'line-through' : 'none' }}>{t.content}</span>
+                  <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 9, fontFamily: 'DM Mono, monospace', color: t.status==='in_progress' ? '#b7792b' : '#9a9288' }}>{t.status}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 9, color: '#b0a89e', marginTop: 6, fontFamily: 'DM Mono, monospace' }}>todo_write last-write-wins · {todos.filter(t=>t.status==='in_progress').length} in progress</div>
+          </ContextSection>
+        )
+      })()}
+
       <ContextSection title="WORKSPACE">
         <InfoRow label="Project" value={projectName ?? '—'} />
         <InfoRow label="Branch" value={branch} />

@@ -75,7 +75,34 @@ export class AppBackend {
     this.validationStore = new ValidationStore(baseDir)
     const llm = new LocalOpenAIChatAdapter()
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
-    const toolAdapter = new ToolStubAdapter(webRuntime, () => listMcpServers(this.runtimeConfig))
+    // Capture session append for todo/write projection (harness-style last-write-wins, visible in ContextPanel Session context)
+    let currentSessionId: string | null = null
+    const toolAdapter = new ToolStubAdapter(
+      webRuntime,
+      () => listMcpServers(this.runtimeConfig),
+      () => {
+        // Resolve workspace for fs/shell (Project workspace if a session is active, else Global)
+        try {
+          if (currentSessionId) {
+            const h = (this.persistenceAdapter as unknown as { getSync?: (id: string) => { projectId: string | null } }).getSync?.(currentSessionId)
+            const pid = h?.projectId ?? null
+            if (pid) {
+              const p = (this.persistenceAdapter as unknown as { getProjectSync: (id: string) => { rootPath: string } | null }).getProjectSync(pid)
+              if (p?.rootPath) return p.rootPath
+            }
+          }
+        } catch {}
+        return this.getGlobalWorkspace()
+      },
+      (type: string, data: unknown) => {
+        // Persist todo/write so every later turn can refer to it (harness SessionEventMap 'todo/write')
+        try {
+          if (currentSessionId) this.persistenceAdapter.appendEvent(currentSessionId as unknown as import('@shared/types/branded').SessionId, type as never, data as never)
+        } catch {}
+      }
+    )
+    // Keep currentSessionId in sync via persistence events (best-effort)
+    ;(toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession = (id: string) => { currentSessionId = id }
     // Ensure global workspace + MCP folder exist (ponytail: one folder, no config UI needed)
     this.ensureGlobalWorkspace()
     try { this.ensureMcpDir() } catch {}
@@ -166,6 +193,12 @@ export class AppBackend {
         }
       },
     })
+    // Keep todo/write in session context — set session before each execute so ToolStubAdapter can persist
+    const origExecute = this.orchestrator.execute.bind(this.orchestrator)
+    this.orchestrator.execute = (async (sid: unknown, ...rest: unknown[]) => {
+      try { (toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession?.(String(sid)) } catch {}
+      return origExecute(sid as never, ...(rest as never[]))
+    }) as typeof this.orchestrator.execute
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,

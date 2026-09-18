@@ -37,6 +37,17 @@ export class ToolStubAdapter implements ToolPort {
   constructor(
     private readonly web: WebRuntime = disabledRuntime(),
     private readonly getMcpServers: () => McpServer[] = () => [],
+    private readonly getWorkspace: () => string = () => {
+      try {
+        const { app } = require('electron')
+        const { getSovaraDataDir } = require('../storage/paths')
+        // Fallback: use SovaraWorkspace under userData if no workspace configured
+        return require('path').join(app.getPath('userData'), 'SovaraWorkspace')
+      } catch {
+        return process.cwd()
+      }
+    },
+    private readonly appendEvent?: (type: string, data: unknown) => void,
   ) {}
 
   list(): ToolDefinition[] {
@@ -72,6 +83,64 @@ export class ToolStubAdapter implements ToolPort {
             file_path: { type: 'string', description: 'Local file path (workspace-relative) to image/pdf page' },
             model: { type: 'string', description: 'OCR model name, unlimited. e.g. baidu/Unlimited-OCR, rapidocr, microsoft/trocr-base-printed' },
           },
+        },
+      },
+      // Harness-style seams: todo/fs/shell — organized like packages/todo, fs, shell
+      {
+        name: 'todo_write',
+        toolset: 'todo' as const,
+        description:
+          'Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (no partial updates). Use to plan multi-step work and show progress: add one todo per concrete step before you start. Mark in_progress while work remains, completed when done. Statuses: pending/in_progress/completed. Skip for trivial single-step tasks. The list is shown to the user in Session context.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            todos: {
+              type: 'array' as const,
+              description: 'The COMPLETE task list, replacing any previous list.',
+              items: {
+                type: 'object' as const,
+                properties: {
+                  content: { type: 'string' as const, description: 'What the task is — a short imperative line.' },
+                  status: { type: 'string' as const, enum: ['pending', 'in_progress', 'completed'] as const, description: 'pending/in_progress/completed' },
+                },
+                required: ['content', 'status'] as const,
+              },
+            },
+          },
+          required: ['todos'] as const,
+        },
+      },
+      {
+        name: 'fs_list',
+        toolset: 'fs' as const,
+        description: 'List files and folders in the workspace. Input: { path?: string } (relative to workspace root, default "."). Returns names, sizes, isDirectory. Use to answer "what files and folder it had".',
+        parameters: {
+          type: 'object' as const,
+          properties: { path: { type: 'string' as const, description: 'Relative path inside workspace' } },
+          required: [] as const,
+        },
+      },
+      {
+        name: 'fs_read',
+        toolset: 'fs' as const,
+        description: 'Read a text file from the workspace. Input: { path: string } (relative). Returns first 8000 chars.',
+        parameters: {
+          type: 'object' as const,
+          properties: { path: { type: 'string' as const, description: 'Relative file path' } },
+          required: ['path'] as const,
+        },
+      },
+      {
+        name: 'shell_exec',
+        toolset: 'shell' as const,
+        description: 'Run a shell command in the workspace (Windows PowerShell 5.1, prefix with "wsl " for linux). Input: { command: string, workdir?: string }. Use for dir/ls/git/npm/docker. Gated by Permissions.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            command: { type: 'string' as const, description: 'Shell command' },
+            workdir: { type: 'string' as const, description: 'Relative workdir, default "."' },
+          },
+          required: ['command'] as const,
         },
       },
     ]
@@ -123,6 +192,9 @@ export class ToolStubAdapter implements ToolPort {
       if (name === 'web_search') out = await this.dispatchSearch(args)
       else if (name === 'web_fetch') out = await this.dispatchFetch(args)
       else if (name === 'ocr') out = await this.dispatchOcr(args)
+      else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
+      else if (name === 'fs_list' || name === 'fs_read') out = await this.dispatchFs(name, args)
+      else if (name === 'shell_exec') out = await this.dispatchShell(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
       else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
       this.noteResult(name, !out.includes('"error"'))
@@ -208,6 +280,42 @@ export class ToolStubAdapter implements ToolPort {
     b64 = b64.replace(/^data:[^,]+,/, '')
     const out = await ocrImage(b64, model)
     return JSON.stringify({ ocr: out, model })
+  }
+
+  private async dispatchTodoWrite(args: Record<string, unknown>): Promise<string> {
+    const raw = args['todos']
+    if (!Array.isArray(raw)) return JSON.stringify({ error: 'todo_write requires { todos: {content,status}[] }' })
+    // Harness validation: whole-list, unique content, at most one in_progress unless allowParallel
+    const seen = new Set<string>()
+    let active = 0
+    const todos: Array<{ content: string; status: string }> = []
+    for (const it of raw as Array<{ content?: unknown; status?: unknown }>) {
+      const content = typeof it.content === 'string' ? it.content.trim() : ''
+      const status = typeof it.status === 'string' ? it.status : ''
+      if (!content) return JSON.stringify({ error: 'invalid todo: content must be non-empty' })
+      if (seen.has(content)) return JSON.stringify({ error: `invalid todos: duplicate content ${JSON.stringify(content)}` })
+      seen.add(content)
+      if (!['pending','in_progress','completed'].includes(status)) return JSON.stringify({ error: `invalid status ${status}` })
+      if (status === 'in_progress') active++
+      todos.push({ content, status })
+    }
+    // allowParallelInProgress: true like harness pkg todo/tool-todo Config allowParallelInProgress: true
+    // Persist as session event so ContextPanel can project it (last-write-wins)
+    try { this.appendEvent?.('todo/write', { todos }) } catch {}
+    const counts = { pending: todos.filter(t=>t.status==='pending').length, inProgress: todos.filter(t=>t.status==='in_progress').length, completed: todos.filter(t=>t.status==='completed').length }
+    return JSON.stringify({ todos, counts })
+  }
+
+  private async dispatchFs(name: string, args: Record<string, unknown>): Promise<string> {
+    const { dispatchFs } = await import('../../capabilities/fs/index.ts')
+    const ws = this.getWorkspace()
+    return dispatchFs(name, args, ws)
+  }
+
+  private async dispatchShell(args: Record<string, unknown>): Promise<string> {
+    const { dispatchShell } = await import('../../capabilities/shell/index.ts')
+    const ws = this.getWorkspace()
+    return dispatchShell(args, ws)
   }
 }
 
