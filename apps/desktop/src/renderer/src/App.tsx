@@ -212,7 +212,21 @@ export function App(): React.JSX.Element {
     [chat, reasoningEnabled]
   )
 
-  const handleCopy = useCallback((_content: string): void => {}, [])
+  const handleCopy = useCallback((content: string): void => {
+    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(content).catch(() => {})
+    else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = content
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      } catch {}
+    }
+  }, [])
 
   // Inline-only: do NOT navigate to full Models/Runtime page from chat buttons.
   // Model & runtime are selected directly via Composer's ModelSelector popover (inline).

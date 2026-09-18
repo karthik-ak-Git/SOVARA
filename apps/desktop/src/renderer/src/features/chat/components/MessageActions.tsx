@@ -54,7 +54,7 @@ export function MessageActions({
         onClick={handleCopy}
         aria-label="Copy message"
         title="Copy"
-        disabled={busy}
+        disabled={false}
       >
         <Copy size={12} aria-hidden />
         <span className="sr-only">Copy</span>

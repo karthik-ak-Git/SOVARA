@@ -24,6 +24,7 @@ import { getArtifactsDir } from '../storage/paths'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
 import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
+import type { DiscoveredModel } from '@shared/types/models'
 import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 
 function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
@@ -403,10 +404,25 @@ export class AgentOrchestrator {
             this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM, using partial offload`)
             ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
           } else {
-            const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
-            const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much VRAM'} and even partial offload does not fit (GPU 6144MB). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this GPU.`
-            this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
-            throw new AgentOrchestratorError('resource-blocked', errMsg)
+            // Even partial doesn't fit (e.g., gemma 12B Q4 ~14GB >6GB) — transparently fallback to first fitting library model
+            const fitting = models.filter((m) => m.available).find((m) => {
+              // Use same partial check but with this candidate's id
+              // Sync check via resources is async, so we do a quick heuristic: keep original fittingAlternatives logic from adapter
+              // For now pick first small model that is known to fit (Nemotron/Spark/Unlimited-OCR per error list)
+              return /nemotron|spark|unlimited-ocr|phi|gemma.*2b|qwen.*0\.6b/i.test(m.modelId) || m.modelId.toLowerCase().includes('4b')
+            }) ?? models.find((m) => m.available)
+            if (fitting && fitting.modelId !== routing.modelId) {
+              this.safeLog(`[SOVARA][ROUTER] ${routing.modelId!} even partial no-fit → auto-fallback to ${fitting.modelId} (was user-selected but cannot fit 6GB)`)
+              this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `Selected ${routing.modelId!} too large for this GPU (even partial), auto-switching to ${fitting.modelId} that fits` })
+              routing = { modelId: fitting.modelId, runtimeId: fitting.runtimeId, reason: `auto-fallback: ${routing.modelId!} cannot fit 6GB even partial → ${fitting.modelId}`, task: classification, candidatesConsidered: models.length, switched: true }
+              // Persist the fallback as new active so UI pill updates
+              try { await this.deps.workbench.selectModel('local', fitting.modelId) } catch {}
+            } else {
+              const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
+              const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much VRAM'} and even partial offload does not fit (GPU 6144MB). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this GPU.`
+              this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
+              throw new AgentOrchestratorError('resource-blocked', errMsg)
+            }
           }
         }
         // Mark switched so workbench persists selection if needed and lifecycle uses correct gpuMode
@@ -498,8 +514,57 @@ export class AgentOrchestrator {
         }
         const msg = e instanceof Error ? e.message : String(e)
         if (msg.toLowerCase().includes('resource') || msg.toLowerCase().includes('vram') || msg.toLowerCase().includes('max concurrent')) {
-          this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
-          throw new AgentOrchestratorError('resource-blocked', msg)
+          // Transparent fallback for "even partial does not fit" (e.g., gemma 12B 14GB >6GB) — pick first fitting library model
+          let handledFallback = false
+          if (/even partial offload does not fit/i.test(msg)) {
+            const m = msg.match(/Models in your library that fit this GPU:\s*([^\.]+)\./i)
+            const alts = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : []
+            let fallback: DiscoveredModel | null = null
+            if (alts.length > 0) {
+              const firstAlt = alts[0].replace(/\.gguf$/i, '')
+              fallback = models.find((mm) => mm.displayName.toLowerCase().includes(firstAlt.toLowerCase()) || mm.modelId.toLowerCase().includes(firstAlt.toLowerCase())) ?? null
+            }
+            if (!fallback) {
+              // Heuristic: pick first small fitting (Nemotron/Spark/Unlimited-OCR) — same list the error shows
+              fallback = models.find((mm) => /nemotron|spark|unlimited-ocr|phi/i.test(mm.modelId)) ?? models.find((mm) => mm.available) ?? null
+            }
+            if (fallback && fallback.modelId !== routing.modelId) {
+              this.safeLog(`[SOVARA][LLAMA] ${routing.modelId!} no-fit → auto-fallback to ${fallback.modelId} (was user-selected but cannot fit 6GB)`)
+              this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `Selected ${routing.modelId!} too large for this GPU (even partial), auto-switching to ${fallback.displayName} that fits` })
+              // Persist fallback as new active so pill and next turn stay consistent
+              try { await this.deps.workbench.selectModel('local', fallback.modelId) } catch {}
+              routing.modelId = fallback.modelId
+              routing.runtimeId = fallback.runtimeId
+              routing.reason = `auto-fallback: ${msg.slice(0,60)} → ${fallback.modelId}`
+              // Retry load once with fitting model (evicts old resident transparently)
+              try {
+                const retryInst = (this.deps.models as ModelRuntimePort & { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown }> }).ensureHealthy
+                  ? await (this.deps.models as ModelRuntimePort & { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown }> }).ensureHealthy(fallback.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: 'local' } as never)
+                  : await this.deps.models.load(fallback.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: 'local' } as never)
+                const h2 = await this.deps.models.health(retryInst.id).catch(() => ({ ok: false }))
+                if (h2.ok) {
+                  ownedEndpoint = this.deps.models.baseUrl(retryInst.id)
+                  try { (this.deps.models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(retryInst.id); ownedInstanceForMetrics = String(retryInst.id) } catch {}
+                  const snapAfter2 = await this.deps.resources.getSnapshot().catch(() => resources)
+                  this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramUsedMB: snapAfter2.models.totalVramUsedMB, vramTotalMB: snapAfter2.vram.totalMB, detail: routing.reason })
+                  handledFallback = true
+                  // Fallback succeeded — don't throw, let execution continue to streaming with new model
+                } else {
+                  const msg2 = `fallback ${fallback.modelId} also unhealthy`
+                  this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg2, error: msg2 })
+                  throw new AgentOrchestratorError('resource-blocked', msg2)
+                }
+              } catch (e2) {
+                const msg2 = e2 instanceof Error ? e2.message : String(e2)
+                this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg2, error: msg2 })
+                throw new AgentOrchestratorError('resource-blocked', msg2)
+              }
+            }
+          }
+          if (!handledFallback) {
+            this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
+            throw new AgentOrchestratorError('resource-blocked', msg)
+          }
         }
         // Sovereign fallback: owned sidecar blocked (spawn UNKNOWN / MOTW /
         // WDAC) → try LM Studio / Ollama loopback before failing. The user's
