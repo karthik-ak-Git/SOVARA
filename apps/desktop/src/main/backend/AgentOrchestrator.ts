@@ -29,22 +29,119 @@ import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
   const t = text.trim()
   if (!detected) return false
-  // Fenced code block opened but not closed → truncated
   const fences = (t.match(/```/g) ?? []).length
   if (fences % 2 === 1) return true
-  // HTML artifact must close </html> (and have at least 2 slides worth if PPT requested)
   if (detected.fileName.toLowerCase().endsWith('.html') || detected.kind === 'code') {
     if (/```html|<!doctype html|<html/i.test(t)) {
       if (!/<\/html\s*>/i.test(t)) return true
-      // PPT heuristic: 6-slide request but only 1-2 sections closed
       if (/ppt|slides?|presentation/i.test(detected.fileName) && (t.match(/<\/section>/gi) ?? []).length < 2) {
-        // not definitive — but let length heuristic decide
       }
     }
   }
-  // Length near model's max (4096 tokens ~ 12k chars) with artifact requested → likely hit n_predict
   if (t.length > 9000 && /```/.test(t) && !t.endsWith('```')) return true
   return false
+}
+
+// ── Hybrid context compression — mirrors ChatService.buildBudgetedHistory ──
+// Microsoft hybrid (summary + sliding window 3-5), ACC-RAG adaptive, VSCode ghost-data fix (lossy, not near-lossless)
+// Importance: decisions, errors, code fences, URLs, artifacts — preserved; tool traces & duplicated file content omitted.
+function importanceScore(sentence: string): number {
+  const s = sentence.toLowerCase()
+  let score = 0
+  if (/```/.test(sentence)) score += 3
+  if (/https?:\/\//.test(sentence)) score += 3
+  if (/(decided|agreed|confirmed|chosen|selected|error|bug|crash|failed|fix|decis)/.test(s)) score += 2
+  if (/\$[\d,]+/.test(sentence)) score += 2
+  if (/\b\d{4}-\d{2}-\d{2}\b/.test(sentence)) score += 1
+  if (/(artifact|saved at|generated file|ppt|html|pdf|xlsx|docx)/.test(s)) score += 2.5
+  if (sentence.length > 40 && sentence.length < 240) score += 0.5
+  return score
+}
+function summarizeOlderTurns(older: import('@shared/types/ports').LlmChatMessage[], maxChars: number): string | null {
+  if (older.length === 0) return null
+  const collapsed = older.map((m) => {
+    let c = m.content
+    if (c.length > 4000 && /```(html|tsx|python)/.test(c)) {
+      const firstLine = c.split('\n').find((l) => l.trim().length > 0)?.slice(0, 120) ?? ''
+      const kind = /```html/.test(c) ? 'HTML' : /```tsx/.test(c) ? 'TSX' : 'code'
+      return `${m.role}: [Previous ${kind} artifact ~${Math.round(c.length/1000)}k chars, first line: ${firstLine.slice(0,80)} — saved on disk, not repeated]`
+    }
+    if (c.length > 1200) {
+      const sentences = c.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0)
+      const scored = sentences.map((s) => ({ s, sc: importanceScore(s) })).sort((a, b) => b.sc - a.sc)
+      const top = scored.slice(0, Math.min(3, sentences.length)).map((x) => x.s).join(' ')
+      return `${m.role}: ${top.slice(0, 600)}${c.length > 600 ? '…' : ''}`
+    }
+    return `${m.role}: ${c.slice(0, 600)}`
+  })
+  let summary = collapsed.join('\n').slice(0, maxChars)
+  if (summary.length > maxChars) summary = summary.slice(0, maxChars - 20) + '…'
+  return summary
+}
+function buildBudgetedHistory(
+  events: Array<{ seq: number; time: number; type: string; data: unknown }>,
+  systemChars: number,
+  nCtx: number,
+  opts?: { slidingWindowTurns?: number; reservedCompletionTokens?: number }
+): import('@shared/types/ports').LlmChatMessage[] {
+  const sliding = opts?.slidingWindowTurns ?? 3
+  const reserved = opts?.reservedCompletionTokens ?? 1200
+  const budgetTokens = Math.max(800, nCtx - reserved)
+  const budgetChars = budgetTokens * 4
+  const historyBudgetChars = Math.max(800, budgetChars - systemChars)
+  const allTurns = toRequestMessages(events)
+  if (allTurns.length === 0) return allTurns
+  const totalChars = allTurns.reduce((n, m) => n + m.content.length, 0)
+  if (totalChars <= historyBudgetChars) return allTurns
+  const keepMessages = sliding * 2
+  const recent = allTurns.slice(-keepMessages)
+  const older = allTurns.slice(0, -keepMessages)
+  if (older.length === 0) {
+    let chars = recent.reduce((n, m) => n + m.content.length, 0)
+    const out = [...recent]
+    while (out.length > 1 && chars > historyBudgetChars) {
+      const dropped = out.shift()!
+      chars -= dropped.content.length
+    }
+    if (chars > historyBudgetChars && out.length > 0) {
+      const excess = chars - historyBudgetChars
+      out[0].content = out[0].content.slice(0, Math.max(200, out[0].content.length - excess - 50)) + '…[truncated for budget]'
+    }
+    return out
+  }
+  const recentChars = recent.reduce((n, m) => n + m.content.length, 0)
+  const summaryBudget = Math.max(400, historyBudgetChars - recentChars)
+  const summaryText = summarizeOlderTurns(older, summaryBudget)
+  if (!summaryText) return recent
+  const summaryMsg: import('@shared/types/ports').LlmChatMessage = {
+    role: 'user',
+    content: `[Conversation summary — ${older.length} earlier messages compressed, ${allTurns.length} total → ${recent.length} recent kept verbatim]\n${summaryText}`,
+  }
+  const out = [summaryMsg, ...recent]
+  let outChars = out.reduce((n, m) => n + m.content.length, 0)
+  if (outChars > historyBudgetChars) {
+    const excess = outChars - historyBudgetChars
+    summaryMsg.content = summaryMsg.content.slice(0, Math.max(300, summaryMsg.content.length - excess - 50)) + '\n…[summary truncated for budget]'
+  }
+  return out
+}
+function compactForCtx(messages: import('@shared/types/ports').LlmChatMessage[], nCtx: number): import('@shared/types/ports').LlmChatMessage[] {
+  const reserved = 1200
+  const budgetTokens = Math.max(800, nCtx - reserved)
+  const budgetChars = budgetTokens * 4
+  let chars = messages.reduce((n, m) => n + m.content.length, 0)
+  if (chars <= budgetChars) return messages
+  const out = [...messages]
+  while (out.length > 2 && chars > budgetChars) {
+    const dropIdx = 1
+    chars -= out[dropIdx].content.length
+    out.splice(dropIdx, 1)
+  }
+  if (chars > budgetChars && out.length > 2) {
+    const excess = chars - budgetChars
+    out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
+  }
+  return out
 }
 
 export class AgentOrchestratorError extends Error {
@@ -547,14 +644,42 @@ export class AgentOrchestrator {
         ...(webContext ? [webContext] : []),
         ...attachmentContext,
       ]
-      // RAG: don't send full history — retrieve only relevant turns via semantic search
+      // ── Budget-aware hybrid compression (prod pattern: summary + sliding window) ──
+      // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
+      // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
+      // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
+      let nCtx = classification.contextLengthNeeded || 4096
+      // Try to read actual server ctx from resident instance (if already loaded with different ctx)
+      try {
+        const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
+        const hit = insts?.find((x) => String(x.modelId) === String(routing.modelId!) || String(x.id).includes(String(routing.modelId!).replace(/[^a-z0-9]/gi, '_')))
+        if (hit?.ctxLen && hit.ctxLen > nCtx) nCtx = hit.ctxLen
+      } catch {}
+      const systemChars = systemBlocks.join('\n\n').length
+      // Adaptive: if estimated prompt would exceed 4096 even after 8192, we must compress; if it fits 8192 but not 4096 and VRAM allows, bump to 8192.
+      // For now keep nCtx as is (4096) and compress aggressively — bumping requires server restart which we do via reload with larger ctx on next load.
+      // RAG first, then budget hybrid as fallback
       const { retrieveRelevant } = await import('./rag/semanticSearch')
       const ragPrior = retrieveRelevant(prior, content, { maxChunks: 6, maxChars: 12000 })
-      let messages: import('@shared/types/ports').LlmChatMessage[] = [
-        { role: 'system', content: systemBlocks.join('\n\n') },
-        ...toRequestMessages(ragPrior),
-        { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
-      ]
+      let historyMsgs: import('@shared/types/ports').LlmChatMessage[]
+      // If RAG already fits budget, use it; else hybrid compress the FULL prior (not just RAG) to preserve detail via summary
+      const ragTurns = toRequestMessages(ragPrior)
+      const estRagTokens = Math.ceil((systemChars + ragTurns.reduce((n, m) => n + m.content.length, 0) + content.length) / 4)
+      const budgetTokens = Math.max(800, nCtx - 1200)
+      if (estRagTokens <= budgetTokens) {
+        historyMsgs = ragTurns
+      } else {
+        // Hybrid: last 3 turns verbatim, older summarized via importance (code/URLs/decisions/artifacts)
+        historyMsgs = buildBudgetedHistory(prior, systemChars, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
+      }
+      let messages: import('@shared/types/ports').LlmChatMessage[] = compactForCtx(
+        [
+          { role: 'system', content: systemBlocks.join('\n\n') },
+          ...historyMsgs,
+          { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
+        ],
+        nCtx
+      )
       let autoRetried = false // one automatic retry after compact on empty/stall
 
       appendChatLog(this.deps.baseDir, {
@@ -943,15 +1068,17 @@ export class AgentOrchestrator {
           try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
           appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `auto-retry compact empty after ${secs}s (attempt 2)` })
           this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `empty after ${secs}s — retrying once with compacted history` })
-          // Rebuild compact messages: 3 chunks/6000 chars vs 6/12000, and drop duplicate last user if identical
+          // Retry with hybrid budget: tighter window (2 turns) to definitely fit 4096 even after 6576-token overflow
           try {
-            const { retrieveRelevant: rr2 } = await import('./rag/semanticSearch')
-            const ragCompact = rr2(prior, content, { maxChunks: 3, maxChars: 6000 })
-            messages = [
-              { role: 'system', content: systemBlocks.join('\n\n') },
-              ...toRequestMessages(ragCompact),
-              { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
-            ]
+            const retryHistory = buildBudgetedHistory(prior, systemBlocks.join('\n\n').length, nCtx, { slidingWindowTurns: 2, reservedCompletionTokens: 1400 })
+            messages = compactForCtx(
+              [
+                { role: 'system', content: systemBlocks.join('\n\n') },
+                ...retryHistory,
+                { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
+              ],
+              nCtx
+            )
           } catch { /* keep original messages on import failure */ }
           // Reset stream state and re-arm stall guard
           text = ''

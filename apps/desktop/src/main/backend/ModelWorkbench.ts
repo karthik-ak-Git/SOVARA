@@ -70,20 +70,30 @@ export class ModelWorkbench {
   }
 
   /**
-   * Sovereign fallback: LM Studio (:1234) and Ollama (:11434) are the
-   * escape hatch when the owned sidecar is blocked by WDAC/antivirus
-   * (spawn UNKNOWN). Entries are stable-id, disabled-by-default-safe:
-   * created once, never duplicated, user probes to activate.
+   * Detect-only: LM Studio (:1234) and Ollama (:11434) are NEVER used for
+   * inference. Sovara is sovereign — every prompt runs through the owned
+   * llama.cpp sidecar (runtimeId=local). These entries exist ONLY so
+   * Library can list GGUFs the user already has in ~/.lmstudio/models or
+   * Ollama store. The adapter's scanGgufFiles reads their paths; we never
+   * POST to their HTTP endpoints.
+   *
+   * They are created DISABLED and are filtered out of routing. The user
+   * can still see files discovered there, but selecting one migrates to
+   * local:GGUF via resolveModelPath.
    */
   private ensureExternalRuntimes(): void {
     try {
       const want: Array<{ id: string; displayName: string; type: 'lmstudio' | 'ollama'; endpoint: string }> = [
-        { id: 'lmstudio', displayName: 'LM Studio (local)', type: 'lmstudio', endpoint: 'http://127.0.0.1:1234/v1' },
-        { id: 'ollama', displayName: 'Ollama (local)', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1' },
+        { id: 'lmstudio', displayName: 'LM Studio — file discovery only (not a runner)', type: 'lmstudio', endpoint: 'http://127.0.0.1:1234/v1' },
+        { id: 'ollama', displayName: 'Ollama — file discovery only (not a runner)', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1' },
       ]
       for (const w of want) {
-        if (!this.config.getRuntime(w.id)) {
-          this.config.upsertRuntime({ id: w.id, displayName: w.displayName, type: w.type, endpoint: w.endpoint, enabled: true, timeoutMs: 8000 })
+        const existing = this.config.getRuntime(w.id)
+        if (!existing) {
+          this.config.upsertRuntime({ id: w.id, displayName: w.displayName, type: w.type, endpoint: w.endpoint, enabled: false, timeoutMs: 8000 })
+        } else if (existing.entry.enabled) {
+          // Force-disable even if an older install left it enabled — sovereign invariant.
+          this.config.upsertRuntime({ ...existing.entry, enabled: false })
         }
       }
     } catch { /* never block listing */ }
@@ -299,20 +309,48 @@ export class ModelWorkbench {
   /** Ensure the library's local files appear as a runtime so Chat orchestration (ARCHITECTURE_PHASE1 §6) can select them without a probe. */
   private ensureLocalLibraryRuntime(): void {
     try {
-      if (this.config.getRuntime('local')) return
-      // Only create if there is at least one file in library
-      const lib = this.loadLocalLibrarySnapshot()
-      if (lib.length === 0) return
-      const entry: ModelRuntimeEntry = { id: 'local', displayName: 'Sovara Local (llama.cpp)', type: 'llama.cpp', endpoint: 'local', enabled: true, timeoutMs: 8000 }
-      this.config.upsertRuntime(entry)
-      this.config.saveProbeSnapshot('local', lib, null)
-      // Auto-select first if nothing selected (selection only — VRAM load
-      // happens on select/send, never silently here).
-      if (!this.config.getActiveSelection()) {
-        this.config.setActiveSelection({ runtimeId: 'local', modelId: lib[0].modelId })
+      const hasLocal = !!this.config.getRuntime('local')
+      if (!hasLocal) {
+        // Only create if there is at least one file in library
+        const lib = this.loadLocalLibrarySnapshot()
+        if (lib.length === 0) return
+        const entry: ModelRuntimeEntry = { id: 'local', displayName: 'Sovara Local (llama.cpp)', type: 'llama.cpp', endpoint: 'local', enabled: true, timeoutMs: 8000 }
+        this.config.upsertRuntime(entry)
+        this.config.saveProbeSnapshot('local', lib, null)
+        // Auto-select first if nothing selected (selection only — VRAM load
+        // happens on select/send, never silently here).
+        if (!this.config.getActiveSelection()) {
+          this.config.setActiveSelection({ runtimeId: 'local', modelId: lib[0].modelId })
+        }
+        // Log: connected models discovered
+        try { this.logLocalDiscovery(lib) } catch {}
       }
-      // Log: connected models discovered
-      try { this.logLocalDiscovery(lib) } catch {}
+      // Sovereign invariant: stale external active (lmstudio/ollama) must be
+      // cleared on startup if no local GGUF matches — otherwise Chat would
+      // POST to :1234 and hit connection-refused.
+      const sel = this.config.getActiveSelection()
+      if (sel && sel.runtimeId !== 'local') {
+        const live = this.isModelLive(sel.modelId)
+        if (!live) {
+          appendLlamaLog(this.baseDir, 'clear-stale-external-selection', { runtimeId: sel.runtimeId, modelId: sel.modelId })
+          this.config.clearActiveSelection()
+        } else {
+          // External id is live only because the file exists on disk — migrate
+          // it to local so the next Chat uses the sidecar, not the external HTTP.
+          try {
+            const localSnap = this.config.getRuntime('local')
+            const needle = String(sel.modelId).toLowerCase().replace(/\.gguf$/i, '').split('/').pop()?.trim() ?? String(sel.modelId).toLowerCase()
+            const hit = localSnap?.lastModels.find((m) => m.displayName.toLowerCase().replace(/\.gguf$/i,'').trim() === needle || m.modelId.toLowerCase().includes(needle))
+            if (hit) {
+              this.config.setActiveSelection({ runtimeId: 'local', modelId: hit.modelId })
+              appendLlamaLog(this.baseDir, 'startup-migrate-external-to-local', { from: `${sel.runtimeId}:${sel.modelId}`, to: `local:${hit.modelId}` })
+            } else {
+              // Has a file but no snapshot hit — keep as local live file
+              this.config.setActiveSelection({ runtimeId: 'local', modelId: sel.modelId })
+            }
+          } catch { this.config.clearActiveSelection() }
+        }
+      }
     } catch { /* never block */ }
   }
 
@@ -465,8 +503,12 @@ export class ModelWorkbench {
         return { selection: null, available: false }
       }
     }
-    // Migrate external (LM Studio/Ollama) selection to bundled local when same GGUF exists locally — avoids connection-refused without LM Studio running.
-    if (sel && sel.runtimeId !== 'local' && this.isModelLive(sel.modelId)) {
+    // Sovereign: external selections (lmstudio/ollama) are NEVER runnable — they are
+    // detect-only. Try to migrate to a local GGUF with the same basename; if no
+    // local file exists, mark unavailable so the UI shows "Open Models" instead
+    // of trying http://127.0.0.1:1234 and hitting connection-refused.
+    if (sel && sel.runtimeId !== 'local') {
+      let migrated = false
       try {
         const localSnap = this.config.getRuntime('local')
         if (localSnap) {
@@ -481,10 +523,18 @@ export class ModelWorkbench {
           if (localHit && this.isModelLive(localHit.modelId)) {
             this.config.setActiveSelection({ runtimeId: 'local', modelId: localHit.modelId })
             sel = this.config.getActiveSelection()
+            migrated = true
             appendLlamaLog(this.baseDir, 'migrate-external-to-local', { from: `${sel?.runtimeId}:${sel?.modelId}`, to: `local:${localHit.modelId}` })
           }
         }
       } catch { /* keep original selection */ }
+      if (!migrated) {
+        // No local GGUF matches this external id — e.g. lmstudio:qwen/qwen3.5-9b with no local file.
+        // Tell the renderer the selection is not runnable; ChatService will surface
+        // "No active local model selected. Open Models and select a model first."
+        appendLlamaLog(this.baseDir, 'external-selection-blocked', { runtimeId: sel!.runtimeId, modelId: sel!.modelId })
+        return { selection: sel, available: false }
+      }
     }
     if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)

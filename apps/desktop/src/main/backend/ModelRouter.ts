@@ -98,8 +98,11 @@ function scoreModel(
 export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecision> {
   const { task, models, active } = ctx
 
-  // Only consider available models
-  const available = models.filter((m) => m.available)
+  // SOVEREIGN: only the owned sidecar (runtimeId=local) may run inference.
+  // LM Studio / Ollama entries are detect-only (see ModelWorkbench.ensureExternalRuntimes).
+  // We keep their files for Library listing, but we NEVER route a prompt to :1234 / :11434.
+  const sovereign = models.filter((m) => m.runtimeId === 'local')
+  const available = sovereign.filter((m) => m.available)
   if (available.length === 0) {
     return {
       modelId: null,
@@ -112,12 +115,13 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
   }
 
   let scored = available.map((m) => scoreModel(m, task, ctx.resources))
-  // Honor explicit selection: +50 bias so user's chosen model wins unless blocked for VRAM
+  // Honor explicit selection: sovereign — user's chosen local model always wins
+  // unless resource-blocked. Use +100 so no capability bonus can outrank it.
   if (active) {
     for (const s of scored) {
       if (s.model.modelId === active.modelId && s.model.runtimeId === active.runtimeId) {
-        s.score += 50
-        s.reason += ', user selected'
+        s.score += 100
+        s.reason += ', user selected (sovereign)'
       }
     }
   }
@@ -152,6 +156,17 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
 
   // All candidates blocked
   const top = scored[0]
+  // Even in blocked case, never fall back to an external runner — surface the sovereign reason.
+  if (top && top.model.runtimeId !== 'local') {
+    return {
+      modelId: null,
+      runtimeId: null,
+      reason: `sovereign: no local model fits and external runners are disabled — free VRAM or download a smaller GGUF into the Sovara library | top external was ${top.model.modelId}`,
+      task,
+      candidatesConsidered: scored.length,
+      switched: false,
+    }
+  }
   return {
     modelId: top ? top.model.modelId : null,
     runtimeId: top ? top.model.runtimeId : null,

@@ -107,19 +107,127 @@ export function toRequestMessages(
   return bounded
 }
 
+/**
+ * Hybrid context compression — production pattern from leaks + online research:
+ * - Microsoft "Summarized Context + Sliding Window" (Azure OpenAI docs 2025): keep last 3-5 turns verbatim, summarize older.
+ * - ACC-RAG / CORE-RAG (EMNLP 2025): adaptive rate, hierarchical, evidentiality-guided — keep only answer-critical info.
+ * - VSCode Copilot ghost-data fix (issue #299810): near-lossless summaries are harmful — must be lossy, omit tool traces & file duplication,
+ *   collapse completed work to one line, reference file path not content, relevance decay.
+ * - context-compressor (leiMizzou): TextRank + importance filtering (decisions, errors, URLs, code blocks) — preserve those.
+ *
+ * This is the lossy, detail-preserving compressor that replaces the naive drop-oldest loop.
+ * It keeps last N turns full, and compresses older turns into a single summary message that
+ * retains decisions, errors, code fences, URLs, and artifact references — not full file content.
+ */
+function importanceScore(sentence: string): number {
+  const s = sentence.toLowerCase()
+  let score = 0
+  if (/```/.test(sentence)) score += 3
+  if (/https?:\/\//.test(sentence)) score += 3
+  if (/(decided|agreed|confirmed|chosen|selected|error|bug|crash|failed|fix|decis)/.test(s)) score += 2
+  if (/\$[\d,]+/.test(sentence)) score += 2
+  if (/\b\d{4}-\d{2}-\d{2}\b/.test(sentence)) score += 1
+  if (sentence.length > 40 && sentence.length < 240) score += 0.5
+  if (/(artifact|saved at|generated file|ppt|html|pdf|xlsx|docx)/.test(s)) score += 2.5
+  return score
+}
+
+function summarizeOlderTurns(older: LlmChatMessage[], maxChars: number): string | null {
+  if (older.length === 0) return null
+  // Collapse completed artifacts: if older contains large html/pdf code blocks, replace with one-liner reference
+  const collapsed = older.map((m) => {
+    let c = m.content
+    // Large html artifact in history — replace with reference (file already on disk, no need to resend 15k chars)
+    if (c.length > 4000 && /```(html|tsx|python)/.test(c)) {
+      const firstLine = c.split('\n').find((l) => l.trim().length > 0)?.slice(0, 120) ?? ''
+      const kind = /```html/.test(c) ? 'HTML' : /```tsx/.test(c) ? 'TSX' : 'code'
+      return `${m.role}: [Previous ${kind} artifact ~${Math.round(c.length/1000)}k chars, first line: ${firstLine.slice(0,80)} — full file saved on disk, see artifacts/ — not repeated]`
+    }
+    if (c.length > 1200) {
+      // Extractive: split into sentences, rank, keep top 2-3
+      const sentences = c.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0)
+      const scored = sentences.map((s) => ({ s, sc: importanceScore(s) })).sort((a, b) => b.sc - a.sc)
+      const top = scored.slice(0, Math.min(3, sentences.length)).map((x) => x.s).join(' ')
+      return `${m.role}: ${top.slice(0, 600)}${c.length > 600 ? '…' : ''}`
+    }
+    return `${m.role}: ${c.slice(0, 600)}`
+  })
+  let summary = collapsed.join('\n').slice(0, maxChars)
+  // Ensure we keep detail: if still too long, truncate from oldest
+  if (summary.length > maxChars) summary = summary.slice(0, maxChars - 20) + '…'
+  return summary
+}
+
+export function buildBudgetedHistory(
+  events: Array<{ seq: number; time: number; type: string; data: unknown }>,
+  systemChars: number,
+  nCtx: number,
+  opts?: { slidingWindowTurns?: number; reservedCompletionTokens?: number }
+): LlmChatMessage[] {
+  const sliding = opts?.slidingWindowTurns ?? 3 // Microsoft best practice: 3-5
+  const reserved = opts?.reservedCompletionTokens ?? 1200 // leave room for answer
+  const budgetTokens = Math.max(800, nCtx - reserved)
+  const budgetChars = budgetTokens * 4
+  const historyBudgetChars = Math.max(800, budgetChars - systemChars)
+
+  const allTurns = toRequestMessages(events) // already respects /compact and MAX_HISTORY_CHARS
+  if (allTurns.length === 0) return allTurns
+  const totalChars = allTurns.reduce((n, m) => n + m.content.length, 0)
+  if (totalChars <= historyBudgetChars) return allTurns
+
+  // Hybrid: keep last `sliding` turns (each turn = 2 messages, but we count messages)
+  const keepMessages = sliding * 2
+  const recent = allTurns.slice(-keepMessages)
+  const older = allTurns.slice(0, -keepMessages)
+  if (older.length === 0) {
+    // Even recent alone is too large — truncate oldest within recent
+    let chars = recent.reduce((n, m) => n + m.content.length, 0)
+    const out = [...recent]
+    while (out.length > 1 && chars > historyBudgetChars) {
+      const dropped = out.shift()!
+      chars -= dropped.content.length
+    }
+    if (chars > historyBudgetChars && out.length > 0) {
+      const excess = chars - historyBudgetChars
+      out[0].content = out[0].content.slice(0, Math.max(200, out[0].content.length - excess - 50)) + '…[truncated for budget]'
+    }
+    return out
+  }
+  const recentChars = recent.reduce((n, m) => n + m.content.length, 0)
+  const summaryBudget = Math.max(400, historyBudgetChars - recentChars)
+  const summaryText = summarizeOlderTurns(older, summaryBudget)
+  if (!summaryText) return recent
+  // Single summary message as user role (so model treats it as context, not assistant claim)
+  const summaryMsg: LlmChatMessage = {
+    role: 'user',
+    content: `[Conversation summary — ${older.length} earlier messages compressed, ${allTurns.length} total → ${recent.length} recent kept verbatim]\n${summaryText}`,
+  }
+  const out = [summaryMsg, ...recent]
+  // Final guard: if still over, truncate summary further (lossy, but preserves recent)
+  let outChars = out.reduce((n, m) => n + m.content.length, 0)
+  if (outChars > historyBudgetChars) {
+    const excess = outChars - historyBudgetChars
+    summaryMsg.content = summaryMsg.content.slice(0, Math.max(300, summaryMsg.content.length - excess - 50)) + '\n…[summary truncated for budget]'
+  }
+  return out
+}
+
 function compactForCtx(messages: LlmChatMessage[], nCtx: number): LlmChatMessage[] {
-  const maxChars = Math.max(800, nCtx * 3) // keep ~75% of ctx for prompt, rest for completion
+  // Budget-aware final guard — never exceed nCtx. System at [0] is sacred.
+  const reserved = 1200
+  const budgetTokens = Math.max(800, nCtx - reserved)
+  const budgetChars = budgetTokens * 4
   let chars = messages.reduce((n, m) => n + m.content.length, 0)
+  if (chars <= budgetChars) return messages
   const out = [...messages]
-  // Never drop system (0) or last user (tail); drop oldest history first (index 1..)
-  while (out.length > 2 && chars > maxChars) {
+  // Drop oldest history first (index 1..), never system(0) or last user(tail)
+  while (out.length > 2 && chars > budgetChars) {
     const dropIdx = 1
     chars -= out[dropIdx].content.length
     out.splice(dropIdx, 1)
   }
-  // If still over, truncate the oldest remaining non-system message content
-  if (chars > maxChars && out.length > 2) {
-    const excess = chars - maxChars
+  if (chars > budgetChars && out.length > 2) {
+    const excess = chars - budgetChars
     out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
   }
   return out
@@ -229,21 +337,25 @@ export class ChatService {
 
     // 3. History + user persistence first (durable before any network).
     let prior = await this.deps.persistence.getEvents(sessionId)
-    // Auto-compact when approaching context limit to avoid invalid-response empty reply (keep English, low tokens)
+    // Hybrid context compression is now handled at prompt-build time via buildBudgetedHistory
+    // (Microsoft hybrid + ACC-RAG + importance). We keep this as a durable /compact marker
+    // only when history is truly large, so the summary persists for next turns. The per-request
+    // budget is enforced below in message assembly (fits nCtx 4096/8192).
     try {
       const estPriorTokens = Math.ceil(prior.reduce((n, e) => n + (extractContent(e.data)?.length ?? 0), 0) / 4) + Math.ceil(content.length / 4)
-      if (estPriorTokens > 5500 && prior.length > 10) {
-        const keep = prior.slice(-8)
-        const older = prior.filter((e) => e.type === 'user/message' || e.type === 'assistant/message').slice(0, -8).slice(-8)
+      if (estPriorTokens > 6500 && prior.length > 12) {
+        // Persist a lossy summary for future turns, but don't mutate `prior` for this send — budget logic will handle it
+        const older = prior.filter((e) => e.type === 'user/message' || e.type === 'assistant/message').slice(0, -6).slice(-8)
         const summary = older.map((e) => {
           const c = extractContent(e.data) ?? ''
           const role = e.type === 'user/message' ? 'User' : 'Assistant'
-          return `${role}: ${c.slice(0, 100).replace(/\n/g, ' ')}`
-        }).join('\n').slice(0, 700)
-        const compactContent = `Auto-compacted ${older.length} turns for context limit. Summary (English):\n${summary}`
+          // Importance-aware: keep code fence header, not full file
+          const clipped = c.length > 500 && /```/.test(c) ? c.slice(0, 300) + '…[code omitted, see file]' : c.slice(0, 120).replace(/\n/g, ' ')
+          return `${role}: ${clipped}`
+        }).join('\n').slice(0, 900)
+        const compactContent = `Auto-compacted ${older.length} turns for context. Summary (English, lossy — recent 3 turns kept verbatim):\n${summary}`
         await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactContent })
-        prior = [...keep.slice(0, 0), ...keep] // keep only last 8 for this send; history now compacted
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `auto-compact est ${estPriorTokens} tokens → kept ${keep.length} turns` })
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `durable auto-compact marker est ${estPriorTokens} tokens` })
       }
     } catch { /* auto-compact best-effort */ }
     // Resolve workspace (project or global) — injected as system context so tools know where they may operate.
@@ -295,11 +407,26 @@ export class ChatService {
       ...(skillsContext ? [skillsContext] : []),
       ...(webContext ? [webContext] : []),
     ]
-    const messages: LlmChatMessage[] = [
-      { role: 'system', content: systemBlocks.join('\n\n') },
-      ...toRequestMessages(prior),
-      { role: 'user', content },
-    ]
+    // Budget-aware hybrid: keep last 3 turns verbatim, older summarized via importance (code/URLs/decisions)
+    // Fits nCtx minus reserved completion — prevents 6576 > 4096 exceed_context_size_error without losing detail.
+    let nCtx = 4096
+    try {
+      if (isLocal && this.deps.models) {
+        const insts = await (this.deps.models as unknown as { listInstances?: () => Promise<Array<{ id: string; ctxLen?: number; modelId?: string }> > }).listInstances?.()
+        const hit = insts?.find((x) => String(x.id) === String(ownedInstanceId) || String(x.modelId) === String(active.selection!.modelId))
+        if (hit?.ctxLen && hit.ctxLen > 0) nCtx = hit.ctxLen
+      }
+    } catch {}
+    const systemChars = systemBlocks.join('\n\n').length
+    const historyMsgs = buildBudgetedHistory(prior, systemChars, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
+    let messages: LlmChatMessage[] = compactForCtx(
+      [
+        { role: 'system', content: systemBlocks.join('\n\n') },
+        ...historyMsgs,
+        { role: 'user', content },
+      ],
+      nCtx
+    )
     // Log injected context for observability (skills/plugins/tools)
     appendChatLog(this.deps.baseDir, {
       sessionId: sid,
