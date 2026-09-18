@@ -84,9 +84,15 @@ function scoreModel(
   // (applied in routeModel via active param; score bump here if needed)
   // handled in routeModel scoring below
 
-  // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
+  // 3-5x speed + all-layers: prefer small/fast that fits fully at 8192 over xlarge partial 7/32 (hallucinates)
+  // Harness-style: small models (needle3, 0.5B-4B) fit 999 layers at 8192 with 655MB, Qwen 9B needs 7/32 at 8192 → 6.5 t/s vs 30 t/s
   const vramFree = resources.vram.freeMB
   const vramTotal = resources.vram.totalMB
+  const isSmallFast = profile?.paramsBucket === 'small' || profile?.paramsBucket === 'medium'
+  const isXlargePartial = profile?.paramsBucket === 'xlarge' && task.contextLengthNeeded >= 8192
+  if (isSmallFast && task.contextLengthNeeded >= 8192) { score += 15; reasons.push('small fits 8192 fully → 3-5x') }
+  if (isXlargePartial) { score -= 18; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
+  // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
   if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 25; reasons.push('vram pressure vs xlarge') }
   if (vramTotal !== undefined && vramTotal < 7000 && profile?.paramsBucket === 'xlarge') { score -= 20; reasons.push('needs large VRAM') }
   // If task is simple chat/tool pdf, prefer small/medium resident model over xlarge CPU

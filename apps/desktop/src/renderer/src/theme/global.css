@@ -5716,4 +5716,16 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .context-todo.active { color: #C65D3B; font-weight: 600; }
 .context-thinking { border-left: 2px solid #f0ede7; margin-left: 9px; padding: 8px 0 8px 14px; font: 400 12px/1.5 'Manrope', sans-serif; color: #5a5a5a; }
 .context-processing { display: flex; align-items: center; gap: 6px; font: 400 11px/1 'Manrope', sans-serif; color: #8A8279; padding: 6px 0; }
+/* Harness-style 3-5x speed + no-hallucination: all-layers needle3 + todo/tool animations */
+@keyframes todo-slide-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes tool-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.6 } }
+.sv-artifact-panel { animation: todo-slide-in 220ms ease-out }
+.context-panel .context-section { animation: todo-slide-in 240ms ease-out }
+.context-panel .context-section:nth-child(2) { animation-delay: 40ms }
+.context-panel .context-section:nth-child(3) { animation-delay: 80ms }
+.header-pipeline .sovara-stage.is-active { background: #fdf1ed; color: #bd653e; border: 1px solid #f0d9c8 }
+.sv-message .stitch-reasoning-toggle { transition: background 150ms ease }
+.sv-message .stitch-reasoning-content { animation: todo-slide-in 180ms ease-out }
+.model-pill { transition: all 150ms ease }
+.model-pill:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(189,101,62,.12) }
 
