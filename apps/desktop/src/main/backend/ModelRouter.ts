@@ -84,8 +84,8 @@ function scoreModel(
 
   // Prefer available models (should be filtered already)
   if (m.available) score += 5
-  // Diversity: small/medium that also handle the task get a clear edge at 8192 — prevents Qwen always winning
-  if ((profile?.paramsBucket === 'small' || profile?.paramsBucket === 'medium') && hasNeed) { score += 8; reasons.push('small+capable for 8192') }
+  // Diversity: true-small that also handles the task gets edge at 8192 — prevents Qwen-9B always winning
+  if (profile?.paramsBucket === 'small' && hasNeed) { score += 8; reasons.push('small+capable for 8192') }
 
   // Honor explicit user selection — strong bias if active matches (user picked in UI)
   // This prevents auto-switching away from Unlimited-OCR when user explicitly chose it
@@ -97,9 +97,15 @@ function scoreModel(
   // Harness-style: small models (needle3, 0.5B-4B) fit 999 layers at 8192 with 655MB, Qwen 9B needs 7/32 at 8192 → 6.5 t/s vs 30 t/s
   const vramFree = resources.vram.freeMB
   const vramTotal = resources.vram.totalMB
-  const isSmallFast = profile?.paramsBucket === 'small' || profile?.paramsBucket === 'medium'
+  // Only true-small (needle/phi/gemma ≤4B) fits 8192 fully 999/999. Qwen-9B is 'medium' but 5.3GB file → 7/32 partial at 8192.
+  // Detect heavy medium by modelId (9B/12B/14B in name) and penalize instead of bonus.
+  const heavyMedium = profile?.paramsBucket === 'medium' && /9b|12b|14b|32b|70b/i.test(m.modelId)
+  const isSmallFast = profile?.paramsBucket === 'small' && !heavyMedium
+  const isMediumFast = profile?.paramsBucket === 'medium' && !heavyMedium
   const isXlargePartial = profile?.paramsBucket === 'xlarge' && task.contextLengthNeeded >= 8192
   if (isSmallFast && task.contextLengthNeeded >= 8192) { score += 22; reasons.push('small fits 8192 fully 999/999 → 3-5x') }
+  else if (isMediumFast && task.contextLengthNeeded >= 8192) { score += 10; reasons.push('medium fits 8192 mostly → fast') }
+  if (heavyMedium && task.contextLengthNeeded >= 8192) { score -= 20; reasons.push('9B+ medium partial 7/32 at 8192 → slow/hallucinate, prefer small 999') }
   if (isXlargePartial) { score -= 26; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
   // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
   if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 25; reasons.push('vram pressure vs xlarge') }

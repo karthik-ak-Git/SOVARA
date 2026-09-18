@@ -113,9 +113,28 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
             : lang.toLowerCase().includes('json')
               ? 'data.json'
               : `${lang}-output`
+    // Skip empty fences (Qwen at 7/32 emits ```json``` with no body → empty data.json card duplication)
+    if (!code.trim()) {
+      lastIndex = match.index + match[0].length
+      continue
+    }
     parts.push({ type: 'code', language: lang, code, title })
     lastIndex = match.index + match[0].length
   }
+  // Dedupe identical adjacent parts (your 11:05 PM screenshot: same data.json card + same text twice)
+  const deduped: ParsedPart[] = []
+  for (const p of parts) {
+    const prev = deduped[deduped.length - 1]
+    if (prev && prev.type === p.type) {
+      const a = prev.type === 'code' ? (prev as { code: string }).code.trim() : (prev as { text: string }).text.trim()
+      const b = p.type === 'code' ? (p as { code: string }).code.trim() : (p as { text: string }).text.trim()
+      if (a === b && a.length > 0) continue
+      if (prev.type === 'text' && p.type === 'text' && a.length > 40 && b.startsWith(a.slice(0, 40))) continue
+    }
+    deduped.push(p)
+  }
+  parts.length = 0
+  parts.push(...deduped)
   // Streaming partial fence: show live preview even before closing ```
   if (streaming && lastIndex < raw.length) {
     const tail = raw.slice(lastIndex)
