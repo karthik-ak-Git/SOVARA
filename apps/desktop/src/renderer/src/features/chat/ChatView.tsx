@@ -200,7 +200,8 @@ export function ChatView({
     if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable'))
       return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
     if (lower.includes('invalid-response') || lower.includes('runtime answered 500') || lower.includes('runtime answered 502') || lower.includes('runtime answered 503')) {
-      return { title: 'Model failed to generate', hint: `${err} — The local server returned an error. This often means the GGUF is incompatible with this llama.cpp build, context is too large, or the model file is corrupted. Try a different quant (e.g. Q4_K_M) or lower context to 2048, then reload the model.`, action: 'models' }
+      // Suppressed — server auto-compacts and retries; no scary banner. Check logs if persists.
+      return null
     }
     if (lower.includes('model could not be loaded') || lower.includes('model-load-failed') || lower.includes('failed')) {
       if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }

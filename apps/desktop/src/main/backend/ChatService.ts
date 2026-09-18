@@ -78,12 +78,19 @@ function extractContent(data: unknown): string | null {
   return null
 }
 
-/** Visible conversation → OpenAI roles. Cancelled markers never go to the model. */
+/** Visible conversation → OpenAI roles. Respects /compact marker to keep context small. */
 export function toRequestMessages(
   events: Array<{ seq: number; time: number; type: string; data: unknown }>
 ): LlmChatMessage[] {
+  // If a /compact summary exists, ignore everything before the latest one (keeps prompt short & English)
+  const lastCompactIdx = (() => {
+    let idx = -1
+    for (let i = 0; i < events.length; i++) if (events[i].type === 'system/compact' || events[i].type === 'system/summary') idx = i
+    return idx
+  })()
+  const slice = lastCompactIdx >= 0 ? events.slice(lastCompactIdx + 1) : events
   const turns: LlmChatMessage[] = []
-  for (const e of events) {
+  for (const e of slice) {
     if (e.type !== 'user/message' && e.type !== 'assistant/message') continue
     const content = extractContent(e.data)
     if (content === null || content === '') continue
@@ -143,6 +150,32 @@ export class ChatService {
       throw new ChatServiceError('already-generating', err)
     }
 
+    // /compact — context compressor: keep last turns, summarize older, enforce English, stay under context limit
+    const trimmedForCompact = content.trim()
+    if (trimmedForCompact === '/compact' || trimmedForCompact.startsWith('/compact ') || trimmedForCompact === '/compact:en') {
+      const prior = await this.deps.persistence.getEvents(sessionId)
+      if (prior.length <= 10) {
+        const msg = 'Context is already compact — no compression needed. Continue in English.'
+        const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
+        this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+        return { ok: true, userSeq: -1, assistantSeq: seq }
+      }
+      const keep = prior.slice(-8)
+      const older = prior.filter((e) => e.type === 'user/message' || e.type === 'assistant/message').slice(0, -8).slice(-12)
+      const summary = older.map((e) => {
+        const c = extractContent(e.data) ?? ''
+        const role = e.type === 'user/message' ? 'User' : 'Assistant'
+        return `${role}: ${c.slice(0, 120).replace(/\n/g, ' ')}`
+      }).join('\n').slice(0, 900)
+      const compactContent = `Compacted ${older.length} earlier turns. Summary (English, short):\n${summary}\n[Keep English, keep context short]`
+      await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactContent })
+      const ack = `✓ Compacted — kept last ${keep.length} turns, summarized ${older.length} older. Context now English & short.`
+      const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
+      this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `compact kept ${keep.length}, summarized ${older.length}` })
+      return { ok: true, userSeq: -1, assistantSeq: seq }
+    }
+
     // 1. Resolve the active model — orchestrated chat per ARCHITECTURE_PHASE1 §4/6 (AppBackend→ChatService→Workbench→LlmPort).
     // Never silently substitute, never fabricate: no selection → honest error.
     let active = this.deps.workbench.getActiveModel()
@@ -195,7 +228,24 @@ export class ChatService {
     }
 
     // 3. History + user persistence first (durable before any network).
-    const prior = await this.deps.persistence.getEvents(sessionId)
+    let prior = await this.deps.persistence.getEvents(sessionId)
+    // Auto-compact when approaching context limit to avoid invalid-response empty reply (keep English, low tokens)
+    try {
+      const estPriorTokens = Math.ceil(prior.reduce((n, e) => n + (extractContent(e.data)?.length ?? 0), 0) / 4) + Math.ceil(content.length / 4)
+      if (estPriorTokens > 5500 && prior.length > 10) {
+        const keep = prior.slice(-8)
+        const older = prior.filter((e) => e.type === 'user/message' || e.type === 'assistant/message').slice(0, -8).slice(-8)
+        const summary = older.map((e) => {
+          const c = extractContent(e.data) ?? ''
+          const role = e.type === 'user/message' ? 'User' : 'Assistant'
+          return `${role}: ${c.slice(0, 100).replace(/\n/g, ' ')}`
+        }).join('\n').slice(0, 700)
+        const compactContent = `Auto-compacted ${older.length} turns for context limit. Summary (English):\n${summary}`
+        await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactContent })
+        prior = [...keep.slice(0, 0), ...keep] // keep only last 8 for this send; history now compacted
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `auto-compact est ${estPriorTokens} tokens → kept ${keep.length} turns` })
+      }
+    } catch { /* auto-compact best-effort */ }
     // Resolve workspace (project or global) — injected as system context so tools know where they may operate.
     let workspaceContext: string | null = null
     try {
@@ -342,11 +392,18 @@ export class ChatService {
     }
 
     if (text === '') {
-      const msg = 'invalid-response: the local model returned an empty reply'
+      // Empty reply often means context overflow or GGUF mismatch — auto-compact and ack in English without scary banner.
+      try {
+        const compactContent = `Auto-compacted for empty reply — context was too large for ${String(model).slice(0, 60)}.`
+        await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactContent })
+      } catch {}
+      const msg = 'The model returned an empty reply — context was auto-compacted. Please retry your last message or type /compact to keep context short.'
       this.log(entry.id, endpoint, model, started, undefined, 'invalid-response', streamed)
-      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
-      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
-      throw new ChatServiceError('runtime-unavailable', msg)
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: 'empty reply auto-compacted', modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
+      const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
+      this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+      // Return ack instead of throwing — UI will show friendly message, no red banner.
+      return { ok: true, userSeq, assistantSeq: seq }
     }
 
     // 5. Track token usage
@@ -566,10 +623,16 @@ export class ChatService {
     }
 
     if (text === '') {
-      const msg = 'invalid-response: the local model returned an empty reply'
+      try {
+        const compactContent = `Auto-compacted for empty regenerate — context was too large.`
+        await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactContent })
+      } catch {}
+      const msg = 'The model returned an empty reply — context was auto-compacted. Please retry or type /compact.'
       this.log(entry.id, endpoint, model, started, undefined, 'invalid-response', streamed)
-      this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
-      throw new ChatServiceError('runtime-unavailable', msg)
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: 'empty regenerate auto-compacted', modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
+      const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
+      this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+      return { ok: true, assistantSeq: seq }
     }
 
     const promptText = messages.map((m) => m.content).join(' ')

@@ -232,6 +232,29 @@ export class ModelWorkbench {
         })
       }
     }
+    // Deduplicate: same GGUF via LM Studio + Local Library → single entry, prefer bundled local (llama.cpp) so inference does not require LM Studio.
+    if (!runtimeId) {
+      const prio = (r: string): number => r === 'local' ? 10 : r === 'lmstudio' ? 1 : r === 'ollama' ? 1 : 0
+      const byKey = new Map<string, DiscoveredModel>()
+      for (const m of out) {
+        const key = String(m.modelId).toLowerCase().replace(/\.gguf$/i, '').split('/').pop()?.trim() ?? String(m.modelId).toLowerCase()
+        const displayKey = m.displayName.toLowerCase().trim()
+        const mapKey = `${key}|${displayKey.slice(0, 32)}`
+        const existing = byKey.get(mapKey)
+        if (!existing) byKey.set(mapKey, m)
+        else if (prio(m.runtimeId) > prio(existing.runtimeId)) byKey.set(mapKey, m)
+        else if (prio(m.runtimeId) === prio(existing.runtimeId) && String(m.modelId).length < String(existing.modelId).length) byKey.set(mapKey, m)
+      }
+      // Also dedup by displayName alone for cases where modelId differs slightly (e.g., path prefix)
+      const byDisplay = new Map<string, DiscoveredModel>()
+      for (const m of byKey.values()) {
+        const dKey = m.displayName.toLowerCase().replace(/\.gguf$/i,'').trim()
+        const ex = byDisplay.get(dKey)
+        if (!ex) byDisplay.set(dKey, m)
+        else if (prio(m.runtimeId) > prio(ex.runtimeId)) byDisplay.set(dKey, m)
+      }
+      return Array.from(byDisplay.values())
+    }
     return out
   }
 
@@ -437,6 +460,27 @@ export class ModelWorkbench {
         try { (this.config as unknown as { clearActiveSelection?: () => void }).clearActiveSelection?.() } catch {}
         return { selection: null, available: false }
       }
+    }
+    // Migrate external (LM Studio/Ollama) selection to bundled local when same GGUF exists locally — avoids connection-refused without LM Studio running.
+    if (sel && sel.runtimeId !== 'local' && this.isModelLive(sel.modelId)) {
+      try {
+        const localSnap = this.config.getRuntime('local')
+        if (localSnap) {
+          const needle = String(sel.modelId).toLowerCase().replace(/\.gguf$/i, '').split('/').pop()?.trim() ?? String(sel.modelId).toLowerCase()
+          const dNeedle = sel.modelId.toLowerCase()
+          const localHit = localSnap.lastModels.find((m) =>
+            m.modelId.toLowerCase() === dNeedle ||
+            m.displayName.toLowerCase() === needle ||
+            m.modelId.toLowerCase().includes(needle) ||
+            needle.includes(m.modelId.toLowerCase().replace(/\.gguf$/i, '').split('/').pop() ?? '')
+          )
+          if (localHit && this.isModelLive(localHit.modelId)) {
+            this.config.setActiveSelection({ runtimeId: 'local', modelId: localHit.modelId })
+            sel = this.config.getActiveSelection()
+            appendLlamaLog(this.baseDir, 'migrate-external-to-local', { from: `${sel?.runtimeId}:${sel?.modelId}`, to: `local:${localHit.modelId}` })
+          }
+        }
+      } catch { /* keep original selection */ }
     }
     if (!sel) return this.resolveRootModel()
     const snap = this.config.getRuntime(sel.runtimeId)

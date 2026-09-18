@@ -182,24 +182,20 @@ export function MessageBubble({
   if (thinking) {
     return (
       <div key={id} data-testid="assistant-thinking" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is thinking" style={{ alignItems: 'flex-start' } as React.CSSProperties}>
-        <div className="bot-type-box" style={{ flex: 1, maxWidth: 420, border: '1px solid #E8E4DE', borderRadius: 16, background: '#fff', padding: '14px 16px', boxShadow: '0 2px 12px rgba(60,50,40,.06)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ width: 28, height: 28, borderRadius: 8, background: '#C65D3B', display: 'grid', placeItems: 'center', color: '#fff', flex: 'none' }}><Sparkles size={14} /></span>
-            <span style={{ font: '600 13px/1 Manrope', color: '#1A1614' }}>Sovara</span>
-            <span style={{ font: '500 10px/1 Manrope', color: '#22c55e', background: '#f0fdf4', padding: '2px 6px', borderRadius: 999, border: '1px solid #dcfce7' }}>● Connecting</span>
+        <div className="sovereign-ledger" role="status" aria-label="Sovara loading">
+          <div className="ledger-head">
+            <span className="ledger-mark" aria-hidden><Sparkles size={14} /></span>
+            <span className="ledger-name">Sovara</span>
+            <span className="ledger-phase thinking">Thinking</span>
+            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'spark x2.5 4b'} • Streaming…</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, font: '400 12px/1 Manrope', color: '#8A8279' }}>
+          <div className="ledger-track" aria-hidden><div className="ledger-fill" style={{ width: '48%' } as React.CSSProperties} /></div>
+          <div className="ledger-why">Analysing your request — why: building local context before generating • English only</div>
+          <div className="ledger-foot">
             <span>Thinking</span>
-            <span className="sv-thinking-dots" aria-hidden style={{ display: 'inline-flex', gap: 4 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#C65D3B', animation: 'pulse 1s infinite' } as React.CSSProperties} />
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#C65D3B', opacity: .6, animation: 'pulse 1s infinite .2s' } as React.CSSProperties} />
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#C65D3B', opacity: .3, animation: 'pulse 1s infinite .4s' } as React.CSSProperties} />
-            </span>
+            <span className="ledger-ticker" aria-hidden>[●●○]</span>
+            <span style={{ marginLeft: 'auto', font: '400 10px/1 DM Mono', color: '#8A8279' }}>● Ready</span>
           </div>
-        </div>
-        <div style={{ flex: 'none', display: 'flex', flexDirection: 'column', gap: 6, font: '500 10px/1 Manrope', color: '#8A8279' }}>
-          <span style={{ padding: '6px 8px', borderRadius: 999, background: '#fff', border: '1px solid #E8E4DE', whiteSpace: 'nowrap' }}>LOCAL MODEL — {modelBadge ?? 'spark x2.5 4b'} • Streaming…</span>
-          <span style={{ padding: '4px 8px', borderRadius: 999, background: '#f0fdf4', border: '1px solid #dcfce7', color: '#16a34a', fontSize: 10 }}>● Ready</span>
         </div>
       </div>
     )
@@ -208,7 +204,7 @@ export function MessageBubble({
   if (isEditing && isUser && onEditAndResend) {
     return (
       <article key={id} data-testid="message-user-editing" data-role={role} className="sv-message sv-message--user" aria-label="Edit your message">
-        <div className="sv-message-bubble sv-message-user">
+        <div className="sv-message-bubble sv-message-user" style={{ width: '100%', maxWidth: 480 }}>
           <textarea
             className="sv-composer-input"
             value={editDraft}
@@ -217,7 +213,7 @@ export function MessageBubble({
             autoFocus
             aria-label="Edit message"
             data-testid="edit-input"
-            style={{ minHeight: 60, padding: 0 }}
+            style={{ minHeight: 60, padding: '10px 12px', border: '1px solid #E8E4DE', borderRadius: 8, background: '#fff', color: '#1A1614', font: '400 13px/1.5 Manrope', width: '100%', resize: 'vertical' } as React.CSSProperties}
           />
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
             <button

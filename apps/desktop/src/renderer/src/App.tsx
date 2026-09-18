@@ -263,6 +263,33 @@ export function App(): React.JSX.Element {
 
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(true)
+  // Unowned chats → global Sovara workspace (right-rail SOVARA project)
+  const displayProjects = useMemo(() => {
+    const base = projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))
+    const global = chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))
+    if (global.length > 0) {
+      const idx = base.findIndex((p) => p.name.toLowerCase() === 'sovara')
+      if (idx >= 0) {
+        const existing = base[idx] as { id: string; name: string; sessions: { id: string; title: string }[] }
+        base[idx] = { ...existing, sessions: [...(existing.sessions as { id: string; title: string }[]), ...global] }
+      } else {
+        base.unshift({ id: '__global__', name: 'SOVARA', sessions: global })
+      }
+    }
+    return base
+  }, [projects, chat.globalSessions, projectChats])
+  const handleSelectProjectWrapped = useCallback((id: string) => {
+    if (id === '__global__') setSelectedProjectId(null)
+    else setSelectedProjectId(id)
+  }, [])
+  const handleNewProjectChatWrapped = useCallback((projectId: string) => {
+    if (projectId === '__global__') {
+      setSelectedProjectId(null)
+      void chat.handleCreate(null)
+      setActiveTab('session')
+      setActiveNav('chat')
+    } else handleNewProjectChat(projectId)
+  }, [chat])
   // Artifact viewer and Session context share the right rail — opening one closes the other
   useEffect(() => { if (artifactsOpen) setContextOpen(false) }, [artifactsOpen])
   useEffect(() => { if (contextOpen && artifactsOpen) setArtifactsOpen(false) }, [contextOpen])
@@ -297,17 +324,17 @@ export function App(): React.JSX.Element {
         onTabSelect={handleTabSelect}
         onNewSession={handleNewSession}
         footer={null}
-        projects={projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))}
+        projects={displayProjects}
         selectedProjectId={selectedProjectId}
         selectedSessionId={chat.selectedId}
-        onSelectProject={setSelectedProjectId}
+        onSelectProject={handleSelectProjectWrapped}
         onSelectSession={openChat}
         onNewProject={() => setProjectModalOpen(true)}
         onNewChat={handleNewSession}
-        onNewProjectChat={handleNewProjectChat}
+        onNewProjectChat={handleNewProjectChatWrapped}
         onRenameChat={(id, title) => void chat.handleRename(id, title)}
         onDeleteChat={(id) => void chat.handleDelete(id)}
-        recentChats={chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))}
+        recentChats={displayProjects.some((p) => p.id === '__global__') ? [] : chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))}
         selectedChatId={chat.selectedId}
         onSelectChat={openChat}
         onCloseChat={closeTab}
@@ -329,9 +356,6 @@ export function App(): React.JSX.Element {
               modelName={activeModelDisplay ?? 'No Model'}
               modelStatus={workbench.active.available ? 'Ready' : 'Offline'}
               onClose={() => setContextOpen(false)}
-              execution={chat.execution}
-              streamingReasoning={chat.streamingReasoning}
-              busy={chat.busy}
             />
           ) : undefined
         }

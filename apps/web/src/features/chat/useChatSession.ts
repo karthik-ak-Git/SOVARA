@@ -372,10 +372,44 @@ export function useChatSession() {
     }
   }, [refreshSessions, sessions, switchSession])
 
+  // --- Compressor: English-only, token-aware /compact ---
+  const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
+  const getTotalChars = (): number => events.reduce((n, e) => {
+    const c = (e.data as { content?: string })?.content ?? ''
+    return n + (typeof c === 'string' ? c.length : 0)
+  }, 0)
+  const handleCompact = useCallback(async (): Promise<void> => {
+    if (!selectedId || events.length <= 12) {
+      setError('Nothing to compact — conversation is short.')
+      setTimeout(() => setError(null), 2500)
+      return
+    }
+    // Keep last 10 turns, summarize older into a local system summary (no persistence delete — rely on compactForCtx truncation).
+    // Emit a transient compact marker so right sidebar Progress shows completion.
+    const keep = events.slice(-10)
+    const summary = `[Compressed ${events.length - keep.length} earlier messages — summarized for context. Language: English only. Tokens ~${estimateTokens(getTotalChars())} → ~${estimateTokens(keep.reduce((n,e)=>n+String((e.data as {content?:string})?.content??'').length,0))}. Use English.]`
+    setEvents([...keep.slice(0,0), { seq: -1, time: Date.now(), type: 'system/compact', data: { content: summary } } as unknown as SessionEventView, ...keep])
+    setError(null)
+    // Also persist a compact marker for server-side history pruning
+    try { await sendChatMessage(selectedId, summary, { reasoning: false }) } catch { /* marker persistence best-effort */ }
+  }, [selectedId, events, estimateTokens, getTotalChars])
+
   const handleSend = useCallback(
     async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
+      // /compact command — local + server compaction
+      if (text === '/compact' || text.startsWith('/compact ')) {
+        await handleCompact()
+        setDraft('')
+        return
+      }
+      // Auto-compact when approaching context limit (~80% of 8192 tokens ≈ 6400 tokens ≈ 25600 chars)
+      const totalChars = getTotalChars() + text.length
+      if (estimateTokens(totalChars) > 6400) {
+        // Fire compact before send to keep prompt in English and within budget
+        await handleCompact()
+      }
       let targetId = selectedId
       if (!targetId) {
         setBusy(true)
@@ -440,7 +474,7 @@ export function useChatSession() {
         })
       // SSE subscription drives all reactive UI updates (streamingText, streamingReasoning).
     },
-    [selectedId, busy, sessions.length, refreshEvents, refreshSessions]
+    [selectedId, busy, sessions.length, refreshEvents, refreshSessions, handleCompact]
   )
 
   const handleCancel = useCallback(async (): Promise<void> => {
@@ -552,6 +586,7 @@ export function useChatSession() {
     handleRename,
     handleDelete,
     handleSend,
+    handleCompact,
     handleCancel,
     handleRegenerate,
     handleEditAndResend,

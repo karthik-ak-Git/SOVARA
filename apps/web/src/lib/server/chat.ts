@@ -76,10 +76,15 @@ export async function editResendChat(raw: unknown) {
   const data = zChatEditResend.parse(raw)
   const sid = brand<'SessionId'>(data.sessionId)
   try {
-    // Both the orchestrator and the legacy ChatService expose editAndResend.
-    const t = await target()
-    return await t.editAndResend(sid, data.content, { webSearch: data.webSearch, reasoning: data.reasoning })
+    const t = await target() as unknown as { editAndResend?: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>; execute?: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>; send?: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }
+    const opts = { webSearch: data.webSearch, reasoning: data.reasoning }
+    if (t.editAndResend) return await t.editAndResend(sid, data.content, opts)
+    if (t.execute) return await t.execute(sid, data.content, opts)
+    if (t.send) return await t.send(sid, data.content, opts)
+    throw new Error('editResend unavailable: no chat handler')
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('Cannot read properties')) throw new Error(mapChatError(new Error('editResend failed: chat service not ready, please retry'), 'editResend failed'))
     throw new Error(mapChatError(e, 'editResend failed'))
   }
 }

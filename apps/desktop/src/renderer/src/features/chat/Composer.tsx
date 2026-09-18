@@ -75,6 +75,8 @@ export function Composer({
   active,
   runtimes,
   models,
+  projectCount,
+  onNewProject,
   execMode,
   onExecModeChange,
   reasoningEnabled = false,
@@ -466,8 +468,8 @@ export function Composer({
       </div>
 
       <div className="composer-meta">
-        <button type="button" className="composer-meta-btn" onClick={() => onOpenSettings?.()}><Folder size={13} aria-hidden />{projectName ?? 'SOVARA'}<ChevronDown size={12} aria-hidden /></button>
-        <button type="button" className="composer-meta-btn"><span className="branch-icon">⑂</span> main</button>
+        <button type="button" className="composer-meta-btn" onClick={() => onNewProject?.()} title="Create or switch project — global workspace is Sovara"><Folder size={13} aria-hidden />{projectName ?? 'SOVARA'}<ChevronDown size={12} aria-hidden /></button>
+        <button type="button" className="composer-meta-btn" onClick={() => { /* branch selector — main is global workspace branch */ }} title="Branch: main (global)"><span className="branch-icon">⑂</span> main</button>
         <span className="meta-spacer" />
         <PermissionControl mode={execMode} onChange={onExecModeChange} />
         <span className="composer-meta-private"><ShieldCheck size={13} aria-hidden /> Local &amp; private</span>

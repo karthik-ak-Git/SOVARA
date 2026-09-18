@@ -249,23 +249,47 @@ export function registerIpcHandlers(): void {
     const sid = brand<'SessionId'>(parsed.data.sessionId)
     console.log(`[SOVARA][IPC] chat:editResend sid=${parsed.data.sessionId} len=${parsed.data.content.length} reasoning=${!!parsed.data.reasoning}`)
     try {
-      const backend = getBackend()
-      const target: { editAndResend?: Function; execute?: Function; editResend?: Function } =
-        (backend as unknown as { orchestrator?: unknown }).orchestrator ?? backend.chat
-      // orchestrator exposes editAndResend, chat exposes editAndResend
-      const fn = (target as { editAndResend?: Function; editResend?: Function }).editAndResend ?? (target as { editResend?: Function }).editResend
+      const backend = getBackend() as unknown as { orchestrator?: { editAndResend?: Function; execute?: Function }; chat?: { editAndResend?: Function; send?: Function; execute?: Function } }
+      const orch = backend.orchestrator
+      const chat = backend.chat
       const resendOpts = { webSearch: parsed.data.webSearch, reasoning: parsed.data.reasoning, attachments: parsed.data.attachments }
-      const res = fn
-        ? await (fn as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
-        : await (target as unknown as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute(sid, parsed.data.content, resendOpts)
-      console.log(`[SOVARA][IPC] chat:editResend ok sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
-      return res
+      // Prefer explicit editAndResend; fall back to execute/send (append-only) so edit never crashes. Never read .execute of undefined.
+      if (orch?.editAndResend) {
+        const res = await (orch.editAndResend as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
+        console.log(`[SOVARA][IPC] chat:editResend ok via orchestrator sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+        return res
+      }
+      if (chat?.editAndResend) {
+        const res = await (chat.editAndResend as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
+        console.log(`[SOVARA][IPC] chat:editResend ok via chat sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+        return res
+      }
+      if (orch?.execute) {
+        const res = await (orch.execute as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
+        console.log(`[SOVARA][IPC] chat:editResend fallback via orchestrator.execute sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+        return res
+      }
+      if (chat?.send) {
+        const res = await (chat.send as (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }>)(sid, parsed.data.content, resendOpts)
+        console.log(`[SOVARA][IPC] chat:editResend fallback via chat.send sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+        return res
+      }
+      // Last resort: try backend.chat as generic
+      const fallback = (backend as unknown as { chat?: unknown }).chat
+      if (fallback && typeof (fallback as { execute?: unknown }).execute === 'function') {
+        const res = await ((fallback as { execute: (s: SessionId, c: string, o?: unknown) => Promise<{ userSeq: number; assistantSeq: number }> }).execute)(sid, parsed.data.content, resendOpts)
+        console.log(`[SOVARA][IPC] chat:editResend fallback generic execute sid=${parsed.data.sessionId} userSeq=${res.userSeq}`)
+        return res
+      }
+      throw new Error('editResend unavailable: no chat handler')
     } catch (e) {
       console.error(`[SOVARA][IPC][chat:editResend][ERROR] sid=${parsed.data.sessionId} ${e instanceof Error ? e.message : String(e)}`)
       const raw = e instanceof Error ? e.message : 'editResend failed'
       const code = (e as { code?: string })?.code
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
+      // Never surface raw "Cannot read properties of undefined" to UI — map to user-friendly retryable error
+      if (raw.includes('Cannot read properties')) throw new Error('editResend failed: chat service not ready, please retry')
       throw new Error(raw)
     }
   })

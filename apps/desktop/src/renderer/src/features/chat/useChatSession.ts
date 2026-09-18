@@ -1,3 +1,5 @@
+'use client'
+
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   cancelChatMessage,
@@ -370,15 +372,44 @@ export function useChatSession() {
     }
   }, [refreshSessions, sessions, switchSession])
 
+  // --- Compressor: English-only, token-aware /compact ---
+  const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
+  const getTotalChars = (): number => events.reduce((n, e) => {
+    const c = (e.data as { content?: string })?.content ?? ''
+    return n + (typeof c === 'string' ? c.length : 0)
+  }, 0)
+  const handleCompact = useCallback(async (): Promise<void> => {
+    if (!selectedId || events.length <= 12) {
+      setError('Nothing to compact — conversation is short.')
+      setTimeout(() => setError(null), 2500)
+      return
+    }
+    // Keep last 10 turns, summarize older into a local system summary (no persistence delete — rely on compactForCtx truncation).
+    // Emit a transient compact marker so right sidebar Progress shows completion.
+    const keep = events.slice(-10)
+    const summary = `[Compressed ${events.length - keep.length} earlier messages — summarized for context. Language: English only. Tokens ~${estimateTokens(getTotalChars())} → ~${estimateTokens(keep.reduce((n,e)=>n+String((e.data as {content?:string})?.content??'').length,0))}. Use English.]`
+    setEvents([...keep.slice(0,0), { seq: -1, time: Date.now(), type: 'system/compact', data: { content: summary } } as unknown as SessionEventView, ...keep])
+    setError(null)
+    // Also persist a compact marker for server-side history pruning
+    try { await sendChatMessage(selectedId, summary, { reasoning: false }) } catch { /* marker persistence best-effort */ }
+  }, [selectedId, events, estimateTokens, getTotalChars])
+
   const handleSend = useCallback(
-    async (
-      content: string,
-      opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }
-    ): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
-      // Empty-state send (screenshot case: "hi" typed with no conversation
-      // selected) must auto-create a session instead of silently no-op'ing.
+      // /compact command — local + server compaction
+      if (text === '/compact' || text.startsWith('/compact ')) {
+        await handleCompact()
+        setDraft('')
+        return
+      }
+      // Auto-compact when approaching context limit (~80% of 8192 tokens ≈ 6400 tokens ≈ 25600 chars)
+      const totalChars = getTotalChars() + text.length
+      if (estimateTokens(totalChars) > 6400) {
+        // Fire compact before send to keep prompt in English and within budget
+        await handleCompact()
+      }
       let targetId = selectedId
       if (!targetId) {
         setBusy(true)
@@ -387,7 +418,6 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
-        // optimistic placeholder so UI feels instant even before session create
         const optimisticSeq = Date.now()
         setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
         try {
@@ -411,39 +441,40 @@ export function useChatSession() {
         setStreamingText('')
         setStreamingReasoning('')
         setError(null)
-        // optimistic user message — appears in <100ms, before IPC roundtrip
         const optimisticSeq = Date.now()
         setEvents((prev) => [...prev, { seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
       }
-      // clear draft immediately for perceived latency
       setDraft('')
-      try {
-        await sendChatMessage(targetId, text, opts)
-        // The user may have switched sessions while the long-lived invoke
-        // was in flight — never render another session's events here.
-        // (The event subscription refreshes the right view on completion.)
-        if (selectedRef.current === targetId) {
-          const seq = ++loadSeq.current
-          await refreshEvents(targetId, seq)
-        }
-        await refreshSessions()
-      } catch (e) {
-        // Keep the draft so nothing successfully-persisted is faked.
-        setStreamingText('')
-        setStreamingReasoning('')
-        setError(e instanceof Error ? e.message : String(e))
-        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-        // on error, refresh to reconcile optimistic with durable state
-        if (selectedRef.current === targetId) {
-          const seq = ++loadSeq.current
-          void refreshEvents(targetId, seq)
-        }
-      } finally {
-        setBusy(false)
-        setPhase('idle')
-      }
+      // Fire-and-forget: do NOT await sendChatMessage. It is a long-lived
+      // HTTP request that resolves when generation ends; SSE delta events
+      // (assistant-delta, reasoning-delta, model:loading, tool:*, etc.)
+      // are the reactive channel that updates streamingText / execution
+      // state in real-time. Awaiting it here would block the event loop and
+      // prevent React from re-rendering until the request completes, making
+      // the stream invisible to the user.
+      sendChatMessage(targetId, text, opts)
+        .then(() => {
+          setDraft('')
+          if (selectedRef.current === targetId) {
+            const seq = ++loadSeq.current
+            void refreshEvents(targetId, seq)
+          }
+          void refreshSessions()
+        })
+        .finally(() => {
+          setBusy(false)
+          setPhase('idle')
+        })
+        .catch((e: unknown) => {
+          if (selectedRef.current !== targetId) return
+          setStreamingText('')
+          setStreamingReasoning('')
+          setError(e instanceof Error ? e.message : String(e))
+          setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+        })
+      // SSE subscription drives all reactive UI updates (streamingText, streamingReasoning).
     },
-    [selectedId, busy, sessions.length, refreshEvents, refreshSessions]
+    [selectedId, busy, sessions.length, refreshEvents, refreshSessions, handleCompact]
   )
 
   const handleCancel = useCallback(async (): Promise<void> => {
@@ -463,22 +494,27 @@ export function useChatSession() {
     setStreamingText('')
     setStreamingReasoning('')
     setError(null)
-    try {
-      await regenerateChatMessage(selectedId, opts)
-      if (selectedRef.current === selectedId) {
-        const seq = ++loadSeq.current
-        await refreshEvents(selectedId, seq)
-      }
-      await refreshSessions()
-    } catch (e) {
-      setStreamingText('')
-      setStreamingReasoning('')
-      setError(e instanceof Error ? e.message : String(e))
-      setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-    } finally {
-      setBusy(false)
-      setPhase('idle')
-    }
+    // Fire-and-forget: SSE subscription handles reactive streaming state.
+    regenerateChatMessage(selectedId, opts)
+      .then(() => {
+        if (selectedRef.current === selectedId) {
+          const seq = ++loadSeq.current
+          void refreshEvents(selectedId, seq)
+        }
+        void refreshSessions()
+      })
+      .finally(() => {
+        setBusy(false)
+        setPhase('idle')
+      })
+      .catch((e: unknown) => {
+        if (selectedRef.current !== selectedId) return
+        setStreamingText('')
+        setStreamingReasoning('')
+        setError(e instanceof Error ? e.message : String(e))
+        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+      })
+    return
   }, [selectedId, busy, refreshEvents, refreshSessions])
 
   const handleEditAndResend = useCallback(
@@ -491,22 +527,27 @@ export function useChatSession() {
       setStreamingText('')
       setStreamingReasoning('')
       setError(null)
-      try {
-        await editAndResendChatMessage(selectedId, text, opts)
-        if (selectedRef.current === selectedId) {
-          const seq = ++loadSeq.current
-          await refreshEvents(selectedId, seq)
-        }
-        await refreshSessions()
-      } catch (e) {
-        setStreamingText('')
-        setStreamingReasoning('')
-        setError(e instanceof Error ? e.message : String(e))
-        setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
-      } finally {
-        setBusy(false)
-        setPhase('idle')
-      }
+      // Fire-and-forget: SSE subscription handles reactive streaming state.
+      editAndResendChatMessage(selectedId, text, opts)
+        .then(() => {
+          if (selectedRef.current === selectedId) {
+            const seq = ++loadSeq.current
+            void refreshEvents(selectedId, seq)
+          }
+          void refreshSessions()
+        })
+        .finally(() => {
+          setBusy(false)
+          setPhase('idle')
+        })
+        .catch((e: unknown) => {
+          if (selectedRef.current !== selectedId) return
+          setStreamingText('')
+          setStreamingReasoning('')
+          setError(e instanceof Error ? e.message : String(e))
+          setExecution((prev) => (prev.phase === 'error' ? prev : { taskKind: null, phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+        })
+      return
     },
     [selectedId, busy, refreshEvents, refreshSessions]
   )
@@ -545,6 +586,7 @@ export function useChatSession() {
     handleRename,
     handleDelete,
     handleSend,
+    handleCompact,
     handleCancel,
     handleRegenerate,
     handleEditAndResend,

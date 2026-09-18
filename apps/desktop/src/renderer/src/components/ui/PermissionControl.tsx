@@ -1,3 +1,5 @@
+'use client'
+
 import { useState, useRef, useEffect, type ReactElement } from 'react'
 import { Shield, ChevronDown, TriangleAlert } from 'lucide-react'
 
