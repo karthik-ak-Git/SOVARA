@@ -64,8 +64,8 @@ export function ContextPanel({
         </div>
       </ContextSection>
       <ContextSection title="RUNTIME">
-        <InfoRow label="GPU" value="Detecting..." />
-        <InfoRow label="VRAM" value="—" />
+        <InfoRow label="GPU" value="Desktop only" />
+        <div style={{ fontSize: 10, color: '#9a9288', marginTop: 6, lineHeight: 1.5 }}>Live GPU load, VRAM, tokens/s and context usage appear in the SOVARA desktop app — web is static.</div>
       </ContextSection>
     </aside>
   )

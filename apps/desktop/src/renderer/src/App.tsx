@@ -356,6 +356,11 @@ export function App(): React.JSX.Element {
               modelName={activeModelDisplay ?? 'No Model'}
               modelStatus={workbench.active.available ? 'Ready' : 'Offline'}
               onClose={() => setContextOpen(false)}
+              execution={chat.execution}
+              streamingText={chat.streamingText}
+              streamingReasoning={chat.streamingReasoning}
+              events={chat.events}
+              resources={workbench.resources}
             />
           ) : undefined
         }

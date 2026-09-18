@@ -2,27 +2,43 @@ import os from 'node:os'
 import { execSync } from 'node:child_process'
 import type { HardwareInfo } from '@shared/types/explore'
 
-function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: number } | null {
+function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: number; gpuUtil?: number } | null {
   try {
-    // nvidia-smi outputs: "8192, NVIDIA GeForce RTX 4080"
-    const out = execSync('nvidia-smi --query-gpu=memory.total,memory.free,name --format=csv,noheader,nounits', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
+    // Include utilization.gpu for live load bar — "42, 8192, 6144, NVIDIA GeForce RTX 4080"
+    const out = execSync('nvidia-smi --query-gpu=utilization.gpu,memory.total,memory.free,name --format=csv,noheader,nounits', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
     const line = out.split('\n').map((s) => s.trim()).filter(Boolean)[0]
     if (!line) return null
-    // CSV: "8192, 6144, NVIDIA GeForce RTX 4080"
     const parts = line.split(',').map((s) => s.trim())
-    if (parts.length >= 2) {
-      const total = parseInt(parts[0], 10)
-      const free = parseInt(parts[1], 10)
-      const name = parts.slice(2).join(',').trim() || undefined
+    if (parts.length >= 3) {
+      const util = parseInt(parts[0], 10)
+      const total = parseInt(parts[1], 10)
+      const free = parseInt(parts[2], 10)
+      const name = parts.slice(3).join(',').trim() || undefined
       if (Number.isFinite(total) && total > 0) {
-        return { totalVramMB: total, freeVramMB: Number.isFinite(free) ? free : undefined, name }
+        return { gpuUtil: Number.isFinite(util) ? util : undefined, totalVramMB: total, freeVramMB: Number.isFinite(free) ? free : undefined, name }
       }
     }
+    // Fallback: older driver without utilization column still returns 3 cols above; keep retry without util for compat
     return null
-  } catch { return null }
+  } catch {
+    // Compat fallback without util column (very old drivers)
+    try {
+      const out = execSync('nvidia-smi --query-gpu=memory.total,memory.free,name --format=csv,noheader,nounits', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
+      const line = out.split('\n').map((s) => s.trim()).filter(Boolean)[0]
+      if (!line) return null
+      const parts = line.split(',').map((s) => s.trim())
+      if (parts.length >= 2) {
+        const total = parseInt(parts[0], 10)
+        const free = parseInt(parts[1], 10)
+        const name = parts.slice(2).join(',').trim() || undefined
+        if (Number.isFinite(total) && total > 0) return { totalVramMB: total, freeVramMB: Number.isFinite(free) ? free : undefined, name }
+      }
+      return null
+    } catch { return null }
+  }
 }
 
-function tryWmic(): { name?: string; totalVramMB?: number } | null {
+function tryWmic(): { name?: string; totalVramMB?: number; gpuUtil?: number } | null {
   if (process.platform !== 'win32') return null
   try {
     // wmic returns AdapterRAM in bytes
@@ -42,7 +58,7 @@ function tryWmic(): { name?: string; totalVramMB?: number } | null {
   } catch { return null }
 }
 
-function tryPowerShell(): { name?: string; totalVramMB?: number } | null {
+function tryPowerShell(): { name?: string; totalVramMB?: number; gpuUtil?: number } | null {
   if (process.platform !== 'win32') return null
   try {
     const out = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -First 1 Name, AdapterRAM | Format-List"', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
@@ -62,19 +78,20 @@ export function getHardwareProfile(): HardwareInfo {
   const freeRamMB = Math.round(os.freemem() / (1024 * 1024))
 
   // Try GPU detection in priority: nvidia-smi → wmic → powershell
-  let gpu: { name?: string; totalVramMB?: number; freeVramMB?: number } | null = null
+  let gpu: { name?: string; totalVramMB?: number; freeVramMB?: number; gpuUtil?: number } | null = null
   gpu = tryNvidiaSmi()
   if (!gpu || !gpu.totalVramMB) {
     const w = tryWmic()
-    if (w) gpu = { ...gpu, ...w }
+    if (w) gpu = { ...(gpu ?? {}), ...w } as typeof gpu
   }
   if (!gpu || !gpu.totalVramMB) {
     const p = tryPowerShell()
-    if (p) gpu = { ...gpu, ...p }
+    if (p) gpu = { ...(gpu ?? {}), ...p } as typeof gpu
   }
 
   let totalVramMB = gpu?.totalVramMB
   let freeVramMB = gpu?.freeVramMB
+  const gpuUtil = typeof gpu?.gpuUtil === 'number' && Number.isFinite(gpu.gpuUtil) ? gpu.gpuUtil : undefined
   // WMIC can report AdapterRAM as signed 32-bit; large VRAM wraps negative — clamp without fabricating free
   if (totalVramMB !== undefined && totalVramMB < 0) totalVramMB = Math.abs(totalVramMB)
   // Do NOT synthesize freeVramMB when nvidia-smi unavailable: keep undefined so callers show estimation-only warning
@@ -89,7 +106,8 @@ export function getHardwareProfile(): HardwareInfo {
     freeVramMB: isDedicated ? freeVramMB : undefined,
     gpuName: gpu?.name,
     gpuAvailable,
-  }
+    gpuUtilization: gpuAvailable ? gpuUtil : undefined,
+  } as HardwareInfo & { gpuUtilization?: number }
 }
 
 export function getVramAwareCompatibilityMessage(hw: HardwareInfo): string {

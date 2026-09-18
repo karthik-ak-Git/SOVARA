@@ -191,7 +191,7 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
               <button
                 type="button"
                 className="settings-action-btn"
-                title="Detect LM Studio or Ollama model folders"
+                title="Detect LM Studio or Ollama model folders and import their GGUF paths into Sovara. Sovara still runs everything through its own llama.cpp sidecar — these folders are not used as runtimes."
                 onClick={() => void handleDetect()}
               >
                 <Radar size={14} />
@@ -202,6 +202,7 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
             <div className="library-detect">
               <div className="library-detect-header">
                 <span className="library-detect-title">Detected locations</span>
+                <span className="muted small" style={{ fontSize: 11 }}>Import = Sovara finds GGUF paths here. Inference still goes through Sovara's own llama.cpp sidecar — these folders are never started as runtimes.</span>
                 <button type="button" className="settings-action-btn" style={{ fontSize: 11 }} onClick={() => void refreshConnected()}>Refresh logs</button>
               </div>
               {detectLocations.filter((l) => !l.exists).length > 0 && !detectLoading && !detectError ? (

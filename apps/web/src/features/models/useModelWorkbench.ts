@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  addRuntime,
   ensureLocalRuntime,
   getActiveModel,
   getSystemResources,
@@ -11,25 +10,24 @@ import {
   listLibraryModels,
   onDownloadEvents,
   probeLocalRuntime,
-  removeRuntime,
   selectModel,
-  testRuntimeConnection,
   type LocalRuntimeStatus,
   type SystemResourcesView,
 } from '@/lib/client/api'
-import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry, RuntimeProbeResult } from '@shared/types/models'
+import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 
 /**
- * Commit 6 — Models workbench state.
- * Registry + probe results + selection, all server-owned. React holds no
- * endpoint strings beyond form drafts and no selection beyond the mirror.
+ * Models workbench state — Sovara-owned runtime only.
+ * Sovara is sovereign: there is one runtime (llama.cpp sidecar) and the
+ * Library directory is the only source of model files. Adding / probing /
+ * removing third-party loopback runtimes (LM Studio, Ollama, vLLM) is no
+ * longer supported.
  */
 export function useModelWorkbench() {
   const [runtimes, setRuntimes] = useState<ModelRuntimeEntry[]>([])
   const [models, setModels] = useState<DiscoveredModel[]>([])
   const [active, setActive] = useState<ActiveModelState>({ selection: null, available: false })
   const [resources, setResources] = useState<SystemResourcesView | null>(null)
-  const [probes, setProbes] = useState<Record<string, RuntimeProbeResult>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Last explicitly selected model — powers the "Retry with Fit mode" path
@@ -56,7 +54,7 @@ export function useModelWorkbench() {
     // ensure at least one local runtime entry for the pill label
     let runtimesOut = rt
     if (libModels.length > 0 && rt.length === 0) {
-      runtimesOut = [{ id: 'local', displayName: 'Local Library', type: 'openai-compatible' as const, endpoint: 'local', enabled: true, timeoutMs: 8000 }]
+      runtimesOut = [{ id: 'local', displayName: 'Sovara Local (llama.cpp)', type: 'llama.cpp' as const, endpoint: 'local', enabled: true, timeoutMs: 8000 }]
     }
     setRuntimes(runtimesOut)
     setModels(merged)
@@ -119,34 +117,6 @@ export function useModelWorkbench() {
     [busy]
   )
 
-  const handleAdd = useCallback(
-    (displayName: string, endpoint: string) =>
-      runGuarded('add', async () => {
-        await addRuntime({ displayName, endpoint })
-        await refresh()
-      }),
-    [runGuarded, refresh]
-  )
-
-  const handleRemove = useCallback(
-    (runtimeId: string) =>
-      runGuarded(`remove:${runtimeId}`, async () => {
-        await removeRuntime(runtimeId)
-        await refresh()
-      }),
-    [runGuarded, refresh]
-  )
-
-  const handleProbe = useCallback(
-    (runtimeId: string) =>
-      runGuarded(`probe:${runtimeId}`, async () => {
-        const result = await testRuntimeConnection(runtimeId)
-        setProbes((p) => ({ ...p, [runtimeId]: result }))
-        await refresh()
-      }),
-    [runGuarded, refresh]
-  )
-
   const handleSelect = useCallback(
     async (runtimeId: string, modelId: string): Promise<void> => {
       // Model switching must never appear dead because another workbench
@@ -196,5 +166,5 @@ export function useModelWorkbench() {
 
   const dismissError = useCallback(() => setError(null), [])
 
-  return { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
+  return { runtimes, models, active, resources, busy, error, dismissError, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress, refresh }
 }

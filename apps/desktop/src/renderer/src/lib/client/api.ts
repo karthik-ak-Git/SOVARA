@@ -287,7 +287,7 @@ export async function removeRegistryRowsByPath(localPath: string): Promise<{ ok:
 export interface SystemResourcesView {
   cpu: { logicalCores: number; loadAvg1: number }
   ram: { totalMB: number; freeMB: number; usedByAppMB: number }
-  gpu: { available: boolean; name?: string; driverVersion?: string }
+  gpu: { available: boolean; name?: string; driverVersion?: string; utilization?: number }
   vram: { totalMB?: number; freeMB?: number; usedByModelsMB?: number }
   disk: { path: string; totalMB: number; freeMB: number }
   models: { instances: unknown[]; totalVramUsedMB?: number }

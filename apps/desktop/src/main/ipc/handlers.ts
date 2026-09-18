@@ -717,6 +717,7 @@ export function registerIpcHandlers(): void {
       return { ok: true, path: parsed.data.path, externalDirs: dirs, libraryDir: getBackend().getLibraryDir() }
     } catch (e) { throw new Error(e instanceof Error ? e.message : 'could not register external directory') }
   })
+
   ipcMain.handle('library:revealInFolder', async (_e, raw: unknown) => {
     const p = typeof raw === 'string' ? raw : (raw as { path?: string })?.path
     if (!p) throw new Error('missing path')

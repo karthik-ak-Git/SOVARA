@@ -210,9 +210,21 @@ export class AppBackend {
   }
 
   scanLibrary(): LibraryEntry[] {
-    return scanLibrary(this.getLibraryDir(), this.runtimeConfig.listRegistryRows(), this.runtimeConfig.getExternalModelDirs())
+    // Sovara is sovereign — only the local library dir is the runtime's
+    // home. Cross-service folders (LM Studio, Ollama) are NOT scanned here
+    // because they aren't our library. The detection flow (Library → Detect
+    // LM Studio / Ollama folders) lets users explicitly opt-in to IMPORT
+    // GGUF paths from those folders into Sovara's own registry; once
+    // imported, they live under our `local` runtime (llama.cpp sidecar).
+    return scanLibrary(this.getLibraryDir(), this.runtimeConfig.listRegistryRows(), [])
   }
   registerExternalModelDir(dir: string): string[] {
+    // IMPORT only — discover GGUF paths under cross-service folders (LM
+    // Studio, Ollama) and register them in Sovara's model_registry. The
+    // adapter still routes through `local` (llama.cpp sidecar); we never
+    // start a third-party HTTP server. This is the "drop a model into
+    // Sovara" path — discovery side. The model file itself is left in
+    // place at its original location; Sovara reads it from there.
     const { statSync } = require('node:fs')
     const abs = require('node:path').resolve(dir.trim())
     if (!abs) throw new Error('external path is not a directory')
@@ -224,37 +236,37 @@ export class AppBackend {
       try {
         // Derive HF repo from folder like "Qwen__Qwen3-0.6B" -> "Qwen/Qwen3-0.6B" or "lmstudio-community/GLM-4.6V-Flash-GGUF"
         const parts = f.path.split(/[/\\]/)
-        const idx = parts.findIndex(p=> p.includes('__'))
+        const idx = parts.findIndex(p => p.includes('__'))
         let repo = abs
-        if (idx>=0) repo = parts[idx].replace('__','/') // Qwen/Qwen3-0.6B
+        if (idx >= 0) repo = parts[idx].replace('__', '/')
         else {
-          // try parent folder under lmstudio root (e.g. lmstudio-community)
-          const rel = f.path.replace(abs+require('node:path').sep,'')
+          const rel = f.path.replace(abs + require('node:path').sep, '')
           const top = rel.split(/[/\\]/)[0]
-          if (top && top!=='..') repo = top.includes('-GGUF') ? `lmstudio-community/${top}` : top
+          if (top && top !== '..') repo = top.includes('-GGUF') ? `lmstudio-community/${top}` : top
         }
         const id = downloadRowId('external', f.path.toLowerCase(), 'main', f.file)
         this.runtimeConfig.upsertRegistryRow({ id, sourceProvider: 'external', repository: repo, rfilename: f.file, localPath: f.path, displayName: `${repo} — ${f.file}`, fileSizeBytes: f.sizeBytes, downloadStatus: 'completed', installStatus: 'installed' })
-        // Build sidecar JSON next to the gguf (can't overwrite lmstudio folder, so write <file>.json)
-        try { const fs=require('node:fs'); const jsonPath=f.path.replace(/\.gguf$/i,'.json'); if(!fs.existsSync(jsonPath)){ fs.writeFileSync(jsonPath, JSON.stringify({ repository: repo, rfilename: f.file, localPath: f.path, displayName: `${repo} — ${f.file}`, sizeBytes: f.sizeBytes, source: 'lmstudio-external', huggingFaceUrl: repo.includes('/')?`https://huggingface.co/${repo}`:`https://huggingface.co/models?search=${encodeURIComponent(repo)}` }, null, 2)) } } catch {}
-        // cleanup old flat-path row from earlier build (C:\...\models/FILE.gguf without subfolder)
+        try {
+          const fs = require('node:fs')
+          const jsonPath = f.path.replace(/\.gguf$/i, '.json')
+          if (!fs.existsSync(jsonPath)) {
+            fs.writeFileSync(jsonPath, JSON.stringify({ repository: repo, rfilename: f.file, localPath: f.path, displayName: `${repo} — ${f.file}`, sizeBytes: f.sizeBytes, source: 'sovara-imported', huggingFaceUrl: repo.includes('/') ? `https://huggingface.co/${repo}` : `https://huggingface.co/models?search=${encodeURIComponent(repo)}` }, null, 2))
+          }
+        } catch {}
         try {
           const staleId = downloadRowId('external', f.file.toLowerCase(), 'main', f.file)
           if (staleId !== id) { const r = this.runtimeConfig.getRegistryRow(staleId); if (r && r.localPath.toLowerCase() !== f.path.toLowerCase()) this.runtimeConfig.removeRegistryRow(staleId) }
         } catch {}
       } catch (e) { console.error('[registerExternal] upsert failed', e) }
     }
-      // purge legacy flat GLM ghost that causes "no GGUF at .../GLM-4.6V-Flash-Q4_K_M.gguf"
-     try { const db2=(this as unknown as {db: unknown}).db as { exec: (sql:string)=>void } | undefined; if(db2){ db2.exec("DELETE FROM model_registry WHERE local_path LIKE '%/GLM-4.6V-Flash-Q4_K_M.gguf' AND local_path NOT LIKE '%lmstudio-community%'"); } } catch {}
-     try { this.runtimeConfig.setAppSetting('root_model','no-default'); const sel=this.runtimeConfig.getActiveSelection(); if(sel?.modelId?.includes('GLM-4.6V-Flash')) this.runtimeConfig.clearActiveSelection(); } catch {}
-      try {
-       const filtered = externals.filter((e: {path:string})=> !e.path.toLowerCase().includes('mmproj'))
-       const ggufs = filtered.slice(0,40).map((e: {file:string})=> ({ modelId: e.file.replace(/\.gguf$/i,''), displayName: e.file }))
-       if (ggufs.length) {
+    try {
+      const filtered = externals.filter((e: { path: string }) => !e.path.toLowerCase().includes('mmproj'))
+      const ggufs = filtered.slice(0, 40).map((e: { file: string }) => ({ modelId: e.file.replace(/\.gguf$/i, ''), displayName: e.file }))
+      if (ggufs.length) {
         this.workbench.listRuntimes()
-        const existing = (()=>{ try { return this.runtimeConfig.listRegistryRows().filter(r=> r.installStatus!=='missing').map(r=> ({ modelId: r.rfilename.replace(/\.gguf$/i,''), displayName: r.displayName })) } catch { return [] } })()
-        const merged = [...new Map([...existing, ...ggufs].map(m=> [m.modelId.toLowerCase(), m] as const)).values()]
-        const cfg = this.runtimeConfig as unknown as { saveProbeSnapshot: (id:string,m:Array<{modelId:string;displayName:string}>,e:string|null)=>void }
+        const existing = (() => { try { return this.runtimeConfig.listRegistryRows().filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.rfilename.replace(/\.gguf$/i, ''), displayName: r.displayName })) } catch { return [] } })()
+        const merged = [...new Map([...existing, ...ggufs].map(m => [m.modelId.toLowerCase(), m] as const)).values()]
+        const cfg = this.runtimeConfig as unknown as { saveProbeSnapshot: (id: string, m: Array<{ modelId: string; displayName: string }>, e: string | null) => void }
         cfg.saveProbeSnapshot('local', merged, null)
         console.info(`[registerExternal] snapshot local -> ${merged.length} models`)
       }

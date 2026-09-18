@@ -41,11 +41,13 @@ import {
   appendLlamaLog,
   buildServerArgs,
   classifyLoadFailure,
+  ensureLlamaRuntime,
   findFreePort,
   getLlamaServerPath,
   getLlamaVersion,
   killServer,
   kvCacheMBFromInfo,
+  migrateLegacyRuntime,
   planMemory,
   planPartialFit,
   queryGpuVram,
@@ -57,7 +59,7 @@ import {
 
 export interface AdapterDeps {
   spawn?: typeof spawnLlamaServer
-  waitReady?: (port: number, timeoutMs: number) => Promise<void>
+  waitReady?: (port: number, timeoutMs: number, proc?: ChildProcess | null) => Promise<void>
   queryVram?: typeof queryGpuVram
   findPort?: typeof findFreePort
   exePathOverride?: string | null
@@ -136,7 +138,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   ) {
     this.deps = {
       spawn: deps?.spawn ?? spawnLlamaServer,
-      waitReady: deps?.waitReady ?? ((port: number, t: number) => waitForServerReady(port, t)),
+      waitReady: deps?.waitReady ?? ((port: number, t: number, proc?: ChildProcess | null) => waitForServerReady(port, t, undefined, proc)),
       queryVram: deps?.queryVram ?? queryGpuVram,
       findPort: deps?.findPort ?? findFreePort,
       ...(deps?.exePathOverride !== undefined ? { exePathOverride: deps.exePathOverride } : {}),
@@ -159,6 +161,28 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     return getLlamaServerPath(this.baseDir)
   }
 
+  /**
+   * Auto-install the llama-server.exe binary if it isn't on disk yet, so the
+   * user never has to click "Install local runtime" — the moment they pick
+   * a model the missing runtime gets pulled down. Returns the resolved path
+   * (existing or freshly provisioned). Throws if installation fails (network
+   * outage, antivirus blocked the download, disk full).
+   */
+  async ensureRuntimeProvisioned(onProgress?: (p: { phase: string; receivedBytes: number; totalBytes: number | null }) => void): Promise<string> {
+    const existing = this.exePath()
+    if (existing) return existing
+    // Try the legacy → new migration first (silent, no download).
+    try {
+      const mig = await migrateLegacyRuntime(this.baseDir)
+      if (mig.exePath) return mig.exePath
+    } catch { /* fall through to fresh install */ }
+    // Fresh install of the pinned CUDA build. Re-use the runtime module's
+    // ensureLlamaRuntime so the progress events and MOTW unblocking stay
+    // consistent with the manual flow.
+    const result = await ensureLlamaRuntime(this.baseDir, onProgress ? (p) => onProgress({ phase: p.phase, receivedBytes: p.receivedBytes, totalBytes: p.totalBytes }) : undefined)
+    return result.path
+  }
+
   private libraryDir(): string {
     if (this.libraryDirOverride) return this.libraryDirOverride
     try {
@@ -176,18 +200,24 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   }
 
   private scanGgufFiles(): string[] {
+    // Path-discovery only: we surface GGUF files that the user has already
+    // placed inside cross-service folders (LM Studio, Ollama) so the
+    // Library can list them. None of these paths is ever loaded through a
+    // third-party HTTP server — every load goes through Sovara's own
+    // llama.cpp sidecar (`local` runtime). Adding a folder to the Sovara
+    // Library is just a "I know about this file" pointer; the file itself
+    // stays where the user put it.
     const out: string[] = []
     walkGguf(this.libraryDir(), out)
-    // Also scan LM Studio / common external GGUF locations so a GGUF that
-    // the user already has (e.g. Nemotron in ~/.lmstudio/models) is
-    // considered "detected" without requiring a manual copy into the Sovara
-    // library. Missing files are pruned from the model list by the workbench.
     for (const dir of this.lmStudioCandidateDirs()) walkGguf(dir, out)
-    // Deduplicate by basename+size would be ideal, but basename is enough for the UI
     return [...new Set(out)].sort()
   }
 
   private lmStudioCandidateDirs(): string[] {
+    // Best-effort candidate paths. All of these are READ-ONLY scans for
+    // GGUF filenames — Sovara never opens an HTTP socket against LM Studio
+    // or Ollama, never queries `:1234` / `:11434`, never imports a remote
+    // model manifest. Discovery ≠ execution.
     const out: string[] = []
     try {
       const home = os.homedir()
@@ -524,7 +554,20 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     // Structured runtime selection (spec §5) — GGUF → llama.cpp only.
     // When auto-fallback chose CPU, force CPU path even though GPU exists.
     const isAutoCpu = autoFallback === 'cpu'
-    const exe = this.exePath()
+    // Auto-provision the llama.cpp runtime the first time we need it. The
+    // user never has to click "Install local runtime" — the moment they
+    // pick a model the missing binary gets pulled. Throws if installation
+    // genuinely fails (antivirus blocked, no network, disk full), and the
+    // caller surfaces the real reason — never the generic connection-refused.
+    let exe = this.exePath()
+    if (!exe) {
+      try {
+        exe = await this.ensureRuntimeProvisioned()
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        throw new Error(`runtime-not-installed: ${msg}`)
+      }
+    }
     const useCuda = !forceCpu && !isAutoCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0)
     const selection = selectRuntimeForModel({
       format: 'gguf',
@@ -594,7 +637,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     })
 
     try {
-      await this.deps.waitReady(port, 240_000)
+      await this.deps.waitReady(port, 240_000, proc)
     } catch (e) {
       await killServer(proc).catch(() => {})
       this.instances.delete(key) // OFFLINE — never leave a stuck LOADING
@@ -625,7 +668,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
           cur.failureReason = 'runner-crash'; cur.lastError = `runner exited (code=${code ?? 'unknown'} signal=${signal ?? 'none'})`
         })
         try {
-          await this.deps.waitReady(retryPort, 240_000)
+          await this.deps.waitReady(retryPort, 240_000, proc2)
         } catch (e2) {
           await killServer(proc2).catch(() => {})
           this.instances.delete(key)
@@ -659,7 +702,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
           cur.failureReason = 'runner-crash'; cur.lastError = `cpu fallback exited (code=${code ?? 'unknown'} signal=${signal ?? 'none'})`
         })
         try {
-          await this.deps.waitReady(cpuPort, 240_000)
+          await this.deps.waitReady(cpuPort, 240_000, cpuProc)
         } catch (e2) {
           await killServer(cpuProc).catch(() => {})
           this.instances.delete(key)

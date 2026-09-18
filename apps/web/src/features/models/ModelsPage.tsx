@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, type ReactElement } from 'react'
-import { Database, Plug, RefreshCw, Trash2 } from 'lucide-react'
+import { type ReactElement } from 'react'
+import { Database, Cpu } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Card } from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
@@ -14,10 +14,8 @@ function formatCtx(n?: number): string {
 }
 
 export function ModelsPage(): ReactElement {
-  const { runtimes, models, active, resources, probes, busy, error, dismissError, handleAdd, handleRemove, handleProbe, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
+  const { models, active, resources, busy, error, dismissError, handleSelect, handleSelectFit, lastSelect, handleEnsureRuntime, localRuntime, runtimeProgress } =
     useModelWorkbench()
-  const [name, setName] = useState('')
-  const [endpoint, setEndpoint] = useState('http://127.0.0.1:1234/v1')
 
   const vramUnknown = resources !== null && resources.vram.totalMB === undefined
 
@@ -44,7 +42,7 @@ export function ModelsPage(): ReactElement {
             </span>
             {!active.available ? (
               <span className="badge badge--warn" aria-label="Selected model unavailable">
-                Unavailable - probe its runtime
+                Unavailable — drop the GGUF into your Library and reselect
               </span>
             ) : (
               <span className="badge badge--success">Selected</span>
@@ -52,16 +50,18 @@ export function ModelsPage(): ReactElement {
           </div>
         ) : (
           <p className="muted small" role="status">
-            No model selected. Add a local runtime below, test the connection, then select a model.
+            No model selected. Pick a model from the list below.
           </p>
         )}
       </Card>
 
-      {/* Sovara owned runtime — our own llama.cpp sidecar, no third party */}
+      {/* Sovara owned runtime — our own llama.cpp sidecar. No LM Studio /
+          Ollama / vLLM endpoints are accepted: Sovara is sovereign and
+          loads GGUF weights through its own llama-server.exe binary. */}
       <Card>
         <div className="panel-head">
           <div className="panel-title">
-            <Database size={16} aria-hidden />
+            <Cpu size={16} aria-hidden />
             <span>Sovara Local Runtime</span>
           </div>
           <div className="panel-hint muted small">llama.cpp sidecar · CUDA · owned by Sovara</div>
@@ -78,7 +78,7 @@ export function ModelsPage(): ReactElement {
         ) : (
           <div role="status" aria-label="Local runtime not installed">
             <p className="muted small">
-              Not installed. One-time download (~240MB pinned CUDA build) — afterwards Sovara runs fully offline and loads your Library GGUFs into VRAM itself.
+              Not installed. One-time download (~240MB pinned CUDA build) — afterwards Sovara runs fully offline and loads your Library GGUFs into VRAM itself. The runtime is also auto-installed the first time you select a model.
             </p>
             {runtimeProgress ? (
               <p className="muted small" role="status" aria-label="Runtime install progress">
@@ -112,105 +112,6 @@ export function ModelsPage(): ReactElement {
         </div>
       ) : null}
 
-      {/* Connected runtimes */}
-      <Card>
-        <div className="panel-head">
-          <div className="panel-title">
-            <Plug size={16} aria-hidden />
-            <span>Connected runtimes</span>
-          </div>
-          <div className="panel-hint muted small">{runtimes.length} configured | loopback only</div>
-        </div>
-
-        <form
-          className="runtime-add"
-          aria-label="Add local runtime"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (name.trim() && endpoint.trim()) void handleAdd(name.trim(), endpoint.trim())
-          }}
-        >
-          <label className="field" htmlFor="rt-name">
-            <span className="field-label">Display name</span>
-            <input
-              id="rt-name"
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value.slice(0, 80))}
-              placeholder="LM Studio (local)"
-              maxLength={80}
-              aria-label="Runtime display name"
-            />
-          </label>
-          <label className="field" htmlFor="rt-endpoint">
-            <span className="field-label">Endpoint</span>
-            <input
-              id="rt-endpoint"
-              className="input"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value.slice(0, 256))}
-              placeholder="http://127.0.0.1:1234/v1"
-              maxLength={256}
-              inputMode="url"
-              aria-label="Runtime endpoint URL"
-            />
-          </label>
-          <Button variant="primary" type="submit" disabled={busy !== null || !name.trim() || !endpoint.trim()} aria-label="Add runtime">
-            Add
-          </Button>
-        </form>
-
-        {runtimes.length === 0 ? (
-          <EmptyState
-            title="No local runtimes yet"
-            description="Add LM Studio, Ollama, vLLM, or any OpenAI-compatible server on localhost. Only loopback addresses are accepted."
-          />
-        ) : (
-          <ul className="runtime-list" aria-label="Configured runtimes">
-            {runtimes.map((rt) => {
-              const probe = probes[rt.id]
-              const status = probe ? (probe.reachable ? 'connected' : 'disconnected') : 'not-probed'
-              return (
-                <li key={rt.id} className="runtime-row" data-testid={`runtime-${rt.id}`}>
-                  <div className="runtime-info">
-                    <strong>{rt.displayName}</strong>
-                    <span className="muted small runtime-endpoint">{rt.endpoint}</span>
-                  </div>
-                  <span
-                    className={`badge ${status === 'connected' ? 'badge--success' : status === 'disconnected' ? 'badge--warn' : 'badge--info'}`}
-                    data-testid={`runtime-status-${rt.id}`}
-                    role="status"
-                  >
-                    {status === 'connected'
-                      ? `Connected | ${probe!.models.length} models | ${probe!.latencyMs}ms`
-                      : status === 'disconnected'
-                        ? `Disconnected | ${probe!.error ?? 'unreachable'}`
-                        : 'Not probed yet'}
-                  </span>
-                  <div className="runtime-actions">
-                    <Button
-                      onClick={() => void handleProbe(rt.id)}
-                      disabled={busy !== null}
-                      aria-label={`Test connection to ${rt.displayName}`}
-                    >
-                      <RefreshCw size={12} aria-hidden /> Test
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      onClick={() => void handleRemove(rt.id)}
-                      disabled={busy !== null}
-                      aria-label={`Remove ${rt.displayName}`}
-                    >
-                      <Trash2 size={12} aria-hidden /> Remove
-                    </Button>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </Card>
-
       {/* Available models */}
       <Card>
         <div className="panel-head">
@@ -218,12 +119,12 @@ export function ModelsPage(): ReactElement {
             <Database size={16} aria-hidden />
             <span>Available models</span>
           </div>
-          <div className="panel-hint muted small">{models.length} discovered | from last probe</div>
+          <div className="panel-hint muted small">{models.length} discovered | from your Library</div>
         </div>
         {models.length === 0 ? (
           <EmptyState
             title="No models discovered"
-            description="Test a runtime connection above to discover its local models. Snapshots persist - Refresh re-probes."
+            description="Drop a GGUF into your Sovara Library (or use Library → Import) and it will appear here automatically."
           />
         ) : (
           <ul className="model-list" aria-label="Discovered models">
@@ -234,7 +135,7 @@ export function ModelsPage(): ReactElement {
                   <div className="model-info">
                     <strong>{m.displayName}</strong>
                     <span className="muted small">
-                      {runtimes.find((r) => r.id === m.runtimeId)?.displayName ?? m.runtimeId} | ctx {formatCtx(m.contextLength)}
+                      Sovara Local · llama.cpp | ctx {formatCtx(m.contextLength)}
                       {!m.available ? ' | unavailable' : ''}
                     </span>
                   </div>

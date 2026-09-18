@@ -43,11 +43,11 @@ export class SystemResourceStub implements SystemResourceManagerPort {
     return {
       cpu: { logicalCores: os.cpus().length, loadAvg1: os.loadavg()[0] ?? 0 },
       ram: { totalMB, freeMB, usedByAppMB: Math.round(process.memoryUsage().rss / (1024 * 1024)) },
-      gpu: { available: gpuAvailable, name: hw?.gpuName ?? (instances.length > 0 ? 'Local GPU (in use)' : undefined) },
+      gpu: { available: gpuAvailable, name: hw?.gpuName ?? (instances.length > 0 ? 'Local GPU (in use)' : undefined), utilization: (hw as unknown as { gpuUtilization?: number })?.gpuUtilization },
       vram: {
         totalMB: hw?.totalVramMB,
         freeMB: hw?.freeVramMB,
-        usedByModelsMB: instances.length > 0 ? totalVramUsed : undefined,
+        usedByModelsMB: instances.length > 0 ? totalVramUsed : (hw?.gpuAvailable && hw.totalVramMB && hw.freeVramMB !== undefined ? hw.totalVramMB - hw.freeVramMB : undefined),
       },
       disk: { path: 'unknown', totalMB: 0, freeMB: 0 },
       models: { instances, totalVramUsedMB: instances.length > 0 ? totalVramUsed : undefined },

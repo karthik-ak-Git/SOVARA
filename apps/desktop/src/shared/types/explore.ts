@@ -118,6 +118,8 @@ export interface HardwareInfo {
   freeVramMB?: number
   gpuName?: string
   gpuAvailable: boolean
+  /** Live GPU compute utilization 0-100 from nvidia-smi utilization.gpu (undefined when unavailable). */
+  gpuUtilization?: number
 }
 
 export interface CompatibilityResult {

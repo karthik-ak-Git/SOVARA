@@ -338,6 +338,10 @@ export class ModelWorkbench {
         try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
       }
       const external = (()=>{ try { return (this.config as unknown as { getExternalModelDirs?: ()=>string[] }).getExternalModelDirs?.() ?? [] } catch { return [] } })()
+      // Discovery only — we list GGUF paths the user already has in LM
+      // Studio / Ollama folders so the workbench can offer them. Every
+      // load still goes through Sovara's own llama.cpp sidecar; we never
+      // call LM Studio's or Ollama's HTTP server.
       const dirs = [libDir, ...external]
       const { readdirSync } = require('node:fs') as typeof import('node:fs')
       const { join } = require('node:path') as typeof import('node:path')
