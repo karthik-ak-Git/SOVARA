@@ -31,26 +31,27 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
   const [filter, setFilter] = useState('')
   const triggerRef = useRef<HTMLButtonElement>(null)
 
-  const selectedModel = active.selection
+  const isAuto = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
+  const selectedModel = !isAuto && active.selection
     ? models.find(
         (m) =>
           m.modelId === active.selection!.modelId && m.runtimeId === active.selection!.runtimeId
       )
     : null
 
-  const runtimeName = selectedModel
+  const runtimeName = isAuto ? 'Smart routing' : selectedModel
     ? runtimes.find((r) => r.id === selectedModel.runtimeId)?.displayName ?? selectedModel.runtimeId
     : null
 
-  const ctxLabel = selectedModel?.contextLength ? formatCtx(selectedModel.contextLength) : null
+  const ctxLabel = isAuto ? null : selectedModel?.contextLength ? formatCtx(selectedModel.contextLength) : null
 
-  const modelLabel = selectedModel
+  const modelLabel = isAuto ? 'Auto' : selectedModel
     ? ctxLabel
       ? `${prettyName(selectedModel.displayName)} · ${ctxLabel}`
       : prettyName(selectedModel.displayName)
     : 'No model'
 
-  const statusLabel = active.available ? 'Ready' : 'Unavailable'
+  const statusLabel = isAuto ? 'Smart' : active.available ? 'Ready' : 'Unavailable'
 
   const filtered = models.filter((m) => {
     if (!filter) return true
@@ -127,6 +128,21 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
           </div>
 
           <ul className="model-popover-list">
+            {/* Auto smart-routing — user requested: pinned model for entire chat, Auto for per-task best */}
+            <li
+              role="option"
+              aria-selected={isAuto}
+              className={`model-popover-item ${isAuto ? 'model-popover-item--active' : ''}`}
+              data-testid="model-auto"
+              onClick={() => { onSelect('auto', '__auto__'); setOpen(false); setFilter(''); triggerRef.current?.focus() }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect('auto', '__auto__'); setOpen(false); setFilter(''); triggerRef.current?.focus() } }}
+              tabIndex={0}
+              data-active={isAuto || undefined}
+            >
+              <span className="model-popover-item-name" title="Auto — smart route per task">Auto</span>
+              <span className="model-popover-item-meta muted small">Smart routing · picks best per task<Brain size={12} aria-hidden style={{ marginLeft: 6 }} /></span>
+              {isAuto ? <Check size={14} className="model-popover-check-active" aria-label="Active" /> : null}
+            </li>
             {filtered.length === 0 ? (
               <li className="model-popover-empty" role="option" aria-disabled>
                 No models match &quot;{filter}&quot;
@@ -134,7 +150,7 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
             ) : (
               filtered.map((m) => {
                 const isActive =
-                  active.selection?.modelId === m.modelId && active.selection?.runtimeId === m.runtimeId
+                  !isAuto && active.selection?.modelId === m.modelId && active.selection?.runtimeId === m.runtimeId
                 const rt = runtimes.find((r) => r.id === m.runtimeId)
                 return (
                   <li

@@ -292,9 +292,54 @@ export class ChatService {
       return { ok: true, userSeq: -1, assistantSeq: seq }
     }
 
-    // 1. Resolve the active model — orchestrated chat per ARCHITECTURE_PHASE1 §4/6 (AppBackend→ChatService→Workbench→LlmPort).
-    // Never silently substitute, never fabricate: no selection → honest error.
+    // 1. Resolve the active model — pinned vs Auto smart-routing.
+    // Pinned: what user selected is used for entire chat (user request). Auto: smart route per task.
     let active = this.deps.workbench.getActiveModel()
+    const isAutoActive = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
+    if (isAutoActive) {
+      // Auto smart-routing: pick best local model for this prompt via ModelRouter, don't persist
+      try {
+        const { classifyTask } = await import('./TaskClassifier')
+        const { routeModel } = await import('./ModelRouter')
+        const modelsForAuto = this.deps.workbench.listModels().filter((m) => m.runtimeId === 'local' && m.available)
+        if (modelsForAuto.length > 0) {
+          const resources = await this.deps.resources.getSnapshot()
+          const classification = classifyTask(content, { reasoning: opts?.reasoning, webSearch: opts?.webSearch, hasImage: false })
+          const routed = await routeModel({
+            task: classification,
+            models: modelsForAuto,
+            active: null,
+            resources,
+            checkBeforeLoad: async (modelId) => {
+              try {
+                const mm = modelsForAuto.find((x) => x.modelId === modelId)
+                return await this.deps.resources.checkBeforeLoad(
+                  { id: modelId as never, displayName: mm?.displayName ?? modelId, source: 'custom', format: 'gguf' } as never,
+                  { ctxLen: classification.contextLengthNeeded }
+                )
+              } catch { return { level: 'ok' as const } }
+            },
+          })
+          if (routed.modelId && routed.runtimeId) {
+            const hit = modelsForAuto.find((m) => m.modelId === routed.modelId && m.runtimeId === routed.runtimeId)
+            if (hit) {
+              active = { selection: { runtimeId: hit.runtimeId, modelId: hit.modelId }, available: true, displayName: hit.displayName, runtimeDisplayName: `Auto → ${hit.displayName}` }
+              appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: hit.modelId, runtimeId: hit.runtimeId, detail: `auto smart-route ${classification.kind} → ${hit.modelId} (${routed.reason})` })
+            }
+          }
+        }
+      } catch { /* fallback to first available below */ }
+      if (active.selection?.modelId === '__auto__') {
+        // Auto routing failed — fallback to first local
+        try {
+          const ms = this.deps.workbench.listModels().filter((m) => m.runtimeId === 'local' && m.available)
+          if (ms.length > 0) {
+            const first = ms[0]
+            active = { selection: { runtimeId: first.runtimeId, modelId: first.modelId }, available: true, displayName: first.displayName, runtimeDisplayName: `Auto → ${first.displayName}` }
+          }
+        } catch {}
+      }
+    }
     if (!active.selection || !active.available) {
       try {
         const m = this.deps.workbench.listModels()
@@ -309,6 +354,7 @@ export class ChatService {
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'no-active-model', error: msg })
       throw new ChatServiceError('no-active-model', msg)
     }
+    // Auto already resolved to a concrete local model above, so describeRuntime will be local
     const entry = this.deps.workbench.describeRuntime(active.selection.runtimeId)
     if (!entry || !entry.enabled) {
       const msg = 'The selected runtime is unavailable. Open Models and test its connection.'

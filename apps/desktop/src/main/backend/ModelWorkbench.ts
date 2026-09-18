@@ -449,6 +449,18 @@ export class ModelWorkbench {
   }
 
   async selectModel(runtimeId: string, modelId: string, opts?: { fit?: boolean }): Promise<ActiveModelState> {
+    // Auto smart-routing: user wants per-task best model, not pinned.
+    if (runtimeId === 'auto' && modelId === '__auto__') {
+      this.config.setAppSetting('sovara_auto_routing', 'true')
+      // Clear pinned selection so getActiveModel returns Auto
+      try { this.config.clearActiveSelection() } catch {}
+      appendLlamaLog(this.baseDir, 'select-auto', { detail: 'auto smart-routing enabled' })
+      return this.getActiveModel()
+    }
+    // Any explicit model pick disables Auto
+    if (this.config.getAppSetting('sovara_auto_routing') === 'true') {
+      this.config.setAppSetting('sovara_auto_routing', 'false')
+    }
     // Always prune stale ghosts before any selection decision
     this.pruneMissingFromLocalSnapshot()
     let snap = this.config.getRuntime(runtimeId)
@@ -535,6 +547,10 @@ export class ModelWorkbench {
   }
 
   getActiveModel(): ActiveModelState {
+    // Auto smart-routing takes precedence — pill shows Auto, router picks per-task best
+    if (this.config.getAppSetting('sovara_auto_routing') === 'true') {
+      return { selection: { runtimeId: 'auto', modelId: '__auto__' }, available: true, displayName: 'Auto', runtimeDisplayName: 'Smart routing' }
+    }
     let sel = this.config.getActiveSelection()
     // If active selection is a stale flat LMStudio id (pre-fix: "GLM-4.6V-Flash-Q4_K_M" without nested path), clear it so dropdown is user-driven
     if (sel && (sel.modelId === 'GLM-4.6V-Flash-Q4_K_M' || sel.modelId === 'GLM-4.6V-Flash-Q4_K_M.gguf')) {

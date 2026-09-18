@@ -303,26 +303,26 @@ export class AgentOrchestrator {
       const resources = await this.deps.resources.getSnapshot()
       const baseSnapshot = active.selection ? { modelId: active.selection.modelId, runtimeId: active.selection.runtimeId } : null
 
-      // Scoring: initial user-selected model is already loaded. For simple tasks
-      // (chat/summarization without vision/tools) use it directly — no switch.
-      // For complex tasks (requiresVision/tools/reasoning/code) let the router
-      // score and pick the best fitting model.
-      const isSimpleTask = (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision && !(classification as unknown as { requiresTools?: boolean }).requiresTools
+      // Pinned vs Auto: user selected model is used for entire chat; Auto smart-routes per task.
+      // The pill shows which: pinned = local model name, Auto = "Auto" smart.
+      const isAuto = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
       let routing: Awaited<ReturnType<typeof routeModel>>
-      if (baseSnapshot && isSimpleTask) {
+      if (!isAuto && baseSnapshot) {
+        // Pinned — no smart routing, entire chat uses user selection (user request)
         routing = {
           modelId: baseSnapshot.modelId,
           runtimeId: baseSnapshot.runtimeId,
-          reason: `user-selected ${baseSnapshot.modelId} — simple task, no routing`,
+          reason: `pinned ${baseSnapshot.modelId} — entire chat uses user selection`,
           task: classification,
           candidatesConsidered: 1,
           switched: false,
         } as unknown as Awaited<ReturnType<typeof routeModel>>
       } else {
+        // Auto — smart route per task via ModelRouter (capability + VRAM aware)
         routing = await routeModel({
           task: classification,
           models,
-          active: active.selection ?? null,
+          active: isAuto ? null : active.selection ?? null,
           resources,
           checkBeforeLoad: async (modelId) => {
             try {
@@ -336,12 +336,12 @@ export class AgentOrchestrator {
             }
           },
         })
-        // For simple tasks honor base over scored GLM (even when router ran due to no base check)
-        if (baseSnapshot && isSimpleTask && routing.modelId !== baseSnapshot.modelId) {
+        // For simple tasks honor base over scored GLM (even when router ran due to no base check) — but only if not Auto
+        if (!isAuto && baseSnapshot && (classification.kind === 'chat' || classification.kind === 'summarization') && !classification.requiresVision && routing.modelId !== baseSnapshot.modelId) {
           routing = {
             modelId: baseSnapshot.modelId,
             runtimeId: baseSnapshot.runtimeId,
-            reason: `honoring user base ${baseSnapshot.modelId} over scored ${routing.modelId} (simple)`,
+            reason: `honoring pinned ${baseSnapshot.modelId} over scored ${routing.modelId} (simple)`,
             task: classification,
             candidatesConsidered: 1,
             switched: false,
