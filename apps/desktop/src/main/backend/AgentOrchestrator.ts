@@ -121,6 +121,18 @@ export class AgentOrchestrator {
       // propagate to orchestrator's emit for UI cancellation
     }
     controller.signal.addEventListener('abort', onAbort, { once: true })
+    // Hard stall guard: 249s empty waits are user-hostile. Abort if no token after 150s and surface friendly ack.
+    let stallTimer: ReturnType<typeof setTimeout> | null = null
+    const armStallGuard = (firstTokenAtRef: { value: number | null }): void => {
+      stallTimer = setTimeout(() => {
+        if (firstTokenAtRef.value === null && this.inFlight.has(sid) && !controller.signal.aborted) {
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'timeout', error: `stall-timeout: no token after 150s (model ${sid})` })
+          controller.abort(new Error('stall-timeout: the local model did not produce any token in 150s'))
+        }
+      }, 150_000)
+      // Node timers should not keep process alive after UI closed
+      if (stallTimer && typeof (stallTimer as unknown as { unref?: () => void }).unref === 'function') (stallTimer as unknown as { unref: () => void }).unref!()
+    }
 
     try {
       // ── PHASE 1: task classification (real, not faked) ──
@@ -720,6 +732,8 @@ export class AgentOrchestrator {
         }
       }
       let orchFirstTokenAt: number | null = null
+      const firstTokenRef = { value: null as number | null }
+      armStallGuard(firstTokenRef)
       if (!chunkMode) try {
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
@@ -731,6 +745,11 @@ export class AgentOrchestrator {
         })) {
           if (controller.signal.aborted) break
           if (chunk.type === 'text-delta' && chunk.text) {
+            if (orchFirstTokenAt === null) {
+              orchFirstTokenAt = Date.now()
+              firstTokenRef.value = orchFirstTokenAt
+              if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+            }
             let delta = chunk.text
             if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
               if (delta.includes('<thinking>') || delta.includes('<think>')) {
@@ -768,6 +787,21 @@ export class AgentOrchestrator {
           if (chunk.type === 'done') break
         }
       } catch (e) {
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+        // Stall guard abort -> friendly timeout ack instead of handler crash
+        const rawStall = e instanceof Error ? e.message : String(e)
+        if (/stall-timeout/i.test(rawStall)) {
+          const secs = Math.round((Date.now() - startedAll) / 1000)
+          const msg = `The model stalled for ${secs}s with no tokens — context was auto-compacted. Try /compact, a shorter prompt, or a smaller quant.`
+          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: `Stall-timeout after ${secs}s — auto-compacted.` }) } catch {}
+          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'timeout', streamed)
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'timeout', error: msg, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `stall-timeout ack after ${secs}s`, stepIndex: 0 })
+          this.noteEndQuiet(ownedInstanceForMetrics)
+          return { ok: true, userSeq, assistantSeq: seq, routing, classification }
+        }
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled' })
           this.noteEndQuiet(ownedInstanceForMetrics)
@@ -782,6 +816,7 @@ export class AgentOrchestrator {
         this.noteEndQuiet(ownedInstanceForMetrics)
         throw new AgentOrchestratorError('llm-failed', safe)
       }
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
 
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars streamed=${streamed}` })
 
@@ -872,13 +907,26 @@ export class AgentOrchestrator {
       }
 
       if (text.trim() === '') {
-        const msg = 'invalid-response: the local model returned an empty reply'
-        this.noteEndQuiet(ownedInstanceForMetrics)
-        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: msg, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
-        this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
-        throw new AgentOrchestratorError('llm-failed', msg)
+        // Reasoning-only stall: Qwen3.5 streams <think> for minutes then closes late or never.
+        // If we have buffered reasoning but no final answer, promote it instead of throwing empty.
+        const reasoningFallback = reasoningBuffer.trim()
+        if (reasoningFallback.length > 40) {
+          text = reasoningFallback + '\n\n[Note: model returned only reasoning — promoted to answer. If truncated, retry with a shorter prompt or /compact.]'
+        } else if (reasoningFallback.length > 0) {
+          text = reasoningFallback
+        } else {
+          const secs = Math.round((Date.now() - startedAll) / 1000)
+          const compactMsg = `Auto-compacted for empty reply — model ${model} returned no text after ${secs}s (streamed=${streamed}). Likely context overflow or reasoning stall.`
+          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
+          const ack = `The model returned an empty reply after ${secs}s — context was auto-compacted. Try a shorter prompt, type /compact, or pick a smaller quant. If it repeats, check runtime health or restart the local server.`
+          this.noteEndQuiet(ownedInstanceForMetrics)
+          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: ack, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty-reply ack after ${secs}s`, stepIndex: 0 })
+          return { ok: true, userSeq, assistantSeq: seq, routing, classification }
+        }
       }
 
       // ── Required-output artifact: the user asked for a FILE (pdf / excel /
@@ -990,6 +1038,7 @@ export class AgentOrchestrator {
       this.emit(sid, 'task:error', { taskKind: 'chat', detail: msg, error: msg })
       throw new AgentOrchestratorError('llm-failed', msg)
     } finally {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
       this.inFlight.delete(sid)
       controller.signal.removeEventListener('abort', onAbort)
     }
@@ -1176,11 +1225,23 @@ export class AgentOrchestrator {
         reasoningBuffer = ''
       }
       if (text.trim() === '') {
-        const msg = 'invalid-response: the local model returned an empty reply'
-        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
-        this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
-        throw new AgentOrchestratorError('llm-failed', msg)
+        const reasoningFallback2 = reasoningBuffer.trim()
+        if (reasoningFallback2.length > 40) {
+          text = reasoningFallback2 + '\n\n[Note: model returned only reasoning — promoted to answer.]'
+        } else if (reasoningFallback2.length > 0) {
+          text = reasoningFallback2
+        } else {
+          const secs = Math.round((Date.now() - startedAll) / 1000)
+          const compactMsg = `Auto-compacted for empty regenerate — model ${model} returned no text after ${secs}s.`
+          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
+          const ack = `The model returned an empty reply after ${secs}s — context was auto-compacted. Retry or type /compact.`
+          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
+          this.emit(sid, 'task:error', { taskKind: classification.kind, detail: ack, error: ack })
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty-regenerate ack after ${secs}s`, stepIndex: 0 })
+          return { ok: true, assistantSeq: seq, routing, classification }
+        }
       }
       const promptText = messages.map((m) => m.content).join(' ')
       const tokenUsage = usage ?? { promptTokens: Math.ceil(promptText.length / 4), completionTokens: Math.ceil(text.length / 4), totalTokens: Math.ceil((promptText.length + text.length) / 4) }

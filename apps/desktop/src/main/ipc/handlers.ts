@@ -172,6 +172,9 @@ export function registerIpcHandlers(): void {
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
       if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (code === 'llm-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      // Graceful empty-reply should already have been converted to ack in orchestrator — but if it slips, make it retryable not a handler crash
+      if (raw.includes('invalid-response') && raw.includes('empty reply')) throw new Error('runtime-unavailable: the local model returned an empty reply — try /compact or a shorter prompt')
       throw new Error(raw)
     }
   })
@@ -288,6 +291,9 @@ export function registerIpcHandlers(): void {
       const code = (e as { code?: string })?.code
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
+      if (code === 'runtime-unavailable' || code === 'model-load-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (code === 'llm-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (raw.includes('invalid-response') && raw.includes('empty reply')) throw new Error('runtime-unavailable: the local model returned an empty reply — try /compact or a shorter prompt (editResend)')
       // Never surface raw "Cannot read properties of undefined" to UI — map to user-friendly retryable error
       if (raw.includes('Cannot read properties')) throw new Error('editResend failed: chat service not ready, please retry')
       throw new Error(raw)
