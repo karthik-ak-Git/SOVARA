@@ -414,7 +414,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<TrackedInstance> {
     const t0 = Date.now()
     const runtimeId = opts?.runtimeId ?? 'local'
-    const ctxLen = opts?.ctxLen ?? 4096
+    const ctxLen = opts?.ctxLen ?? 8192
     const id = instanceIdFor(modelId)
     const key = id as string
 

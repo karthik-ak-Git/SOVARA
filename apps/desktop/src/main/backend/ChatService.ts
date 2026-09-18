@@ -456,7 +456,7 @@ export class ChatService {
         const insts = await (this.deps.models as unknown as { listInstances?: () => Promise<Array<{ id: string; ctxLen?: number; modelId?: string }> > }).listInstances?.()
         const hit = insts?.find((x) => String(x.id) === String(ownedInstanceId) || String(x.modelId) === String(active.selection!.modelId))
         if (hit?.ctxLen && hit.ctxLen > 0) nCtx = hit.ctxLen
-        else if (estTotalForLoad > 4200) nCtx = 8192
+        // nCtxForLoad is already 8192 — keep it; do not fall back to 4096
       }
     } catch {}
     // Reuse prior and systemBlocks from above; recompute history with final nCtx budget
@@ -711,7 +711,7 @@ export class ChatService {
     let regenModel: string
     let regenInstanceId: string | null = null
     if (regenIsLocal) {
-      const ready = await this.ensureLocalReady(active.selection.modelId, active.selection.runtimeId)
+      const ready = await this.ensureLocalReady(active.selection.modelId, active.selection.runtimeId, 8192)
       regenEndpoint = ready.endpoint
       regenModel = ready.model
       regenInstanceId = ready.instanceId
