@@ -61,11 +61,18 @@ function scoreModel(
   if (contextLength >= task.contextLengthNeeded) { score += 15; reasons.push('ctx fits') }
   else { score -= 20; reasons.push(`ctx short ${contextLength}<${task.contextLengthNeeded}`) }
 
-  // Size heuristic: small/fast for chat, stronger for reasoning/coding/analysis
+  // Size heuristic: small/fast for chat, stronger for reasoning/coding/analysis — but not at 7/32 hallucinate cost
   if (profile) {
-    if (task.kind === 'chat' && profile.paramsBucket === 'small') { score += 8; reasons.push('small for chat') }
-    if ((task.kind === 'reasoning' || task.kind === 'analysis' || task.kind === 'agent') && profile.strength >= 3) { score += 10; reasons.push('strong for reasoning') }
-    if (task.kind === 'coding' && capabilities.includes('coding')) { score += 10; reasons.push('code capable') }
+    if (task.kind === 'chat' && profile.paramsBucket === 'small') { score += 12; reasons.push('small for chat') }
+    if ((task.kind === 'reasoning' || task.kind === 'analysis' || task.kind === 'agent') && profile.strength >= 3) {
+      // Strong bonus reduced when 8192 forces 7/32 partial — small 999/999 is clearer than xlarge 7/32
+      const is8192Partial = profile.paramsBucket === 'xlarge' && task.contextLengthNeeded >= 8192
+      score += is8192Partial ? 2 : 10; reasons.push(is8192Partial ? 'strong but 7/32 at 8192' : 'strong for reasoning')
+    }
+    if (task.kind === 'coding' && capabilities.includes('coding')) {
+      const isCodSmall = (profile.paramsBucket === 'small' || profile.paramsBucket === 'medium') && capabilities.includes('coding')
+      score += isCodSmall ? 14 : 10; reasons.push(isCodSmall ? 'code capable small → fast' : 'code capable')
+    }
     if (task.kind === 'summarization' && capabilities.includes('summarization')) { score += 8; reasons.push('summarizer') }
   } else {
     // No profile → neutral, don't punish unknown heavily
@@ -77,6 +84,8 @@ function scoreModel(
 
   // Prefer available models (should be filtered already)
   if (m.available) score += 5
+  // Diversity: small/medium that also handle the task get a clear edge at 8192 — prevents Qwen always winning
+  if ((profile?.paramsBucket === 'small' || profile?.paramsBucket === 'medium') && hasNeed) { score += 8; reasons.push('small+capable for 8192') }
 
   // Honor explicit user selection — strong bias if active matches (user picked in UI)
   // This prevents auto-switching away from Unlimited-OCR when user explicitly chose it
@@ -90,8 +99,8 @@ function scoreModel(
   const vramTotal = resources.vram.totalMB
   const isSmallFast = profile?.paramsBucket === 'small' || profile?.paramsBucket === 'medium'
   const isXlargePartial = profile?.paramsBucket === 'xlarge' && task.contextLengthNeeded >= 8192
-  if (isSmallFast && task.contextLengthNeeded >= 8192) { score += 15; reasons.push('small fits 8192 fully → 3-5x') }
-  if (isXlargePartial) { score -= 18; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
+  if (isSmallFast && task.contextLengthNeeded >= 8192) { score += 22; reasons.push('small fits 8192 fully 999/999 → 3-5x') }
+  if (isXlargePartial) { score -= 26; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
   // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
   if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 25; reasons.push('vram pressure vs xlarge') }
   if (vramTotal !== undefined && vramTotal < 7000 && profile?.paramsBucket === 'xlarge') { score -= 20; reasons.push('needs large VRAM') }
