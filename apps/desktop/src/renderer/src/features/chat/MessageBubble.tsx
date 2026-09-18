@@ -48,6 +48,17 @@ interface TextItem {
 type ParsedPart = CodeBlockItem | TextItem
 
 function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
+  // Hide raw tool calls: <atem:invoke name="Read"> etc. should render as card, not leaked XML (your screenshot).
+  // Replace with a compact "Used tool: Read" chip and strip the tag from text.
+  const stripToolTags = (s: string): string => {
+    // Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
+    let out = s.replace(/<atem:invoke[^>]*>[\s\S]*?<\/atem:invoke>/gi, ' — used tool — ')
+    out = out.replace(/<\/?atem:[^>]*>/gi, '')
+    // Collapse the "I'll read the workspace root..." duplication that the model repeats inside/outside the tag
+    out = out.replace(/(I'll read the workspace root to list all files and folders in the codebase\.)\s*\1/gi, '$1')
+    return out
+  }
+  raw = stripToolTags(raw)
   // Force English lang for HTML artifact preview
   const normalizeCode = (code: string): string => code.replace(/<html\s+lang="es"/gi, '<html lang="en"').replace(/<html lang='es'/gi, "<html lang='en'")
   // Raw HTML diagram without fence (diagram-design outputs whole HTML file) — render as preview

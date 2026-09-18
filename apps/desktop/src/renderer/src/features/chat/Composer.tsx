@@ -371,7 +371,20 @@ export function Composer({
             'Ask anything, / for commands, @ for context...'
           }
           value={value}
-          onChange={(e) => onChange(e.target.value.slice(0, MAX_LENGTH))}
+          onChange={(e) => {
+            const v = e.target.value.slice(0, MAX_LENGTH)
+            onChange(v)
+            // "/" command palette + "@" file context — previously dead (no handler, so "/" and "@" did nothing)
+            const last = v.slice(-1)
+            if (last === '/') {
+              // Show minimal command hint: /compact is the main one that keeps 8192 in budget
+              ;(window as unknown as { __sovaraSlashHint?: boolean }).__sovaraSlashHint = true
+            }
+            if (last === '@') {
+              // Trigger file picker for workspace context (so "@" actually does something)
+              fileInputRef.current?.click()
+            }
+          }}
           onKeyDown={handleKeyDown}
           maxLength={MAX_LENGTH}
           disabled={disabled}
@@ -379,6 +392,12 @@ export function Composer({
           rows={2}
           data-testid="composer-input"
         />
+        {value.endsWith('/') ? (
+          <div role="listbox" aria-label="Commands" style={{ position: 'absolute', bottom: '100%', left: 12, background: '#fff', border: '1px solid #E8E4DE', borderRadius: 8, padding: 6, font: '12px Manrope', boxShadow: '0 8px 24px rgba(0,0,0,0.08)', zIndex: 5 }}>
+            <div style={{ padding: '4px 8px', cursor: 'pointer' }} onMouseDown={(e) => { e.preventDefault(); onChange(value.slice(0, -1) + '/compact '); areaRef.current?.focus() }}>/compact — keep context in English & under 8192</div>
+            <div style={{ padding: '4px 8px', opacity: 0.6 }}>/help — list commands</div>
+          </div>
+        ) : null}
 
         <div className="sv-composer-bottom">
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
