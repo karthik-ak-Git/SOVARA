@@ -1059,6 +1059,28 @@ export class AgentOrchestrator {
                 }
               }
               if (out_t !== t) return out_t
+              // Also match <fs_list {path:"."}> / <fs_list {"path":"."}> brace variants Qwen-7/32 emits (your 11:18 PM screenshot)
+              const braceRe = /<(fs_list|fs_read|shell_exec)\s*(\{[^>]*\})\s*>/gi
+              let bm: RegExpExecArray | null
+              while ((bm = braceRe.exec(t)) !== null) {
+                const toolName = bm[1].toLowerCase()
+                let args: Record<string, unknown> = { path: '.' }
+                try {
+                  const jsonish = bm[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')
+                  args = JSON.parse(jsonish)
+                } catch { args = toolName === 'fs_list' ? { path: '.' } : {} }
+                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName} {...}> brace form — dispatching` } as never)
+                try {
+                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
+                  out_t = out_t.replace(bm[0], `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`)
+                } catch (e) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
+                }
+              }
+              if (out_t !== t) return out_t
               const tagRe = /<(fs_list|fs_read|shell_exec|todo_write)([^>]*)>(?:<\/\1>)?/gi
               let m: RegExpExecArray | null
               let remaining = t
