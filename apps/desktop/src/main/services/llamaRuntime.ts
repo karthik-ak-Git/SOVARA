@@ -634,6 +634,8 @@ export interface ServerArgsOpts {
   nGpuLayers?: number
   alias?: string
   mmprojPath?: string
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'max'
+  enableTools?: boolean
 }
 
 export function buildServerArgs(opts: ServerArgsOpts): string[] {
@@ -645,9 +647,13 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   const threadsBatch = Math.max(4, Math.min(16, threads))
   const isPartialOffload = (opts.nGpuLayers ?? 999) < 999
   const ctx = Math.max(8192, opts.ctxLen ?? 8192)
-  // Adaptive batch: for 4k ctx use 2048+1024, for 8k+ ctx use 4096+2048 to keep prefill in 2 batches
-  const batch = ctx >= 8192 ? 4096 : 2048
-  const ubatch = ctx >= 8192 ? 2048 : 1024
+  // 6GB-safe batch: discussion #9784 — 9B Q4 at 8192 burning 2.8GB KV already; -b 4096/ub 2048 inflates
+  // compute buffers and OOMs borderline fits. Small (≤4B file) keeps 4096/2048; heavy keeps 2048/1024.
+  let fileMB = 0
+  try { fileMB = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)) } catch { fileMB = 0 }
+  const isHeavy = fileMB >= 3000
+  const batch = ctx >= 8192 ? (isHeavy ? 2048 : 4096) : 2048
+  const ubatch = ctx >= 8192 ? (isHeavy ? 1024 : 2048) : 1024
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
@@ -694,6 +700,18 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die
   // memory hops during prompt processing (~10% win, no cost on single-die).
   try { if (process.platform !== 'win32') args.push('--numa', 'distribute') } catch { /* ignore */ }
+  // --fit on: let the server auto-distribute layers/KV across CUDA/CPU (GPU strategy guide 2026-02-23).
+  // Our manual planPartialFit stays as preflight estimate; --fit is the enforcer at spawn.
+  try { args.push('--fit', 'on', '--fit-ctx', '4096') } catch { /* ignore */ }
+  // Native reasoning effort — maps thinkingLevel to server-side template budget (not just prompt tags).
+  if (opts.reasoningEffort) {
+    try { args.push('--reasoning-effort', opts.reasoningEffort) } catch { /* ignore */ }
+  }
+  // Native server tools (localhost-only): read_file/file_glob_search/grep_search/exec_shell_command.
+  // This is what makes "read the codebase" a real tool-call instead of hallucinated <fs_list> text.
+  if (opts.enableTools) {
+    try { args.push('--tools', 'read_file,file_glob_search,grep_search,exec_shell_command') } catch { /* ignore */ }
+  }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)
   return args

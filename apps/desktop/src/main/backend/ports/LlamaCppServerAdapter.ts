@@ -611,7 +611,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     const port = await this.deps.findPort()
     const alias = path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64)
-    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias })
+    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias, reasoningEffort: 'medium', enableTools: true })
     const endpoint = `http://127.0.0.1:${port}/v1`
     const tracked: TrackedInstance = {
       id, modelId: modelId as ModelId, runtimeId, status: statusFor('LOADING'), state: 'LOADING', ctxLen, port,
@@ -704,7 +704,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       if (c.kind === 'backend-failure' && ngl !== 0) {
         appendLlamaLog(this.baseDir, 'load-cuda-fallback-cpu', { modelId, error: raw.slice(0,200) })
         const cpuPort = await this.deps.findPort()
-        const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias })
+        const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, reasoningEffort: 'medium', enableTools: true })
         const cpuEndpoint = `http://127.0.0.1:${cpuPort}/v1`
         // exe already verified; same binary runs CPU when -ngl 0 but some
         // builds need cpu exe path — we reuse same exe with 0 layers.
