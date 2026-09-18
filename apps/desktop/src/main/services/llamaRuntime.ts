@@ -693,9 +693,11 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   try { args.push('--cont-batching') } catch { /* ignore */ }
   // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die memory hops (~10% win, no cost on single-die).
   try { if (process.platform !== 'win32') args.push('--numa', 'distribute') } catch { /* ignore */ }
-  // Native reasoning effort — maps thinkingLevel to server-side template budget (not just prompt tags).
+  // Native reasoning effort — 4B Nano medium overflows p2730→c0, use low for <4GB
   if (opts.reasoningEffort) {
-    try { args.push('--reasoning-effort', opts.reasoningEffort) } catch { /* ignore */ }
+    let eff = opts.reasoningEffort
+    try { const mb = Math.round(fs.statSync(opts.modelPath).size/(1024*1024)); if (mb < 3500 && eff==='medium') eff='low' } catch {}
+    try { args.push('--reasoning-effort', eff) } catch { /* ignore */ }
   }
   // Native server tools — ponytail: only for >=7B tool-capable models.
   // 4B thinking models (Nemotron-3-Nano) hallucinate {"path":"coed base"} instead of real tool_calls → empty reply after 16s stall.

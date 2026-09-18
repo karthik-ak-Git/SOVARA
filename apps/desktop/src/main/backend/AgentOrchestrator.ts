@@ -1056,8 +1056,8 @@ export class AgentOrchestrator {
       }
 
       // ── PHASE 6: agent execution loop (LLM stream + optional tool steps) ──
-      // For now, single LLM step with honest step:start/end events. Tool loop seam
-      // is prepared: if a tool is needed, we emit tool:start/delta/end and loop.
+      let loopSteps = 0; const MAX_LOOP = 1
+      toolLoop: while (loopSteps++ < MAX_LOOP) {
       if (classification.reasoningRequired || opts?.reasoning) {
         this.emit(sid, 'task:thinking', {
           taskKind: classification.kind,
@@ -1419,7 +1419,10 @@ export class AgentOrchestrator {
             const msg = e instanceof Error ? e.message : String(e)
             this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool failed: ${msg}` })
           }
+          // harness loop note — inline tools already appended via tryInlineTools above, no extra loop needed for this turn
         }
+      }
+      break
       }
 
       if (controller.signal.aborted) {
