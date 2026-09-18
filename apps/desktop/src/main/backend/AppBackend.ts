@@ -174,6 +174,14 @@ export class AppBackend {
       models,
       resources
     }
+    // Hidden auto-router: Cactus-Compute/needle3 — download by default, invisible, tool-use.
+    // Runs in background, no UI emit, not in Library/Explorer.
+    void (async () => {
+      try {
+        const { ensureHiddenNeedle3 } = await import('../services/hiddenModels')
+        await ensureHiddenNeedle3(baseDir)
+      } catch {}
+    })()
   }
 
   getInfo(): { name: string; version: string; electron: string; node: string; platform: NodeJS.Platform; arch: string } {

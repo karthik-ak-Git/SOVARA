@@ -56,6 +56,7 @@ import {
   spawnLlamaServer,
   waitForServerReady,
 } from '../../services/llamaRuntime'
+import { HIDDEN_NEEDLE_MODEL_ID, hiddenNeedlePath, isHiddenNeedleDownloaded } from '../../services/hiddenModels'
 
 export interface AdapterDeps {
   spawn?: typeof spawnLlamaServer
@@ -249,6 +250,12 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    * (with or without `.gguf`), or display name. Throws model-not-found.
    */
   resolveModelPath(modelId: string): string {
+    // Hidden needle3 — not in registry, hidden path outside library scan
+    if (String(modelId) === HIDDEN_NEEDLE_MODEL_ID) {
+      const hp = hiddenNeedlePath(this.baseDir)
+      if (fs.existsSync(hp) && hp.toLowerCase().endsWith('.gguf')) return hp
+      throw new Error(`model-not-found: hidden needle3 not yet downloaded (run ensureHiddenNeedle3)`)
+    }
     const clean = String(modelId ?? '').trim()
     if (!clean) throw new Error('model-not-found: empty model id')
     if (path.isAbsolute(clean)) {

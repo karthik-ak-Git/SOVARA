@@ -297,11 +297,14 @@ export class ChatService {
     let active = this.deps.workbench.getActiveModel()
     const isAutoActive = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
     if (isAutoActive) {
-      // Auto smart-routing: pick best local model for this prompt via ModelRouter, don't persist
+      // Auto smart-routing: hidden needle3 (Cactus-Compute/needle3) is first in listModelsForRouting when downloaded — tool-use will prefer it
       try {
         const { classifyTask } = await import('./TaskClassifier')
         const { routeModel } = await import('./ModelRouter')
-        const modelsForAuto = this.deps.workbench.listModels().filter((m) => m.runtimeId === 'local' && m.available)
+        const rawForAuto = typeof (this.deps.workbench as unknown as { listModelsForRouting?: () => ReturnType<typeof this.deps.workbench.listModels> }).listModelsForRouting === 'function'
+          ? (this.deps.workbench as unknown as { listModelsForRouting: () => ReturnType<typeof this.deps.workbench.listModels> }).listModelsForRouting()
+          : this.deps.workbench.listModels()
+        const modelsForAuto = rawForAuto.filter((m) => m.runtimeId === 'local' && m.available)
         if (modelsForAuto.length > 0) {
           const resources = await this.deps.resources.getSnapshot()
           const classification = classifyTask(content, { reasoning: opts?.reasoning, webSearch: opts?.webSearch, hasImage: false })
@@ -330,9 +333,12 @@ export class ChatService {
         }
       } catch { /* fallback to first available below */ }
       if (active.selection?.modelId === '__auto__') {
-        // Auto routing failed — fallback to first local
+        // Auto routing failed — fallback to first local (including hidden)
         try {
-          const ms = this.deps.workbench.listModels().filter((m) => m.runtimeId === 'local' && m.available)
+          const msRaw = typeof (this.deps.workbench as unknown as { listModelsForRouting?: () => ReturnType<typeof this.deps.workbench.listModels> }).listModelsForRouting === 'function'
+            ? (this.deps.workbench as unknown as { listModelsForRouting: () => ReturnType<typeof this.deps.workbench.listModels> }).listModelsForRouting()
+            : this.deps.workbench.listModels()
+          const ms = msRaw.filter((m) => m.runtimeId === 'local' && m.available)
           if (ms.length > 0) {
             const first = ms[0]
             active = { selection: { runtimeId: first.runtimeId, modelId: first.modelId }, available: true, displayName: first.displayName, runtimeDisplayName: `Auto → ${first.displayName}` }

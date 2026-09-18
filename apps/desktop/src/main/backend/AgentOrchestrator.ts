@@ -298,13 +298,18 @@ export class AgentOrchestrator {
       // Snapshot the user's initially selected model as the "base" that
       // will book-end the run: base → (tool models)* → base (formatted).
       this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `routing for ${classification.kind}` })
-      const models = this.deps.workbench.listModels()
+      const isAutoPre = this.deps.workbench.getActiveModel().selection?.modelId === '__auto__'
+      const wbHidden = this.deps.workbench as unknown as { listModelsForRouting?: () => DiscoveredModel[] }
+      const models = isAutoPre && typeof wbHidden.listModelsForRouting === 'function'
+        ? wbHidden.listModelsForRouting()
+        : this.deps.workbench.listModels()
       const active = this.deps.workbench.getActiveModel()
       const resources = await this.deps.resources.getSnapshot()
       const baseSnapshot = active.selection ? { modelId: active.selection.modelId, runtimeId: active.selection.runtimeId } : null
 
       // Pinned vs Auto: user selected model is used for entire chat; Auto smart-routes per task.
       // The pill shows which: pinned = local model name, Auto = "Auto" smart.
+      // Hidden needle3 is included in modelsForRouting when Auto, so tool-use picks needle3.
       const isAuto = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
       let routing: Awaited<ReturnType<typeof routeModel>>
       if (!isAuto && baseSnapshot) {
@@ -319,6 +324,7 @@ export class AgentOrchestrator {
         } as unknown as Awaited<ReturnType<typeof routeModel>>
       } else {
         // Auto — smart route per task via ModelRouter (capability + VRAM aware)
+        // Hidden needle3 (Cactus-Compute/needle3) is first in listModelsForRouting when downloaded — tool-use will prefer it
         routing = await routeModel({
           task: classification,
           models,

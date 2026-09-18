@@ -31,6 +31,7 @@ export interface CapabilityProfile {
 }
 
 export const MODEL_CAPABILITY_REGISTRY: CapabilityProfile[] = [
+  { family: 'needle', capabilities: ['tool-use', 'reasoning', 'chat'], defaultContextLength: 8192, strength: 3, paramsBucket: 'small' },
   { family: 'phi', capabilities: ['chat', 'reasoning', 'coding'], defaultContextLength: 4096, strength: 2, paramsBucket: 'small' },
   { family: 'gemma', capabilities: ['chat', 'reasoning'], defaultContextLength: 8192, strength: 2, paramsBucket: 'small' },
   { family: 'qwen', capabilities: ['chat', 'coding', 'reasoning', 'tool-use', 'analysis'], defaultContextLength: 8192, strength: 3, paramsBucket: 'medium' },

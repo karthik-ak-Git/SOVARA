@@ -14,6 +14,7 @@ import { appendLlamaLog } from '../services/llamaRuntime'
 import { RuntimeConfigStore, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
 import { CustomOpenAICompatibleAdapter, type HttpGet } from './ports/CustomOpenAICompatibleAdapter'
 import type { ModelRuntimePort, SystemResourceManagerPort } from '@shared/types/ports'
+import { HIDDEN_NEEDLE_MODEL_ID, hiddenNeedleDiscoveredModel, hiddenNeedlePath, isHiddenNeedleDownloaded } from '../services/hiddenModels'
 import type {
   ActiveModelState,
   DiscoveredModel,
@@ -303,12 +304,42 @@ export class ModelWorkbench {
     return out
   }
 
+  /** Hidden needle3 for Auto — not in UI list, but in routing when Auto */
+  private getHiddenNeedleForRouting(): DiscoveredModel | null {
+    try {
+      if (!isHiddenNeedleDownloaded(this.baseDir)) return null
+      const h = hiddenNeedleDiscoveredModel(this.baseDir)
+      if (!h) return null
+      // Check file still live
+      if (!this.isModelLive(h.modelId) && !isHiddenNeedleDownloaded(this.baseDir)) return null
+      return {
+        modelId: h.modelId,
+        displayName: h.displayName,
+        runtimeId: 'local',
+        source: 'llama.cpp' as const,
+        capabilities: ['tool-use', 'reasoning', 'chat'] as unknown as DiscoveredModel['capabilities'],
+        available: true,
+      }
+    } catch { return null }
+  }
+
+  listModelsForRouting(): DiscoveredModel[] {
+    const base = this.listModels()
+    const hidden = this.getHiddenNeedleForRouting()
+    if (hidden && !base.some((m) => m.modelId === hidden.modelId)) {
+      // Put hidden first so Auto prefers it for tool-use, but router will still score per task
+      base.unshift(hidden)
+    }
+    return base
+  }
+
   private isMmprojId(modelId: string): boolean {
     const b = String(modelId).split('/').pop()?.toLowerCase() ?? ''
     return b === 'mmproj.gguf' || b.startsWith('mmproj-')
   }
 
   private isModelLive(modelId: string): boolean {
+    if (modelId === HIDDEN_NEEDLE_MODEL_ID) return isHiddenNeedleDownloaded(this.baseDir)
     if (this.isMmprojId(modelId)) return false // projector shard — never a runnable selection
     try {
       if (!this.models?.resolveModelPath) return true // adapter without path check — don't prune
