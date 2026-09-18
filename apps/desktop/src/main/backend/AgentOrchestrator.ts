@@ -963,6 +963,7 @@ export class AgentOrchestrator {
       }
       let orchFirstTokenAt: number | null = null
       const firstTokenRef = { value: null as number | null }
+      const inlineToolOutputs: string[] = []
       armStallGuard(firstTokenRef)
       if (!chunkMode) try {
         for await (const chunk of this.deps.llm.streamChat({
@@ -1009,6 +1010,52 @@ export class AgentOrchestrator {
                 this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta })
                 continue
               }
+            }
+            // Shell/FS/Todo like thinking: if Qwen hallucinates <fs_list path="."> or <shell_exec> as text instead of tool_call,
+            // parse it as a real tool and execute immediately — do not leak it to the bubble or exit early.
+            // This is the "shell utilization as thinking" the user requested: tools stream like reasoning, and the turn
+            // never exits until fs/shell/todo work is done.
+            const tryInlineTools = async (t: string): Promise<string> => {
+              const tagRe = /<(fs_list|fs_read|shell_exec|todo_write)([^>]*)>(?:<\/\1>)?/gi
+              let m: RegExpExecArray | null
+              let remaining = t
+              let cleaned = ''
+              let lastIdx = 0
+              while ((m = tagRe.exec(t)) !== null) {
+                const name = m[1].toLowerCase()
+                const attr = m[2] || ''
+                const pathM = attr.match(/path\s*=\s*"([^"]*)"/i) || attr.match(/path\s*=\s*'([^']*)'/i)
+                const cmdM = attr.match(/command\s*=\s*"([^"]*)"/i)
+                let args: Record<string, unknown> = {}
+                if (name === 'fs_list') args = { path: pathM?.[1] ?? '.' }
+                else if (name === 'fs_read') args = { path: pathM?.[1] ?? '' }
+                else if (name === 'shell_exec') args = { command: cmdM?.[1] ?? attr.trim().replace(/^[^>]*>/, '').split('<')[0] ?? '' }
+                // For todo_write the XML form is not used; skip
+                if (Object.keys(args).length === 0) continue
+                // Emit before/after like reasoning so UI shows Tool card and does not exit
+                cleaned += t.slice(lastIdx, m.index)
+                lastIdx = m.index + m[0].length
+                const toolName = name
+                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName}> from text — dispatching` } as never)
+                try {
+                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
+                  cleaned += `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`
+                } catch (e) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
+                  cleaned += `\n\n[Tool ${toolName} error: ${String(e).slice(0, 200)}]\n\n`
+                }
+              }
+              cleaned += remaining.slice(lastIdx)
+              return cleaned
+            }
+            const parsed = await tryInlineTools(delta)
+            if (parsed !== delta) {
+              // Replace the leaked tag with its result and continue streaming the cleaned text
+              delta = parsed
+              if (!delta.trim()) continue
             }
             text += delta
             if (orchFirstTokenAt === null) orchFirstTokenAt = Date.now()
@@ -1137,6 +1184,32 @@ export class AgentOrchestrator {
       if (controller.signal.aborted) {
         this.noteEndQuiet(ownedInstanceForMetrics)
         return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
+      }
+
+      // Inline fs/shell leak follow-up: Qwen at 7/32 layers often emits <fs_list path="."> as text instead of tool_call.
+      // We already executed it via tryInlineTools and have inlineToolOutputs — now synthesize a final answer with those results
+      // so we don't exit with just "I'll explore the workspace..." and the raw tag.
+      if (inlineToolOutputs.length > 0 && text.trim().length < 1200) {
+        const toolCtx = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, detail: 'fs/shell result synthesis' })
+        const followMessages: import('@shared/types/ports').LlmChatMessage[] = [
+          ...messages,
+          { role: 'assistant', content: text },
+          { role: 'user', content: `Tool results (fs_list/fs_read/shell_exec you requested):\n${toolCtx}\n\nNow provide the final answer about the files and folders, concisely, listing the actual files from the tool result above. Do not repeat the <fs_list> tag.` },
+        ]
+        let secondText = ''
+        try {
+          for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages: followMessages, timeoutMs, stream: true, signal: controller.signal })) {
+            if (controller.signal.aborted) break
+            if (chunk.type === 'text-delta' && chunk.text) { secondText += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
+            if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+            if (chunk.type === 'done') break
+          }
+          if (secondText.trim().length > 20) text = secondText
+          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: 'inline tool synthesis done' })
+        } catch (e) {
+          this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'inline', detail: `synthesis failed: ${e instanceof Error ? e.message : String(e)}` })
+        }
       }
 
       if (text.trim() === '') {
