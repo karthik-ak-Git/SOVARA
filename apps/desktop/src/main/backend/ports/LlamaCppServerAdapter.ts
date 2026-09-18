@@ -605,7 +605,8 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     appendLlamaLog(this.baseDir, 'load-start', {
       modelId, modelPath, fileSizeMB: Math.round(fileSize / (1024 * 1024)),
       estimatedVramMB, plan, ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
-      offloadedLayers: ngl, partialOffload, autoFallback, vramFreeBeforeMB: vramBefore ?? 'unknown',
+      offloadedLayers: ngl, totalLayers: (plan as unknown as { totalLayers?: number })?.totalLayers ?? (ngl === 999 ? ngl : 32), allLayers: `${ngl === 999 ? 'all' : `${ngl}/${(plan as unknown as { totalLayers?: number })?.totalLayers ?? 32} GPU + ${((plan as unknown as { totalLayers?: number })?.totalLayers ?? 32) - ngl} CPU`} = all layers loaded (CPU spill)`,
+      partialOffload, autoFallback, vramFreeBeforeMB: vramBefore ?? 'unknown',
     })
 
     const port = await this.deps.findPort()
