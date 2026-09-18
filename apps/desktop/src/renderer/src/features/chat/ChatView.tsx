@@ -278,7 +278,8 @@ export function ChatView({
   const activeTitle = selectedId ? _sessions.find((s) => s.id === selectedId)?.title ?? 'New chat' : 'New chat'
   const eyebrowProject = projectName ?? 'SOVARA'
   return (
-    <section className="sv-chat-main" aria-label="Chat">
+    <section className={`sv-chat-main ${artifactsPanelOpen ? 'sv-chat-main--with-panel' : ''}`} aria-label="Chat">
+      <div className="sv-chat-content">
       {/* Main chat area */}
       {showEmpty ? (
         <div className="sv-empty-state" role="status" aria-label="Start a conversation">
@@ -437,8 +438,9 @@ export function ChatView({
           </div>
         </div>
       )}
+      </div>
 
-      {/* Artifact Side Panel */}
+      {/* Artifact Side Panel — right side, not bottom */}
       {artifactsPanelOpen ? (
         <aside className="sv-artifact-panel" aria-label="Artifacts output panel">
           <div className="sv-artifact-header">
@@ -452,6 +454,15 @@ export function ChatView({
                 <button type="button" className={`sv-artifact-tab${artifactTab === 'preview' ? ' sv-artifact-tab--active' : ''}`} onClick={() => setArtifactTab('preview')}>Preview</button>
                 <button type="button" className="sv-btn sv-btn-ghost" style={{ width: 28, height: 28, padding: 0 }} onClick={handleCopyArtifact} title="Copy artifact code" aria-label="Copy artifact code">
                   {copiedArtifact ? <Check size={14} style={{ color: 'var(--stitch-success, #5A8F5A)' }} /> : <Copy size={14} />}
+                </button>
+                <button type="button" className="sv-btn sv-btn-ghost" style={{ width: 28, height: 28, padding: 0 }} onClick={() => {
+                  if (!activeArtifact) return
+                  const blob = new Blob([activeArtifact.code], { type: 'text/html' })
+                  const url = URL.createObjectURL(blob)
+                  window.open(url, '_blank', 'noopener')
+                  setTimeout(() => URL.revokeObjectURL(url), 60000)
+                }} title="Open in new tab" aria-label="Open in new tab">
+                  <MoreHorizontal size={14} style={{ transform: 'rotate(90deg)' }} />
                 </button>
               </div>
             ) : null}
