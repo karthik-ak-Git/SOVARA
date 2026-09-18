@@ -24,6 +24,28 @@ import { getArtifactsDir } from '../storage/paths'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
 import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
+import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
+
+function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
+  const t = text.trim()
+  if (!detected) return false
+  // Fenced code block opened but not closed → truncated
+  const fences = (t.match(/```/g) ?? []).length
+  if (fences % 2 === 1) return true
+  // HTML artifact must close </html> (and have at least 2 slides worth if PPT requested)
+  if (detected.fileName.toLowerCase().endsWith('.html') || detected.kind === 'code') {
+    if (/```html|<!doctype html|<html/i.test(t)) {
+      if (!/<\/html\s*>/i.test(t)) return true
+      // PPT heuristic: 6-slide request but only 1-2 sections closed
+      if (/ppt|slides?|presentation/i.test(detected.fileName) && (t.match(/<\/section>/gi) ?? []).length < 2) {
+        // not definitive — but let length heuristic decide
+      }
+    }
+  }
+  // Length near model's max (4096 tokens ~ 12k chars) with artifact requested → likely hit n_predict
+  if (t.length > 9000 && /```/.test(t) && !t.endsWith('```')) return true
+  return false
+}
 
 export class AgentOrchestratorError extends Error {
   constructor(
@@ -58,8 +80,7 @@ export interface AgentOrchestratorDeps {
   getSkillsContext?: () => Promise<string | null>
 }
 
-const CHAT_SYSTEM_PROMPT =
-  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Answer concisely and directly.\n\nDIAGRAM RULE (mandatory): If the user asks for any diagram, drawing, architecture, flowchart, sequence, ER, or visual — you MUST use the diagram-design skill. Output a single self-contained HTML file with inline SVG (no external JS, no matplotlib, no mermaid). Use the SOVARA sovereign skin (dark, system fonts). Do NOT use python plotting. Keep diagrams static (animation=none) unless explicitly requested. The response MUST contain the HTML in a ```html code block so it renders as preview.'
+const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 
 function toRequestMessages(events: Array<{ seq: number; time: number; type: string; data: unknown }>): import('@shared/types/ports').LlmChatMessage[] {
   const turns: import('@shared/types/ports').LlmChatMessage[] = []
@@ -1024,6 +1045,64 @@ export class AgentOrchestrator {
           this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty-reply ack after ${secs}s`, stepIndex: 0 })
           return { ok: true, userSeq, assistantSeq: seq, routing, classification }
         }
+      }
+
+      // ── RESUME-ON-TRUNCATE: compaction must NOT restart from initial state ──
+      // If the model streamed a partial HTML/code file and got cut (``` not closed
+      // or </html> missing), continue from the exact suffix instead of restarting.
+      const detectedEarly = detectOutputFormat(content)
+      if (detectedEarly && isArtifactTruncated(text, detectedEarly) && !autoRetried && !controller.signal.aborted) {
+        autoRetried = true
+        const suffix = text.slice(-900)
+        const prefixLen = text.length
+        // Persist the partial prefix so history survives compact (append-only)
+        try { await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text + '\n<!-- TRUNCATED — continuation follows (do not re-render as final) -->' }) } catch {}
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `artifact truncated at ${prefixLen} chars — resuming with continuation prompt` })
+        this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `partial artifact ${prefixLen} chars — continuing from suffix, not restarting` })
+        // Build continuation prompt: system + history including prefix + explicit resume user turn
+        try {
+          const liveEvents = await this.deps.persistence.getEvents(sessionId)
+          const continuationSystem = SOVARA_SYSTEM_PROMPT + '\n\n[SYSTEM CONTINUATION: Your previous output was truncated. Continue exactly from the last character of the prior assistant message. Do NOT restart, do NOT re-emit the header/slide 1. Emit only the remainder to a valid closed file.]'
+          messages = [
+            { role: 'system', content: continuationSystem },
+            ...toRequestMessages(liveEvents),
+            { role: 'user', content: `SYSTEM CONTINUATION: Continue the previous file from exactly where it stopped. Last 900 chars for alignment:\n${suffix}\n\nContinue to a valid closed file. Do NOT restart from the beginning.` },
+          ]
+        } catch { /* fallback: just suffix as user prompt */ messages.push({ role: 'user', content: `Continue from suffix:\n${suffix}` }) }
+        // Re-arm stall guard and extend token budget for the remainder
+        let cont = ''
+        reasoningBuffer = ''
+        inReasoning = false
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+        const contRef = { value: null as number | null }
+        armStallGuard(contRef)
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'continuing truncated artifact' })
+        try {
+          for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+            if (controller.signal.aborted) break
+            if (chunk.type === 'text-delta' && chunk.text) {
+              let delta = chunk.text
+              // Strip any echoed prefix duplication (model sometimes repeats last line)
+              if (cont.length === 0 && delta.trimStart().startsWith(suffix.trimStart().slice(0, 60))) {
+                // skip duplicated header echo — keep streaming but don't duplicate prefix
+                const overlap = suffix.trimStart().slice(0, 60)
+                if (delta.includes(overlap)) delta = delta.slice(delta.indexOf(overlap) + overlap.length)
+                if (!delta) continue
+              }
+              cont += delta
+              text += delta
+              this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
+            }
+            if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+            if (chunk.type === 'done') break
+          }
+        } catch (e2) {
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+          // Continuation failure is non-fatal — keep prefix; artifact will be partial but valid
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'error', error: e2 instanceof Error ? e2.message : String(e2), detail: 'continuation failed, keeping prefix' })
+        }
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `continuation ${cont.length} chars — total ${text.length}` })
       }
 
       // ── Required-output artifact: the user asked for a FILE (pdf / excel /

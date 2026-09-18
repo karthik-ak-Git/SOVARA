@@ -19,10 +19,10 @@ import type { ModelWorkbench } from './ModelWorkbench'
 import { detectOutputFormat, generateArtifactFile } from './artifacts'
 import path from 'node:path'
 import fs from 'node:fs'
+import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 
-/** Minimal local system prompt. Main-only: never renderer-provided. English + artifact + thinking streaming. */
-export const CHAT_SYSTEM_PROMPT =
-  'You are SOVARA, a local AI assistant running fully offline on the user\u2019s machine. Always respond in English only — never use Spanish or other languages; when generating HTML always use <html lang="en">. Answer concisely and directly in English. When the user requests a UI, dashboard, login page, or file (pdf/xlsx/docx/html), output the file content in a single fenced code block (```html, ```tsx, ```python) so the artifact pipeline can capture it for live preview. Always stream your private reasoning inside <thinking>...</thinking> tags before the final answer so the UI can display live thinking with time.'
+export { SOVARA_SYSTEM_PROMPT as CHAT_SYSTEM_PROMPT } from './prompts/sovaraSystem'
+const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 
 const MAX_HISTORY_MESSAGES = 50
 const MAX_HISTORY_CHARS = 24_000
