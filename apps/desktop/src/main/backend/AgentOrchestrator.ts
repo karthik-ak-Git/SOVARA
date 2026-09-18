@@ -1614,20 +1614,34 @@ export class AgentOrchestrator {
       const models = this.deps.workbench.listModels()
       const active = this.deps.workbench.getActiveModel()
       const resources = await this.deps.resources.getSnapshot()
-      const routing = await routeModel({
-        task: classification,
-        models,
-        active: active.selection ?? null,
-        resources,
-        checkBeforeLoad: async (modelId) => {
-          try {
-            return await this.deps.resources.checkBeforeLoad(
-              { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' } as never,
-              { ctxLen: classification.contextLengthNeeded }
-            )
-          } catch { return { level: 'ok' as const } }
-        },
-      })
+      // Honor pinned selection (same as execute): user picked GLM/gemma in pill → regenerate must NOT re-route to Qwen.
+      const isAutoRegen = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
+      let routing: Awaited<ReturnType<typeof routeModel>>
+      if (!isAutoRegen && active.selection) {
+        routing = {
+          modelId: active.selection.modelId,
+          runtimeId: active.selection.runtimeId,
+          reason: `pinned ${active.selection.modelId} — regenerate honors user selection (not re-routing)`,
+          task: classification,
+          candidatesConsidered: 1,
+          switched: false,
+        } as unknown as Awaited<ReturnType<typeof routeModel>>
+      } else {
+        routing = await routeModel({
+          task: classification,
+          models,
+          active: active.selection ?? null,
+          resources,
+          checkBeforeLoad: async (modelId) => {
+            try {
+              return await this.deps.resources.checkBeforeLoad(
+                { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' } as never,
+                { ctxLen: classification.contextLengthNeeded }
+              )
+            } catch { return { level: 'ok' as const } }
+          },
+        })
+      }
       if (!routing.modelId! || !routing.runtimeId!) throw new AgentOrchestratorError('no-model-available', `No compatible model for "${classification.kind}". ${routing.reason}`)
       const pressure = await this.deps.resources.checkBeforeLoad(
         { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
