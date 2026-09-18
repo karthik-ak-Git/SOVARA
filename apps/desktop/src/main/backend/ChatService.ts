@@ -743,9 +743,23 @@ export class ChatService {
       ...(mcpContext ? [mcpContext] : []),
       ...(skillsContext ? [skillsContext] : []),
     ]
+    // Root fix: regenerate must end on a user turn — llama.cpp 400s on trailing assistant messages.
+    // toRequestMessages(prior) ends with the previous assistant reply, so drop trailing assistants
+    // and re-anchor on the last user message (with an explicit regenerate nudge).
+    const regenHistory = toRequestMessages(prior)
+    while (regenHistory.length > 0 && regenHistory[regenHistory.length - 1]?.role === 'assistant') {
+      regenHistory.pop()
+    }
+    if (regenHistory.length === 0 || regenHistory[regenHistory.length - 1]?.role !== 'user') {
+      regenHistory.push({ role: 'user', content: lastContent })
+    } else {
+      // Append nudge so the model regenerates rather than echoing history tail
+      const tail = regenHistory[regenHistory.length - 1]!
+      tail.content = `${tail.content}\n\n[Regenerate: answer again, fresh wording, same request.]`
+    }
     const messages: LlmChatMessage[] = [
       { role: 'system', content: systemBlocksReg.join('\n\n') },
-      ...toRequestMessages(prior),
+      ...regenHistory,
     ]
 
     const controller = new AbortController()

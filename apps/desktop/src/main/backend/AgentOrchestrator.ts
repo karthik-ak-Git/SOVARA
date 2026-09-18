@@ -722,9 +722,26 @@ export class AgentOrchestrator {
       // Single leading system message — Bonsai/Mistral Jinja aborts if any
       // system turn appears after index 0 ("System message must be at the
       // beginning"). Merge all advisory blocks into one.
+      // Human fix: local llama.cpp gets NO native tools array (adapter sends messages-only),
+      // so the model must be told the exact tool-call convention. Otherwise Qwen-7/32 hallucinates
+      // <fs_list> text and we exit after 1 step with 62 tokens.
+      let toolCatalog: string | null = null
+      try {
+        const defs = (this.deps.tools as unknown as { list?: () => Array<{ name: string; description: string }> }).list?.() ?? []
+        if (defs.length > 0) {
+          const lines = defs.map((d) => `- ${d.name}: ${d.description}`).join('\n')
+          toolCatalog =
+            `TOOLS — call with a fenced block, NOT XML. Format exactly:\n\`\`\`tool:fs_list\n{"path": "."}\n\`\`\`\n` +
+            `Available tools:\n${lines}\n` +
+            `Rules: 1) For "read the codebase / list files" ALWAYS do todo_write first, then fs_list {"path":"."}, then fs_read/shell_exec. ` +
+            `2) Emit ONE fenced tool block per step, then wait for its [Tool result] before the next. ` +
+            `3) Never emit <fs_list>, <shell_exec>, <atem:invoke> as text — those leak and stall.`
+        }
+      } catch { /* advisory */ }
       const systemBlocks = [
         CHAT_SYSTEM_PROMPT,
         ...(reasoningSystem ? [reasoningSystem] : []),
+        ...(toolCatalog ? [toolCatalog] : []),
         ...(workspaceContext ? [workspaceContext] : []),
         ...(mcpContext ? [mcpContext] : []),
         ...(skillsContext ? [skillsContext] : []),
@@ -1016,11 +1033,32 @@ export class AgentOrchestrator {
                 continue
               }
             }
-            // Shell/FS/Todo like thinking: if Qwen hallucinates <fs_list path="."> or <shell_exec> as text instead of tool_call,
+            // Shell/FS/Todo like thinking: if Qwen hallucinates <fs_list path="."> or ```tool:fs_list as text instead of tool_call,
             // parse it as a real tool and execute immediately — do not leak it to the bubble or exit early.
             // This is the "shell utilization as thinking" the user requested: tools stream like reasoning, and the turn
             // never exits until fs/shell/todo work is done.
             const tryInlineTools = async (t: string): Promise<string> => {
+              // First: fenced ```tool:name {json}``` convention (preferred, unambiguous)
+              const fenceRe = /```tool:(fs_list|fs_read|shell_exec|todo_write)\s*\n([\s\S]*?)```/gi
+              let fm: RegExpExecArray | null
+              let out_t = t
+              while ((fm = fenceRe.exec(t)) !== null) {
+                const toolName = fm[1].toLowerCase()
+                let args: Record<string, unknown> = {}
+                try { args = JSON.parse(fm[2].trim() || '{}') } catch { continue }
+                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed fenced tool:${toolName} — dispatching` } as never)
+                try {
+                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
+                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`)
+                } catch (e) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
+                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} error: ${String(e).slice(0, 200)}]\n\n`)
+                }
+              }
+              if (out_t !== t) return out_t
               const tagRe = /<(fs_list|fs_read|shell_exec|todo_write)([^>]*)>(?:<\/\1>)?/gi
               let m: RegExpExecArray | null
               let remaining = t
@@ -1630,9 +1668,22 @@ export class AgentOrchestrator {
         ...(skillsContext ? [skillsContext] : []),
         ...(todoContextReg ? [todoContextReg] : []),
       ]
+      // Root fix (same as ChatService): regenerate history must end on user — drop trailing assistants.
+      const regenHistory = toRequestMessages(prior)
+      while (regenHistory.length > 0 && regenHistory[regenHistory.length - 1]?.role === 'assistant') {
+        regenHistory.pop()
+      }
+      if (regenHistory.length === 0 || regenHistory[regenHistory.length - 1]?.role !== 'user') {
+        regenHistory.push({ role: 'user', content: `${content}\n\n[Regenerate: answer again, fresh wording.]` })
+      } else {
+        const tail = regenHistory[regenHistory.length - 1]!
+        if (!tail.content.includes('[Regenerate:')) {
+          tail.content = `${tail.content}\n\n[Regenerate: answer again, fresh wording, same request.]`
+        }
+      }
       let messages: import('@shared/types/ports').LlmChatMessage[] = [
         { role: 'system', content: systemBlocksReg.join('\n\n') },
-        ...toRequestMessages(prior),
+        ...regenHistory,
       ]
       // Compact if prompt would exceed ctx (2375 > 2304 case): history truncation before stream
       const ctxNeed = classification.contextLengthNeeded
