@@ -1276,7 +1276,49 @@ export class AgentOrchestrator {
                 }
               }
               cleaned += remaining.slice(lastIdx)
+              // bare `fs_list {path:"."}` / `todo_write {todos:[...]}` without fence/brackets — handle inline line form seen in 2:08 AM reasoning
+              const bareRe = /^\s*(fs_list|fs_read|todo_write)\s*(\{[^\n]*\}|\{[^\n]*\n[\s\S]*?\})/gim
+              let bareM: RegExpExecArray | null
+              let bareOut = cleaned
+              let hasBare = false
+              // check original delta for bare form if no tag match
+              const src = t
+              while ((bareM = bareRe.exec(src)) !== null) {
+                const toolName = bareM[1].toLowerCase()
+                let args: Record<string, unknown> = {}
+                try { args = JSON.parse(bareM[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')) } catch { continue }
+                if (toolName === 'fs_list' && !args.path) args = { path: '.' }
+                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed bare ${toolName} {...} — dispatching` } as never)
+                const result = await execTool(toolName, args)
+                if (result.success) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
+                  bareOut = bareOut.replace(bareM[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
+                  hasBare = true
+                }
+              }
+              if (hasBare) return bareOut
               return cleaned
+            }
+            // Also try bare form on non-tag deltas (reasoning text contains `fs_list {path:"."}` verbatim at 2:08 AM)
+            const bareQuickRe = /(fs_list|fs_read|todo_write)\s*\{\s*"?path"?\s*:\s*"?\.?"?\s*\}/i
+            if (bareQuickRe.test(t) && !t.includes('```tool:') && !t.includes('<fs_')) {
+              const m = t.match(/(fs_list|fs_read|todo_write)\s*(\{[^\n]*\})/i)
+              if (m) {
+                const toolName = m[1].toLowerCase()
+                let args: Record<string, unknown> = {}
+                try { args = JSON.parse(m[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')) } catch { args = { path: '.' } }
+                if (toolName === 'fs_list' && !args.path) args = { path: '.' }
+                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `bare quick ${toolName} — dispatching` } as never)
+                const result = await execTool(toolName, args)
+                if (result.success) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
+                  const out_t2 = t.replace(m[0], `\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n`)
+                  return out_t2
+                }
+              }
             }
             const parsed = await tryInlineTools(delta)
             if (parsed !== delta) {
