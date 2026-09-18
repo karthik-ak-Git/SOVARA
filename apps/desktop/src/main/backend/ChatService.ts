@@ -545,8 +545,11 @@ export class ChatService {
               continue
             }
           }
+          // Convert XML leak "<fs_list path=".">" → keep as reasoning, not text, so harness tool stub can still drive fs_list
+          if (/<\/?fs_(list|read|write)/i.test(delta)) { acc.push({ time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: delta } }); continue }
           text += delta
            acc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: delta } })
+           if (reasoningBuffer) { acc.push({ time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: reasoningBuffer } }); reasoningBuffer='' }
            if (firstTokenAt === null) firstTokenAt = Date.now()
            this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
         }

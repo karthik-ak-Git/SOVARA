@@ -496,7 +496,7 @@ export function planMemory(
   }
   const workspaceMB = opts?.workspaceMB ?? Math.round(weightsMB * 0.05)
   const overheadMB = opts?.overheadMB ?? 256
-  const estimatedMB = Math.round(weightsMB * 1.1) + kvCacheMB + workspaceMB + overheadMB
+  const estimatedMB = Math.round(weightsMB * 1.02) + kvCacheMB + workspaceMB + 40 // ollama graph 8% + batch 60MB, not 10% 256 overhead
   return { estimatedMB, weightsMB, kvCacheMB, workspaceMB, overheadMB, ctxLen: resolvedCtx, nParallel, archAware }
 }
 
