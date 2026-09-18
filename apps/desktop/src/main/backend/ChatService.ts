@@ -348,7 +348,7 @@ export class ChatService {
     // Sovereign prompt alone is ~6k tokens, so 4096 always overflows (6489>4096). Use 8192 floor for all local loads.
     // 8192 fits 6GB for 4B (2834→~3600) and 9B partial (3560→~5200), and is needed for 6489 prompt.
     // Enforce floor so no caller can accidentally pass 4096 and trigger 6460>4096.
-    const nCtxForLoad = 8192
+    const nCtxForLoad = 12288
     // 1. Resolve the active model — pinned vs Auto smart-routing.
     // Pinned: what user selected is used for entire chat (user request). Auto: smart route per task.
     let active = this.deps.workbench.getActiveModel()
