@@ -14,6 +14,7 @@ import { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { ModelWorkbench } from './ModelWorkbench'
 import { ChatService } from './ChatService'
 import { AgentOrchestrator } from './AgentOrchestrator'
+import { ToolInfrastructure, getToolInfrastructure } from './tools'
 import { ValidationRunner } from '../services/modelValidationRunner'
 import { ValidationStore } from '../services/validationStore'
 import { getFullHardwareProfile } from '../services/hardwareProfile'
@@ -49,6 +50,8 @@ export interface AppBackendPorts {
 export class AppBackend {
   public readonly ports: AppBackendPorts
   private readonly persistenceAdapter: SqlitePersistenceAdapter
+  /** Tool infrastructure - comprehensive tool system based on DeepSeek Harness */
+  public readonly toolInfrastructure: ToolInfrastructure
   /** Commit 6 — registry/probe/select facet (lifecycle stays stubbed). */
   public readonly workbench: ModelWorkbench
   /** Commit 7 — real local inference orchestration behind LlmPort. */
@@ -67,6 +70,8 @@ export class AppBackend {
     const models = new LlamaCppServerAdapter(baseDir, null)
     const resources = new SystemResourceStub(() => models.listInstances())
     this.runtimeConfig = new RuntimeConfigStore(baseDir)
+    // Initialize tool infrastructure - comprehensive tool system
+    this.toolInfrastructure = getToolInfrastructure()
     // Rebind the adapter to the real config now that it exists (registry
     // localPath resolution + library dir). Same instance, no rescan cost.
     models.bindConfig(this.runtimeConfig)
@@ -199,6 +204,8 @@ export class AppBackend {
           return 'Tools available: todo_write (whole-list, pending/in_progress/completed, last-write-wins, shown in Session context TODO), fs_list {path}, fs_read {path}, shell_exec {command} — all relative to current workspace. Use todo_write first for multi-step tasks.'
         } catch { return null }
       },
+      // Tool infrastructure - comprehensive tool system based on DeepSeek Harness
+      toolInfrastructure: this.toolInfrastructure,
     })
     // Keep todo/write in session context — set session before each execute so ToolStubAdapter can persist
     const origExecute = this.orchestrator.execute.bind(this.orchestrator)
@@ -217,6 +224,31 @@ export class AppBackend {
     }
     // Hidden auto-router: Cactus-Compute/needle3 — download by default, invisible, tool-use.
     void ensureHiddenNeedle3(baseDir).catch(() => {})
+    // Initialize tool infrastructure asynchronously
+    void this.toolInfrastructure.initialize().catch((e) => {
+      console.error('[AppBackend] ToolInfrastructure initialization failed:', e)
+    })
+  }
+
+  /**
+   * Initialize tool infrastructure - call after construction if not already initialized
+   */
+  async initializeToolInfrastructure(): Promise<void> {
+    await this.toolInfrastructure.initialize()
+  }
+
+  /**
+   * Get tool infrastructure status
+   */
+  getToolInfrastructureStatus(): ReturnType<ToolInfrastructure['getStatus']> {
+    return this.toolInfrastructure.getStatus()
+  }
+
+  /**
+   * Shutdown tool infrastructure - call on app exit
+   */
+  async shutdownToolInfrastructure(): Promise<void> {
+    await this.toolInfrastructure.shutdown()
   }
 
   getInfo(): { name: string; version: string; electron: string; node: string; platform: NodeJS.Platform; arch: string } {

@@ -90,6 +90,10 @@ async function checkStatusWithBody(res: Response): Promise<void> {
     const t = await res.text()
     if (t) bodySnippet = t.slice(0, 400).replace(/\s+/g, ' ').trim()
   } catch { /* ignore */ }
+  // Context overflow must be actionable — callers auto-compact on this string
+  if (/exceed.*context|context.*size/i.test(bodySnippet)) {
+    throw new ChatInferenceError('invalid-response', `exceed_context_size_error: ${bodySnippet}`)
+  }
   const suffix = bodySnippet ? ` — ${bodySnippet}` : ''
   throw new ChatInferenceError('invalid-response', `invalid-response: runtime answered ${res.status}${suffix}`)
 }

@@ -9,6 +9,14 @@ import {
 } from '../../services/webSearch'
 import { CrawlUnavailableError, crawlUrls } from '../../services/crawlServer'
 import type { McpServer } from '../../services/mcpStore'
+import {
+  ToolInfrastructure,
+  getToolInfrastructure,
+  ExecutionPolicies,
+  type ToolExecutionResult,
+  type ToolHookContext,
+  type ToolHook,
+} from '../tools'
 
 export interface WebRuntime {
   enabled: boolean
@@ -32,8 +40,24 @@ function disabledRuntime(): WebRuntime {
  * MCP servers added via Connected Apps are exposed as `mcp_<id>` tools and
  * dispatched to their http/stdio transport (ponytail: one generic tool per server,
  * real MCP `tools/list` discovery when the server is reachable).
+ * 
+ * ENHANCED: Now integrates with ToolInfrastructure for:
+ * - Full lifecycle hooks (pre/guard/around/post/result)
+ * - Parallel/exclusive execution scheduling
+ * - PTC (Programmatic Tool Calls) support
+ * - MCP server management
  */
 export class ToolStubAdapter implements ToolPort {
+  private toolInfrastructure: ToolInfrastructure | null = null
+  private hooksEnabled = false
+  private executionLog: Array<{
+    toolName: string
+    args: Record<string, unknown>
+    result: string
+    timestamp: number
+    executionTime: number
+  }> = []
+
   constructor(
     private readonly web: WebRuntime = disabledRuntime(),
     private readonly getMcpServers: () => McpServer[] = () => [],
@@ -48,7 +72,245 @@ export class ToolStubAdapter implements ToolPort {
       }
     },
     private readonly appendEvent?: (type: string, data: unknown) => void,
-  ) {}
+    private readonly enableToolInfrastructure = false,
+  ) {
+    // Auto-initialize tool infrastructure if enabled
+    if (this.enableToolInfrastructure) {
+      this.initializeToolInfrastructure()
+    }
+  }
+
+  /**
+   * Initialize the enhanced tool infrastructure
+   */
+  private async initializeToolInfrastructure(): Promise<void> {
+    if (this.toolInfrastructure) return
+
+    try {
+      this.toolInfrastructure = getToolInfrastructure()
+      await this.toolInfrastructure.initialize()
+
+      // Register lifecycle hooks
+      this.registerLifecycleHooks()
+      this.hooksEnabled = true
+
+      // Register all stub tools with the infrastructure
+      this.registerToolsWithInfrastructure()
+
+      console.log('[ToolStubAdapter] Tool infrastructure initialized')
+    } catch (error) {
+      console.error('[ToolStubAdapter] Failed to initialize tool infrastructure:', error)
+    }
+  }
+
+  /**
+   * Register lifecycle hooks for tool execution
+   */
+  private registerLifecycleHooks(): void {
+    if (!this.toolInfrastructure) return
+
+    // Pre-execute hook: log tool calls
+    const preExecuteHook: ToolHook = {
+      type: 'pre-execute',
+      execute: async (context: ToolHookContext) => {
+        console.log(`[ToolLifecycle] Pre-execute: ${context.toolName}`, context.arguments)
+        return true
+      },
+    }
+
+    // Guard hook: validate arguments
+    const guardHook: ToolHook = {
+      type: 'guard',
+      execute: async (context: ToolHookContext) => {
+        // Allow all by default, can add validation here
+        return { allowed: true }
+      },
+    }
+
+    // Around hook: add timeout/retry logic
+    const aroundHook: ToolHook = {
+      type: 'around',
+      execute: async (context: ToolHookContext, next) => {
+        const startTime = Date.now()
+        try {
+          const result = await next()
+          const duration = Date.now() - startTime
+          console.log(`[ToolLifecycle] Around: ${context.toolName} completed in ${duration}ms`)
+          return result
+        } catch (error) {
+          const duration = Date.now() - startTime
+          console.log(`[ToolLifecycle] Around: ${context.toolName} failed after ${duration}ms`)
+          throw error
+        }
+      },
+    }
+
+    // Post-execute hook: log results
+    const postExecuteHook: ToolHook = {
+      type: 'post-execute',
+      execute: async (context: ToolHookContext, result: ToolExecutionResult) => {
+        this.executionLog.push({
+          toolName: context.toolName,
+          args: context.arguments,
+          result: result.success ? 'success' : result.error || 'failed',
+          timestamp: result.executionTime,
+          executionTime: result.executionTime,
+        })
+        console.log(`[ToolLifecycle] Post-execute: ${context.toolName}`, {
+          success: result.success,
+          executionTime: result.executionTime,
+        })
+      },
+    }
+
+    // Result hook: capture output for PTC
+    const resultHook: ToolHook = {
+      type: 'result',
+      execute: async (context: ToolHookContext, result: ToolExecutionResult) => {
+        // Could emit events for UI updates or audit logging
+        console.log(`[ToolLifecycle] Result: ${context.toolName}`, result.output)
+      },
+    }
+
+    this.toolInfrastructure.addPreExecuteHook(preExecuteHook)
+    this.toolInfrastructure.addGuardHook(guardHook)
+    this.toolInfrastructure.addAroundHook(aroundHook)
+    this.toolInfrastructure.addPostExecuteHook(postExecuteHook)
+    this.toolInfrastructure.addResultHook(resultHook)
+  }
+
+  /**
+   * Register stub tools with the tool infrastructure
+   */
+  private registerToolsWithInfrastructure(): void {
+    if (!this.toolInfrastructure) return
+
+    const tools = this.list()
+    for (const tool of tools) {
+      if (tool.name.startsWith('mcp_')) continue // MCP tools registered separately
+
+      this.toolInfrastructure.registerTool(
+        {
+          id: tool.name,
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.parameters as any,
+          concurrency: this.getConcurrencyForTool(tool.name),
+          timeout: this.getTimeoutForTool(tool.name),
+          tags: [tool.toolset],
+        },
+        async (args, context) => {
+          const result = await this.dispatch(tool.name, args as Record<string, unknown>)
+          return JSON.parse(result)
+        }
+      )
+    }
+  }
+
+  /**
+   * Get concurrency mode for tool
+   */
+  private getConcurrencyForTool(name: string): 'parallel' | 'exclusive' {
+    const exclusiveTools = ['shell_exec', 'fs_write']
+    return exclusiveTools.includes(name) ? 'exclusive' : 'parallel'
+  }
+
+  /**
+   * Get timeout for tool
+   */
+  private getTimeoutForTool(name: string): number {
+    const timeouts: Record<string, number> = {
+      web_search: 30000,
+      web_fetch: 60000,
+      shell_exec: 120000,
+      ocr: 60000,
+    }
+    return timeouts[name] || 30000
+  }
+
+  /**
+   * Get execution log
+   */
+  getExecutionLog(): Array<{
+    toolName: string
+    args: Record<string, unknown>
+    result: string
+    timestamp: number
+    executionTime: number
+  }> {
+    return [...this.executionLog]
+  }
+
+  /**
+   * Clear execution log
+   */
+  clearExecutionLog(): void {
+    this.executionLog = []
+  }
+
+  /**
+   * Get tool infrastructure status
+   */
+  getInfrastructureStatus(): {
+    initialized: boolean
+    hooksEnabled: boolean
+    toolCount: number
+    executionStatus: any
+  } | null {
+    if (!this.toolInfrastructure) return null
+    return this.toolInfrastructure.getStatus()
+  }
+
+  /**
+   * Execute tool via infrastructure (with hooks and scheduling)
+   */
+  async executeViaInfrastructure(
+    toolName: string,
+    args: Record<string, unknown>,
+    options?: { parallel?: boolean; barrier?: string }
+  ): Promise<ToolExecutionResult> {
+    if (!this.toolInfrastructure) {
+      throw new Error('Tool infrastructure not initialized')
+    }
+
+    const policy = options?.parallel === false
+      ? ExecutionPolicies.exclusive(options?.barrier)
+      : ExecutionPolicies.parallel()
+
+    return this.toolInfrastructure.executeTool(toolName, args, { policy })
+  }
+
+  /**
+   * Execute multiple tools in parallel via infrastructure
+   */
+  async executeParallelViaInfrastructure(
+    calls: Array<{ toolName: string; args: Record<string, unknown> }>
+  ): Promise<ToolExecutionResult[]> {
+    if (!this.toolInfrastructure) {
+      throw new Error('Tool infrastructure not initialized')
+    }
+    return this.toolInfrastructure.executeParallel(calls)
+  }
+
+  /**
+   * Run code with tool access (PTC mode)
+   */
+  async runWithTools(code: string): Promise<{
+    result: unknown
+    toolCalls: Array<{
+      toolName: string
+      arguments: Record<string, unknown>
+      result: unknown
+      error?: string
+      timestamp: number
+    }>
+    executionTime: number
+  }> {
+    if (!this.toolInfrastructure) {
+      throw new Error('Tool infrastructure not initialized')
+    }
+    return this.toolInfrastructure.runWithTools(code)
+  }
 
   list(): ToolDefinition[] {
     const base: ToolDefinition[] = [
@@ -143,6 +405,20 @@ export class ToolStubAdapter implements ToolPort {
           required: ['command'] as const,
         },
       },
+      // PTC tool: run_code for programmatic tool invocation
+      {
+        name: 'run_code',
+        toolset: 'code' as const,
+        description: 'Execute JavaScript code with programmatic access to tools. Use await tools.toolName(args) to call any tool. Returns execution result and all tool calls made.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            code: { type: 'string' as const, description: 'JavaScript code to execute. Tools available as: await tools.web_search({ queries: ["query"] })' },
+            language: { type: 'string' as const, description: 'Programming language', enum: ['javascript', 'js'], default: 'javascript' },
+          },
+          required: ['code'] as const,
+        },
+      },
     ]
     // Expose enabled MCP servers as tools — AI can discover them via tools:list
     for (const s of this.getMcpServers()) {
@@ -195,6 +471,7 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
       else if (name === 'fs_list' || name === 'fs_read') out = await this.dispatchFs(name, args)
       else if (name === 'shell_exec') out = await this.dispatchShell(args)
+      else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
       else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
       this.noteResult(name, !out.includes('"error"'))
@@ -206,6 +483,41 @@ export class ToolStubAdapter implements ToolPort {
       return JSON.stringify({
         error: e instanceof Error ? e.message : String(e),
         ...(typeof code === 'string' ? { code } : {}),
+      })
+    }
+  }
+
+  private async dispatchRunCode(args: Record<string, unknown>): Promise<string> {
+    const code = typeof args['code'] === 'string' ? args['code'] : ''
+    if (!code) return JSON.stringify({ error: 'run_code requires { code: string }' })
+
+    // Check if tool infrastructure is available for PTC
+    if (this.toolInfrastructure) {
+      try {
+        const result = await this.toolInfrastructure.runWithTools(code)
+        return JSON.stringify({
+          output: result.result,
+          toolCalls: result.toolCalls,
+          executionTime: result.executionTime,
+          summary: `Executed ${result.toolCalls.length} tool call(s) in ${result.executionTime}ms`,
+        })
+      } catch (error) {
+        return JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    // Fallback: basic code execution without tool access
+    try {
+      // Create a function with access to tool dispatch
+      const dispatch = this.dispatch.bind(this)
+      const fn = new Function('dispatch', `return (async () => { ${code} })()`)
+      const result = await fn(dispatch)
+      return JSON.stringify({ output: result, executionTime: Date.now() })
+    } catch (error) {
+      return JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
       })
     }
   }
@@ -319,7 +631,12 @@ export class ToolStubAdapter implements ToolPort {
   }
 }
 
-/** Production runtime: crawl4ai sidecar first, keyless link discovery fallback. */
+/**
+ * Production runtime: crawl4ai sidecar first, keyless link discovery fallback.
+ * 
+ * @param isEnabled - Function to check if web tools are enabled
+ * @param enableInfrastructure - Enable the enhanced tool infrastructure (lifecycle hooks, PTC, etc.)
+ */
 export function createWebRuntime(isEnabled: () => boolean): WebRuntime {
   return {
     get enabled() {
@@ -346,4 +663,16 @@ export function createWebRuntime(isEnabled: () => boolean): WebRuntime {
     },
     crawl: async (urls: string[]) => crawlUrls(urls),
   }
+}
+
+/**
+ * Create a ToolStubAdapter with infrastructure enabled
+ */
+export function createToolStubAdapterWithInfrastructure(
+  web: WebRuntime,
+  getMcpServers: () => McpServer[],
+  getWorkspace: () => string,
+  appendEvent?: (type: string, data: unknown) => void
+): ToolStubAdapter {
+  return new ToolStubAdapter(web, getMcpServers, getWorkspace, appendEvent, true)
 }

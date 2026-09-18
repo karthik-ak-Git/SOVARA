@@ -421,10 +421,10 @@ export function parseQuantization(basename: string): string | undefined {
   return undefined
 }
 
-/** Filenames that are helpers, not runnable weights (projectors, drafts, shards). */
+/** Filenames that are helpers, not runnable weights (projectors, drafts, shards, LoRA adapters). */
 function isAuxWeightFile(rfilename: string): boolean {
   const b = rfilename.split('/').pop()?.toLowerCase() ?? ''
-  return b.includes('mmproj') || b.includes('mtp') || b.includes('imatrix') || b.includes('draft') || b.includes('shiakai')
+  return b.includes('mmproj') || b.includes('mtp') || b.includes('imatrix') || b.includes('draft') || b.includes('shiakai') || b.includes('lora') || b.startsWith('adapter')
 }
 
 /**

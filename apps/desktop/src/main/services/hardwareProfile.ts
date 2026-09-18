@@ -120,12 +120,27 @@ export function getVramAwareCompatibilityMessage(hw: HardwareInfo): string {
 // ── Full profile per MODEL_HARDWARE_VALIDATION 3-4 ──────────────────
 import type { HardwareProfileFull } from '@shared/types/validation'
 
+function detectPhysicalCores(): number | null {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum', { timeout: 3000, encoding: 'utf8', windowsHide: true } as any)
+      const n = parseInt(String(out).match(/\d+/)?.[0] ?? '', 10)
+      if (Number.isFinite(n) && n > 0) return n
+    } else {
+      const raw = execSync('lscpu 2>/dev/null | awk \'/^Core\\(s\\) per socket/{c=$4} /^Socket\\(s\\)/{s=$2} END{print c*s}\'', { timeout: 2000, encoding: 'utf8' } as any)
+      const n = parseInt(String(raw).trim(), 10)
+      if (Number.isFinite(n) && n > 0) return n
+    }
+  } catch { /* fallback */ }
+  return null
+}
+
 function detectCpu(): HardwareProfileFull['cpu'] {
   const cpus = os.cpus()
   const model = cpus[0]?.model?.trim() || 'Unknown CPU'
   const threads = cpus.length || 1
-  // physical cores unknown without wmic; use threads as fallback
-  const cores = threads
+  const physical = detectPhysicalCores()
+  const cores = physical ?? Math.max(1, Math.round(threads / 2))
   return { name: model, cores, threads }
 }
 

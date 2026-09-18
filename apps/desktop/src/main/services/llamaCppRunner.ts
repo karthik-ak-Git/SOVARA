@@ -124,13 +124,24 @@ export async function ensureLlamaModelLoaded(
   log('info', 'load-step2-done', { modelSize: model.size })
   log('info', 'load-step3-context', { modelId, contextLength })
   emit(65, 'context', `Creating context (ctx ${contextLength})`)
-  // Ollama KV trick: flashAttention + threads = physical cores, reduces VRAM ~15%
-  const threads = Math.max(1, Math.min(8, os.cpus().length - 2))
+  // Auto-tuner (lm-serve.sh parity): physical cores only, flash-attn, q8 KV, batch/ubatch
+  const hwProfile = getHardwareProfile()
+  const physCores = (() => {
+    try {
+      // reuse hardwareProfile physical detection: threads/2 heuristic already, but prefer direct
+      const cpus = os.cpus().length || 8
+      return Math.max(2, Math.min(16, Math.round(cpus / 2)))
+    } catch { return 8 }
+  })()
+  const threads = Math.max(2, Math.min(16, physCores))
+  // Adaptive batch — mirrors --batch-size 2048 / --ubatch 512 + heavy-model guard
+  const batchSize = contextLength >= 8192 ? (fileSizeMB >= 3000 ? 2048 : 4096) : 2048
   const context = await model.createContext({
     contextSize: contextLength,
     threads,
     flashAttention: true,
-  })
+    batchSize,
+  } as any)
   emit(90, 'context', `KV cache ready`)
   log('info', 'load-step3-done', { contextLength })
   const sequence = context.getSequence()
@@ -146,7 +157,7 @@ export async function ensureLlamaModelLoaded(
   const gpuLayers = llama.gpu ? 999 : 0
   const totalLayers = 999
   const targetVramMB = llama.gpu ? Math.round(fileSizeMB * 1.12) : 0
-  log('info', 'load-cuda-details', { gpu: String(llama.gpu), backend: llama.gpu ? 'cuda' : 'cpu', flashAttention: true, threads })
+  log('info', 'load-cuda-details', { gpu: String(llama.gpu), backend: llama.gpu ? 'cuda' : 'cpu', flashAttention: true, threads, batchSize, vram: `${hwProfile.totalVramMB ?? 0}MB`, ram: `${hwProfile.totalRamMB}MB` })
   try { registerLoadedInstance(modelId, 'local', contextLength, st.size) } catch {}
   emit(95, 'ready', `Model ready on ${backend}`)
   log('info', 'load-complete', { modelId, backend, contextLength, fileSizeMB })

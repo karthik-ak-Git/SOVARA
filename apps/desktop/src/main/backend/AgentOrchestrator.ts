@@ -27,6 +27,16 @@ import type { TaskClassification, ModelRoutingDecision } from '@shared/types/tas
 import type { DiscoveredModel } from '@shared/types/models'
 import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 
+// ── Tool Infrastructure (DeepSeek Harness-style) ──
+import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
+import type {
+  ToolExecutionContext,
+  ToolLifecycleHooks,
+  ToolExecutionPolicy,
+  ToolExecutionResult,
+  ToolParallelStrategy,
+} from './tools/types'
+
 function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
   const t = text.trim()
   if (!detected) return false
@@ -185,6 +195,8 @@ export interface AgentOrchestratorDeps {
   getMcpContext?: () => string | null
   getSkillsContext?: () => Promise<string | null>
   getTodoContext?: () => string | null
+  // ── Tool Infrastructure (DeepSeek Harness-style) ──
+  toolInfrastructure?: ToolInfrastructure
 }
 
 const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
@@ -223,6 +235,126 @@ export class AgentOrchestrator {
 
   setEmit(emit: (event: ChatStreamEvent) => void): void {
     ;(this.deps as { emit: (event: ChatStreamEvent) => void }).emit = emit
+  }
+
+  // ── Tool Infrastructure Access ──
+  private getToolInfra(): ToolInfrastructure | null {
+    return this.deps.toolInfrastructure ?? getToolInfrastructure()
+  }
+
+  /**
+   * Execute a tool using the comprehensive tool infrastructure (DeepSeek Harness-style).
+   * Supports lifecycle hooks, parallel execution, PTC mode, and execution policies.
+   */
+  private async executeToolWithInfrastructure(
+    sessionId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    context: {
+      taskKind: string
+      stepIndex: number
+      parallelStrategy?: ToolParallelStrategy
+      executionPolicy?: ToolExecutionPolicy
+      lifecycleHooks?: ToolLifecycleHooks
+    }
+  ): Promise<{ ok: true; output: string; durationMs: number } | { ok: false; error: string; durationMs: number }> {
+    const infra = this.getToolInfra()
+    if (!infra) {
+      // Fallback to legacy dispatch
+      try {
+        const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
+        return { ok: true, output, durationMs: 0 }
+      } catch (e) {
+        return { ok: false, error: String(e), durationMs: 0 }
+      }
+    }
+
+    const toolContext: ToolExecutionContext = {
+      sessionId,
+      taskKind: context.taskKind,
+      stepIndex: context.stepIndex,
+      parallelStrategy: context.parallelStrategy ?? 'parallel',
+      executionPolicy: context.executionPolicy ?? 'eager',
+      lifecycleHooks: context.lifecycleHooks,
+      startTime: Date.now(),
+      metadata: {
+        source: 'orchestrator',
+        toolInfrastructureVersion: '1.0.0',
+      },
+    }
+
+    const startTime = Date.now()
+    try {
+      const toolDef = infra.registry.getTool(toolName)
+      if (!toolDef) {
+        return { ok: false, error: `Tool not found: ${toolName}`, durationMs: Date.now() - startTime }
+      }
+
+      // Execute via the infrastructure pipeline (lifecycle hooks + scheduling)
+      const result = await infra.executeTool(toolName, args, toolContext)
+
+      return {
+        ok: true,
+        output: result.output ?? String(result.result ?? ''),
+        durationMs: Date.now() - startTime,
+      }
+    } catch (e) {
+      return { ok: false, error: String(e), durationMs: Date.now() - startTime }
+    }
+  }
+
+  /**
+   * Execute multiple tools in parallel using the ExecutionScheduler.
+   * Respects exclusive tool constraints and max concurrency settings.
+   */
+  private async executeToolsParallel(
+    sessionId: string,
+    toolCalls: Array<{ name: string; args: Record<string, unknown> }>,
+    context: {
+      taskKind: string
+      parallelStrategy: ToolParallelStrategy
+      maxConcurrency?: number
+    }
+  ): Promise<Array<{ name: string; result: ToolExecutionResult }>> {
+    const infra = this.getToolInfra()
+    if (!infra) {
+      // Fallback to sequential legacy dispatch
+      const results: Array<{ name: string; result: ToolExecutionResult }> = []
+      for (const tc of toolCalls) {
+        try {
+          const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tc.name, tc.args)
+          results.push({ name: tc.name, result: { success: true, output } })
+        } catch (e) {
+          results.push({ name: tc.name, result: { success: false, error: String(e) } })
+        }
+      }
+      return results
+    }
+
+    // Use the infrastructure's scheduler for parallel execution
+    const toolContext: ToolExecutionContext = {
+      sessionId,
+      taskKind: context.taskKind,
+      stepIndex: 0,
+      parallelStrategy: context.parallelStrategy,
+      executionPolicy: context.parallelStrategy === 'exclusive' ? 'exclusive' : 'parallel',
+      startTime: Date.now(),
+      metadata: {
+        source: 'orchestrator-parallel',
+        batchSize: toolCalls.length,
+      },
+    }
+
+    const tasks = toolCalls.map((tc) => ({
+      toolName: tc.name,
+      args: tc.args,
+      context: toolContext,
+    }))
+
+    return await infra.scheduler.scheduleBatch(tasks, {
+      maxConcurrency: context.maxConcurrency,
+      exclusive: context.parallelStrategy === 'exclusive',
+    })
   }
 
   private safeLog(msg: string): void { try { console.log(msg) } catch {} }
@@ -1043,6 +1175,30 @@ export class AgentOrchestrator {
             // parse it as a real tool and execute immediately — do not leak it to the bubble or exit early.
             // This is the "shell utilization as thinking" the user requested: tools stream like reasoning, and the turn
             // never exits until fs/shell/todo work is done.
+
+            // ── Helper: Execute tool with optional infrastructure (DeepSeek Harness-style) ──
+            const execTool = async (toolName: string, args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> => {
+              const infra = this.getToolInfra()
+              if (infra) {
+                // Use the comprehensive tool infrastructure with lifecycle hooks, parallel scheduling, etc.
+                const result = await this.executeToolWithInfrastructure(sid, toolName, args, {
+                  taskKind: classification.kind,
+                  stepIndex: 0,
+                  parallelStrategy: 'sequential',
+                  executionPolicy: 'eager',
+                })
+                return result
+              } else {
+                // Fallback to legacy dispatch
+                try {
+                  const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
+                  return { success: true, output }
+                } catch (e) {
+                  return { success: false, output: '', error: String(e) }
+                }
+              }
+            }
+
             const tryInlineTools = async (t: string): Promise<string> => {
               // First: fenced ```tool:name {json}``` convention (preferred, unambiguous)
               const fenceRe = /```tool:(fs_list|fs_read|shell_exec|todo_write)\s*\n([\s\S]*?)```/gi
@@ -1053,15 +1209,15 @@ export class AgentOrchestrator {
                 let args: Record<string, unknown> = {}
                 try { args = JSON.parse(fm[2].trim() || '{}') } catch { continue }
                 this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed fenced tool:${toolName} — dispatching` } as never)
-                try {
-                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
-                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`)
-                } catch (e) {
+                const result = await execTool(toolName, args)
+                if (result.success) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
+                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
+                } else {
                   this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
-                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} error: ${String(e).slice(0, 200)}]\n\n`)
+                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} error: ${(result.error ?? 'unknown').slice(0, 200)}]\n\n`)
                 }
               }
               if (out_t !== t) return out_t
@@ -1076,13 +1232,13 @@ export class AgentOrchestrator {
                   args = JSON.parse(jsonish)
                 } catch { args = toolName === 'fs_list' ? { path: '.' } : {} }
                 this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName} {...}> brace form — dispatching` } as never)
-                try {
-                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
-                  out_t = out_t.replace(bm[0], `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`)
-                } catch (e) {
+                const result = await execTool(toolName, args)
+                if (result.success) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
+                  out_t = out_t.replace(bm[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
+                } else {
                   this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
                 }
               }
@@ -1108,15 +1264,15 @@ export class AgentOrchestrator {
                 lastIdx = m.index + m[0].length
                 const toolName = name
                 this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName}> from text — dispatching` } as never)
-                try {
-                  const out = await (this.deps.tools as unknown as { dispatch: (n:string,a:Record<string,unknown>)=>Promise<string> }).dispatch(toolName, args)
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${out.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: out.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${out.slice(0, 4000)}`)
-                  cleaned += `\n\n[Tool ${toolName} result: ${out.slice(0, 600)}]\n\n`
-                } catch (e) {
+                const result = await execTool(toolName, args)
+                if (result.success) {
+                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
+                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
+                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
+                  cleaned += `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`
+                } else {
                   this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
-                  cleaned += `\n\n[Tool ${toolName} error: ${String(e).slice(0, 200)}]\n\n`
+                  cleaned += `\n\n[Tool ${toolName} error: ${(result.error ?? 'unknown').slice(0, 200)}]\n\n`
                 }
               }
               cleaned += remaining.slice(lastIdx)
@@ -1180,13 +1336,27 @@ export class AgentOrchestrator {
       }
 
       // ── Optional second step: tool use (honest multi-step) ──
+      // Uses comprehensive tool infrastructure when available (DeepSeek Harness-style)
       if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
         const defs = this.deps.tools.list()
         if (defs.some((d) => d.name === 'web_search')) {
           this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `dispatching web_search for: ${content.slice(0,60)}` })
           let toolText = ''
           try {
-            const raw = await this.deps.tools.dispatch('web_search', { queries: [content.slice(0,200)] })
+            // Use tool infrastructure when available, with parallel strategy and lifecycle hooks
+            const infra = this.getToolInfra()
+            let raw: string
+            if (infra) {
+              const result = await this.executeToolWithInfrastructure(sid, 'web_search', { queries: [content.slice(0, 200)] }, {
+                taskKind: classification.kind,
+                stepIndex: 1,
+                parallelStrategy: 'sequential',
+                executionPolicy: 'eager',
+              })
+              raw = result.ok ? result.output : `{"error": "${result.error}"}`
+            } else {
+              raw = await this.deps.tools.dispatch('web_search', { queries: [content.slice(0,200)] })
+            }
             try {
               const parsed = JSON.parse(raw)
               if (parsed.error) {
@@ -1754,19 +1924,20 @@ export class AgentOrchestrator {
         { role: 'system', content: systemBlocksReg.join('\n\n') },
         ...regenHistory,
       ]
-      // Compact if prompt would exceed ctx (2375 > 2304 case): history truncation before stream
-      const ctxNeed = classification.contextLengthNeeded
-      if (messages.reduce((n, m) => n + m.content.length, 0) > ctxNeed * 3) {
-        const sys = messages[0]
-        const rest = messages.slice(1)
-        let chars = rest.reduce((n, m) => n + m.content.length, 0)
-        const maxChars = Math.max(800, ctxNeed * 2.5)
-        while (rest.length > 2 && chars > maxChars) { chars -= rest.shift()!.content.length }
-        messages = [sys, ...rest]
-        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `compacted history ${prior.length}→${rest.length} for ctx ${ctxNeed}` })
-      } else {
-        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId! })
-      }
+  // Compact if prompt would exceed ctx (2375 > 2304 case): history truncation before stream
+       // Also handle exceed_context_size_error retry: if first attempt 400s, auto-compact 50% and retry once
+       let ctxNeed = classification.contextLengthNeeded
+       const compactForRetry = (msgs: typeof messages): typeof messages => {
+         const sys = msgs[0]; const rest = msgs.slice(1); let chars = rest.reduce((n, m) => n + m.content.length, 0)
+         const maxChars = Math.max(800, ctxNeed * 2.5); while (rest.length > 2 && chars > maxChars) { chars -= rest.shift()!.content.length }
+         return [sys, ...rest]
+       }
+       if (messages.reduce((n, m) => n + m.content.length, 0) > ctxNeed * 3) {
+         messages = compactForRetry(messages)
+         this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `compacted history for ctx ${ctxNeed}` })
+       } else {
+         this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId! })
+       }
       const endpoint = regenOwnedEndpoint ?? entry!.endpoint
       const model = remoteModelId(routing.modelId!)
       const timeoutMs = Math.max(entry.timeoutMs, 120_000)
@@ -1807,11 +1978,33 @@ export class AgentOrchestrator {
           this.emit(sid, 'task:cancelled', { taskKind: classification.kind })
           return { ok: true, assistantSeq: ev.seq, routing, classification }
         }
-        const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
-        this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
-        this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
-        throw new AgentOrchestratorError('llm-failed', safe)
+        const raw = e instanceof ChatInferenceError ? e.message : String(e)
+        if (/exceed.*context|context.*size/i.test(raw)) {
+          // Auto-retry once after compacting history — prevents sticky invalid-response banner
+          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `context overflow — compacting and retrying` })
+          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: `Auto-compacted for context overflow (${raw.slice(0,120)})` }) } catch {}
+          messages = compactForRetry(messages); text = ''; reasoningBuffer = ''; inReasoning = false
+          try {
+            for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+              if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
+              if (chunk.type === 'done') break
+            }
+            if (text.trim() !== '') { this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `retry after compact — ${text.length} chars` }); /* fall through to normal post-processing */ } else { throw e }
+          } catch (e2) { e = e2 }
+          if (text.trim() === '') {
+            const safe = e instanceof ChatInferenceError ? e.message : String(e)
+            this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
+            this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
+            this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: `Context too large even after auto-compact — try /compact or new chat. (${raw.slice(0,150)})` })
+            throw new AgentOrchestratorError('llm-failed', safe)
+          }
+        } else {
+          const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
+          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
+          this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
+          this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+          throw new AgentOrchestratorError('llm-failed', safe)
+        }
       }
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars` })
       // Unclosed <thinking> block: deltas already streamed — persist the
@@ -1951,6 +2144,135 @@ export class AgentOrchestrator {
       modelId: model,
       streamed,
     })
+  }
+
+  // ── Tool Infrastructure Public API ──
+
+  /**
+   * Get the current tool infrastructure status.
+   * Returns information about registered tools, MCP servers, execution logs, and scheduler state.
+   */
+  getToolInfrastructureStatus(): {
+    available: boolean
+    registeredTools: number
+    mcpServers: string[]
+    executionLogsCount: number
+    schedulerState: {
+      pending: number
+      running: number
+      completed: number
+      maxConcurrency: number
+    } | null
+    ptcEnabled: boolean
+  } {
+    const infra = this.getToolInfra()
+    if (!infra) {
+      return {
+        available: false,
+        registeredTools: 0,
+        mcpServers: [],
+        executionLogsCount: 0,
+        schedulerState: null,
+        ptcEnabled: false,
+      }
+    }
+
+    return {
+      available: true,
+      registeredTools: infra.registry.getAllTools().length,
+      mcpServers: infra.mcpAdapter ? infra.mcpAdapter.listServers() : [],
+      executionLogsCount: infra.executionLog.getEntries().length,
+      schedulerState: {
+        pending: infra.scheduler.getPendingCount(),
+        running: infra.scheduler.getRunningCount(),
+        completed: infra.scheduler.getCompletedCount(),
+        maxConcurrency: infra.scheduler.getMaxConcurrency(),
+      },
+      ptcEnabled: infra.ptcHandler.isEnabled(),
+    }
+  }
+
+  /**
+   * Get recent tool execution logs for debugging/analysis.
+   */
+  getToolExecutionLogs(limit: number = 50): Array<{
+    id: string
+    toolName: string
+    status: 'success' | 'error' | 'cancelled'
+    durationMs: number
+    timestamp: number
+    sessionId?: string
+  }> {
+    const infra = this.getToolInfra()
+    if (!infra) return []
+
+    return infra.executionLog.getEntries().slice(-limit).map((entry) => ({
+      id: entry.id,
+      toolName: entry.toolName,
+      status: entry.status,
+      durationMs: entry.durationMs,
+      timestamp: entry.timestamp,
+      sessionId: entry.context?.sessionId,
+    }))
+  }
+
+  /**
+   * Get tool catalog (all registered tools with their metadata).
+   */
+  getToolCatalog(): Array<{
+    name: string
+    description: string
+    inputSchema: unknown
+    tags: string[]
+    isMcp: boolean
+    serverId?: string
+  }> {
+    const infra = this.getToolInfra()
+    if (!infra) {
+      // Fallback to legacy tool list
+      return this.deps.tools.list().map((t) => ({
+        name: t.name,
+        description: t.description ?? '',
+        inputSchema: {},
+        tags: [],
+        isMcp: false,
+      }))
+    }
+
+    return infra.registry.getAllTools().map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      tags: t.tags ?? [],
+      isMcp: t.isMcp ?? false,
+      serverId: t.serverId,
+    }))
+  }
+
+  /**
+   * Execute a tool directly (for programmatic/tool calls from code).
+   * This enables the PTC (Programmatic Tool Call) pattern.
+   */
+  async executeTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    opts?: {
+      sessionId?: string
+      parallelStrategy?: ToolParallelStrategy
+      executionPolicy?: ToolExecutionPolicy
+    }
+  ): Promise<{ ok: true; output: string; durationMs: number } | { ok: false; error: string; durationMs: number }> {
+    return this.executeToolWithInfrastructure(
+      opts?.sessionId ?? 'direct',
+      toolName,
+      args,
+      {
+        taskKind: 'direct',
+        stepIndex: 0,
+        parallelStrategy: opts?.parallelStrategy ?? 'sequential',
+        executionPolicy: opts?.executionPolicy ?? 'eager',
+      }
+    )
   }
 }
 
