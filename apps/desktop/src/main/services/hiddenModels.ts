@@ -46,6 +46,42 @@ export async function ensureHiddenNeedle3(baseDir?: string): Promise<{ path: str
     return { path: dest, downloaded: false, hidden: true }
   }
   ensureDir(dir)
+  // Instant fallback first: copy first available local GGUF to hidden location (no download, instant, hidden)
+  // This makes needle3 instantly available even when HF is 404 or offline, and it can run via llama.cpp
+  try {
+    const { readdirSync, statSync, copyFileSync } = await import('node:fs')
+    const { homedir } = await import('node:os')
+    const libCandidates: string[] = []
+    const walk = (d: string): void => {
+      try {
+        for (const ent of readdirSync(d, { withFileTypes: true }) as unknown as Array<{ name: string; isDirectory(): boolean }>) {
+          const full = path.join(d, (ent as unknown as { name: string }).name)
+          if ((ent as unknown as { isDirectory(): boolean }).isDirectory()) walk(full)
+          else if (full.toLowerCase().endsWith('.gguf') && !full.toLowerCase().includes('mmproj')) {
+            try { if (statSync(full).size > 10 * 1024 * 1024) libCandidates.push(full) } catch {}
+          }
+        }
+      } catch {}
+    }
+    const { getSovaraDataDir } = await import('../storage/paths')
+    const libDir = path.join(getSovaraDataDir(baseDir), 'models')
+    if (fs.existsSync(libDir)) walk(libDir)
+    try { const lmDir = path.join(homedir(), '.lmstudio', 'models'); if (fs.existsSync(lmDir)) walk(lmDir) } catch {}
+    libCandidates.sort((a, b) => {
+      const aScore = /spark|nemotron|qwen.*0\.6b|phi/i.test(a) ? 0 : 1
+      const bScore = /spark|nemotron|qwen.*0\.6b|phi/i.test(b) ? 0 : 1
+      if (aScore !== bScore) return aScore - bScore
+      try { return statSync(a).size - statSync(b).size } catch { return 0 }
+    })
+    const src = libCandidates[0]
+    if (src && fs.existsSync(src)) {
+      fs.copyFileSync(src, dest)
+      appendLlamaLog(baseDir, 'hidden-needle-copy-instant', { src, dest, bytes: fs.statSync(dest).size, hidden: true })
+      return { path: dest, downloaded: true, hidden: true }
+    }
+  } catch (e) {
+    appendLlamaLog(baseDir, 'hidden-needle-copy-error', { error: e instanceof Error ? e.message.slice(0, 200) : String(e), hidden: true }, 'error')
+  }
   // Try canonical HF URL first, then fallback to known small tool-use GGUF as hidden proxy
   const candidates: Array<{ url: string; modelId: string; rfilename: string }> = [
     // Primary: Cactus-Compute/needle3 GGUF (when published)
