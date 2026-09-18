@@ -336,6 +336,12 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const key = String(instanceIdFor(String(modelId)))
     const cur = this.instances.get(key)
     if (cur) {
+      // If ctxLen mismatch, reload with requested ctx (e.g., 4096 -> 8192 for large system prompt 6489 tokens)
+      if (opts?.ctxLen && cur.ctxLen !== opts.ctxLen) {
+        appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-mismatch', { modelId: String(modelId), have: cur.ctxLen, want: opts.ctxLen })
+        await this.unload(cur.id).catch(() => {})
+        return this.load(modelId, opts)
+      }
       const h = await this.health(cur.id)
       if (h.ok) {
         cur.lastActiveAt = Date.now()

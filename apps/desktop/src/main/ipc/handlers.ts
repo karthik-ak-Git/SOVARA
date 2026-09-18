@@ -5,7 +5,7 @@ import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
-import { getSessionsDir } from '../storage/paths'
+import { getSessionsDir, getSovaraDataDir } from '../storage/paths'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gateDispatch } from '../services/execPermissions'
@@ -13,6 +13,8 @@ import { checkForUpdates } from '../services/updateFeed'
 import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
+import { migrateLegacyRuntime } from '../services/llamaRuntime'
+import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
 import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
@@ -338,7 +340,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('models:diagnoseRuntime', async () => {
     try {
-      const { diagnoseLlamaExecutable } = await import('../services/llamaRuntime')
       return await diagnoseLlamaExecutable(undefined)
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'diagnose failed')
@@ -347,7 +348,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('models:unblockRuntime', async () => {
     try {
-      const { getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, diagnoseLlamaExecutable, migrateLegacyRuntime, getLlamaServerPath } = await import('../services/llamaRuntime')
       // 1) Migrate legacy @-path → %LOCALAPPDATA%\Sovara (fixes spawn UNKNOWN from @)
       const mig = await migrateLegacyRuntime(undefined)
       // 2) Unblock BOTH dirs (legacy may still be the live exe until reinstall)
@@ -721,8 +721,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('library:revealInFolder', async (_e, raw: unknown) => {
     const p = typeof raw === 'string' ? raw : (raw as { path?: string })?.path
     if (!p) throw new Error('missing path')
-    const { shell } = await import('electron')
-    const fs = await import('node:fs')
     try { if (fs.statSync(p).isDirectory()) { shell.openPath(p); return { ok: true } } } catch {}
     shell.showItemInFolder(p)
     return { ok: true }
@@ -915,9 +913,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('logs:getRecent', async (_e, raw: unknown) => {
     const kind = (raw as { kind?: string })?.kind ?? 'all'
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const { getSovaraDataDir } = await import('../storage/paths')
     const tail = (file: string, n = 40): string[] => {
       try { const t = fs.readFileSync(file,'utf8').trim().split('\n').slice(-n); return t.filter(Boolean) } catch { return [] }
     }

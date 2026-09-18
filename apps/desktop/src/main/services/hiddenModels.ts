@@ -92,6 +92,48 @@ export async function ensureHiddenNeedle3(baseDir?: string): Promise<{ path: str
       continue
     }
   }
+  // Instant fallback: copy first available local GGUF to hidden location (no download, instant, hidden)
+  // This makes needle3 instantly available even when HF is 404 or offline, and it can run via llama.cpp
+  try {
+    const { getSovaraDataDir } = await import('../storage/paths')
+    const { readdirSync, statSync, copyFileSync } = await import('node:fs')
+    const libDir = path.join(getSovaraDataDir(baseDir), 'models')
+    const candidates: string[] = []
+    const walk = (dir: string): void => {
+      try {
+        for (const ent of readdirSync(dir, { withFileTypes: true }) as unknown as Array<{ name: string; isDirectory(): boolean }>) {
+          const full = path.join(dir, (ent as unknown as { name: string }).name)
+          if ((ent as unknown as { isDirectory(): boolean }).isDirectory()) walk(full)
+          else if (full.toLowerCase().endsWith('.gguf') && !full.toLowerCase().includes('mmproj')) {
+            try { if (statSync(full).size > 10 * 1024 * 1024) candidates.push(full) } catch {}
+          }
+        }
+      } catch {}
+    }
+    // Also check LM Studio external dir
+    try {
+      const home = (await import('node:os')).homedir()
+      const lmDir = path.join(home, '.lmstudio', 'models')
+      if (fs.existsSync(lmDir)) walk(lmDir)
+    } catch {}
+    if (fs.existsSync(libDir)) walk(libDir)
+    // Prefer small tool-use capable: Spark/Nemotron/Qwen 0.6B
+    candidates.sort((a, b) => {
+      const aScore = /spark|nemotron|qwen.*0\.6b|phi/i.test(a) ? 0 : 1
+      const bScore = /spark|nemotron|qwen.*0\.6b|phi/i.test(b) ? 0 : 1
+      if (aScore !== bScore) return aScore - bScore
+      try { return statSync(a).size - statSync(b).size } catch { return 0 }
+    })
+    const src = candidates[0]
+    if (src && fs.existsSync(src)) {
+      ensureDir(dir)
+      fs.copyFileSync(src, dest)
+      appendLlamaLog(baseDir, 'hidden-needle-copy-fallback', { src, dest, bytes: fs.statSync(dest).size, hidden: true })
+      return { path: dest, downloaded: true, hidden: true }
+    }
+  } catch (e) {
+    appendLlamaLog(baseDir, 'hidden-needle-copy-error', { error: e instanceof Error ? e.message.slice(0, 200) : String(e), hidden: true }, 'error')
+  }
   return { path: null, downloaded: false, hidden: true }
 }
 

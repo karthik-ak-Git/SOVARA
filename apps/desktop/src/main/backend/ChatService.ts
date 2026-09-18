@@ -343,11 +343,9 @@ export class ChatService {
     ]
     const systemCharsForBudget = systemBlocks.join('\n\n').length
     const estSystemTokensForBudget = Math.ceil(systemCharsForBudget / 4)
-    // Adaptive ctx: system prompt alone is ~6k tokens (SOVARA sovereign), so 4096 always overflows. Use 8192 when needed.
-    const estPriorTokensForLoad = Math.ceil(prior.reduce((n, e) => n + (extractContent(e.data)?.length ?? 0), 0) / 4)
-    const estContentTokensForLoad = Math.ceil(content.length / 4)
-    const estTotalForLoad = estSystemTokensForBudget + estPriorTokensForLoad + estContentTokensForLoad + 1200 // +1200 reserved for answer
-    const nCtxForLoad = estTotalForLoad > 4200 ? 8192 : 4096
+    // Sovereign prompt alone is ~6k tokens, so 4096 always overflows (6489>4096). Use 8192 by default for all local loads.
+    // 8192 fits 6GB for 4B (2834→~3600) and 9B partial (3560→~5200), and is needed for 6489 prompt.
+    const nCtxForLoad = 8192
     // 1. Resolve the active model — pinned vs Auto smart-routing.
     // Pinned: what user selected is used for entire chat (user request). Auto: smart route per task.
     let active = this.deps.workbench.getActiveModel()
