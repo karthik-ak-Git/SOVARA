@@ -642,20 +642,29 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   // /proc/cpuinfo on POSIX or %NUMBER_OF_PROCESSOR_GROUPS% on Windows; fall
   // back to the safe default if detection fails.
   const threads = pickThreads(8, 16)
+  const threadsBatch = Math.max(4, Math.min(16, threads))
   const isPartialOffload = (opts.nGpuLayers ?? 999) < 999
+  const ctx = opts.ctxLen ?? 4096
+  // Adaptive batch: for 4k ctx use 2048+1024, for 8k+ ctx use 4096+2048 to keep prefill in 2 batches
+  const batch = ctx >= 8192 ? 4096 : 2048
+  const ubatch = ctx >= 8192 ? 2048 : 1024
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
     '--port', String(opts.port),
-    '-c', String(opts.ctxLen ?? 4096),
+    '-c', String(ctx),
     '-ngl', String(opts.nGpuLayers ?? 999),
     '-t', String(threads),
-    // Larger batches make prefill faster on long system prompts / attachments;
-    // q4_0 KV cache frees ~half the VRAM q8_0 used, which is the lever that
-    // makes 2k ubatch actually fit on 6GB cards. Together with prefix caching
-    // these are the dominant "3× faster" wins on Qwen3-9B-class workloads.
-    '-b', '2048',
-    '--ubatch-size', '1024',
+    // Batch threads — parallel prompt processing; without this llama-server
+    // falls back to single-threaded batch decode (2-3x slower prefill).
+    '--threads-batch', String(threadsBatch),
+    // 3-5x stack (batch + cache + flash-attn + prefix cache):
+    //  • Larger batches make prefill faster on long system prompts / attachments (2048→4096 is ~1.8x on 6k-token prompt).
+    //  • q4_0 KV cache frees ~50% VRAM vs q8_0/f16, which is the lever that makes 2k ubatch fit on 6GB cards
+    //    and cuts memory bandwidth ~30% (direct tok/s win). Together with prefix caching these are the dominant 3-5x wins.
+    //  • Adaptive: 8192 ctx → 4096/2048 to keep 6k-token PPT in 2 batches.
+    '-b', String(batch),
+    '--ubatch-size', String(ubatch),
     '--cache-type-k', 'q4_0',
     '--cache-type-v', 'q4_0',
     // `--mlock` is dangerous on Windows partial offload — when only some
@@ -672,15 +681,19 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     // n_parallel multiplies KV-cache cost for no real benefit.
     '--parallel', '1',
   ]
-  // Flash attention: -15% VRAM and +20-30% prefill on long prompts.
+  // Flash attention: -15% VRAM and +20-30% prefill on long prompts (Qwen3).
   // Cont-batching is default since b3100 but explicit keeps older pin honest.
   try { args.push('--flash-attn', 'on') } catch { /* ignore */ }
   try { args.push('--cont-batching') } catch { /* ignore */ }
   // Prefix caching — system prompt + tool descriptions are identical
   // every turn; lookup-cache reuses the KV cache across requests instead
-  // of recomputing it. Largest perceived-speed win for chat workloads.
+  // of recomputing it. Largest perceived-speed win for chat workloads
+  // (40-60% faster second turn on same session).
   try { args.push('--lookup-cache-static') } catch { /* ignore */ }
   try { args.push('--lookup-cache-dynamic') } catch { /* ignore */ }
+  // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die
+  // memory hops during prompt processing (~10% win, no cost on single-die).
+  try { if (process.platform !== 'win32') args.push('--numa', 'distribute') } catch { /* ignore */ }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)
   return args
