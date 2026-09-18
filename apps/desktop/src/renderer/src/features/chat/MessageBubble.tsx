@@ -48,15 +48,23 @@ interface TextItem {
 type ParsedPart = CodeBlockItem | TextItem
 
 function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
-  // Hide raw tool calls: <atem:invoke name="Read"> etc. should render as card, not leaked XML (your screenshot).
-  // Replace with a compact "Used tool: Read" chip and strip the tag from text.
+  // Hide raw tool/thinking leaks: <thinking>...</thinking> should be ReasoningBlock, not bubble text (your 10:49 PM screenshot).
+  // Also <atem:invoke> leaked as "— used tool —" must be card. Strip both so bubble shows only the final answer.
   const stripToolTags = (s: string): string => {
-    // Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
-    let out = s.replace(/<atem:invoke[^>]*>[\s\S]*?<\/atem:invoke>/gi, ' — used tool — ')
+    // 1) Remove <thinking>...</thinking> and <think>...</think> entirely (including content) — that is reasoning, not answer
+    let out = s.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // 2) Remove any stray opening/closing thinking tags that were split across chunks
+    out = out.replace(/<\/?thinking>/gi, '').replace(/<\/?think>/gi, '')
+    // 3) Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
+    out = out.replace(/<atem:invoke[^>]*>[\s\S]*?<\/atem:invoke>/gi, ' ')
     out = out.replace(/<\/?atem:[^>]*>/gi, '')
-    // Collapse the "I'll read the workspace root..." duplication that the model repeats inside/outside the tag
+    // 4) Collapse "— used tool —" chip duplication and the repeated "I'll read..." / "Let me explore..." that Qwen 7/32 repeats
+    out = out.replace(/—\s*used tool\s*—/gi, ' ')
     out = out.replace(/(I'll read the workspace root to list all files and folders in the codebase\.)\s*\1/gi, '$1')
-    return out
+    out = out.replace(/(Let me explore the workspace to understand the codebase structure and list all the files\.)\s*\1/gi, '$1')
+    out = out.replace(/\n{3,}/g, '\n\n')
+    return out.trim()
   }
   raw = stripToolTags(raw)
   // Force English lang for HTML artifact preview

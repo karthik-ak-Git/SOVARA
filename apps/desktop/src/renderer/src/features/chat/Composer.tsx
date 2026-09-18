@@ -43,6 +43,8 @@ interface ComposerProps {
   execAvailable: boolean
   reasoningEnabled?: boolean
   onReasoningToggle?: (enabled: boolean) => void
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high'
+  onThinkingLevelChange?: (level: 'off' | 'low' | 'medium' | 'high') => void
   onSelectModel?: (runtimeId: string, modelId: string) => void
   onOpenSettings?: () => void
   projectName?: string | null

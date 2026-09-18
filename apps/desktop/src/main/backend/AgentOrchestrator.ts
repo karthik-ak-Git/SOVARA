@@ -711,9 +711,14 @@ export class AgentOrchestrator {
         })
       } catch { /* audit event best-effort */ }
 
-      const reasoningSystem = classification.reasoningRequired || opts?.reasoning
-        ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.'
-        : null
+      const thinkingLevel = (opts as unknown as { thinkingLevel?: string })?.thinkingLevel ?? (opts?.reasoning ? 'medium' : 'off')
+      const reasoningSystem =
+        thinkingLevel === 'off' ? null
+        : thinkingLevel === 'low'
+          ? 'Think briefly (1-2 sentences) inside <thinking> tags, then give the final answer.'
+          : thinkingLevel === 'high'
+            ? 'Think extensively step by step inside <thinking> tags (explore alternatives, verify plan), then give the final comprehensive answer.'
+            : 'Think step by step inside <thinking> tags, then give the final answer.'
       // Single leading system message — Bonsai/Mistral Jinja aborts if any
       // system turn appears after index 0 ("System message must be at the
       // beginning"). Merge all advisory blocks into one.
