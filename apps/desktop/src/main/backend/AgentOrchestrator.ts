@@ -1647,7 +1647,34 @@ export class AgentOrchestrator {
         { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
         { ctxLen: classification.contextLengthNeeded }
       )
-      if (pressure.blocking) throw new AgentOrchestratorError('resource-blocked', `resource-pressure: ${pressure.reason ?? 'load refused'}`)
+      if (pressure.blocking) {
+        // Pinned-but-unfittable (your Gemma-12B on 6GB): auto-fallback to first fitting library model
+        // instead of hard resource-pressure, and say so honestly in the reason.
+        const alts = models.filter((m) => m.available && m.modelId !== routing.modelId)
+        for (const cand of alts) {
+          try {
+            const p = await this.deps.resources.checkBeforeLoad(
+              { id: cand.modelId as never, displayName: cand.displayName, source: 'custom', format: 'unknown' } as never,
+              { ctxLen: classification.contextLengthNeeded }
+            )
+            if (!p.blocking) {
+              this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `pinned ${routing.modelId} cannot fit 6GB → auto-fallback to ${cand.modelId}` })
+              routing = {
+                modelId: cand.modelId,
+                runtimeId: cand.runtimeId,
+                reason: `pinned ${routing.modelId} needs ~14GB > 6GB GPU — auto-fallback to fitting ${cand.modelId}`,
+                task: classification,
+                candidatesConsidered: alts.length,
+                switched: true,
+              } as unknown as Awaited<ReturnType<typeof routeModel>>
+              break
+            }
+          } catch {}
+        }
+        if ((routing as { reason?: string }).reason?.includes('needs ~14GB') !== true) {
+          throw new AgentOrchestratorError('resource-blocked', `resource-pressure: ${pressure.reason ?? 'load refused'}`)
+        }
+      }
       let entry = this.deps.workbench.describeRuntime(routing.runtimeId!)
       if (!entry || !entry.enabled) throw new AgentOrchestratorError('runtime-unavailable', 'The selected runtime is unavailable. Open Models and test its connection.')
       if (routing.switched) {
