@@ -727,7 +727,7 @@ export class AgentOrchestrator {
       // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
       // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
       // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
-      let nCtx = classification.contextLengthNeeded || 4096
+      let nCtx = Math.max(8192, classification.contextLengthNeeded || 8192)
       // Try to read actual server ctx from resident instance (if already loaded with different ctx)
       try {
         const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
@@ -735,8 +735,7 @@ export class AgentOrchestrator {
         if (hit?.ctxLen && hit.ctxLen > nCtx) nCtx = hit.ctxLen
       } catch {}
       const systemChars = systemBlocks.join('\n\n').length
-      // Adaptive: if estimated prompt would exceed 4096 even after 8192, we must compress; if it fits 8192 but not 4096 and VRAM allows, bump to 8192.
-      // For now keep nCtx as is (4096) and compress aggressively — bumping requires server restart which we do via reload with larger ctx on next load.
+      // Floor 8192 — sovereign prompt is 6460 tokens, so 4096 always overflows.
       // RAG first, then budget hybrid as fallback
       const { retrieveRelevant } = await import('./rag/semanticSearch')
       const ragPrior = retrieveRelevant(prior, content, { maxChunks: 6, maxChars: 12000 })

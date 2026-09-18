@@ -34,10 +34,8 @@ function needsReasoning(text: string, explicit?: boolean): boolean {
 
 function estimateContextNeeded(text: string, extraChars = 0): number {
   const tokens = Math.ceil((text.length + extraChars) / 4) + 2048
-  // Adaptive: keep 4096 default for 6GB cards (fits 12B partial), bump to 8192 only when history is large
-  // and the model is small enough to afford the extra KV (4B models). Large models stay 4096 to keep partial viable.
-  const base = Math.max(4096, Math.min(131072, tokens))
-  // For small models (4B) we can afford 8192 when needed; large models already heavy
+  // Floor 8192 — sovereign prompt alone is 6460 tokens, so 4096 never fits.
+  const base = Math.max(8192, Math.min(131072, tokens))
   return base
 }
 

@@ -128,10 +128,11 @@ export function Composer({
     const onKey = (e: globalThis.KeyboardEvent): void => {
       if (e.key === 'Escape') setAttachMenuOpen(false)
     }
-    document.addEventListener('mousedown', onDoc)
+    const t = setTimeout(() => document.addEventListener('click', onDoc), 150)
     window.addEventListener('keydown', onKey)
     return () => {
-      document.removeEventListener('mousedown', onDoc)
+      clearTimeout(t)
+      document.removeEventListener('click', onDoc)
       window.removeEventListener('keydown', onKey)
     }
   }, [attachMenuOpen])

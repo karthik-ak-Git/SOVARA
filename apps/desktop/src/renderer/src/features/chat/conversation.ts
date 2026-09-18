@@ -64,8 +64,25 @@ export function deriveMessages(events: SessionEventLike[]): ChatMessage[] {
       content,
     }
     if (e.type === 'assistant/message' && pendingReasoning) {
-      msg.reasoning = pendingReasoning.content
-      // Use reasoning's seq for ordering if needed, but keep message seq
+      // Dedupe: Orchestrator promotes reasoning→text when model returns only <think> (text empty)
+      // That creates identical reasoning + message content → would render Thought + duplicate body.
+      // Detect and suppress reasoning when content already is (or starts with) the reasoning.
+      const r = pendingReasoning.content.trim()
+      const c = content.trim()
+      const isDuplicate =
+        r.length > 0 &&
+        (c === r ||
+          c.startsWith(r.slice(0, Math.min(200, r.length))) ||
+          c.includes(r.slice(0, 120)))
+      // Also strip the "[Note: model returned only reasoning…]" suffix for comparison
+      const cWithoutNote = c.replace(/\n\n\[Note: model returned only reasoning[^\]]*\]$/, '').trim()
+      const isPromotedDuplicate = r.length > 0 && (cWithoutNote === r || cWithoutNote.startsWith(r.slice(0, 120)))
+      if (!isDuplicate && !isPromotedDuplicate) {
+        msg.reasoning = pendingReasoning.content
+      } else if (isPromotedDuplicate && cWithoutNote === r) {
+        // Keep only the note-free reasoning as content, hide the duplicate Thought block
+        msg.content = cWithoutNote
+      }
       pendingReasoning = null
     }
     out.push(msg)

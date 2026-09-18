@@ -40,8 +40,12 @@ export function Popover({ open, onClose, anchorRef, children, label }: PopoverPr
         onClose()
       }
     }
-    setTimeout(() => document.addEventListener('mousedown', handleClick), 0)
-    return () => document.removeEventListener('mousedown', handleClick)
+    // Delay to avoid immediately closing when trigger button's own mousedown fires
+    const t = setTimeout(() => document.addEventListener('click', handleClick), 150)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('click', handleClick)
+    }
   }, [open, onClose, anchorRef])
 
   if (!open) return null

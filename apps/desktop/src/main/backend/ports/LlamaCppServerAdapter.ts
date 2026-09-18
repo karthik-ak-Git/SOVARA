@@ -336,11 +336,19 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const key = String(instanceIdFor(String(modelId)))
     const cur = this.instances.get(key)
     if (cur) {
-      // If ctxLen mismatch, reload with requested ctx (e.g., 4096 -> 8192 for large system prompt 6489 tokens)
-      if (opts?.ctxLen && cur.ctxLen !== opts.ctxLen) {
-        appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-mismatch', { modelId: String(modelId), have: cur.ctxLen, want: opts.ctxLen })
+      // Floor 8192 — never downgrade a resident 8192 to 4096 (that caused the 8192→4096→8192 ping-pong and 7-layer reload).
+      // Sovereign prompt is 6460 tokens; 4096 always overflows. So treat any request <8192 as 8192.
+      const want = Math.max(8192, opts?.ctxLen ?? 8192)
+      const have = cur.ctxLen ?? 0
+      if (have !== want && want > have) {
+        // Only upgrade, never downgrade — downgrade would trash VRAM fit and reintroduce 6460>4096.
+        appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-mismatch', { modelId: String(modelId), have, want })
         await this.unload(cur.id).catch(() => {})
-        return this.load(modelId, opts)
+        return this.load(modelId, { ...opts, ctxLen: want })
+      }
+      if (have !== want && want < have) {
+        // Caller asked for smaller ctx than resident — keep resident (8192 superset of 4096).
+        appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-keep', { modelId: String(modelId), have, want, keep: have })
       }
       const h = await this.health(cur.id)
       if (h.ok) {

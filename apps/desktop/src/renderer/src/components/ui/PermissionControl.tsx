@@ -27,8 +27,11 @@ export function PermissionControl({ mode, onChange }: PermissionControlProps): R
     const handle = (e: MouseEvent): void => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    setTimeout(() => document.addEventListener('mousedown', handle), 0)
-    return () => document.removeEventListener('mousedown', handle)
+    const t = setTimeout(() => document.addEventListener('click', handle), 150)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('click', handle)
+    }
   }, [open])
 
   return (
