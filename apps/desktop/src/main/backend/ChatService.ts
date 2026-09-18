@@ -343,8 +343,9 @@ export class ChatService {
     ]
     const systemCharsForBudget = systemBlocks.join('\n\n').length
     const estSystemTokensForBudget = Math.ceil(systemCharsForBudget / 4)
-    // Sovereign prompt alone is ~6k tokens, so 4096 always overflows (6489>4096). Use 8192 by default for all local loads.
+    // Sovereign prompt alone is ~6k tokens, so 4096 always overflows (6489>4096). Use 8192 floor for all local loads.
     // 8192 fits 6GB for 4B (2834→~3600) and 9B partial (3560→~5200), and is needed for 6489 prompt.
+    // Enforce floor so no caller can accidentally pass 4096 and trigger 6460>4096.
     const nCtxForLoad = 8192
     // 1. Resolve the active model — pinned vs Auto smart-routing.
     // Pinned: what user selected is used for entire chat (user request). Auto: smart route per task.
@@ -892,10 +893,10 @@ export class ChatService {
     try {
       const pressure = await this.deps.resources.checkBeforeLoad(
         { id: modelId as never, displayName: modelId, source: 'sovara', format: 'gguf' },
-        { ctxLen: ctxLen ?? 4096 }
+        { ctxLen: Math.max(8192, ctxLen ?? 8192) }
       )
       if (pressure.blocking) {
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `pressure warn (non-blocking, ctx=${ctxLen ?? 4096}): ${pressure.reason ?? 'load refused check, will try evict+partial)'}` })
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `pressure warn (non-blocking, ctx=${Math.max(8192, ctxLen ?? 8192)}): ${pressure.reason ?? 'load refused check, will try evict+partial)'}` })
       }
     } catch { /* never block local load */ }
     appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `loading "${modelId}" into VRAM...` })
@@ -908,8 +909,8 @@ export class ChatService {
       // Routing seam: prefer the verified-healthy path; plain load() also
       // guarantees readiness via the per-model coordinator (spec §10).
       const inst = models.ensureHealthy
-        ? await models.ensureHealthy(modelId as never, { runtimeId, ctxLen: ctxLen ?? 4096 } as never)
-        : await this.deps.models.load(modelId as never, { runtimeId, ctxLen: ctxLen ?? 4096 } as never)
+        ? await models.ensureHealthy(modelId as never, { runtimeId, ctxLen: Math.max(8192, ctxLen ?? 8192) } as never)
+        : await this.deps.models.load(modelId as never, { runtimeId, ctxLen: Math.max(8192, ctxLen ?? 8192) } as never)
       // Never route to a merely-existing process — verify health first.
       const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
       if (!h.ok) throw new Error(`instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
