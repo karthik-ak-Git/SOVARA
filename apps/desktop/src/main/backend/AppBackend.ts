@@ -192,6 +192,13 @@ export class AppBackend {
           return null
         }
       },
+      // Workspace-bound todo/files/shell are now seams: expose them so the model can call todo_write/fs_list immediately
+      getTodoContext: () => {
+        try {
+          // Last todo/write in current session is already in history via buildBudgetedHistory, but also surface a hint
+          return 'Tools available: todo_write (whole-list, pending/in_progress/completed, last-write-wins, shown in Session context TODO), fs_list {path}, fs_read {path}, shell_exec {command} — all relative to current workspace. Use todo_write first for multi-step tasks.'
+        } catch { return null }
+      },
     })
     // Keep todo/write in session context — set session before each execute so ToolStubAdapter can persist
     const origExecute = this.orchestrator.execute.bind(this.orchestrator)

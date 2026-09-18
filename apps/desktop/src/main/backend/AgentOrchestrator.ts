@@ -184,6 +184,7 @@ export interface AgentOrchestratorDeps {
   getProjectWorkspace?: (projectId: string | null) => string | null
   getMcpContext?: () => string | null
   getSkillsContext?: () => Promise<string | null>
+  getTodoContext?: () => string | null
 }
 
 const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
@@ -654,6 +655,8 @@ export class AgentOrchestrator {
       try { mcpContext = this.deps.getMcpContext?.() ?? null } catch { /* ignore */ }
       let skillsContext: string | null = null
       try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { /* ignore */ }
+      let todoContext: string | null = null
+      try { todoContext = this.deps.getTodoContext?.() ?? null } catch { /* ignore */ }
       let webContext: string | null = null
       if (opts?.webSearch && this.deps.webSearch) {
         try { webContext = await this.deps.webSearch(content) } catch { webContext = null }
@@ -720,6 +723,7 @@ export class AgentOrchestrator {
         ...(workspaceContext ? [workspaceContext] : []),
         ...(mcpContext ? [mcpContext] : []),
         ...(skillsContext ? [skillsContext] : []),
+        ...(todoContext ? [todoContext] : []),
         ...(webContext ? [webContext] : []),
         ...attachmentContext,
       ]
@@ -1536,6 +1540,8 @@ export class AgentOrchestrator {
       try { mcpContext = this.deps.getMcpContext?.() ?? null } catch {}
       let skillsContext: string | null = null
       try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch {}
+      let todoContextReg: string | null = null
+      try { todoContextReg = this.deps.getTodoContext?.() ?? null } catch {}
 
       const reasoningSystem = classification.reasoningRequired || opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
       const systemBlocksReg = [
@@ -1544,6 +1550,7 @@ export class AgentOrchestrator {
         ...(workspaceContext ? [workspaceContext] : []),
         ...(mcpContext ? [mcpContext] : []),
         ...(skillsContext ? [skillsContext] : []),
+        ...(todoContextReg ? [todoContextReg] : []),
       ]
       let messages: import('@shared/types/ports').LlmChatMessage[] = [
         { role: 'system', content: systemBlocksReg.join('\n\n') },
