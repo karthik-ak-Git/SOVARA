@@ -94,7 +94,15 @@ function buildBudgetedHistory(
   const totalChars = allTurns.reduce((n, m) => n + m.content.length, 0)
   if (totalChars <= historyBudgetChars) return allTurns
   const keepMessages = sliding * 2
-  const recent = allTurns.slice(-keepMessages)
+  const rawRecent = allTurns.slice(-keepMessages)
+  const recent = rawRecent.map((m) => {
+    if (m.content.length > 4000 && /```(html|tsx|python)/.test(m.content)) {
+      const firstLine = m.content.split('\n').find((l) => l.trim().length > 0)?.slice(0, 120) ?? ''
+      const kind = /```html/.test(m.content) ? 'HTML' : /```tsx/.test(m.content) ? 'TSX' : 'code'
+      return { ...m, content: `[Recent ${kind} artifact ~${Math.round(m.content.length/1000)}k chars, first line: ${firstLine.slice(0,80)} — saved on disk, history reference only]\n${m.content.slice(0, 800)}…[truncated for budget, see saved file]` }
+    }
+    return m
+  })
   const older = allTurns.slice(0, -keepMessages)
   if (older.length === 0) {
     let chars = recent.reduce((n, m) => n + m.content.length, 0)

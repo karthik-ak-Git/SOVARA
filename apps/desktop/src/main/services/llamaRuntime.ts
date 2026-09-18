@@ -644,7 +644,7 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   const threads = pickThreads(8, 16)
   const threadsBatch = Math.max(4, Math.min(16, threads))
   const isPartialOffload = (opts.nGpuLayers ?? 999) < 999
-  const ctx = opts.ctxLen ?? 4096
+  const ctx = opts.ctxLen ?? 8192
   // Adaptive batch: for 4k ctx use 2048+1024, for 8k+ ctx use 4096+2048 to keep prefill in 2 batches
   const batch = ctx >= 8192 ? 4096 : 2048
   const ubatch = ctx >= 8192 ? 2048 : 1024

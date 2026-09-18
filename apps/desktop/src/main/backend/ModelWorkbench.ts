@@ -418,7 +418,12 @@ export class ModelWorkbench {
     this.pruneMissingFromLocalSnapshot()
     let snap = this.config.getRuntime(runtimeId)
     if (!snap) throw new ModelWorkbenchError('unknown runtime')
-    if (!snap.entry.enabled) throw new ModelWorkbenchError('runtime is disabled')
+    if (!snap.entry.enabled) {
+      if (snap.entry.id === 'lmstudio' || snap.entry.id === 'ollama') {
+        throw new ModelWorkbenchError(`runtime is disabled — ${snap.entry.id} is file-discovery only, not a runner. Select a local model (Sovara Local (llama.cpp)) — every prompt runs through the owned sidecar. Files found in ${snap.entry.id} appear in Library and run locally.`)
+      }
+      throw new ModelWorkbenchError('runtime is disabled')
+    }
     // Live check first — if the file is truly missing, give the library hint
     // and ensure the ghost is gone from the list; sticky selection is still
     // kept (tracked) until the user picks a new available model.
