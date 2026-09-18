@@ -845,6 +845,7 @@ export class AgentOrchestrator {
       let streamed = true
       let text = ''
       let reasoningBuffer = ''
+      let allReasoning = '' // never cleared — for empty-reply promotion even after persist
       let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
@@ -915,6 +916,7 @@ export class AgentOrchestrator {
                 const parts = delta.split(/<\/thinking>|<\/think>/)
                 const tail = parts[0] ?? ''
                 reasoningBuffer += tail
+                allReasoning += tail
                 // Exactly-once streaming: earlier chunks were already
                 // emitted incrementally — emit only the not-yet-streamed
                 // tail. The full buffer is persisted once below.
@@ -929,6 +931,7 @@ export class AgentOrchestrator {
               }
               if (inReasoning) {
                 reasoningBuffer += delta
+                allReasoning += delta
                 this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta })
                 continue
               }
@@ -980,6 +983,7 @@ export class AgentOrchestrator {
       // later refresh reconstructs the same reasoning instead of losing it.
       if (reasoningBuffer) {
         try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+        allReasoning += reasoningBuffer
         reasoningBuffer = ''
       }
 
@@ -1062,8 +1066,9 @@ export class AgentOrchestrator {
       }
 
       if (text.trim() === '') {
-        // Reasoning-only stall: Qwen3.5 streams <think> for minutes then closes late or never.
-        const reasoningFallback = reasoningBuffer.trim()
+        // Reasoning-only stall: reasoning models stream <think> then answer; if answer never comes, promote reasoning.
+        // Use allReasoning (never cleared) — reasoningBuffer is cleared after persist, so fallback would be empty.
+        const reasoningFallback = (allReasoning || reasoningBuffer).trim()
         if (reasoningFallback.length > 40) {
           text = reasoningFallback + '\n\n[Note: model returned only reasoning — promoted to answer. If truncated, retry with a shorter prompt or /compact.]'
         } else if (reasoningFallback.length > 0) {
@@ -1088,9 +1093,10 @@ export class AgentOrchestrator {
               nCtx
             )
           } catch { /* keep original messages on import failure */ }
-          // Reset stream state and re-arm stall guard
+          // Reset stream state and re-arm stall guard (fresh reasoning for retry)
           text = ''
           reasoningBuffer = ''
+          allReasoning = ''
           inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
           streamed = true
           usage = undefined
@@ -1110,11 +1116,12 @@ export class AgentOrchestrator {
                     const parts = delta.split(/<\/thinking>|<\/think>/)
                     const tail = parts[0] ?? ''
                     reasoningBuffer += tail
+                    allReasoning += tail
                     if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
                     if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
                     inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
                   }
-                  if (inReasoning) { reasoningBuffer += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
+                  if (inReasoning) { reasoningBuffer += delta; allReasoning += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
                 }
                 text += delta
                 if (orchFirstTokenAt === null) { orchFirstTokenAt = Date.now(); firstTokenRef.value = orchFirstTokenAt; if (stallTimer) { clearTimeout(stallTimer); stallTimer = null } }
@@ -1151,10 +1158,10 @@ export class AgentOrchestrator {
           }
           if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `retry llm done — ${text.length} chars` })
-          if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
-          // Re-evaluate after retry
-          const fb2 = reasoningBuffer.trim()
-          if (text.trim() === '' && fb2.length > 40) text = fb2
+          if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; allReasoning += reasoningBuffer; reasoningBuffer = '' }
+          // Re-evaluate after retry — use allReasoning (reasoningBuffer cleared after persist)
+          const fb2 = (allReasoning || '').trim()
+          if (text.trim() === '' && fb2.length > 40) text = fb2 + '\n\n[Note: promoted reasoning — model returned only reasoning]'
           else if (text.trim() === '' && fb2.length > 0) text = fb2
           if (text.trim() !== '') {
             // fall through to artifact generation below
