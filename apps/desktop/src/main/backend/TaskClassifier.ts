@@ -34,9 +34,11 @@ function needsReasoning(text: string, explicit?: boolean): boolean {
 
 function estimateContextNeeded(text: string, extraChars = 0): number {
   const tokens = Math.ceil((text.length + extraChars) / 4) + 2048
-  // Sovereign default is 8192 — 4096 is too small for system prompt (~1750 tok) + 3-turn history + 1k completion.
-  // Qwen3.5-9B supports 131072, Nemotron 4B supports 8192+ comfortably on 6GB with q4 KV.
-  return Math.max(8192, Math.min(131072, tokens))
+  // Adaptive: keep 4096 default for 6GB cards (fits 12B partial), bump to 8192 only when history is large
+  // and the model is small enough to afford the extra KV (4B models). Large models stay 4096 to keep partial viable.
+  const base = Math.max(4096, Math.min(131072, tokens))
+  // For small models (4B) we can afford 8192 when needed; large models already heavy
+  return base
 }
 
 export function classifyTask(

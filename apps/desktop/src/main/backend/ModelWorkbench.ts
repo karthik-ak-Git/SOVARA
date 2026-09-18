@@ -222,8 +222,19 @@ export class ModelWorkbench {
     // The user's explicit active selection is kept until end-of-chat (sticky),
     // but the list itself is always the live detected set.
     this.pruneMissingFromLocalSnapshot()
-    const entries = runtimeId ? [this.config.getRuntime(runtimeId)?.entry].filter((e): e is ModelRuntimeEntry => Boolean(e)) : this.config.listRuntimes()
-    if (runtimeId && entries.length === 0) throw new ModelWorkbenchError('unknown runtime')
+    const allEntries = runtimeId ? [this.config.getRuntime(runtimeId)?.entry].filter((e): e is ModelRuntimeEntry => Boolean(e)) : this.config.listRuntimes()
+    if (runtimeId && allEntries.length === 0) throw new ModelWorkbenchError('unknown runtime')
+    // Sovereign: when listing all, hide disabled external runtimes (LM Studio/Ollama are file-discovery only).
+    // Their GGUFs are already surfaced via the local snapshot (see registerExternalModelDir), so showing them twice is duplicate.
+    const entries = runtimeId ? allEntries : allEntries.filter((e) => e.enabled || e.id === 'local')
+    if (!runtimeId && entries.length === 0) {
+      // Fallback: if local was pruned, still show local if it has snapshot
+      const localSnap = this.config.getRuntime('local')
+      if (localSnap && localSnap.lastModels.length > 0) {
+        const fake: ModelRuntimeEntry = { id: 'local', displayName: 'Sovara Local (llama.cpp)', type: 'llama.cpp', endpoint: 'local', enabled: true, timeoutMs: 8000 }
+        entries.push(fake)
+      }
+    }
     const out: DiscoveredModel[] = []
     for (const entry of entries) {
       const snap = this.config.getRuntime(entry.id)
@@ -231,6 +242,13 @@ export class ModelWorkbench {
       for (const m of snap.lastModels) {
         // Extra safety: skip any residual entry that cannot be resolved now
         if (entry.id === 'local' && !this.isModelLive(m.modelId)) continue
+        // Skip LM Studio entries that are already present as local via external file path — file path is truth
+        if (entry.id !== 'local') {
+          try {
+            const row = this.config.listRegistryRows().find((r) => r.displayName === m.displayName || r.rfilename === m.displayName || r.repository.endsWith(m.displayName))
+            if (row && this.isModelLive(row.rfilename)) continue // local already covers this file
+          } catch {}
+        }
         out.push({
           modelId: m.modelId,
           displayName: m.displayName,
@@ -245,8 +263,25 @@ export class ModelWorkbench {
     // Deduplicate: same GGUF via LM Studio + Local Library → single entry, prefer bundled local (llama.cpp) so inference does not require LM Studio.
     if (!runtimeId) {
       const prio = (r: string): number => r === 'local' ? 10 : r === 'lmstudio' ? 1 : r === 'ollama' ? 1 : 0
-      const byKey = new Map<string, DiscoveredModel>()
+      // Primary dedup by normalized file path (registry localPath) — same file on disk = same model
+      const byPath = new Map<string, DiscoveredModel>()
+      const pathFor = (m: DiscoveredModel): string | null => {
+        try {
+          const row = this.config.listRegistryRows().find((r) => r.displayName === m.displayName || r.rfilename === m.displayName || m.modelId.toLowerCase().includes(r.rfilename.toLowerCase().replace(/\.gguf$/i,'')))
+          if (row?.localPath) return row.localPath.toLowerCase()
+        } catch {}
+        // Fallback: normalized displayName without version/quant noise
+        const norm = m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').replace(/q4.*$/,'').trim()
+        return `display:${norm}`
+      }
       for (const m of out) {
+        const pkey = pathFor(m) ?? m.modelId.toLowerCase()
+        const existing = byPath.get(pkey)
+        if (!existing) byPath.set(pkey, m)
+        else if (prio(m.runtimeId) > prio(existing.runtimeId)) byPath.set(pkey, m)
+      }
+      const byKey = new Map<string, DiscoveredModel>()
+      for (const m of byPath.values()) {
         const key = String(m.modelId).toLowerCase().replace(/\.gguf$/i, '').split('/').pop()?.trim() ?? String(m.modelId).toLowerCase()
         const displayKey = m.displayName.toLowerCase().trim()
         const mapKey = `${key}|${displayKey.slice(0, 32)}`
@@ -258,7 +293,7 @@ export class ModelWorkbench {
       // Also dedup by displayName alone for cases where modelId differs slightly (e.g., path prefix)
       const byDisplay = new Map<string, DiscoveredModel>()
       for (const m of byKey.values()) {
-        const dKey = m.displayName.toLowerCase().replace(/\.gguf$/i,'').trim()
+        const dKey = m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').trim()
         const ex = byDisplay.get(dKey)
         if (!ex) byDisplay.set(dKey, m)
         else if (prio(m.runtimeId) > prio(ex.runtimeId)) byDisplay.set(dKey, m)

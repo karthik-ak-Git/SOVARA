@@ -87,10 +87,9 @@ export class SystemResourceStub implements SystemResourceManagerPort {
       const canFitCpu = (() => {
         try {
           if (!model.path || !fs.existsSync(model.path)) return false
-          const size = fs.statSync(model.path).size
-          if (size >= 4 * 1024 * 1024 * 1024) return false // large >4GB never auto-CPU (timeout invalid-response)
           const totalRam = Math.round(os.totalmem() / (1024 * 1024))
-          return needMB <= totalRam * 0.75
+          // Allow CPU for large models if RAM can hold it — LM Studio does CPU offload for 12B on 16GB RAM with 4.1GB VRAM
+          return needMB <= totalRam * 0.80
         } catch { return false }
       })()
       const effectiveFreeAfterEvict = total - usedByOthers

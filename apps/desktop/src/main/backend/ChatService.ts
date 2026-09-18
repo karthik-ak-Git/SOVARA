@@ -886,10 +886,53 @@ export class ChatService {
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, outcome: 'ok', detail: `VRAM-resident at ${endpoint}` })
       return { endpoint, model: remoteModelId(String(inst.modelId)), instanceId: String(inst.id) }
     } catch (e) {
-      const raw = e instanceof Error ? e.message : String(e)
+      let raw = e instanceof Error ? e.message : String(e)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'model-load-failed', error: raw, modelId, runtimeId })
       // eslint-disable-next-line no-console
       console.error(`[SOVARA][CHAT][ERROR] load failed model=${modelId}: ${raw}`)
+      // Transparent fallback for 12B even-partial no-fit (LM Studio loads it in 4.1GB via different quant/KV, but our estimate says 14GB)
+      if (/even partial offload does not fit/i.test(raw)) {
+        const m = raw.match(/Models in your library that fit this GPU:\s*([^\.]+)\./i)
+        const alts = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : []
+        let fallbackId: string | null = null
+        if (alts.length > 0) {
+          const firstAlt = alts[0].replace(/\.gguf$/i, '')
+          try {
+            const avail = await this.deps.workbench.listModels()
+            const hit = avail.find((mm) => mm.displayName.toLowerCase().includes(firstAlt.toLowerCase()) || mm.modelId.toLowerCase().includes(firstAlt.toLowerCase()))
+            if (hit) fallbackId = hit.modelId
+          } catch {}
+        }
+        if (!fallbackId) {
+          try {
+            const avail = await this.deps.workbench.listModels()
+            const hit = avail.find((mm) => /nemotron|spark|unlimited-ocr|phi/i.test(mm.modelId)) ?? avail.find((mm) => mm.runtimeId === 'local')
+            if (hit) fallbackId = hit.modelId
+          } catch {}
+        }
+        if (fallbackId && fallbackId !== modelId) {
+          console.log(`[SOVARA][CHAT] ${modelId} no-fit → auto-fallback to ${fallbackId}`)
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: fallbackId, runtimeId: 'local', detail: `auto-fallback: ${modelId} cannot fit 6GB even partial, switching to ${fallbackId}` })
+          try {
+            await this.deps.workbench.selectModel('local', fallbackId)
+            // Retry once with fitting model (evicts old resident)
+            const models2 = this.deps.models as ModelRuntimePort & { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }
+            const inst2 = models2.ensureHealthy
+              ? await models2.ensureHealthy(fallbackId as never, { runtimeId: 'local' } as never)
+              : await this.deps.models.load(fallbackId as never, { runtimeId: 'local' } as never)
+            const h2 = await this.deps.models.health(inst2.id).catch(() => ({ ok: false }))
+            if (h2.ok) {
+              const endpoint2 = this.deps.models.baseUrl(inst2.id)
+              console.log(`[SOVARA][CHAT] FALLBACK LOADED ${fallbackId} endpoint=${endpoint2}`)
+              appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: fallbackId, runtimeId: 'local', outcome: 'ok', detail: `fallback VRAM-resident at ${endpoint2}` })
+              return { endpoint: endpoint2, model: remoteModelId(String(inst2.modelId)), instanceId: String(inst2.id) }
+            }
+          } catch (e2) {
+            raw = e2 instanceof Error ? e2.message : String(e2)
+            console.error(`[SOVARA][CHAT][ERROR] fallback also failed: ${raw}`)
+          }
+        }
+      }
       if (/resource-pressure|insufficient VRAM|max concurrent|eligible for eviction/i.test(raw)) {
         throw new ChatServiceError('resource-pressure', raw)
       }
