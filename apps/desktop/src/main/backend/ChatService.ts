@@ -854,15 +854,17 @@ export class ChatService {
       // provisioning is best-effort; loadInner will surface runner-missing if it still fails
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `runtime provision check failed: ${e instanceof Error ? e.message.slice(0,120) : String(e)}` })
     }
-    const pressure = await this.deps.resources.checkBeforeLoad(
-      { id: modelId as never, displayName: modelId, source: 'sovara', format: 'gguf' },
-      {}
-    )
-    if (pressure.blocking) {
-      const msg = `resource-pressure: ${pressure.reason ?? 'load refused'}`
-      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'resource-pressure', error: msg, modelId, runtimeId })
-      throw new ChatServiceError('resource-pressure', msg)
-    }
+    // Sovereign: never block local load on select-time pressure — the adapter
+    // will LRU-evict + partial-fit + CPU fallback transparently. Only log.
+    try {
+      const pressure = await this.deps.resources.checkBeforeLoad(
+        { id: modelId as never, displayName: modelId, source: 'sovara', format: 'gguf' },
+        {}
+      )
+      if (pressure.blocking) {
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `pressure warn (non-blocking): ${pressure.reason ?? 'load refused check, will try evict+partial)'}` })
+      }
+    } catch { /* never block local load */ }
     appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId, runtimeId, detail: `loading "${modelId}" into VRAM...` })
     // eslint-disable-next-line no-console
     console.log(`[SOVARA][CHAT] LOADING model=${modelId} runtime=${runtimeId}`)

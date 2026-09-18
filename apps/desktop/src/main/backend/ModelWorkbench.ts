@@ -468,13 +468,29 @@ export class ModelWorkbench {
       }
     }
     if (!known) throw new ModelWorkbenchError('unknown model: probe the runtime first')
-    // Resource boundary is real: a blocking verdict refuses the select.
-    const pressure = await this.resources.checkBeforeLoad(
-      { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' },
-      {}
-    )
-    if (pressure.blocking) {
-      throw new ModelWorkbenchError(`resource-pressure: ${pressure.reason ?? 'load refused'}`)
+    // Sovereign local: never block the *selection* on VRAM pressure — the adapter
+    // will LRU-evict the old resident and try partial/CPU before honest fail.
+    // Blocking here would show the red banner instead of transparently shifting.
+    // Only non-local (disabled) runtimes are already filtered; for local we
+    // just log and allow the deferred load to decide.
+    if (runtimeId !== 'local') {
+      const pressure = await this.resources.checkBeforeLoad(
+        { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' },
+        {}
+      )
+      if (pressure.blocking) {
+        throw new ModelWorkbenchError(`resource-pressure: ${pressure.reason ?? 'load refused'}`)
+      }
+    } else {
+      try {
+        const pressure = await this.resources.checkBeforeLoad(
+          { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' },
+          {}
+        )
+        if (pressure.blocking) {
+          appendLlamaLog(this.baseDir, 'select-pressure-warn', { modelId, runtimeId, level: pressure.level, reason: pressure.reason })
+        }
+      } catch { /* never block local select */ }
     }
     this.config.setActiveSelection({ runtimeId, modelId })
     // Dropdown selection is instant — don't block UI loading VRAM. Actual

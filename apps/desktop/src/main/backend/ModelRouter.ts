@@ -115,13 +115,20 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
   }
 
   let scored = available.map((m) => scoreModel(m, task, ctx.resources))
-  // Honor explicit selection: sovereign — user's chosen local model always wins
-  // unless resource-blocked. Use +100 so no capability bonus can outrank it.
+  // Honor explicit selection, but task-aware: if the task needs tool-use/coding/vision
+  // and the pinned model lacks it, don't force it — let a capable model win.
+  // This fixes "for every task it picking the same model (spark)".
   if (active) {
+    const need = capabilitiesForTask(task.kind)
     for (const s of scored) {
       if (s.model.modelId === active.modelId && s.model.runtimeId === active.runtimeId) {
-        s.score += 100
-        s.reason += ', user selected (sovereign)'
+        const caps = s.capabilities
+        const hasNeed = need.every((c) => (caps as string[]).includes(c))
+        const hasAny = need.some((c) => (caps as string[]).includes(c))
+        if (hasNeed) { s.score += 100; s.reason += ', user selected + capability exact' }
+        else if (hasAny) { s.score += 40; s.reason += ', user selected + capability partial' }
+        else if (task.kind === 'chat') { s.score += 60; s.reason += ', user selected (chat)' }
+        else { s.score += 10; s.reason += ', user selected but capability miss — task may reroute' }
       }
     }
   }
