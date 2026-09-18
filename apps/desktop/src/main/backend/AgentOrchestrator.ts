@@ -572,12 +572,17 @@ export class AgentOrchestrator {
             this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
             throw new AgentOrchestratorError('resource-blocked', msg)
           }
-        }
-        // Sovereign fallback: owned sidecar blocked (spawn UNKNOWN / MOTW /
-        // WDAC) → try LM Studio / Ollama loopback before failing. The user's
-        // GGUFs already live in .lmstudio/models, so LM Studio can serve them
-        // with zero reinstall when our binary is quarantined.
-        if (isOwnedRuntime && /spawn unknown|could not start|blocked|not installed|unknown/i.test(msg)) {
+          // Fallback succeeded (fitting model loaded) — skip sovereign-fallback below,
+          // which would otherwise re-throw the stale message via its else branch.
+        } else {
+          // Not a resource error → sovereign fallback check below applies.
+          // (Resource errors with successful fitting-model fallback already continued to
+          // inference above and never reach here.)
+          // Sovereign fallback: owned sidecar blocked (spawn UNKNOWN / MOTW /
+          // WDAC) → try LM Studio / Ollama loopback before failing. The user's
+          // GGUFs already live in .lmstudio/models, so LM Studio can serve them
+          // with zero reinstall when our binary is quarantined.
+          if (isOwnedRuntime && /spawn unknown|could not start|blocked|not installed|unknown/i.test(msg)) {
           const fb = await this.tryExternalFallback(sid, classification, routing.modelId!)
           if (fb) {
             this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `owned sidecar blocked — fallback to ${fb.displayName} (${fb.modelId})` })
@@ -607,6 +612,7 @@ export class AgentOrchestrator {
           this.emit(sid, 'model:failed', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
           throw new AgentOrchestratorError('model-load-failed', msg)
         }
+        } // else: non-resource load error handled by sovereign fallback above
       }
 
       // ── PHASE 4b: vision check — does the routed model actually see pixels?
