@@ -1377,6 +1377,24 @@ export class AgentOrchestrator {
         reasoningBuffer = ''
       }
 
+      // ── Unlimited-context chunked fallback: if message still > nCtx, split and execute chunks sequentially (user requested half-half) ──
+      const approxTokens = messages.reduce((n, m) => n + Math.ceil(m.content.length / 4), 0)
+      if (approxTokens > nCtx - 1200 && messages.length > 3) {
+        const mid = Math.floor(messages.length / 2)
+        const chunks = [messages.slice(0, mid), messages.slice(mid)]
+        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: `\n[Unlimited-context: splitting ${approxTokens} tokens > ${nCtx} into ${chunks.length} chunks]\n` } as never)
+        let merged = ''
+        for (let ci = 0; ci < chunks.length; ci++) {
+          const chunkMsgs = [{ role: 'system', content: chunks[ci][0]?.role === 'system' ? chunks[ci][0].content : systemBlocks.join('\n\n') }, ...chunks[ci].filter(m => m.role !== 'system')] as typeof messages
+          for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: chunkMsgs, timeoutMs, stream: true, signal: controller.signal })) {
+            if (ch.type === 'text-delta' && ch.text) { merged += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
+            if (ch.type === 'done') break
+          }
+          if (ci < chunks.length - 1) merged += '\n\n--- chunk boundary ---\n\n'
+        }
+        if (merged.trim().length > 100) text = merged
+      }
+
       // ── Optional second step: tool use (honest multi-step) ──
       // Uses comprehensive tool infrastructure when available (DeepSeek Harness-style)
       if ((classification.kind === 'tool-use' || classification.kind === 'agent') && !controller.signal.aborted) {
