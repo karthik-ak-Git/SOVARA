@@ -638,6 +638,30 @@ export interface ServerArgsOpts {
   enableTools?: boolean
 }
 
+export const CONTEXT_TIERS = [1024, 2048, 4096, 8192, 16384, 32768] as const
+export function pickTierAtOrBelow(valueMb: number, mbPer1kTokens: number): number {
+  const maxCtxFromMemory = Math.floor((valueMb / mbPer1kTokens) * 1000)
+  const eligible = CONTEXT_TIERS.filter((tier) => tier <= maxCtxFromMemory)
+  if (eligible.length === 0) return CONTEXT_TIERS[0]!
+  return eligible[eligible.length - 1]!
+}
+export async function detectHardwareProfileForLlama(modelSizeMb: number): Promise<{ contextSize: number; gpuLayers: number; mode: string }> {
+  const { exec } = await import('node:child_process')
+  const freeVramMb = await new Promise<number>((res) => exec('nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits', { timeout: 5000 } as never, (_e: unknown, out: unknown) => { const v = parseInt(String(out ?? '0').split('\n')[0] ?? '0', 10); res(Number.isNaN(v) ? 0 : v) }))
+  const freeRamMb = Math.floor((await import('node:os')).default.freemem() / (1024 * 1024))
+  const safety = 0.85
+  if (freeVramMb === 0) return { contextSize: pickTierAtOrBelow(freeRamMb * safety, 8), gpuLayers: 0, mode: 'cpu' }
+  const usableVramMb = freeVramMb * safety
+  if (modelSizeMb >= usableVramMb) {
+    const fitRatio = usableVramMb / modelSizeMb
+    const gpuLayers = Math.max(1, Math.floor(32 * fitRatio))
+    const usableMb = Math.max(usableVramMb - gpuLayers * (modelSizeMb / 32), 256)
+    return { contextSize: pickTierAtOrBelow(usableMb, 8), gpuLayers, mode: 'partial-gpu' }
+  }
+  const usableMb = Math.max(usableVramMb - modelSizeMb, 256)
+  return { contextSize: pickTierAtOrBelow(usableMb, 8), gpuLayers: -1, mode: 'full-gpu' }
+}
+
 export function buildServerArgs(opts: ServerArgsOpts): string[] {
   // Pin threads to physical cores only (hybrid CPUs include efficiency cores
   // in `os.cpus().length` which slows generation). Detect physical cores via
