@@ -876,8 +876,10 @@ export class AgentOrchestrator {
             `3) Never emit <fs_list>, <shell_exec>, <atem:invoke> as text — those leak and stall.`
         }
       } catch { /* advisory */ }
+      const isSmallFsTask = /read the code base|top 5.*import/i.test(content) && content.length < 500
+      const liteSystem = isSmallFsTask ? CHAT_SYSTEM_PROMPT.slice(0, 900) + '\n[Lite sovereign — full prompt deferred for fs_list speed]' : CHAT_SYSTEM_PROMPT
       const systemBlocks = [
-        CHAT_SYSTEM_PROMPT,
+        liteSystem,
         ...(reasoningSystem ? [reasoningSystem] : []),
         ...(toolCatalog ? [toolCatalog] : []),
         ...(workspaceContext ? [workspaceContext] : []),
