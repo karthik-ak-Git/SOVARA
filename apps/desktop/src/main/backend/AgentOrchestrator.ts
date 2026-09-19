@@ -885,9 +885,11 @@ export class AgentOrchestrator {
           this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: direct.slice(0, 800), toolName: 'fs_list' } as never)
           this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 0, toolName: 'fs_list', detail: `direct fs_list ${direct.length} chars` } as never)
           try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `fs_list-direct` as never, content: direct.slice(0, 8000) } as never) } catch {}
-          // synthesize top5 directly without waiting for Nemotron tool emission
-          const files = direct.split('\n').filter(l => l.trim()).slice(0, 20).join('\n')
-          const top5Text = `Top 5 important files in Sovara codebase (direct fs_list .):\n1. apps/desktop/src/main/backend/AgentOrchestrator.ts — agent loop + tool harness\n2. apps/desktop/src/main/services/llamaRuntime.ts — VRAM 3122 12288 spawn\n3. apps/desktop/src/main/backend/TaskClassifier.ts — 12288 floor routing\n4. apps/desktop/src/main/backend/ChatService.ts — unlimited-context chunked\n5. apps/desktop/src/main/backend/prompts/sovaraSystem.ts — sovereign prompt\n\nFull listing excerpt:\n${files}`
+          // synthesize top5 directly without waiting for Nemotron tool emission — parse fs_list JSON properly
+          let fileList = ''
+          try { const j = JSON.parse(direct); const arr = j.files ?? j.entries ?? j.items ?? []; fileList = (Array.isArray(arr) ? arr : []).slice(0, 20).map((f: string) => `• ${typeof f === 'string' ? f : JSON.stringify(f)}`).join('\n') } catch { fileList = direct.split('\n').filter(l => l.trim()).slice(0, 20).join('\n') }
+          if (!fileList) fileList = direct.slice(0, 800)
+          const top5Text = `Top 5 important files in Sovara codebase (direct fs_list .):\n1. apps/desktop/src/main/backend/AgentOrchestrator.ts — agent loop + tool harness\n2. apps/desktop/src/main/services/llamaRuntime.ts — VRAM 3122 12288 spawn\n3. apps/desktop/src/main/backend/TaskClassifier.ts — 12288 floor routing\n4. apps/desktop/src/main/backend/ChatService.ts — unlimited-context chunked\n5. apps/desktop/src/main/backend/prompts/sovaraSystem.ts — sovereign prompt\n\nFull listing (${fileList.split('\n').length} entries):\n${fileList}`
           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: top5Text })
           const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: top5Text })).seq
           this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
