@@ -105,11 +105,12 @@ function scoreModel(
   const isXlargePartial = profile?.paramsBucket === 'xlarge' && task.contextLengthNeeded >= 8192
   if (isSmallFast && task.contextLengthNeeded >= 8192) { score += 22; reasons.push('small fits 8192 fully 999/999 → 3-5x') }
   else if (isMediumFast && task.contextLengthNeeded >= 8192) { score += 10; reasons.push('medium fits 8192 mostly → fast') }
-  if (heavyMedium && task.contextLengthNeeded >= 8192) { score -= 20; reasons.push('9B+ medium partial 7/32 at 8192 → slow/hallucinate, prefer small 999') }
-  if (isXlargePartial) { score -= 26; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
+  if (heavyMedium && task.contextLengthNeeded >= 8192) { score -= 40; reasons.push('9B+ medium partial 7/32 at 8192 → slow/hallucinate, prefer small 999 — consumer 6GB no s') }
+  if (isXlargePartial) { score -= 30; reasons.push('xlarge partial 7/32 at 8192 → slow/hallucinate') }
   // VRAM signal: penalize xlarge on low VRAM, and penalize CPU fallback (large RAM models) — prevents 9B CPU timeout invalid-response
-  if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 25; reasons.push('vram pressure vs xlarge') }
-  if (vramTotal !== undefined && vramTotal < 7000 && profile?.paramsBucket === 'xlarge') { score -= 20; reasons.push('needs large VRAM') }
+  if (vramFree !== undefined && profile?.paramsBucket === 'xlarge' && vramFree < 4000) { score -= 30; reasons.push('vram pressure vs xlarge') }
+  if (vramTotal !== undefined && vramTotal < 7000 && profile?.paramsBucket === 'xlarge') { score -= 30; reasons.push('needs large VRAM') }
+  if (vramTotal !== undefined && vramTotal < 7000 && heavyMedium) { score -= 40; reasons.push('consumer 6GB heavyMedium blocked') }
   // If task is simple chat/tool pdf, prefer small/medium resident model over xlarge CPU
   if (profile?.paramsBucket === 'xlarge' && (task.kind === 'chat' || task.kind === 'tool-use')) { score -= 8; reasons.push('xlarge overkill') }
 
