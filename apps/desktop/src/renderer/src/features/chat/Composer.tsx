@@ -334,7 +334,7 @@ export function Composer({
         e.preventDefault()
         const selected = mentionItems[mentionIndex]
         if (selected) {
-          const v = value.replace(/(?:^|\s)[/@][\w-.-]*$/, (match) => {
+          const v = value.replace(/(?:^|\s)(?:\/skill(?:\s+[\w-.-]*)?|[/@][\w-.-]*)$/, (match) => {
             const prefix = match.slice(0, match.search(/[/@]/))
             return prefix + selected.id + ' '
           })
@@ -490,12 +490,12 @@ export function Composer({
                 key={item.id}
                 style={{ padding: '6px 10px', cursor: 'pointer', borderRadius: 4, background: i === mentionIndex ? 'var(--stitch-parchment, #F7F5F2)' : 'transparent', display: 'flex', flexDirection: 'column' }}
                 onMouseEnter={() => setMentionIndex(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  const v = value.replace(/(?:^|\s)[/@][\w-.-]*$/, (m) => {
-                    return m.slice(0, m.search(/[/@]/)) + item.id + ' '
-                  })
-                  onChange(v)
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    const v = value.replace(/(?:^|\s)(?:\/skill(?:\s+[\w-.-]*)?|[/@][\w-.-]*)$/, (m) => {
+                      return m.slice(0, m.search(/[/@]/)) + item.id + ' '
+                    })
+                    onChange(v)
                   setMentionType(null)
                   requestAnimationFrame(() => areaRef.current?.focus())
                 }}
