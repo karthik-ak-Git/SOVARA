@@ -1,75 +1,97 @@
-# SOVARA — Sovereign AI Desktop Workbench
+<div align="center">
+  <h1>🌌 SOVARA: Autonomous Local-First Agent</h1>
+  <p>A sovereign, privacy-first AI coding companion optimized for consumer hardware.</p>
+  
+  ![NPM Version](https://img.shields.io/npm/v/sovara?color=blue&label=npx%20sovara)
+  ![License](https://img.shields.io/badge/License-MIT-green.svg)
+  ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows)
+  ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20Next.js-black)
+</div>
 
-On-premise, offline-first AI workbench for confidential industrial work.
-Windows desktop app (Electron) — local only, no cloud, no telemetry.
+<hr />
 
-> **Current state (Phase 1):** secure Electron shell, durable session store
-> (SQLite + append-only JSONL), mock local chat over session events, and a
-> local model workbench (detect → connect → probe → list → select) for
-> OpenAI-compatible loopback runtimes (LM Studio, Ollama, vLLM, llama.cpp
-> server). **No real inference yet** — chat answers come from a deterministic
-> local stub; model load/execution, downloads, RAG, MCP, and agents are
-> explicitly out of scope until later phases.
->
-> See [docs/ARCHITECTURE_PHASE1.md](docs/ARCHITECTURE_PHASE1.md) for the full
-> architecture proposal and boundaries.
+## 🚀 Live Demo (Sandbox)
 
-## Quick start
+👉 **[Try the Web Sandbox Demo](https://sovara.vercel.app/)** *(Replace this with your actual Vercel URL)*
 
-Requires Node >= 22 and [pnpm](https://pnpm.io/) 11.x. All commands run from
-the repo root:
+> **Note:** The web version operates in a restricted browser sandbox. Local shell commands and filesystem edits are disabled. For the true, autonomous local experience, install the Desktop version below.
 
-```sh
-pnpm install
-pnpm dev            # Electron shell + internal Next.js server (UI + /api)
-pnpm dev:web        # Next.js browser dev server only (port 51840)
-pnpm typecheck      # tsc --noEmit
-pnpm --filter @sovara/desktop test    # vitest suite (101 tests)
-pnpm build          # electron-vite production build
-pnpm build:win      # Windows installer / unpacked dir (apps/desktop/dist)
-```
+## 📌 About
 
-## Project structure
+SOVARA is an on-premise, offline-first AI workbench designed for confidential industrial work and agentic coding. It gives you a powerful LLM assistant that can read, write, and execute code directly on your local filesystem—without sending your intellectual property to the cloud.
+
+This platform is built to demonstrate:
+- **100% Privacy:** No telemetry, no cloud dependencies (unless using external APIs in Web Mode).
+- **Agentic Capabilities:** Edits files, runs shell commands, and manages workspaces.
+- **Hardware Agnosticism:** Dynamically optimizes local models based on your specific RAM/VRAM availability.
+
+## ✨ Features
+
+| Feature | Description |
+| :--- | :--- |
+| 💻 **True Local Execution** | Runs completely offline on your own hardware via Electron & Llama.cpp. |
+| ⚡ **Hardware Optimization** | Auto-detects your GPU/CPU to dynamically load 4-bit (CPU) or 8-bit (GPU) models. |
+| 🛡️ **Web Sandbox** | A beautiful Next.js web UI for cloud-based inference testing. |
+| 🛠️ **Agentic Tools** | Full read/write filesystem access and terminal execution. |
+| 📦 **Frictionless Setup** | 1-line PowerShell or NPX installation. |
+| 🎨 **Modern UI** | Seamless, responsive dashboard with dark/light mode and session management. |
+
+## 🛠️ Tech Stack
+
+| Technology | Role |
+| :--- | :--- |
+| **Electron** | Desktop shell and local filesystem/OS bridge |
+| **Next.js / React** | Frontend UI for both Web Sandbox and Desktop Renderer |
+| **Node.js** | Local backend operations and hardware probing |
+| **SQLite** | Durable session and conversation storage |
+| **Llama.cpp** | Local model inference and execution engine |
+
+## 📂 Project Structure
 
 ```text
-SOVARA
-├── apps/desktop/            # the Electron app (@sovara/desktop)
-│   ├── src/main/            # Main process: window, IPC handlers, AppBackend,
-│   │                        # ports/adapters, storage, network, config, logging
-│   ├── src/preload/         # contextBridge whitelist (window.sovara) only
-│   ├── src/shared/          # types + IPC channels/schemas (no runtime code)
-│   └── tests/               # vitest: contracts, persistence, IPC, UI, sovereignty
-├── apps/web/                # Next.js UI + internal API (the only UI; legacy
-│                            # Vite renderer src/renderer was deleted)
-├── docs/ARCHITECTURE_PHASE1.md
-└── test/                    # read-only reference checkouts (never shipped)
+📁 SOVARA
+├── 📁 apps
+│   ├── 📁 desktop      # Full local Electron app (True Autonomous Mode)
+│   └── 📁 web          # Next.js Vercel deployment (Sandbox Demo Mode)
+├── 📁 packages
+│   └── 📁 sovara       # NPX 1-line installer package
+└── 📁 docs             # Architecture and phase documentation
 ```
 
-## Architecture at a glance
+## 🚀 How to Use
 
-```text
-Next.js UI → /api → server services → AppBackend → Ports → Adapters → local runtime
+### Option 1 — Web Sandbox (No Setup Required)
+Perfect for testing the UI and chat capabilities without downloading the app.
+👉 **[Open Web Demo](https://sovara.vercel.app/)**
+
+### Option 2 — True Local Execution (Windows Only)
+Unlocks the full autonomous experience with local file editing and hardware-optimized AI models.
+
+**Method A: 1-Line PowerShell Install (Recommended)**
+Open PowerShell and run:
+```powershell
+iwr -useb https://raw.githubusercontent.com/karthik-ak-Git/SOVARA/main/install.ps1 | iex
 ```
 
-- Web UI has **no** `fs` / `child_process` / `electron` / database
-  access — everything goes through same-origin `/api` validated with Zod.
-- `PersistencePort` is real (SQLite metadata + `events.v1.jsonl` source of
-  truth, seq-contiguous). Chat is derived from session events; no messages table.
-- `ModelWorkbench` (Commit 6) owns the runtime registry, probing, and active
-  model selection behind `CustomOpenAICompatibleAdapter` and a single
-  loopback-only `HttpClient` (`http:` + `127.0.0.1`/`localhost`/`::1`, DNS
-  verified, redirects re-validated, timeout + size caps). Persistence via the
-  existing database; per-request local logging without bodies or secrets.
-- `LlmPort`, tool/sandbox/DSH/Hermes/model-lifecycle ports remain stubs.
+**Method B: Node.js / NPM Install**
+If you have Node.js installed, simply run:
+```bash
+npx sovara
+```
 
-## Sovereignty guarantees
+*(Both methods will automatically fetch the latest optimized `.exe` from GitHub and launch the installer).*
 
-Default offline. No external network, telemetry, cloud, downloads, or model
-execution. CI-equivalent local gates: `sovereignty.test.ts` (no Cordis, no
-Python spawn, fetch only inside `HttpClient`), `security.test.ts` (sandbox,
-CSP, IPC validation), plus workbench proofs (loopback allow/reject, no cloud
-endpoints, web UI isolation, VRAM reported UNKNOWN never fabricated).
+## 🧠 How Hardware Optimization Works
 
-## License
+| Hardware Detected | Model Quantization | Status |
+| :--- | :--- | :--- |
+| **> 8GB VRAM (NVIDIA)** | 8-bit (Q8_0) | 🟢 Maximum Quality |
+| **< 8GB VRAM / CPU** | 4-bit (Q4_K_M) | 🟡 Optimized for Speed |
+| **Apple Silicon (Mac)** | Metal Accelerated | *(Coming Soon)* |
 
-MIT — see [LICENSE](LICENSE).
+## 👨‍💻 Author
+
+**Karthik AK**
+- 🐙 GitHub: [@karthik-ak-Git](https://github.com/karthik-ak-Git)
+
+> 🌟 **Star this repo** if you find it useful!
