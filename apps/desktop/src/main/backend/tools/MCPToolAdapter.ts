@@ -151,38 +151,65 @@ export class MCPToolAdapter extends EventEmitter {
    * Create an MCP client based on transport type
    */
   private async createClient(config: MCPServerConfig): Promise<MCPClient> {
-    // In a real implementation, this would create the appropriate MCP client
-    // For now, create a mock client that can be replaced with actual MCP SDK
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
+    
+    if (config.transport !== 'stdio') {
+      throw new Error(`Only stdio transport is currently supported, got: ${config.transport}`)
+    }
+    if (!config.command) {
+      throw new Error(`Command is required for stdio transport`)
+    }
+
+    const envConfig = { ...process.env, ...(config.env || {}) }
+    const filteredEnv = Object.fromEntries(
+      Object.entries(envConfig).filter(([_, v]) => v !== undefined)
+    ) as Record<string, string>
+
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args || [],
+      env: filteredEnv,
+    })
+
+    const mcp = new Client(
+      { name: "sovara-client", version: "1.0.0" },
+      { capabilities: {} }
+    )
+
     const client: MCPClient = {
       id: config.id,
       name: config.name,
       connected: false,
       tools: [],
       callTool: async (name: string, args: Record<string, unknown>) => {
-        if (!client.connected) {
-          throw new Error(`MCP client ${config.id} is not connected`);
+        if (!client.connected) throw new Error(`MCP client ${config.id} is not connected`)
+        const result = await mcp.callTool({ name, arguments: args })
+        if (result.isError) {
+          const first = (result.content as any[])?.[0]
+          throw new Error(String(first?.text || 'Unknown MCP tool error'))
         }
-        // Actual tool call would go through stdio/http
-        return { success: true, tool: name, args };
+        const first = (result.content as any[])?.[0]
+        return { success: true, tool: name, args, output: String(first?.text || '') }
       },
       connect: async () => {
-        // Simulate connection
-        client.connected = true;
-        client.tools = [
-          {
-            name: 'example_tool',
-            description: 'Example MCP tool',
-            inputSchema: { type: 'object', properties: { input: { type: 'string' } } },
-          },
-        ];
+        await mcp.connect(transport)
+        client.connected = true
+        const res = await mcp.listTools()
+        client.tools = res.tools.map((t) => ({
+          name: t.name,
+          description: t.description || '',
+          inputSchema: t.inputSchema as any,
+        }))
       },
       disconnect: async () => {
-        client.connected = false;
-        client.tools = [];
+        await mcp.close()
+        client.connected = false
+        client.tools = []
       },
-    };
+    }
 
-    return client;
+    return client
   }
 
   /**

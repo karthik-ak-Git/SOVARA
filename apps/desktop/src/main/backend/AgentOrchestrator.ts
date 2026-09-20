@@ -16,25 +16,28 @@ import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimePort, ToolPort, LlmImagePart } from '@shared/types/ports'
 import type { ModelWorkbench } from './ModelWorkbench'
 import { classifyTask } from './TaskClassifier'
-import { routeModel } from './ModelRouter'
+import { routeModel, pickFittingModel } from './ModelRouter'
 import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
 import { getArtifactsDir } from '../storage/paths'
+import { gateDispatch } from '../services/execPermissions'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
 import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
 import type { DiscoveredModel } from '@shared/types/models'
-import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
+import { SOVARA_SYSTEM_PROMPT, STRUCTURED_OUTPUT_INSTRUCTION } from './prompts/sovaraSystem'
+import { DEFAULT_TUNING } from '../config/tuning'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
+import { extractToolFences, stripToolFences, looksLikeToolFence, looksLikeBareToolCall, extractBareToolCalls, stripBareToolCalls } from './tools/fenceTools'
 import type {
   ToolExecutionContext,
-  ToolLifecycleHooks,
-  ToolExecutionPolicy,
+  ToolHook,
+  ExecutionPolicy,
+  ExecutionMode,
   ToolExecutionResult,
-  ToolParallelStrategy,
 } from './tools/types'
 
 function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
@@ -95,8 +98,8 @@ function buildBudgetedHistory(
   nCtx: number,
   opts?: { slidingWindowTurns?: number; reservedCompletionTokens?: number }
 ): import('@shared/types/ports').LlmChatMessage[] {
-  const sliding = opts?.slidingWindowTurns ?? 3
-  const reserved = opts?.reservedCompletionTokens ?? 1200
+  const sliding = opts?.slidingWindowTurns ?? DEFAULT_TUNING.slidingWindowTurns
+  const reserved = opts?.reservedCompletionTokens ?? DEFAULT_TUNING.reservedCompletionTokens
   const budgetTokens = Math.max(800, nCtx - reserved)
   const budgetChars = budgetTokens * 4
   const historyBudgetChars = Math.max(800, budgetChars - systemChars)
@@ -195,6 +198,7 @@ export interface AgentOrchestratorDeps {
   getMcpContext?: () => string | null
   getSkillsContext?: () => Promise<string | null>
   getTodoContext?: () => string | null
+  getExecMode?: () => 'off' | 'ask' | 'review' | 'allow'
   // ── Tool Infrastructure (DeepSeek Harness-style) ──
   toolInfrastructure?: ToolInfrastructure
 }
@@ -214,9 +218,9 @@ function toRequestMessages(events: Array<{ seq: number; time: number; type: stri
     if (content === null || content === '') continue
     turns.push({ role: e.type === 'user/message' ? 'user' : 'assistant', content })
   }
-  const bounded = turns.slice(-50)
+  const bounded = turns.slice(-DEFAULT_TUNING.historyMaxMessages)
   let chars = bounded.reduce((n, m) => n + m.content.length, 0)
-  while (bounded.length > 1 && chars > 24000) {
+  while (bounded.length > 1 && chars > DEFAULT_TUNING.historyMaxChars) {
     const dropped = bounded.shift()
     chars -= dropped?.content.length ?? 0
   }
@@ -230,6 +234,15 @@ function remoteModelId(qualified: string): string {
 
 export class AgentOrchestrator {
   private readonly inFlight = new Map<string, AbortController>()
+  private readonly pendingApprovals = new Map<string, { resolve: (val: { approved: boolean, modifiedArgs?: any }) => void }>()
+
+  public resolveToolApproval(toolCallId: string, approved: boolean, modifiedArgs?: any) {
+    const pending = this.pendingApprovals.get(toolCallId)
+    if (pending) {
+      pending.resolve({ approved, modifiedArgs })
+      this.pendingApprovals.delete(toolCallId)
+    }
+  }
 
   constructor(private readonly deps: AgentOrchestratorDeps) {}
 
@@ -253,51 +266,48 @@ export class AgentOrchestrator {
     context: {
       taskKind: string
       stepIndex: number
-      parallelStrategy?: ToolParallelStrategy
-      executionPolicy?: ToolExecutionPolicy
-      lifecycleHooks?: ToolLifecycleHooks
+      parallelStrategy?: 'sequential' | 'all' | 'race' | 'settled' | 'exclusive'
+      executionPolicy?: ExecutionPolicy
+      lifecycleHooks?: any
+      maxConcurrency?: number
     }
   ): Promise<{ ok: true; output: string; durationMs: number } | { ok: false; error: string; durationMs: number }> {
-    const infra = this.getToolInfra()
-    if (!infra) {
-      // Fallback to legacy dispatch
-      try {
-        const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
-        return { ok: true, output, durationMs: 0 }
-      } catch (e) {
-        return { ok: false, error: String(e), durationMs: 0 }
-      }
-    }
-
-    const toolContext: ToolExecutionContext = {
-      sessionId,
-      taskKind: context.taskKind,
-      stepIndex: context.stepIndex,
-      parallelStrategy: context.parallelStrategy ?? 'parallel',
-      executionPolicy: context.executionPolicy ?? 'eager',
-      lifecycleHooks: context.lifecycleHooks,
-      startTime: Date.now(),
-      metadata: {
-        source: 'orchestrator',
-        toolInfrastructureVersion: '1.0.0',
-      },
-    }
-
     const startTime = Date.now()
+    const infra = this.getToolInfra()
+
+    // 1. If tool is registered in the enhanced infrastructure with a registered handler, run it there
+    if (infra && infra.getRegistry().has(toolName)) {
+      try {
+        const policy: ExecutionPolicy = {
+          mode: context.parallelStrategy === 'exclusive' ? 'exclusive' : 'parallel',
+          maxConcurrent: context.maxConcurrency,
+        }
+        const toolContext: ToolExecutionContext = {
+          toolCallId: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          toolName,
+          arguments: args,
+          sessionId,
+          startTime,
+          metadata: {
+            source: 'orchestrator',
+            taskKind: context.taskKind,
+            stepIndex: context.stepIndex,
+          },
+        }
+        const result = await infra.getScheduler().schedule(toolName, args, policy, toolContext)
+        if (result.success) {
+          const outStr = typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '')
+          return { ok: true, output: outStr, durationMs: result.executionTime }
+        }
+      } catch {
+        // Fall back to primary dispatch
+      }
+    }
+
+    // 2. Primary tool dispatcher via ToolStubAdapter (fs_list, fs_read, fs_write, fs_patch, todo_write, shell_exec, etc.)
     try {
-      const toolDef = infra.registry.getTool(toolName)
-      if (!toolDef) {
-        return { ok: false, error: `Tool not found: ${toolName}`, durationMs: Date.now() - startTime }
-      }
-
-      // Execute via the infrastructure pipeline (lifecycle hooks + scheduling)
-      const result = await infra.executeTool(toolName, args, toolContext)
-
-      return {
-        ok: true,
-        output: result.output ?? String(result.result ?? ''),
-        durationMs: Date.now() - startTime,
-      }
+      const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
+      return { ok: true, output, durationMs: Date.now() - startTime }
     } catch (e) {
       return { ok: false, error: String(e), durationMs: Date.now() - startTime }
     }
@@ -312,7 +322,7 @@ export class AgentOrchestrator {
     toolCalls: Array<{ name: string; args: Record<string, unknown> }>,
     context: {
       taskKind: string
-      parallelStrategy: ToolParallelStrategy
+      parallelStrategy?: string
       maxConcurrency?: number
     }
   ): Promise<Array<{ name: string; result: ToolExecutionResult }>> {
@@ -323,9 +333,27 @@ export class AgentOrchestrator {
       for (const tc of toolCalls) {
         try {
           const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tc.name, tc.args)
-          results.push({ name: tc.name, result: { success: true, output } })
+          results.push({
+            name: tc.name,
+            result: {
+              toolCallId: `call_${Date.now()}`,
+              toolName: tc.name,
+              success: true,
+              output,
+              executionTime: 0,
+            },
+          })
         } catch (e) {
-          results.push({ name: tc.name, result: { success: false, error: String(e) } })
+          results.push({
+            name: tc.name,
+            result: {
+              toolCallId: `call_${Date.now()}`,
+              toolName: tc.name,
+              success: false,
+              error: String(e),
+              executionTime: 0,
+            },
+          })
         }
       }
       return results
@@ -333,13 +361,13 @@ export class AgentOrchestrator {
 
     // Use the infrastructure's scheduler for parallel execution
     const toolContext: ToolExecutionContext = {
+      toolCallId: `batch_${Date.now()}`,
+      toolName: 'batch',
+      arguments: {},
       sessionId,
-      taskKind: context.taskKind,
-      stepIndex: 0,
-      parallelStrategy: context.parallelStrategy,
-      executionPolicy: context.parallelStrategy === 'exclusive' ? 'exclusive' : 'parallel',
       startTime: Date.now(),
       metadata: {
+        taskKind: context.taskKind,
         source: 'orchestrator-parallel',
         batchSize: toolCalls.length,
       },
@@ -347,14 +375,12 @@ export class AgentOrchestrator {
 
     const tasks = toolCalls.map((tc) => ({
       toolName: tc.name,
-      args: tc.args,
+      arguments: tc.args,
       context: toolContext,
     }))
 
-    return await infra.scheduler.scheduleBatch(tasks, {
-      maxConcurrency: context.maxConcurrency,
-      exclusive: context.parallelStrategy === 'exclusive',
-    })
+    const batchResults = await infra.getScheduler().scheduleParallel(tasks, context.maxConcurrency)
+    return batchResults.map((res) => ({ name: res.toolName, result: res }))
   }
 
   private safeLog(msg: string): void { try { console.log(msg) } catch {} }
@@ -381,15 +407,17 @@ export class AgentOrchestrator {
       // propagate to orchestrator's emit for UI cancellation
     }
     controller.signal.addEventListener('abort', onAbort, { once: true })
-    // Hard stall guard: 249s empty waits are user-hostile. Abort if no token after 150s and surface friendly ack.
+    // Hard stall guard: empty waits are user-hostile. Abort if no token arrives within
+    // the tunable stall window and surface a friendly ack.
     let stallTimer: ReturnType<typeof setTimeout> | null = null
     const armStallGuard = (firstTokenAtRef: { value: number | null }): void => {
+      const stallMs = DEFAULT_TUNING.stallGuardMs
       stallTimer = setTimeout(() => {
         if (firstTokenAtRef.value === null && this.inFlight.has(sid) && !controller.signal.aborted) {
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'timeout', error: `stall-timeout: no token after 150s (model ${sid})` })
-          controller.abort(new Error('stall-timeout: the local model did not produce any token in 150s'))
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'timeout', error: `stall-timeout: no token after ${Math.round(stallMs / 1000)}s (model ${sid})` })
+          controller.abort(new Error(`stall-timeout: the local model did not produce any token in ${Math.round(stallMs / 1000)}s`))
         }
-      }, 150_000)
+      }, stallMs)
       // Node timers should not keep process alive after UI closed
       if (stallTimer && typeof (stallTimer as unknown as { unref?: () => void }).unref === 'function') (stallTimer as unknown as { unref: () => void }).unref!()
     }
@@ -543,22 +571,22 @@ export class AgentOrchestrator {
             this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM, using partial offload`)
             ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
           } else {
-            // Even partial doesn't fit (e.g., gemma 12B Q4 ~14GB >6GB) — transparently fallback to first fitting library model
-            const fitting = models.filter((m) => m.available).find((m) => {
-              // Use same partial check but with this candidate's id
-              // Sync check via resources is async, so we do a quick heuristic: keep original fittingAlternatives logic from adapter
-              // For now pick first small model that is known to fit (Nemotron/Spark/Unlimited-OCR per error list)
-              return /nemotron|spark|unlimited-ocr|phi|gemma.*2b|qwen.*0\.6b/i.test(m.modelId) || m.modelId.toLowerCase().includes('4b')
-            }) ?? models.find((m) => m.available)
+            // Even partial doesn't fit — dynamic fallback: rank by ACTUAL free VRAM/RAM fit,
+            // never by hardcoded model names (dynamic hardware-first selection).
+            const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
+            const fitting = fit?.model ?? null
             if (fitting && fitting.modelId !== routing.modelId) {
-              this.safeLog(`[SOVARA][ROUTER] ${routing.modelId!} even partial no-fit → auto-fallback to ${fitting.modelId} (was user-selected but cannot fit 6GB)`)
+              const vramTotalMb = resources.vram.totalMB ?? 0
+              const fitLabel = fit!.gpu ? `fits ${fit!.fitMb.toFixed(0)}MB VRAM` : `fits ${fit!.fitMb.toFixed(0)}MB RAM (CPU offload)`
+              this.safeLog(`[SOVARA][ROUTER] ${routing.modelId!} even partial no-fit → auto-fallback to ${fitting.modelId} (${fitLabel}, was user-selected but cannot fit ${vramTotalMb.toFixed(0)}MB VRAM)`)
               this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `Selected ${routing.modelId!} too large for this GPU (even partial), auto-switching to ${fitting.modelId} that fits` })
-              routing = { modelId: fitting.modelId, runtimeId: fitting.runtimeId, reason: `auto-fallback: ${routing.modelId!} cannot fit 6GB even partial → ${fitting.modelId}`, task: classification, candidatesConsidered: models.length, switched: true }
+              routing = { modelId: fitting.modelId, runtimeId: fitting.runtimeId, reason: `auto-fallback: ${routing.modelId!} cannot fit ${vramTotalMb.toFixed(0)}MB VRAM even partial → ${fitting.modelId} (${fitLabel})`, task: classification, candidatesConsidered: models.length, switched: true }
               // Persist the fallback as new active so UI pill updates
               try { await this.deps.workbench.selectModel('local', fitting.modelId) } catch {}
             } else {
               const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
-              const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much VRAM'} and even partial offload does not fit (GPU 6144MB). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this GPU.`
+              const vramTotal = (resources.vram.totalMB ?? 0) > 0 ? `${(resources.vram.totalMB ?? 0).toFixed(0)}MB VRAM` : 'no GPU detected'
+              const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much memory'} and even partial offload does not fit (${vramTotal}). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this machine.`
               this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
               throw new AgentOrchestratorError('resource-blocked', errMsg)
             }
@@ -653,22 +681,15 @@ export class AgentOrchestrator {
         }
         const msg = e instanceof Error ? e.message : String(e)
         if (msg.toLowerCase().includes('resource') || msg.toLowerCase().includes('vram') || msg.toLowerCase().includes('max concurrent')) {
-          // Transparent fallback for "even partial does not fit" (e.g., gemma 12B 14GB >6GB) — pick first fitting library model
+          // Transparent fallback for "even partial does not fit" — dynamic: rank by ACTUAL
+          // free VRAM/RAM fit via pickFittingModel (no hardcoded model names).
           let handledFallback = false
           if (/even partial offload does not fit/i.test(msg)) {
-            const m = msg.match(/Models in your library that fit this GPU:\s*([^\.]+)\./i)
-            const alts = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : []
-            let fallback: DiscoveredModel | null = null
-            if (alts.length > 0) {
-              const firstAlt = alts[0].replace(/\.gguf$/i, '')
-              fallback = models.find((mm) => mm.displayName.toLowerCase().includes(firstAlt.toLowerCase()) || mm.modelId.toLowerCase().includes(firstAlt.toLowerCase())) ?? null
-            }
-            if (!fallback) {
-              // Heuristic: pick first small fitting (Nemotron/Spark/Unlimited-OCR) — same list the error shows
-              fallback = models.find((mm) => /nemotron|spark|unlimited-ocr|phi/i.test(mm.modelId)) ?? models.find((mm) => mm.available) ?? null
-            }
+            const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
+            const fallback: DiscoveredModel | null = fit?.model ?? null
             if (fallback && fallback.modelId !== routing.modelId) {
-              this.safeLog(`[SOVARA][LLAMA] ${routing.modelId!} no-fit → auto-fallback to ${fallback.modelId} (was user-selected but cannot fit 6GB)`)
+              const fitLabel = fit!.gpu ? `fits ${fit!.fitMb.toFixed(0)}MB VRAM` : `fits ${fit!.fitMb.toFixed(0)}MB RAM (CPU offload)`
+              this.safeLog(`[SOVARA][LLAMA] ${routing.modelId!} no-fit → auto-fallback to ${fallback.modelId} (${fitLabel}, was user-selected but cannot fit ${(resources.vram.totalMB ?? 0).toFixed(0)}MB VRAM)`)
               this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `Selected ${routing.modelId!} too large for this GPU (even partial), auto-switching to ${fallback.displayName} that fits` })
               // Persist fallback as new active so pill and next turn stay consistent
               try { await this.deps.workbench.selectModel('local', fallback.modelId) } catch {}
@@ -790,9 +811,15 @@ export class AgentOrchestrator {
         }
       } catch { /* advisory */ }
       let mcpContext: string | null = null
-      try { mcpContext = this.deps.getMcpContext?.() ?? null } catch { /* ignore */ }
+      try { 
+        mcpContext = this.deps.getMcpContext?.() ?? null
+        if (mcpContext) this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: 'MCP Context', detail: 'Reading configured MCP servers...' })
+      } catch { /* ignore */ }
       let skillsContext: string | null = null
-      try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { /* ignore */ }
+      try { 
+        skillsContext = (await this.deps.getSkillsContext?.()) ?? null
+        if (skillsContext) this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: 'Enterprise Skills', detail: 'Reading configured skills...' })
+      } catch { /* ignore */ }
       let todoContext: string | null = null
       try { todoContext = this.deps.getTodoContext?.() ?? null } catch { /* ignore */ }
       let webContext: string | null = null
@@ -865,7 +892,9 @@ export class AgentOrchestrator {
       // <fs_list> text and we exit after 1 step with 62 tokens.
       let toolCatalog: string | null = null
       try {
-        const defs = (this.deps.tools as unknown as { list?: () => Array<{ name: string; description: string }> }).list?.() ?? []
+        const infra = this.getToolInfra()
+        const defs = infra ? infra.getRegistry().list() : (this.deps.tools as unknown as { list?: () => Array<{ name: string; description: string }> }).list?.() ?? []
+        
         if (defs.length > 0) {
           const lines = defs.map((d) => `- ${d.name}: ${d.description}`).join('\n')
           toolCatalog =
@@ -876,35 +905,14 @@ export class AgentOrchestrator {
             `3) Never emit <fs_list>, <shell_exec>, <atem:invoke> as text — those leak and stall.`
         }
       } catch { /* advisory */ }
-      const isSmallFsTask = /read the code base|top 5.*import/i.test(content) && content.length < 500
-      // harness clear fix: for deterministic fs_list top5, execute tools directly (no LLM tool-planning stall) — mirror dsh agent-loop tool infra
-      if (isSmallFsTask) {
-        this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: 0, toolName: 'fs_list', detail: 'harness direct fs read D:\\SOVARA (bypass workspace guard)' } as never)
-        try {
-          // Rule: codebase access = D:\SOVARA repo, not SovaraWorkspace app files — bypass sandboxed fs_list which only allows workspace
-          const fs = await import('node:fs'); const path = await import('node:path')
-          const repo = 'D:\\SOVARA'; const entries = fs.readdirSync(repo, { withFileTypes: true }).map(d => (d.isDirectory() ? d.name + '/' : d.name))
-          const direct = JSON.stringify({ workspace: repo, path: '.', entries, count: entries.length })
-          this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: direct.slice(0, 800), toolName: 'fs_list' } as never)
-          this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 0, toolName: 'fs_list', detail: `direct fs_list ${direct.length} chars` } as never)
-          try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `fs_list-direct` as never, content: direct.slice(0, 8000) } as never) } catch {}
-          // synthesize top5 directly without waiting for Nemotron tool emission — parse fs_list JSON properly
-          let fileList = ''
-          try { const j = JSON.parse(direct); const arr = j.files ?? j.entries ?? j.items ?? []; fileList = (Array.isArray(arr) ? arr : []).slice(0, 20).map((f: string) => `• ${typeof f === 'string' ? f : JSON.stringify(f)}`).join('\n') } catch { fileList = direct.split('\n').filter(l => l.trim()).slice(0, 20).join('\n') }
-          if (!fileList) fileList = direct.slice(0, 800)
-          const top5Text = `Top 5 important files in Sovara codebase (direct fs_list .):\n1. apps/desktop/src/main/backend/AgentOrchestrator.ts — agent loop + tool harness\n2. apps/desktop/src/main/services/llamaRuntime.ts — VRAM 3122 12288 spawn\n3. apps/desktop/src/main/backend/TaskClassifier.ts — 12288 floor routing\n4. apps/desktop/src/main/backend/ChatService.ts — unlimited-context chunked\n5. apps/desktop/src/main/backend/prompts/sovaraSystem.ts — sovereign prompt\n\nFull listing (${fileList.split('\n').length} entries):\n${fileList}`
-          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: top5Text })
-          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: top5Text })).seq
-          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
-          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: 'harness direct top5 done' } as never)
-          return { ok: true, userSeq, assistantSeq: seq, routing, classification }
-        } catch (e) {
-          this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 0, toolName: 'fs_list', detail: `direct failed ${String(e).slice(0,100)}` } as never)
-        }
-      }
-      const liteSystem = isSmallFsTask ? CHAT_SYSTEM_PROMPT.slice(0, 900) + '\n[Lite sovereign — full prompt deferred for fs_list speed]' : CHAT_SYSTEM_PROMPT
+      // No hard-coded bypasses — all workspace FS goes through the global ToolInfrastructure.
+      // getProjectWorkspace / getGlobalWorkspace (AppBackend.ts:128,171) resolves the
+      // visually-selected project (Session's projectId) for every tool dispatch.
+      // DeepSeek harness parity: ToolRegistry + ExecutionScheduler (isConcurrencySafe) + BlockAssembler
+      const shouldStructured = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent'
       const systemBlocks = [
-        liteSystem,
+        CHAT_SYSTEM_PROMPT,
+        ...(shouldStructured ? [STRUCTURED_OUTPUT_INSTRUCTION] : []),
         ...(reasoningSystem ? [reasoningSystem] : []),
         ...(toolCatalog ? [toolCatalog] : []),
         ...(workspaceContext ? [workspaceContext] : []),
@@ -1083,9 +1091,58 @@ export class AgentOrchestrator {
       }
 
       // ── PHASE 6: agent execution loop (LLM stream + optional tool steps) ──
-      let loopSteps = 0; const MAX_LOOP = 1
+      let loopSteps = 0; const MAX_LOOP = DEFAULT_TUNING.maxToolLoopSteps
+      const inlineToolOutputs: string[] = []
+      // hoisted so post-loop synthesis (1558ff) can access them — fixes text/is not defined
+      let endpoint = ownedEndpoint ?? entry!.endpoint
+      let model = remoteModelId(routing.modelId!)
+      let timeoutMs = Math.max(entry.timeoutMs, DEFAULT_TUNING.timeoutFloorMs)
+      let streamed = true
+      let text = ''
+      let reasoningBuffer = ''
+      let allReasoning = ''
+      let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+      let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+      let orchFirstTokenAt: number | null = null
+      const firstTokenRef = { value: null as number | null }
+      let chunkMode = false
+      // Hoisted into the while scope so the RESUME-ON-TRUNCATE continuation branch
+      // (outside the if(!chunkMode) guard) can also set this flag without declaring its own.
+      let shouldContinueLoop = false
+
+      // ── Dynamic max_tokens computation ─────────────────────────────────────
+      // Estimate prompt size in tokens (1 token ≈ 4 chars for English).
+      // Then compute how many tokens remain for the model's response:
+      //   available = nCtx - promptEstimate - reservedCompletionTokens
+      // Cap at maxCompletionTokensCap (default 8192) so we never ask for more
+      // than the model + hardware can reasonably deliver.
+      // This replaces the adapter's former hardcoded 2048/4096.
+      const promptTokenEstimate = messages.reduce((n, m) => n + Math.ceil(m.content.length / 4), 0)
+      const maxCompletionTokens = Math.max(
+        512,  // floor: always allow at least a short reply
+        Math.min(
+          nCtx - promptTokenEstimate - DEFAULT_TUNING.reservedCompletionTokens,
+          DEFAULT_TUNING.maxCompletionTokensCap
+        )
+      )
+
+      // ── Tools to pass natively to the model ────────────────────────────────
+      // For tool-use / agent / coding tasks we send the full tool catalog in
+      // the HTTP body so the model can emit native tool_calls.
+      // For chat / reasoning / vision we skip tools to avoid confusing the model
+      // and wasting context budget on tool descriptions.
+      const shouldSendTools = (
+        classification.kind === 'tool-use' ||
+        classification.kind === 'agent' ||
+        classification.kind === 'coding' ||
+        classification.kind === 'reasoning' ||
+        /\b(read|write|list|file|files|code|build|create|dashboard|make|generate|implement)\b/i.test(content)
+      )
+      const toolsForRequest = shouldSendTools ? this.deps.tools.list() : []
+
       toolLoop: while (loopSteps++ < MAX_LOOP) {
-      if (classification.reasoningRequired || opts?.reasoning) {
+        shouldContinueLoop = false
+        if (classification.reasoningRequired || opts?.reasoning) {
         this.emit(sid, 'task:thinking', {
           taskKind: classification.kind,
           modelId: routing.modelId!,
@@ -1100,24 +1157,29 @@ export class AgentOrchestrator {
       // Owned sidecar serves on its own loopback port; third-party runtimes
       // serve on their registered endpoint. Either way this is REAL streaming
       // through LlmPort — no canned text anywhere on this path.
-      const endpoint = ownedEndpoint ?? entry!.endpoint
-      const model = remoteModelId(routing.modelId!)
-      const timeoutMs = Math.max(entry.timeoutMs, 120_000)
-      let streamed = true
-      let text = ''
-      let reasoningBuffer = ''
-      let allReasoning = '' // never cleared — for empty-reply promotion even after persist
-      let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
-      let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
-
+      // reset per-loop (hoisted vars reused post-loop for synthesis)
+      endpoint = ownedEndpoint ?? entry!.endpoint
+      model = remoteModelId(routing.modelId!)
+      timeoutMs = Math.max(entry.timeoutMs, DEFAULT_TUNING.timeoutFloorMs)
+      streamed = true
+      text = ''
+      reasoningBuffer = ''
+      allReasoning = ''
+      inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+      usage = undefined
+      orchFirstTokenAt = null
+      // Deduplicated fence set: fences collected during streaming are executed
+      // exactly once after the stream ends, then cleared per loop iteration.
+      const streamFenceSet = new Set<string>()
+      firstTokenRef.value = null
+      chunkMode = false
       // Real streaming (owned sidecar or remote runtime — same protocol)
       // Chunk large prompts: process till end, then synthesize for exact results
-      const CHUNK_THRESHOLD = 9000
+      const CHUNK_THRESHOLD = DEFAULT_TUNING.chunkThresholdChars
       const shouldChunk = content.length > CHUNK_THRESHOLD
-      let chunkMode = false
       if (shouldChunk) {
         const { chunkText } = await import('./rag/chunker')
-        const chunks = chunkText(content, { chunkSize: 6000, overlap: 400, maxChunks: 12 })
+        const chunks = chunkText(content, { chunkSize: DEFAULT_TUNING.chunkSizeChars, overlap: 400, maxChunks: 12 })
         if (chunks.length > 1) {
           chunkMode = true
           this.emit(sid, 'step:start', { taskKind: classification.kind, detail: `chunking ${content.length} chars into ${chunks.length} parts` })
@@ -1148,11 +1210,31 @@ export class AgentOrchestrator {
           }
         }
       }
-      let orchFirstTokenAt: number | null = null
-      const firstTokenRef = { value: null as number | null }
-      const inlineToolOutputs: string[] = []
       armStallGuard(firstTokenRef)
+      // shouldContinueLoop is declared at the while (toolLoop) level so it is in scope
+      // both here (inside the try) and in the RESUME-ON-TRUNCATE branch below.
       if (!chunkMode) try {
+        // ── Helper: Execute tool with optional infrastructure (DeepSeek Harness-style) ──
+        const execTool = async (toolName: string, args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> => {
+          const infra = this.getToolInfra()
+          if (infra) {
+            const result = await this.executeToolWithInfrastructure(sid, toolName, args, {
+              taskKind: classification.kind,
+              stepIndex: 0,
+              parallelStrategy: 'sequential',
+              executionPolicy: { mode: 'parallel' },
+            })
+            return { success: result.ok, output: result.ok ? result.output : '', error: !result.ok ? result.error : undefined }
+          } else {
+            try {
+              const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
+              return { success: true, output }
+            } catch (e) {
+              return { success: false, output: '', error: String(e) }
+            }
+          }
+        }
+
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
           model,
@@ -1160,6 +1242,11 @@ export class AgentOrchestrator {
           timeoutMs,
           stream: true,
           signal: controller.signal,
+          // Pass the computed ceiling so the adapter doesn't hardcode 2048.
+          maxCompletionTokens,
+          // Send tool definitions when relevant — the model emits tool_calls
+          // in the SSE stream, which we capture below on the 'done' chunk.
+          ...(toolsForRequest.length > 0 ? { tools: toolsForRequest } : {}),
         })) {
           if (controller.signal.aborted) break
           if (chunk.type === 'text-delta' && chunk.text) {
@@ -1198,160 +1285,20 @@ export class AgentOrchestrator {
                 continue
               }
             }
-            // Shell/FS/Todo like thinking: if Qwen hallucinates <fs_list path="."> or ```tool:fs_list as text instead of tool_call,
-            // parse it as a real tool and execute immediately — do not leak it to the bubble or exit early.
-            // This is the "shell utilization as thinking" the user requested: tools stream like reasoning, and the turn
-            // never exits until fs/shell/todo work is done.
 
-            // ── Helper: Execute tool with optional infrastructure (DeepSeek Harness-style) ──
-            const execTool = async (toolName: string, args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> => {
-              const infra = this.getToolInfra()
-              if (infra) {
-                // Use the comprehensive tool infrastructure with lifecycle hooks, parallel scheduling, etc.
-                const result = await this.executeToolWithInfrastructure(sid, toolName, args, {
-                  taskKind: classification.kind,
-                  stepIndex: 0,
-                  parallelStrategy: 'sequential',
-                  executionPolicy: 'eager',
-                })
-                return result
-              } else {
-                // Fallback to legacy dispatch
-                try {
-                  const output = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(toolName, args)
-                  return { success: true, output }
-                } catch (e) {
-                  return { success: false, output: '', error: String(e) }
-                }
+            // Collect all tool fences encountered during streaming for post-stream execution.
+            // This avoids interleaving tool execution inside the delta loop, which caused
+            // the model to stall or exit prematurely. All tool calls are executed once
+            // after the stream ends, then appended as a model message so synthesis can happen
+            // in the next LLM turn.
+            if (looksLikeToolFence(delta)) {
+              const fences = extractToolFences(delta)
+              for (const f of fences) {
+                const sig = `${f.toolName}:${JSON.stringify(f.args)}`
+                streamFenceSet.add(sig)
               }
-            }
-
-            const tryInlineTools = async (t: string): Promise<string> => {
-              // First: fenced ```tool:name {json}``` convention (preferred, unambiguous)
-              const fenceRe = /```tool:(fs_list|fs_read|shell_exec|todo_write)\s*\n([\s\S]*?)```/gi
-              let fm: RegExpExecArray | null
-              let out_t = t
-              while ((fm = fenceRe.exec(t)) !== null) {
-                const toolName = fm[1].toLowerCase()
-                let args: Record<string, unknown> = {}
-                try { args = JSON.parse(fm[2].trim() || '{}') } catch { continue }
-                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed fenced tool:${toolName} — dispatching` } as never)
-                const result = await execTool(toolName, args)
-                if (result.success) {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
-                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
-                } else {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
-                  out_t = out_t.replace(fm[0], `\n\n[Tool ${toolName} error: ${(result.error ?? 'unknown').slice(0, 200)}]\n\n`)
-                }
-              }
-              if (out_t !== t) return out_t
-              // Also match <fs_list {path:"."}> / <fs_list {"path":"."}> brace variants Qwen-7/32 emits (your 11:18 PM screenshot)
-              const braceRe = /<(fs_list|fs_read|shell_exec)\s*(\{[^>]*\})\s*>/gi
-              let bm: RegExpExecArray | null
-              while ((bm = braceRe.exec(t)) !== null) {
-                const toolName = bm[1].toLowerCase()
-                let args: Record<string, unknown> = { path: '.' }
-                try {
-                  const jsonish = bm[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')
-                  args = JSON.parse(jsonish)
-                } catch { args = toolName === 'fs_list' ? { path: '.' } : {} }
-                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName} {...}> brace form — dispatching` } as never)
-                const result = await execTool(toolName, args)
-                if (result.success) {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
-                  out_t = out_t.replace(bm[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
-                } else {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
-                }
-              }
-              if (out_t !== t) return out_t
-              const tagRe = /<(fs_list|fs_read|shell_exec|todo_write)([^>]*)>(?:<\/\1>)?/gi
-              let m: RegExpExecArray | null
-              let remaining = t
-              let cleaned = ''
-              let lastIdx = 0
-              while ((m = tagRe.exec(t)) !== null) {
-                const name = m[1].toLowerCase()
-                const attr = m[2] || ''
-                const pathM = attr.match(/path\s*=\s*"([^"]*)"/i) || attr.match(/path\s*=\s*'([^']*)'/i)
-                const cmdM = attr.match(/command\s*=\s*"([^"]*)"/i)
-                let args: Record<string, unknown> = {}
-                if (name === 'fs_list') args = { path: pathM?.[1] ?? '.' }
-                else if (name === 'fs_read') args = { path: pathM?.[1] ?? '' }
-                else if (name === 'shell_exec') args = { command: cmdM?.[1] ?? attr.trim().replace(/^[^>]*>/, '').split('<')[0] ?? '' }
-                // For todo_write the XML form is not used; skip
-                if (Object.keys(args).length === 0) continue
-                // Emit before/after like reasoning so UI shows Tool card and does not exit
-                cleaned += t.slice(lastIdx, m.index)
-                lastIdx = m.index + m[0].length
-                const toolName = name
-                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed <${toolName}> from text — dispatching` } as never)
-                const result = await execTool(toolName, args)
-                if (result.success) {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
-                  cleaned += `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`
-                } else {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} failed` } as never)
-                  cleaned += `\n\n[Tool ${toolName} error: ${(result.error ?? 'unknown').slice(0, 200)}]\n\n`
-                }
-              }
-              cleaned += remaining.slice(lastIdx)
-              // bare `fs_list {path:"."}` / `todo_write {todos:[...]}` without fence/brackets — handle inline line form seen in 2:08 AM reasoning
-              const bareRe = /^\s*(fs_list|fs_read|todo_write)\s*(\{[^\n]*\}|\{[^\n]*\n[\s\S]*?\})/gim
-              let bareM: RegExpExecArray | null
-              let bareOut = cleaned
-              let hasBare = false
-              // check original delta for bare form if no tag match
-              const src = t
-              while ((bareM = bareRe.exec(src)) !== null) {
-                const toolName = bareM[1].toLowerCase()
-                let args: Record<string, unknown> = {}
-                try { args = JSON.parse(bareM[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')) } catch { continue }
-                if (toolName === 'fs_list' && !args.path) args = { path: '.' }
-                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `parsed bare ${toolName} {...} — dispatching` } as never)
-                const result = await execTool(toolName, args)
-                if (result.success) {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
-                  try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${toolName}-${Date.now()}` as never, content: result.output.slice(0, 8000) } as never) } catch {}
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
-                  bareOut = bareOut.replace(bareM[0], `\n\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n\n`)
-                  hasBare = true
-                }
-              }
-              if (hasBare) return bareOut
-              return cleaned
-            }
-            // Also try bare form on non-tag deltas (reasoning text contains `fs_list {path:"."}` verbatim at 2:08 AM)
-            const bareQuickRe = /(fs_list|fs_read|todo_write)\s*\{\s*"?path"?\s*:\s*"?\.?"?\s*\}/i
-            if (bareQuickRe.test(t) && !t.includes('```tool:') && !t.includes('<fs_')) {
-              const m = t.match(/(fs_list|fs_read|todo_write)\s*(\{[^\n]*\})/i)
-              if (m) {
-                const toolName = m[1].toLowerCase()
-                let args: Record<string, unknown> = {}
-                try { args = JSON.parse(m[2].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')) } catch { args = { path: '.' } }
-                if (toolName === 'fs_list' && !args.path) args = { path: '.' }
-                this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName, detail: `bare quick ${toolName} — dispatching` } as never)
-                const result = await execTool(toolName, args)
-                if (result.success) {
-                  this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName, detail: `tool ${toolName} returned ${result.output.length} chars` } as never)
-                  inlineToolOutputs.push(`[${toolName} ${JSON.stringify(args)}]\n${result.output.slice(0, 4000)}`)
-                  const out_t2 = t.replace(m[0], `\n[Tool ${toolName} result: ${result.output.slice(0, 600)}]\n`)
-                  return out_t2
-                }
-              }
-            }
-            const parsed = await tryInlineTools(delta)
-            if (parsed !== delta) {
-              // Replace the leaked tag with its result and continue streaming the cleaned text
-              delta = parsed
-              if (!delta.trim()) continue
+              delta = stripToolFences(delta)
+              if (!delta) continue
             }
             text += delta
             if (orchFirstTokenAt === null) orchFirstTokenAt = Date.now()
@@ -1359,6 +1306,128 @@ export class AgentOrchestrator {
           }
           if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
           if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+
+          // ── Native tool_calls handling ──────────────────────────────────────
+          // When llama-server returns finish_reason:'tool_calls', the adapter
+          // delivers the accumulated call list on the 'done' chunk.
+          // We execute each call, append results as role:'tool' messages, then
+          // continue toolLoop so the model sees the results and writes its reply.
+          
+          if (chunk.type === 'done' && !controller.signal.aborted) {
+            // Convert bare tool calls and missed fences into native chunk.toolCalls
+            // so they participate in the actual toolLoop instead of the post-stream single pass.
+            let injectedCalls = false
+            const checkAndInject = (sourceText: string) => {
+              if (!sourceText) return
+              const fences = []
+              if (looksLikeToolFence(sourceText)) fences.push(...extractToolFences(sourceText))
+              if (looksLikeBareToolCall(sourceText)) fences.push(...extractBareToolCalls(sourceText))
+              
+              for (const f of fences) {
+                // Same normalization as post-stream
+                if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
+                  const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
+                  if (/^[a-z]:\//i.test(p) || require('path').isAbsolute(p)) f.args['path'] = '.'
+                }
+                const sig = `${f.toolName}:${JSON.stringify(f.args)}`
+                if (!streamFenceSet.has(sig)) {
+                  streamFenceSet.add(sig)
+                  chunk.toolCalls = chunk.toolCalls || []
+                  chunk.toolCalls.push({
+                    id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
+                    type: 'function',
+                    function: { name: f.toolName, arguments: JSON.stringify(f.args) }
+                  })
+                  injectedCalls = true
+                }
+              }
+            }
+            checkAndInject(text)
+            checkAndInject(allReasoning)
+            if (injectedCalls) {
+              if (looksLikeToolFence(text)) text = stripToolFences(text)
+              if (looksLikeBareToolCall(text)) text = stripBareToolCalls(text)
+            }
+          }
+
+          if (chunk.type === 'done' && chunk.toolCalls && chunk.toolCalls.length > 0 && !controller.signal.aborted) {
+            // Stall guard no longer needed — we're about to do real work
+            if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+            this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, detail: `model requested ${chunk.toolCalls.length} tool(s)` })
+
+            // Append the model's tool-call request to the message history first
+            // (required by the OpenAI protocol: assistant message with tool_calls
+            // must come before the tool result messages)
+            const assistantToolCallMsg: import('@shared/types/ports').LlmChatMessage = {
+              role: 'assistant',
+              content: text.trim() || '',
+              tool_calls: chunk.toolCalls.map((tc) => ({
+                id: tc.id,
+                type: tc.type,
+                function: tc.function,
+              })),
+            }
+            messages.push(assistantToolCallMsg)
+
+            // Execute each requested tool and append its result
+            for (const tc of chunk.toolCalls) {
+              const toolName = tc.function.name
+              let toolArgs: Record<string, unknown> = {}
+              try { toolArgs = JSON.parse(tc.function.arguments || '{}') } catch { /* bad JSON from model — use empty args */ }
+
+              this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `executing ${toolName}` })
+              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: `[${toolName}] ...`, toolName } as never)
+
+              let toolResult: string
+              try {
+                const mode = this.deps.getExecMode?.() ?? 'review'
+                const gate = gateDispatch(mode, toolName)
+                
+                if (!gate.allowed) {
+                  if (gate.reason === 'disabled') {
+                    toolResult = JSON.stringify({ error: `Tool execution disabled by permission policy (mode: off).` })
+                  } else {
+                    // needs-approval
+                    // Pause and wait for user approval
+                    this.deps.emit({ sessionId: sid, kind: 'agent:needs-approval', toolCallId: tc.id, toolName, args: toolArgs } as never)
+                    const approval = await new Promise<{ approved: boolean, modifiedArgs?: any }>((resolve) => {
+                      this.pendingApprovals.set(tc.id, { resolve })
+                    })
+                    if (!approval.approved) {
+                      toolResult = JSON.stringify({ error: 'User denied tool execution.' })
+                    } else {
+                      toolArgs = approval.modifiedArgs || toolArgs
+                      const result = await execTool(toolName, toolArgs)
+                      toolResult = result.output || (result.error ? `Error: ${result.error}` : '{}')
+                    }
+                  }
+                } else {
+                  // autoApproved (gate.allowed === true)
+                  const result = await execTool(toolName, toolArgs)
+                  toolResult = result.output || (result.error ? `Error: ${result.error}` : '{}')
+                }
+              } catch (toolErr) {
+                toolResult = JSON.stringify({ error: String(toolErr) })
+              }
+
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, content: toolResult }) } catch {}
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `${toolName} → ${toolResult.slice(0, 120)}` })
+              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolResult.slice(0, 400), toolName } as never)
+
+              // Append as a tool-result message so the model sees it on the next turn
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: toolResult.slice(0, 8000), // cap to avoid context overflow
+              })
+            }
+
+            // Reset text accumulator — the model's next response is the actual answer
+            text = ''
+            shouldContinueLoop = true
+            break // exit the chunk iterator; continue toolLoop
+          }
+
           if (chunk.type === 'done') break
         }
       } catch (e) {
@@ -1391,6 +1460,10 @@ export class AgentOrchestrator {
         this.noteEndQuiet(ownedInstanceForMetrics)
         throw new AgentOrchestratorError('llm-failed', safe)
       }
+      // Set by the text.trim() === '' block above when the model returned empty text and
+      // we want to retry the turn rather than emit nothing.  Must be outside the try
+      // so the continue can legally jump to the while (toolLoop) header.
+      if (shouldContinueLoop) continue
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
 
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars streamed=${streamed}` })
@@ -1440,7 +1513,7 @@ export class AgentOrchestrator {
                 taskKind: classification.kind,
                 stepIndex: 1,
                 parallelStrategy: 'sequential',
-                executionPolicy: 'eager',
+                executionPolicy: { mode: 'parallel' },
               })
               raw = result.ok ? result.output : `{"error": "${result.error}"}`
             } else {
@@ -1511,6 +1584,43 @@ export class AgentOrchestrator {
           // harness loop note — inline tools already appended via tryInlineTools above, no extra loop needed for this turn
         }
       }
+
+      // ── JARVIS SOUL: Autonomous Multi-Step Continuation ──
+      // If the model executed exploratory/planning tools (fs_list, fs_read, todo_write)
+      // or reviewed workspace files, and the task requires coding/building/fixing/updating,
+      // DO NOT STOP to ask the user to type "continue". Drive the next step automatically!
+      const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review)\b/i.test(content)
+      const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"'))) || /todo_write|list_files|fs_list|explore/i.test(text)
+      const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|css|svg|python|py)\b[\s\S]{150,}```/i.test(text)
+      const hasWrittenCode = messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"'))) || hasRealCodeFence
+      const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
+
+      // Continue autonomously if:
+      // 1. Model emitted a fake JSON claim instead of writing code, OR
+      // 2. Model did exploration (fs_list) but hasn't written code yet, OR
+      // 3. User requested a build/fix task and no code has been written to disk/fence yet.
+      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || (didExploration && !hasWrittenCode) || !hasWrittenCode) && loopSteps < MAX_LOOP && !controller.signal.aborted
+
+      if (shouldJarvisContinue) {
+          const nextDirective = isFakeFileClaim
+            ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your <skills_context> and MCP tools if necessary. Write the real code now.`
+            : `[Autonomous Agent Directive]: Workspace inspection complete. Now proceed immediately to write the complete, functional code and implementation using fs_write (e.g. app.py, main.js) or a full markdown code block. Review the Enterprise Skills and MCP tools in your context before writing. Do not stop or ask for confirmation.`
+
+        this.deps.emit({
+          sessionId: sid,
+          kind: 'assistant-delta',
+          text: `\n\n*[Jarvis Agent: Autonomously proceeding to write code...]*\n\n`,
+        })
+        messages.push({ role: 'assistant', content: text.trim() || 'Workspace inspected.' })
+        messages.push({
+          role: 'user',
+          content: nextDirective,
+        })
+        text = ''
+        shouldContinueLoop = true
+        continue toolLoop
+      }
+
       break
       }
 
@@ -1519,6 +1629,133 @@ export class AgentOrchestrator {
         return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
       }
 
+      // Synthesis pass: if toolLoop exited without final text (e.g. model called tools or hit loop cap),
+      // prompt the model to synthesize all tool results and answer the original request.
+      // We omit tools here so the model focuses 100% on text/code output.
+      if (text.trim() === '' && !controller.signal.aborted) {
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: loopSteps, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'final synthesis' })
+        const synthMsgs: import('@shared/types/ports').LlmChatMessage[] = [
+          ...messages,
+          {
+            role: 'user',
+            content: 'Synthesize the tool results above and provide your complete, detailed response addressing the original request with all requested code and files.',
+          },
+        ]
+        try {
+          for await (const ch of this.deps.llm.streamChat({
+            endpoint,
+            model,
+            messages: synthMsgs,
+            timeoutMs,
+            stream: true,
+            signal: controller.signal,
+            maxCompletionTokens,
+          })) {
+            if (controller.signal.aborted) break
+            if (ch.type === 'text-delta' && ch.text) {
+              text += ch.text
+              this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text })
+            }
+            if (ch.type === 'done' && ch.usage) usage = ch.usage
+            if (ch.type === 'done') break
+          }
+          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: loopSteps, detail: `synthesis complete — ${text.length} chars` })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          this.safeLog(`[SOVARA][SYNTHESIS] error: ${msg}`)
+        }
+      }
+
+      // Fallback: streaming split may have missed fences — scan full text for any unexecuted ```tool: fences
+      // and execute them now so they don't leak to the bubble as raw markdown (see screenshot).
+      // Handles 3-4 backticks, Windows abs paths like D:\data\rewards, and double-fenced spam.
+      // workspaceRoot for path normalization (re-resolve, post-loop not in earlier scope)
+      let fallbackWsRoot: string | null = null
+      try {
+        const h = await this.deps.persistence.get(sessionId).catch(() => null) as { projectId?: string | null } | null
+        const pid2 = h?.projectId ?? null
+        fallbackWsRoot = this.deps.getProjectWorkspace?.(pid2) ?? this.deps.getGlobalWorkspace?.() ?? null
+      } catch {}
+      // Post-stream recovery — scans BOTH the text channel and the reasoning
+      // channel (allReasoning). The reasoning branch `continue`s before
+      // tryInlineTools ever runs, so fences inside <think> (the 2:09/3:30 PM
+      // traces) were previously stored as text and NEVER executed → empty reply.
+      // Dedupe per fence signature (tool+args) so text+reasoning duplicates
+      // (the model emits the same call twice) dispatch exactly once.
+      const executedSignatures = new Set<string>()
+      const dispatchMissedFence = async (tName: string, args: Record<string, unknown>): Promise<boolean> => {
+        const sig = `${tName}:${JSON.stringify(args)}`
+        if (executedSignatures.has(sig)) return false
+        executedSignatures.add(sig)
+        try {
+          this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName: tName, detail: `post-stream ${tName} — dispatching` } as never)
+          const r = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tName, args)
+          inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\n${r.slice(0,4000)}`)
+          try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${tName}-${Date.now()}` as never, content: r.slice(0,8000) } as never) } catch {}
+          this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName: tName, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
+          return true
+        } catch { return false }
+      }
+      let missed = 0
+      if (looksLikeToolFence(text)) {
+        // Hardened parser (fenceTools): handles glued `````` fences, 4/5-tick,
+        // mismatched tick counts, and lenient JSON — the strict-JSON regex
+        // missed these, leaving empty text → "empty reply after Ns".
+        for (const f of extractToolFences(text)) {
+          const args = { ...f.args } as Record<string, unknown>
+          // Normalize absolute workspace path the model emits (D:\data\rewards) to relative "." so resolveWorkspacePath works
+          if (f.toolName === 'fs_list' && typeof args['path'] === 'string') {
+            const p = (args['path'] as string).replace(/\\/g, '/').trim()
+            if (/^[a-z]:\//i.test(p) || path.isAbsolute(p as string)) {
+              try {
+                const wsNorm = fallbackWsRoot ? path.resolve(fallbackWsRoot).replace(/\\/g, '/').toLowerCase() : ''
+                if (wsNorm && (p.toLowerCase() === wsNorm || p.toLowerCase() === wsNorm + '/')) args['path'] = '.'
+                else if (wsNorm && p.toLowerCase().startsWith(wsNorm + '/')) args['path'] = p.slice(wsNorm.length + 1) || '.'
+                else args['path'] = '.'
+              } catch { args['path'] = '.' }
+            }
+          }
+          if (await dispatchMissedFence(f.toolName, args)) missed++
+        }
+        if (missed > 0) {
+          // strip raw fences by span (fenceTools) so user never sees leak (3/4/5-tick, glued)
+          text = stripToolFences(text)
+        }
+      }
+      // Reasoning-channel recovery: fences inside <think> never hit the text path.
+      if (looksLikeToolFence(allReasoning)) {
+        for (const f of extractToolFences(allReasoning)) {
+          const args = { ...f.args } as Record<string, unknown>
+          if (f.toolName === 'fs_list' && typeof args['path'] === 'string') {
+            const p = (args['path'] as string).replace(/\\/g, '/').trim()
+            if (/^[a-z]:\//i.test(p) || path.isAbsolute(p as string)) args['path'] = '.'
+          }
+          if (await dispatchMissedFence(f.toolName, args)) missed++
+        }
+      }
+      // Bare tool call recovery: models like Nemotron-3-Nano emit tool calls
+      // as plain text (fs_list {path:"."}) or XML tags (<fs_list path=".">) without
+      // backtick fences. Detect and dispatch these from both text and reasoning.
+      const normBareArgs = (toolName: string, args: Record<string, unknown>): Record<string, unknown> => {
+        if (toolName === 'fs_list' && typeof args['path'] === 'string') {
+          const p = (args['path'] as string).replace(/\\/g, '/').trim()
+          if (/^[a-z]:\//i.test(p) || path.isAbsolute(p)) args['path'] = '.'
+        }
+        return args
+      }
+      if (looksLikeBareToolCall(text)) {
+        for (const f of extractBareToolCalls(text)) {
+          const args = normBareArgs(f.toolName, { ...f.args })
+          if (await dispatchMissedFence(f.toolName, args)) missed++
+        }
+        if (missed > 0) text = stripBareToolCalls(text)
+      }
+      if (looksLikeBareToolCall(allReasoning)) {
+        for (const f of extractBareToolCalls(allReasoning)) {
+          const args = normBareArgs(f.toolName, { ...f.args })
+          if (await dispatchMissedFence(f.toolName, args)) missed++
+        }
+      }
       // Inline fs/shell leak follow-up: Qwen at 7/32 layers often emits <fs_list path="."> as text instead of tool_call.
       // We already executed it via tryInlineTools and have inlineToolOutputs — now synthesize a final answer with those results
       // so we don't exit with just "I'll explore the workspace..." and the raw tag.
@@ -1545,191 +1782,115 @@ export class AgentOrchestrator {
         }
       }
 
+      // If text is only bare tool calls with no real content, strip them and
+      // treat text as effectively empty so synthesis/fallback kicks in.
+      if (text.trim() !== '' && looksLikeBareToolCall(text)) {
+        const stripped = stripBareToolCalls(text)
+        if (stripped.trim().length < 10) text = ''
+      }
+
       if (text.trim() === '') {
-        // Reasoning-only stall: reasoning models stream <think> then answer; if answer never comes, promote reasoning.
-        // Use allReasoning (never cleared) — reasoningBuffer is cleared after persist, so fallback would be empty.
-        const reasoningFallback = (allReasoning || reasoningBuffer).trim()
-        if (reasoningFallback.length > 40) {
-          // Hide the debug note from user-visible content — emit as log only. Dedupe + note caused the
-          // "SOVARA doesn't have... SOVARA doesn't have... [Note: promoted]" duplication in the bubble.
-          text = reasoningFallback
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `promoted reasoning to answer (${reasoningFallback.length} chars, truncated note hidden)` })
-        } else if (reasoningFallback.length > 0) {
-          text = reasoningFallback
-        } else if (!autoRetried) {
-          // One automatic retry: compact aggressively and re-stream once, so the user sees the 6-slide PPT without manual /compact
-          autoRetried = true
-          const secs = Math.round((Date.now() - startedAll) / 1000)
-          const compactMsg = `Auto-compacted for empty retry — model ${model} returned no text after ${secs}s. Retrying once with compacted context.`
-          try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: compactMsg }) } catch {}
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `auto-retry compact empty after ${secs}s (attempt 2)` })
-          this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `empty after ${secs}s — retrying once with compacted history` })
-          // Retry with hybrid budget: tighter window (2 turns) to definitely fit 4096 even after 6576-token overflow
-          try {
-            const retryHistory = buildBudgetedHistory(prior, systemBlocks.join('\n\n').length, nCtx, { slidingWindowTurns: 2, reservedCompletionTokens: 1400 })
-            messages = compactForCtx(
-              [
-                { role: 'system', content: systemBlocks.join('\n\n') },
-                ...retryHistory,
-                { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
-              ],
-              nCtx
-            )
-          } catch { /* keep original messages on import failure */ }
-          // Reset stream state and re-arm stall guard (fresh reasoning for retry)
-          text = ''
-          reasoningBuffer = ''
-          allReasoning = ''
-          inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
-          streamed = true
-          usage = undefined
-          orchFirstTokenAt = null
-          firstTokenRef.value = null
-          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-          armStallGuard(firstTokenRef)
-          this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'retry llm generation (compacted)' })
-          try {
-            for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
-              if (controller.signal.aborted) break
-              if (chunk.type === 'text-delta' && chunk.text) {
-                let delta = chunk.text
-                if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
-                  if (delta.includes('<thinking>') || delta.includes('<think>')) { inReasoning = true; delta = delta.replace(/<thinking>|<think>/g, '') }
-                  if (delta.includes('</thinking>') || delta.includes('</think>')) {
-                    const parts = delta.split(/<\/thinking>|<\/think>/)
-                    const tail = parts[0] ?? ''
-                    reasoningBuffer += tail
-                    allReasoning += tail
-                    if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
-                    if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
-                    inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
-                  }
-                  if (inReasoning) { reasoningBuffer += delta; allReasoning += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
-                }
-                text += delta
-                if (orchFirstTokenAt === null) { orchFirstTokenAt = Date.now(); firstTokenRef.value = orchFirstTokenAt; if (stallTimer) { clearTimeout(stallTimer); stallTimer = null } }
-                this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
-              }
-              if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
-              if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
-              if (chunk.type === 'done') break
-            }
-          } catch (e2) {
-            if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-            const raw2 = e2 instanceof Error ? e2.message : String(e2)
-            if (/stall-timeout/i.test(raw2)) {
-              const secs2 = Math.round((Date.now() - startedAll) / 1000)
-              const msg = `The model stalled again after ${secs2}s (retry). Context compacted twice — try a fresh session or a smaller model/quant.`
-              this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'timeout', streamed)
-              const seq2 = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: msg })).seq
-              this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: seq2 })
-              this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `stall-retry failed after ${secs2}s`, stepIndex: 0 })
-              this.noteEndQuiet(ownedInstanceForMetrics)
-              return { ok: true, userSeq, assistantSeq: seq2, routing, classification }
-            }
-            if (controller.signal.aborted || (e2 instanceof ChatInferenceError && (e2 as ChatInferenceError).code === 'cancelled')) {
-              this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled on retry' })
-              this.noteEndQuiet(ownedInstanceForMetrics)
-              return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
-            }
-            const safe2 = e2 instanceof ChatInferenceError ? (e2 as ChatInferenceError).message : 'stream-error on retry'
-            this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e2), streamed)
-            const seq2 = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `Retry failed: ${safe2} — type /compact or start a new chat.` })).seq
-            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: seq2 })
-            this.noteEndQuiet(ownedInstanceForMetrics)
-            return { ok: true, userSeq, assistantSeq: seq2, routing, classification }
-          }
-          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-          this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `retry llm done — ${text.length} chars` })
-          if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; allReasoning += reasoningBuffer; reasoningBuffer = '' }
-          // Re-evaluate after retry — use allReasoning (reasoningBuffer cleared after persist)
-          const fb2 = (allReasoning || '').trim()
-          if (text.trim() === '' && fb2.length > 40) text = fb2 + '\n\n[Note: promoted reasoning — model returned only reasoning]'
-          else if (text.trim() === '' && fb2.length > 0) text = fb2
-          if (text.trim() !== '') {
-            // fall through to artifact generation below
-          } else {
-            const secs = Math.round((Date.now() - startedAll) / 1000)
-            const ack = `The model returned an empty reply again after ${secs}s even after auto-compact retry. Please start a fresh session or pick a smaller quant.`
-            this.noteEndQuiet(ownedInstanceForMetrics)
-            this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
-            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: ack, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
-            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
-            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
-            this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty after retry ${secs}s`, stepIndex: 0 })
-            return { ok: true, userSeq, assistantSeq: seq, routing, classification }
-          }
-        } else {
-          const secs = Math.round((Date.now() - startedAll) / 1000)
-          const ack = `The model returned an empty reply after ${secs}s — context was auto-compacted. Try a shorter prompt, type /compact, or pick a smaller quant. If it repeats, check runtime health or restart the local server.`
-          this.noteEndQuiet(ownedInstanceForMetrics)
-          this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, 'invalid-response', streamed)
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'invalid-response', error: ack, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
-          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: ack })).seq
-          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
-          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `empty-reply ack after ${secs}s`, stepIndex: 0 })
-          return { ok: true, userSeq, assistantSeq: seq, routing, classification }
-        }
-      }
-
-      // ── RESUME-ON-TRUNCATE: compaction must NOT restart from initial state ──
-      // If the model streamed a partial HTML/code file and got cut (``` not closed
-      // or </html> missing), continue from the exact suffix instead of restarting.
-      const detectedEarly = detectOutputFormat(content)
-      if (detectedEarly && isArtifactTruncated(text, detectedEarly) && !autoRetried && !controller.signal.aborted) {
-        autoRetried = true
-        const suffix = text.slice(-900)
-        const prefixLen = text.length
-        // Persist the partial prefix so history survives compact (append-only)
-        try { await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text + '\n<!-- TRUNCATED — continuation follows (do not re-render as final) -->' }) } catch {}
-        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `artifact truncated at ${prefixLen} chars — resuming with continuation prompt` })
-        this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `partial artifact ${prefixLen} chars — continuing from suffix, not restarting` })
-        // Build continuation prompt: system + history including prefix + explicit resume user turn
-        try {
-          const liveEvents = await this.deps.persistence.getEvents(sessionId)
-          const continuationSystem = SOVARA_SYSTEM_PROMPT + '\n\n[SYSTEM CONTINUATION: Your previous output was truncated. Continue exactly from the last character of the prior assistant message. Do NOT restart, do NOT re-emit the header/slide 1. Emit only the remainder to a valid closed file.]'
-          messages = [
-            { role: 'system', content: continuationSystem },
-            ...toRequestMessages(liveEvents),
-            { role: 'user', content: `SYSTEM CONTINUATION: Continue the previous file from exactly where it stopped. Last 900 chars for alignment:\n${suffix}\n\nContinue to a valid closed file. Do NOT restart from the beginning.` },
+        // Priority 1: Use inline tool outputs from dispatched tools
+        if (inlineToolOutputs.length > 0) {
+          // Synthesize tool results into a proper response
+          const toolCtxForSynth = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
+          const synthMsgs2: import('@shared/types/ports').LlmChatMessage[] = [
+            ...messages,
+            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List the actual files/folders found. Do not emit tool calls.` },
           ]
-        } catch { /* fallback: just suffix as user prompt */ messages.push({ role: 'user', content: `Continue from suffix:\n${suffix}` }) }
-        // Re-arm stall guard and extend token budget for the remainder
-        let cont = ''
-        reasoningBuffer = ''
-        inReasoning = false
-        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-        const contRef = { value: null as number | null }
-        armStallGuard(contRef)
-        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'continuing truncated artifact' })
-        try {
-          for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
-            if (controller.signal.aborted) break
-            if (chunk.type === 'text-delta' && chunk.text) {
-              let delta = chunk.text
-              // Strip any echoed prefix duplication (model sometimes repeats last line)
-              if (cont.length === 0 && delta.trimStart().startsWith(suffix.trimStart().slice(0, 60))) {
-                // skip duplicated header echo — keep streaming but don't duplicate prefix
-                const overlap = suffix.trimStart().slice(0, 60)
-                if (delta.includes(overlap)) delta = delta.slice(delta.indexOf(overlap) + overlap.length)
-                if (!delta) continue
-              }
-              cont += delta
-              text += delta
-              this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
+          try {
+            let synthText = ''
+            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal, maxCompletionTokens })) {
+              if (controller.signal.aborted) break
+              if (ch.type === 'text-delta' && ch.text) { synthText += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
+              if (ch.type === 'done' && ch.usage) usage = ch.usage
+              if (ch.type === 'done') break
             }
-            if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
-            if (chunk.type === 'done') break
+            if (synthText.trim().length > 20 && !looksLikeBareToolCall(synthText)) {
+              text = synthText
+            } else {
+              text = `Here are the results:\n\n${inlineToolOutputs.join('\n\n')}`
+            }
+          } catch {
+            text = `Here are the results:\n\n${inlineToolOutputs.join('\n\n')}`
           }
-        } catch (e2) {
-          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-          // Continuation failure is non-fatal — keep prefix; artifact will be partial but valid
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'error', error: e2 instanceof Error ? e2.message : String(e2), detail: 'continuation failed, keeping prefix' })
+        // Priority 2: Promote reasoning if it's NOT a raw tool call
+        } else {
+          const reasoningFallback = (allReasoning || reasoningBuffer).trim()
+          const isToolOnly = reasoningFallback.length > 0 && looksLikeBareToolCall(reasoningFallback) && stripBareToolCalls(reasoningFallback).trim().length < 10
+          if (reasoningFallback.length > 40 && !isToolOnly) {
+            text = reasoningFallback
+            appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `promoted reasoning to answer (${reasoningFallback.length} chars)` })
+          } else if (reasoningFallback.length > 0 && !isToolOnly) {
+            text = reasoningFallback
+          } else {
+            const toolResults = messages.filter((m) => m.role === 'tool')
+            if (toolResults.length > 0) {
+              text = `Executed ${toolResults.length} tool(s) successfully.\n\n` + toolResults.map((t) => t.content).join('\n\n')
+            } else {
+              text = 'I couldn\'t generate a response. Please try again with a more specific prompt.'
+            }
+          }
         }
-        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-        this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `continuation ${cont.length} chars — total ${text.length}` })
       }
 
+    // ── RESUME-ON-TRUNCATE: compaction must NOT restart from initial state ──
+    // If the model streamed a partial HTML/code file and got cut (``` not closed
+    // or </html> missing), continue from the exact suffix instead of restarting.
+    const detectedEarly = detectOutputFormat(content)
+    if (detectedEarly && isArtifactTruncated(text, detectedEarly) && !autoRetried && !controller.signal.aborted) {
+      autoRetried = true
+      const suffix = text.slice(-900)
+      const prefixLen = text.length
+      // Persist the partial prefix so history survives compact (append-only)
+      try { await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text + '\n<!-- TRUNCATED — continuation follows (do not re-render as final) -->' }) } catch {}
+      appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `artifact truncated at ${prefixLen} chars — resuming with continuation prompt` })
+      this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `partial artifact ${prefixLen} chars — continuing from suffix, not restarting` })
+      // Build continuation prompt: system + history including prefix + explicit resume user turn
+      try {
+        const liveEvents = await this.deps.persistence.getEvents(sessionId)
+        const continuationSystem = SOVARA_SYSTEM_PROMPT + '\n\n[SYSTEM CONTINUATION: Your previous output was truncated. Continue exactly from the last character of the prior assistant message. Do NOT restart, do NOT re-emit the header/slide 1. Emit only the remainder to a valid closed file.]'
+        messages = [
+          { role: 'system', content: continuationSystem },
+          ...toRequestMessages(liveEvents),
+          { role: 'user', content: `SYSTEM CONTINUATION: Continue the previous file from exactly where it stopped. Last 900 chars for alignment:\n${suffix}\n\nContinue to a valid closed file. Do NOT restart from the beginning.` },
+        ]
+      } catch { /* fallback: just suffix as user prompt */ messages.push({ role: 'user', content: `Continue from suffix:\n${suffix}` }) }
+      // Re-arm stall guard and extend token budget for the remainder
+      let cont = ''
+      reasoningBuffer = ''
+      inReasoning = false
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+      const contRef = { value: null as number | null }
+      armStallGuard(contRef)
+      this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'continuing truncated artifact' })
+      try {
+        for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+          if (controller.signal.aborted) break
+          if (chunk.type === 'text-delta' && chunk.text) {
+            let delta = chunk.text
+            // Strip any echoed prefix duplication (model sometimes repeats last line)
+            if (cont.length === 0 && delta.trimStart().startsWith(suffix.trimStart().slice(0, 60))) {
+              // skip duplicated header echo — keep streaming but don't duplicate prefix
+              const overlap = suffix.trimStart().slice(0, 60)
+              if (delta.includes(overlap)) delta = delta.slice(delta.indexOf(overlap) + overlap.length)
+              if (!delta) continue
+            }
+            cont += delta
+            text += delta
+            this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
+          }
+          if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
+          if (chunk.type === 'done') break
+        }
+      } catch (e2) {
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+        // Continuation failure is non-fatal — keep prefix; artifact will be partial but valid
+        appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'error', error: e2 instanceof Error ? e2.message : String(e2), detail: 'continuation failed, keeping prefix' })
+      }
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+      this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `continuation ${cont.length} chars — total ${text.length}` })
+    }
       // ── Required-output artifact: the user asked for a FILE (pdf / excel /
       // word / code). Derive it from the final reply, persist an audit event,
       // and append the saved path to the reply so the timeline keeps it. ──
@@ -1814,7 +1975,7 @@ export class AgentOrchestrator {
         completionTokens: tokenUsage.completionTokens,
         totalTokens: tokenUsage.totalTokens,
         latencyMs: Date.now() - startedAll,
-        detail: `agent steps=1 task=${classification.kind} routing=${routing.reason}`,
+        detail: `agent steps=${loopSteps} task=${classification.kind} routing=${routing.reason}`,
       })
       this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })
       this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: assistantSeq })
@@ -1825,7 +1986,7 @@ export class AgentOrchestrator {
           kind: classification.kind,
           modelId: routing.modelId!,
           runtimeId: routing.runtimeId!,
-          steps: 1,
+          steps: loopSteps,
           durationMs: Date.now() - startedAll,
           streamed,
           routingReason: routing.reason,
@@ -1916,30 +2077,24 @@ export class AgentOrchestrator {
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) {
-        // Pinned-but-unfittable (your Gemma-12B on 6GB): auto-fallback to first fitting library model
-        // instead of hard resource-pressure, and say so honestly in the reason.
-        const alts = models.filter((m) => m.available && m.modelId !== routing.modelId)
-        for (const cand of alts) {
-          try {
-            const p = await this.deps.resources.checkBeforeLoad(
-              { id: cand.modelId as never, displayName: cand.displayName, source: 'custom', format: 'unknown' } as never,
-              { ctxLen: classification.contextLengthNeeded }
-            )
-            if (!p.blocking) {
-              this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `pinned ${routing.modelId} cannot fit 6GB → auto-fallback to ${cand.modelId}` })
-              routing = {
-                modelId: cand.modelId,
-                runtimeId: cand.runtimeId,
-                reason: `pinned ${routing.modelId} needs ~14GB > 6GB GPU — auto-fallback to fitting ${cand.modelId}`,
-                task: classification,
-                candidatesConsidered: alts.length,
-                switched: true,
-              } as unknown as Awaited<ReturnType<typeof routeModel>>
-              break
-            }
-          } catch {}
+        // Pinned-but-unfittable: dynamic fallback ranked by ACTUAL free VRAM/RAM fit
+        // (pickFittingModel) instead of hardcoded size/name assumptions.
+        const vramTotalMb = resources.vram.totalMB ?? 0
+        const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
+        const cand = fit?.model ?? null
+        if (cand) {
+          const fitLabel = fit!.gpu ? `fits ${fit!.fitMb.toFixed(0)}MB VRAM` : `fits ${fit!.fitMb.toFixed(0)}MB RAM (CPU offload)`
+          this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `pinned ${routing.modelId} cannot fit ${vramTotalMb > 0 ? `${vramTotalMb.toFixed(0)}MB GPU` : 'available memory'} → auto-fallback to ${cand.modelId}` })
+          routing = {
+            modelId: cand.modelId,
+            runtimeId: cand.runtimeId,
+            reason: `pinned ${routing.modelId} does not fit ${vramTotalMb > 0 ? `${vramTotalMb.toFixed(0)}MB GPU` : 'available memory'} — auto-fallback to fitting ${cand.modelId} (${fitLabel})`,
+            task: classification,
+            candidatesConsidered: 1,
+            switched: true,
+          } as unknown as Awaited<ReturnType<typeof routeModel>>
         }
-        if ((routing as { reason?: string }).reason?.includes('needs ~14GB') !== true) {
+        if (!cand) {
           throw new AgentOrchestratorError('resource-blocked', `resource-pressure: ${pressure.reason ?? 'load refused'}`)
         }
       }
@@ -2032,12 +2187,14 @@ export class AgentOrchestrator {
        }
       const endpoint = regenOwnedEndpoint ?? entry!.endpoint
       const model = remoteModelId(routing.modelId!)
-      const timeoutMs = Math.max(entry.timeoutMs, 120_000)
+      const timeoutMs = Math.max(entry.timeoutMs, DEFAULT_TUNING.timeoutFloorMs)
       let text = ''
       let reasoningBuffer = ''
+      let allReasoning = ''
       let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
       let streamed = true
+      const inlineToolOutputs: string[] = []
       try {
         for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
           if (chunk.type === 'text-delta' && chunk.text) {
@@ -2048,12 +2205,13 @@ export class AgentOrchestrator {
                 const parts = delta.split(/<\/thinking>|<\/think>/)
                 const tail = parts[0] ?? ''
                 reasoningBuffer += tail
+                allReasoning += tail
                 // Exactly-once streaming (see execute()): emit the tail only.
                 if (tail) { this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail }) }
                 if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
                 inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
               }
-              if (inReasoning) { reasoningBuffer += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
+              if (inReasoning) { reasoningBuffer += delta; allReasoning += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
             }
             text += delta; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta, progress: Math.min(95, 10 + Math.floor(text.length / 40)) })
           }
@@ -2103,13 +2261,96 @@ export class AgentOrchestrator {
       // full text so a later refresh reconstructs it instead of losing it.
       if (reasoningBuffer) {
         try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+        allReasoning += reasoningBuffer
         reasoningBuffer = ''
       }
+      // Post-stream recovery (mirrors execute()): the reasoning branch `continue`s
+      // before any tool parsing, so fences inside  (the 3:42 PM regenerate
+      // trace) and glued text fences were never executed → empty text → the
+      // "empty reply after Ns — auto-compacted" ack. Scan BOTH channels;
+      // dedupe by tool+args so duplicated calls dispatch exactly once.
+      const executedSignatures = new Set<string>()
+      const dispatchMissedFence = async (tName: string, args: Record<string, unknown>): Promise<boolean> => {
+        const sig = `${tName}:${JSON.stringify(args)}`
+        if (executedSignatures.has(sig)) return false
+        executedSignatures.add(sig)
+        try {
+          this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName: tName, detail: `post-stream ${tName} — dispatching` } as never)
+          const r = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tName, args)
+          inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\n${r.slice(0, 4000)}`)
+          try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${tName}-${Date.now()}` as never, content: r.slice(0, 8000) } as never) } catch {}
+          this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName: tName, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
+          return true
+        } catch { return false }
+      }
+      let missed = 0
+      const normalizeAbsPath = (f: { toolName: string; args: Record<string, unknown> }): void => {
+        // Absolute paths the model emits (D:\SOVARA) normalize to workspace-relative '.'
+        if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
+          const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
+          if (/^[a-z]:\//i.test(p) || path.isAbsolute(p)) f.args['path'] = '.'
+        }
+      }
+      if (looksLikeToolFence(text)) {
+        for (const f of extractToolFences(text)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
+        if (missed > 0) text = stripToolFences(text)
+      }
+      if (looksLikeToolFence(allReasoning)) {
+        for (const f of extractToolFences(allReasoning)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
+      }
+      // Bare tool call recovery (regenerate path): same as execute() — detect
+      // bare tool calls like fs_list {path:"."} in both text and reasoning.
+      if (looksLikeBareToolCall(text)) {
+        for (const f of extractBareToolCalls(text)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
+        if (missed > 0) text = stripBareToolCalls(text)
+      }
+      if (looksLikeBareToolCall(allReasoning)) {
+        for (const f of extractBareToolCalls(allReasoning)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
+      }
+      // Strip bare tool calls from text before checking if it's empty (regenerate path)
+      if (text.trim() !== '' && looksLikeBareToolCall(text)) {
+        const stripped = stripBareToolCalls(text)
+        if (stripped.trim().length < 10) text = ''
+      }
       if (text.trim() === '') {
-        const reasoningFallback2 = reasoningBuffer.trim()
-        if (reasoningFallback2.length > 40) {
-          text = reasoningFallback2 + '\n\n[Note: model returned only reasoning — promoted to answer.]'
-        } else if (reasoningFallback2.length > 0) {
+        // Tool results recovered post-stream — the model just never wrote prose.
+        // Answer deterministically from tool output instead of the error ack
+        // (same policy as execute(); the 3:42 PM trace hit exactly this).
+        if (inlineToolOutputs.length > 0) {
+          const toolCtxForSynth = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
+          const synthMsgs2: import('@shared/types/ports').LlmChatMessage[] = [
+            ...messages,
+            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List the actual files/folders found. Do not emit tool calls.` },
+          ]
+          try {
+            let synthText = ''
+            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal })) {
+              if (controller.signal.aborted) break
+              if (ch.type === 'text-delta' && ch.text) { synthText += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
+            }
+            if (synthText.trim().length > 20 && !looksLikeBareToolCall(synthText)) {
+              text = synthText
+            } else {
+              text = `Here are the results:\n\n${inlineToolOutputs.join('\n\n')}`
+            }
+          } catch {
+            text = `Here are the results:\n\n${inlineToolOutputs.join('\n\n')}`
+          }
+          this.log(routing.runtimeId!, endpoint, model, startedAll, 200, 'ok', streamed)
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `tool-result synthesis answer after regenerate (${inlineToolOutputs.length} tool outputs) — empty-reply ack avoided` })
+          this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: 'answered from synthesized tool results (regenerate recovery)', stepIndex: 0 })
+          const detSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: detSeq })
+          return { ok: true, assistantSeq: detSeq, routing, classification }
+        }
+        // allReasoning survives the per-chunk persist clears — the old
+        // `reasoningBuffer.trim()` read an already-cleared buffer and never fired.
+        const reasoningFallback2 = (allReasoning || reasoningBuffer).trim()
+        const isToolOnly2 = reasoningFallback2.length > 0 && looksLikeBareToolCall(reasoningFallback2) && stripBareToolCalls(reasoningFallback2).trim().length < 10
+        if (reasoningFallback2.length > 40 && !isToolOnly2) {
+          text = reasoningFallback2
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `promoted reasoning to answer after regenerate (${reasoningFallback2.length} chars)` })
+        } else if (reasoningFallback2.length > 0 && !isToolOnly2) {
           text = reasoningFallback2
         } else {
           const secs = Math.round((Date.now() - startedAll) / 1000)
@@ -2269,18 +2510,19 @@ export class AgentOrchestrator {
       }
     }
 
+    const status = infra.getStatus()
     return {
       available: true,
-      registeredTools: infra.registry.getAllTools().length,
-      mcpServers: infra.mcpAdapter ? infra.mcpAdapter.listServers() : [],
-      executionLogsCount: infra.executionLog.getEntries().length,
-      schedulerState: {
-        pending: infra.scheduler.getPendingCount(),
-        running: infra.scheduler.getRunningCount(),
-        completed: infra.scheduler.getCompletedCount(),
-        maxConcurrency: infra.scheduler.getMaxConcurrency(),
-      },
-      ptcEnabled: infra.ptcHandler.isEnabled(),
+      registeredTools: status.toolCount,
+      mcpServers: status.mcpServers.map((s) => s.name),
+      executionLogsCount: infra.getExecutionLogs().length,
+      schedulerState: status.executionStatus ? {
+        pending: (status.executionStatus as any).queued ?? 0,
+        running: ((status.executionStatus as any).runningParallel ?? 0) + ((status.executionStatus as any).runningExclusive ?? 0),
+        completed: infra.getExecutionLogs().length,
+        maxConcurrency: 4,
+      } : null,
+      ptcEnabled: false,
     }
   }
 
@@ -2298,7 +2540,7 @@ export class AgentOrchestrator {
     const infra = this.getToolInfra()
     if (!infra) return []
 
-    return infra.executionLog.getEntries().slice(-limit).map((entry) => ({
+    return infra.getExecutionLogs(limit).map((entry: any) => ({
       id: entry.id,
       toolName: entry.toolName,
       status: entry.status,
@@ -2331,10 +2573,10 @@ export class AgentOrchestrator {
       }))
     }
 
-    return infra.registry.getAllTools().map((t) => ({
+    return infra.listTools().map((t: any) => ({
       name: t.name,
       description: t.description,
-      inputSchema: t.inputSchema,
+      inputSchema: t.parameters || t.inputSchema || {},
       tags: t.tags ?? [],
       isMcp: t.isMcp ?? false,
       serverId: t.serverId,
@@ -2350,8 +2592,8 @@ export class AgentOrchestrator {
     args: Record<string, unknown>,
     opts?: {
       sessionId?: string
-      parallelStrategy?: ToolParallelStrategy
-      executionPolicy?: ToolExecutionPolicy
+      parallelStrategy?: 'sequential' | 'all' | 'race' | 'settled'
+      executionPolicy?: ExecutionPolicy
     }
   ): Promise<{ ok: true; output: string; durationMs: number } | { ok: false; error: string; durationMs: number }> {
     return this.executeToolWithInfrastructure(
@@ -2362,7 +2604,7 @@ export class AgentOrchestrator {
         taskKind: 'direct',
         stepIndex: 0,
         parallelStrategy: opts?.parallelStrategy ?? 'sequential',
-        executionPolicy: opts?.executionPolicy ?? 'eager',
+        executionPolicy: opts?.executionPolicy ?? { mode: 'parallel' },
       }
     )
   }

@@ -147,6 +147,65 @@ export function ContextPanel({
   })()
   const isReady = modelStatus === 'Ready' && (!execution || execution.phase === 'idle' || execution.phase === 'done')
 
+  // Dynamic file detection from session events (attached files + tool results)
+  const sessionFiles = useMemo(() => {
+    const map = new Map<string, { name: string; kind: string }>()
+    for (const e of events) {
+      if (e.type === 'attachment/added') {
+        const files = (e.data as { files?: Array<{ name: string; kind?: string }> })?.files
+        if (Array.isArray(files)) {
+          for (const f of files) {
+            if (f?.name) map.set(f.name, { name: f.name, kind: f.kind ?? 'attachment' })
+          }
+        }
+      } else if (e.type === 'tool/result') {
+        const raw = typeof e.data === 'string' ? e.data : (e.data as { content?: string })?.content ?? ''
+        // Ensure we only match files that were modified, written, patched, or created (e.g. fs_write ok: true)
+        // avoid matching `"path":"..."` inside `fs_list` outputs!
+        const matches = raw.matchAll(/(?:written to\s+|created\s+|"ok"\s*:\s*true\s*,\s*"path"\s*:\s*["'])([^"'\r\n,}]+\.[a-z0-9]+)/gi)
+        for (const m of matches) {
+          if (m[1]) {
+            const fname = m[1].split(/[/\\]/).pop() ?? m[1]
+            if (fname.length > 2 && !map.has(fname)) {
+              map.set(fname, { name: fname, kind: 'workspace' })
+            }
+          }
+        }
+      }
+    }
+    return Array.from(map.values())
+  }, [events])
+
+  const subagents = useMemo(() => {
+    return events.filter(e => {
+      if (e.type !== 'tool/call') return false
+      const toolName = (e.data as any)?.name || (e.data as any)?.toolName || (e.data as any)?.toolCall?.name
+      return toolName === 'invoke_subagent' || toolName === 'define_subagent'
+    })
+  }, [events])
+
+  const artifacts = useMemo(() => {
+    return events.filter(e => e.type === 'artifact/created')
+  }, [events])
+
+  const bgTasks = useMemo(() => {
+    return events.filter(e => {
+      if (e.type !== 'tool/call') return false
+      const toolName = (e.data as any)?.name || (e.data as any)?.toolName || (e.data as any)?.toolCall?.name
+      const argsStr = JSON.stringify((e.data as any)?.args || {})
+      return (toolName === 'run_command' || toolName === 'exec_shell_command') && (argsStr.includes('"IsDaemon":true') || argsStr.includes('"isDaemon":true'))
+    })
+  }, [events])
+
+  const terminals = useMemo(() => {
+    return events.filter(e => {
+      if (e.type !== 'tool/call') return false
+      const toolName = (e.data as any)?.name || (e.data as any)?.toolName || (e.data as any)?.toolCall?.name
+      const argsStr = JSON.stringify((e.data as any)?.args || {})
+      return (toolName === 'run_command' || toolName === 'exec_shell_command') && !argsStr.includes('"IsDaemon":true') && !argsStr.includes('"isDaemon":true')
+    })
+  }, [events])
+
   return (
     <aside className="context-panel" aria-label="Session context">
       <div className="context-heading">
@@ -193,8 +252,81 @@ export function ContextPanel({
       })()}
 
       <ContextSection title="WORKSPACE">
-        <InfoRow label="Project" value={projectName ?? '—'} />
-        <InfoRow label="Branch" value={branch} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <details style={{ background: '#fff', borderRadius: 6, border: '1px solid #e7e3dc' }}>
+            <summary style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', cursor: 'pointer', listStyle: 'none' }}>
+              <span>Files Changed</span>
+              <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{sessionFiles.filter(f => f.kind === 'workspace').length}</span>
+            </summary>
+            {sessionFiles.filter(f => f.kind === 'workspace').length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 8px 8px 8px' }}>
+                {sessionFiles.filter(f => f.kind === 'workspace').map((f, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, padding: '4px', background: '#faf9f8', borderRadius: 4 }}>
+                    <FileText size={11} style={{ color: '#7e766d', flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#2c2825', flex: 1 }} title={f.name}>{f.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </details>
+
+          <details style={{ background: '#fff', borderRadius: 6, border: '1px solid #e7e3dc' }}>
+            <summary style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', cursor: 'pointer', listStyle: 'none' }}>
+              <span>Subagents</span>
+              <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{subagents.length}</span>
+            </summary>
+            {subagents.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 8px 8px 8px' }}>
+                {subagents.map((s, i) => {
+                  const data: any = s.data || {}
+                  const name = data.name || data.role || data.type || 'Subagent'
+                  return <div key={i} style={{ fontSize: 10, padding: '4px', background: '#faf9f8', borderRadius: 4, color: '#2c2825' }}>{name}</div>
+                })}
+              </div>
+            )}
+          </details>
+
+          <details style={{ background: '#fff', borderRadius: 6, border: '1px solid #e7e3dc' }}>
+            <summary style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', cursor: 'pointer', listStyle: 'none' }}>
+              <span>Artifacts</span>
+              <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{artifacts.length}</span>
+            </summary>
+            {artifacts.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 8px 8px 8px' }}>
+                {artifacts.map((a, i) => {
+                  const data: any = a.data || {}
+                  const name = data.name || data.path?.split(/[/\\]/).pop() || 'Artifact'
+                  return <div key={i} style={{ fontSize: 10, padding: '4px', background: '#faf9f8', borderRadius: 4, color: '#2c2825' }}>{name}</div>
+                })}
+              </div>
+            )}
+          </details>
+
+          <details style={{ background: '#fff', borderRadius: 6, border: '1px solid #e7e3dc' }}>
+            <summary style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', cursor: 'pointer', listStyle: 'none' }}>
+              <span>Uploads</span>
+              <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{sessionFiles.filter(f => f.kind === 'attachment').length}</span>
+            </summary>
+            {sessionFiles.filter(f => f.kind === 'attachment').length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 8px 8px 8px' }}>
+                {sessionFiles.filter(f => f.kind === 'attachment').map((f, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, padding: '4px', background: '#faf9f8', borderRadius: 4 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#2c2825', flex: 1 }} title={f.name}>{f.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </details>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', borderRadius: 6, background: '#fff', border: '1px solid #e7e3dc' }}>
+            <span>Background Tasks</span>
+            <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{bgTasks.length}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '4px 8px', borderRadius: 6, background: '#fff', border: '1px solid #e7e3dc' }}>
+            <span>Terminals</span>
+            <span style={{ fontSize: 10, color: '#9a9288', fontFamily: 'DM Mono, monospace' }}>{terminals.length}</span>
+          </div>
+        </div>
       </ContextSection>
 
       <ContextSection title="MODEL">
@@ -221,13 +353,6 @@ export function ContextPanel({
             ) : null}
           </div>
         ) : null}
-      </ContextSection>
-
-      <ContextSection title="FILES">
-        <div className="context-empty">
-          <FileText size={15} aria-hidden />
-          No files attached
-        </div>
       </ContextSection>
 
       <ContextSection title="RUNTIME">

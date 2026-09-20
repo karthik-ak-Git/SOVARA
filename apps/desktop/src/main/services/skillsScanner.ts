@@ -211,7 +211,7 @@ export async function loadEnabledSkillsContent(store?: { getAppSetting: (k: stri
       if (budget <= 0) break
       try {
         const text = await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-        const block = `## Skill: ${skill.name}\n${text.slice(0, 1500)}`
+        const block = `## Skill: ${skill.name}\n${text.slice(0, 3500)}`
         parts.push(block.slice(0, budget))
         budget -= block.length
       } catch {}
@@ -240,5 +240,5 @@ export async function loadEnabledSkillsContent(store?: { getAppSetting: (k: stri
   }
 
   if (parts.length === 0) return null
-  return `Skills available (follow their instructions when relevant):\n${parts.join('\n\n---\n\n')}`
+  return `<skills_context>\nEnterprise Skills Available (Consult these instructions closely):\n\n${parts.join('\n\n---\n\n')}\n</skills_context>`
 }

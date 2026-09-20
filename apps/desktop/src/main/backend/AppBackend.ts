@@ -166,6 +166,7 @@ export class AppBackend {
       models,
       baseDir,
       emit: chatEmit,
+      getExecMode: () => this.getExecMode(),
       webSearch: (query: string) => this.runWebSearchForChat(query, webRuntime),
       getGlobalWorkspace: () => this.getGlobalWorkspace(),
       getProjectWorkspace: (projectId: string | null) => {
@@ -209,10 +210,32 @@ export class AppBackend {
     })
     // Keep todo/write in session context — set session before each execute so ToolStubAdapter can persist
     const origExecute = this.orchestrator.execute.bind(this.orchestrator)
-    this.orchestrator.execute = (async (sid: unknown, ...rest: unknown[]) => {
+    this.orchestrator.execute = (async (sid: any, prompt: any, opts: any) => {
       try { (toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession?.(String(sid)) } catch {}
-      return origExecute(sid as never, ...(rest as never[]))
+      
+      // Auto-name session on first prompt
+      let isFirst = false
+      try {
+        const evs = await this.persistenceAdapter.getEvents(String(sid))
+        isFirst = evs.length === 0
+      } catch {}
+      
+      if (isFirst && typeof prompt === 'string') {
+        try {
+          const lines = prompt.trim().split('\n')
+          let title = lines[0]?.trim() || 'New Chat'
+          if (title.length > 35) title = title.slice(0, 35) + '...'
+          await this.persistenceAdapter.renameSession(String(sid), title)
+        } catch {}
+      }
+      
+      return origExecute(sid, prompt, opts)
     }) as typeof this.orchestrator.execute
+    const origRegen = this.orchestrator.regenerate.bind(this.orchestrator)
+    this.orchestrator.regenerate = (async (sid: any, opts: any) => {
+      try { (toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession?.(String(sid)) } catch {}
+      return origRegen(sid, opts)
+    }) as typeof this.orchestrator.regenerate
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,
@@ -488,10 +511,10 @@ export class AppBackend {
     return this.validationStore.list()
   }
 
-  /** AI command permission level (persisted, default 'ask'). */
+  /** AI command permission level (persisted, default 'review'). */
   getExecMode(): ExecMode {
     const raw = this.runtimeConfig.getExecMode()
-    return isExecMode(raw) ? raw : 'ask'
+    return isExecMode(raw) ? raw : 'review'
   }
 
   setExecMode(mode: ExecMode): ExecMode {

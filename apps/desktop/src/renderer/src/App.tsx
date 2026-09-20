@@ -26,6 +26,7 @@ import {
   setExecMode,
   getAppSettings,
   openArtifact,
+  copyToClipboard,
   type ProjectView,
   type ExecMode,
 } from '@/lib/client/api'
@@ -108,11 +109,10 @@ export function App(): React.JSX.Element {
   )
 
   const handleNewSession = useCallback((): void => {
-    void chat.handleCreate(null)
-    setSelectedProjectId(null)
+    void chat.handleCreate(selectedProjectId ?? null)
     setActiveTab('session')
     setActiveNav('chat')
-  }, [chat])
+  }, [chat, selectedProjectId])
 
   const handleNewProjectChat = useCallback(
     (projectId: string): void => {
@@ -213,19 +213,7 @@ export function App(): React.JSX.Element {
   )
 
   const handleCopy = useCallback((content: string): void => {
-    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(content).catch(() => {})
-    else {
-      try {
-        const ta = document.createElement('textarea')
-        ta.value = content
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-      } catch {}
-    }
+    void copyToClipboard(content)
   }, [])
 
   // Inline-only: do NOT navigate to full Models/Runtime page from chat buttons.
@@ -249,9 +237,11 @@ export function App(): React.JSX.Element {
     chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
 
   const activeProjectName = useMemo(() => {
-    if (!selectedProjectId) return null
-    return projects.find((p) => p.id === selectedProjectId)?.name ?? null
-  }, [selectedProjectId, projects])
+    const activeSess = chat.sessions.find((s) => s.id === chat.selectedId)
+    const pid = activeSess?.projectId ?? selectedProjectId
+    if (!pid || pid === '__global__') return 'SOVARA Workspace'
+    return projects.find((p) => p.id === pid)?.name ?? 'SOVARA Workspace'
+  }, [chat.selectedId, chat.sessions, selectedProjectId, projects])
 
   const activeModelDisplay = useMemo(() => {
     if (workbench.active.displayName) return workbench.active.displayName
@@ -398,6 +388,7 @@ export function App(): React.JSX.Element {
             onCancel={chat.handleCancel}
             onRegenerate={handleRegenerate}
             onEditAndResend={handleEditAndResend}
+            onApproveTool={chat.approveTool}
             onCopy={handleCopy}
             onCreateSession={handleNewSession}
             onSwitchSession={chat.switchSession}

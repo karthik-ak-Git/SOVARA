@@ -152,11 +152,11 @@ export interface ToolRegistry {
 // ============================================================================
 
 export interface ToolHandler {
-  (arguments: Record<string, unknown>, context: ToolExecutionContext): Promise<unknown>;
+  (args: Record<string, unknown>, context: ToolExecutionContext): Promise<unknown>;
 }
 
 export interface AsyncToolHandler {
-  (arguments: Record<string, unknown>, context: ToolExecutionContext): AsyncGenerator<unknown, void, unknown>;
+  (args: Record<string, unknown>, context: ToolExecutionContext): AsyncGenerator<unknown, void, unknown>;
 }
 
 // ============================================================================

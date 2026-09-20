@@ -22,7 +22,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { SOVARA_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 import { classifyTask } from './TaskClassifier'
-import { routeModel } from './ModelRouter'
+import { routeModel, pickFittingModel, suggestContextSize } from './ModelRouter'
 import { getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
 import { encodeToPool, retrieveSlice } from '../services/unlimitedContext'
 import { AssistantStreamAccumulator } from './assistantStream'
@@ -345,10 +345,17 @@ export class ChatService {
     ]
     const systemCharsForBudget = systemBlocks.join('\n\n').length
     const estSystemTokensForBudget = Math.ceil(systemCharsForBudget / 4)
-    // Sovereign prompt alone is ~6k tokens, so 4096 always overflows (6489>4096). Use 8192 floor for all local loads.
-    // 8192 fits 6GB for 4B (2834→~3600) and 9B partial (3560→~5200), and is needed for 6489 prompt.
+    // Sovereign prompt alone is ~6k tokens, so 4096 always overflows. Context is sized
+    // dynamically from the ACTUAL machine (test/main.js parity): pick the largest discrete
+    // tier that fits free VRAM/RAM after the model, with safety margin — floored at 8192
+    // so the sovereign prompt always fits.
+    let nCtxForLoad = 8192
+    try {
+      const snap = await this.deps.resources.getSnapshot()
+      const tier = suggestContextSize(snap, 4096) // assume ~4GB weights pre-selection
+      nCtxForLoad = Math.max(8192, tier)
+    } catch { /* unknown hardware → 8192 floor */ }
     // Enforce floor so no caller can accidentally pass 4096 and trigger 6460>4096.
-    const nCtxForLoad = 12288
     // 1. Resolve the active model — pinned vs Auto smart-routing.
     // Pinned: what user selected is used for entire chat (user request). Auto: smart route per task.
     let active = this.deps.workbench.getActiveModel()
@@ -944,29 +951,23 @@ export class ChatService {
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'model-load-failed', error: raw, modelId, runtimeId })
       // eslint-disable-next-line no-console
       console.error(`[SOVARA][CHAT][ERROR] load failed model=${modelId}: ${raw}`)
-      // Transparent fallback for 12B even-partial no-fit (LM Studio loads it in 4.1GB via different quant/KV, but our estimate says 14GB)
+      // Transparent fallback for even-partial no-fit — dynamic: rank by ACTUAL
+      // free VRAM/RAM fit via pickFittingModel (no hardcoded model names).
       if (/even partial offload does not fit/i.test(raw)) {
-        const m = raw.match(/Models in your library that fit this GPU:\s*([^\.]+)\./i)
-        const alts = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : []
         let fallbackId: string | null = null
-        if (alts.length > 0) {
-          const firstAlt = alts[0].replace(/\.gguf$/i, '')
-          try {
-            const avail = await this.deps.workbench.listModels()
-            const hit = avail.find((mm) => mm.displayName.toLowerCase().includes(firstAlt.toLowerCase()) || mm.modelId.toLowerCase().includes(firstAlt.toLowerCase()))
-            if (hit) fallbackId = hit.modelId
-          } catch {}
-        }
-        if (!fallbackId) {
-          try {
-            const avail = await this.deps.workbench.listModels()
-            const hit = avail.find((mm) => /nemotron|spark|unlimited-ocr|phi/i.test(mm.modelId)) ?? avail.find((mm) => mm.runtimeId === 'local')
-            if (hit) fallbackId = hit.modelId
-          } catch {}
-        }
+        try {
+          const [avail, snap] = await Promise.all([
+            this.deps.workbench.listModels(),
+            this.deps.resources.getSnapshot().catch(() => null),
+          ])
+          if (snap) {
+            const fit = pickFittingModel(avail, snap, { excludeModelId: modelId })
+            if (fit) fallbackId = fit.model.modelId
+          }
+        } catch {}
         if (fallbackId && fallbackId !== modelId) {
           console.log(`[SOVARA][CHAT] ${modelId} no-fit → auto-fallback to ${fallbackId}`)
-          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: fallbackId, runtimeId: 'local', detail: `auto-fallback: ${modelId} cannot fit 6GB even partial, switching to ${fallbackId}` })
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', modelId: fallbackId, runtimeId: 'local', detail: `auto-fallback: ${modelId} does not fit available VRAM even partial, switching to ${fallbackId}` })
           try {
             await this.deps.workbench.selectModel('local', fallbackId)
             // Retry once with fitting model (evicts old resident)

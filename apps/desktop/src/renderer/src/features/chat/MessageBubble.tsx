@@ -45,7 +45,15 @@ interface TextItem {
   text: string
 }
 
-type ParsedPart = CodeBlockItem | TextItem
+interface StructuredResponseItem {
+  type: 'structured'
+  summary?: string
+  files?: Array<{ path: string; action?: string; description?: string }>
+  details?: string
+  rawJson: string
+}
+
+type ParsedPart = CodeBlockItem | TextItem | StructuredResponseItem
 
 function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
   // Hide raw tool/thinking leaks: <thinking>...</thinking> should be ReasoningBlock, not bubble text (your 10:49 PM screenshot).
@@ -87,7 +95,7 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     return [{ type: 'text', text: raw }]
   }
   const parts: ParsedPart[] = []
-  const fenceRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g
+  const fenceRegex = /```([a-zA-Z0-9_:-]*)\n([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = fenceRegex.exec(raw)) !== null) {
@@ -96,6 +104,40 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     }
     let lang = match[1]?.trim() || 'code'
     let code = normalizeCode(match[2]?.trimEnd() ?? '')
+
+    // Structured JSON response check (json:response or json with summary/files)
+    if (lang === 'json:response' || (lang.startsWith('json') && code.includes('"summary"'))) {
+      try {
+        const parsed = JSON.parse(code)
+        if (parsed && typeof parsed === 'object') {
+          const summary = typeof parsed.summary === 'string' ? parsed.summary : undefined
+          const details = typeof parsed.details === 'string' ? parsed.details : typeof parsed.text === 'string' ? parsed.text : undefined
+          const files = Array.isArray(parsed.files)
+            ? (parsed.files as Array<Record<string, unknown>>)
+                .filter((f) => f && typeof f['path'] === 'string')
+                .map((f) => ({
+                  path: String(f['path']),
+                  action: typeof f['action'] === 'string' ? f['action'] : undefined,
+                  description: typeof f['description'] === 'string' ? f['description'] : undefined,
+                }))
+            : undefined
+          if (summary || files || details) {
+            parts.push({
+              type: 'structured',
+              summary,
+              files,
+              details,
+              rawJson: code,
+            })
+            lastIndex = match.index + match[0].length
+            continue
+          }
+        }
+      } catch {
+        // Incomplete/streaming JSON — fall through to code block display
+      }
+    }
+
     // If fence has no language but content is a diagram HTML, treat as html for preview
     if ((!lang || lang === 'code') && code.includes('<svg') && code.includes('</svg>')) {
       lang = 'html'
@@ -225,7 +267,7 @@ export function MessageBubble({
             <span className="ledger-mark" aria-hidden><Sparkles size={14} /></span>
             <span className="ledger-name">Sovara</span>
             <span className="ledger-phase thinking">Thinking</span>
-            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'spark x2.5 4b'} • Streaming…</span>
+            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'local'} • Streaming…</span>
           </div>
           <div className="ledger-track" aria-hidden><div className="ledger-fill" style={{ width: '48%' } as React.CSSProperties} /></div>
           <div className="ledger-why">Analysing your request — why: building local context before generating • English only</div>
@@ -359,18 +401,6 @@ export function MessageBubble({
         ) : null}
 
         {parsedParts.map((part, index) => {
-          if (part.type === 'code') {
-            return (
-              <ArtifactCard
-                key={`${id}-code-${index}`}
-                title={part.title}
-                language={part.language}
-                code={part.code}
-                onOpenSplit={onOpenArtifact ? () => onOpenArtifact({ title: part.title, language: part.language, code: part.code }) : undefined}
-              />
-            )
-          }
-          if (!part.text.trim()) return null
           // Minimal markdown for assistant text: **bold**, *italic*, `inline`, -/1. lists, > quote
           // Keep it lightweight (no deps) and preserve whitespace for the model's **workspace**/**SOVARA runtime** etc.
           const renderMarkdown = (raw: string) => {
@@ -442,6 +472,129 @@ export function MessageBubble({
             flushList()
             return out.length ? out : [<p key="p0" style={{ margin: '6px 0', whiteSpace: 'pre-wrap' }} dangerouslySetInnerHTML={{ __html: inline(mdEscape(raw)) }} />]
           }
+
+          if (part.type === 'code') {
+            return (
+              <ArtifactCard
+                key={`${id}-code-${index}`}
+                title={part.title}
+                language={part.language}
+                code={part.code}
+                onOpenSplit={onOpenArtifact ? () => onOpenArtifact({ title: part.title, language: part.language, code: part.code }) : undefined}
+              />
+            )
+          }
+
+          if (part.type === 'structured') {
+            return (
+              <div
+                key={`${id}-struct-${index}`}
+                className="sv-structured-card"
+                style={{
+                  margin: '10px 0',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                }}
+              >
+                {part.summary ? (
+                  <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: part.files?.length || part.details ? '8px' : 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Sparkles size={14} style={{ color: '#E06C47' }} />
+                    <span>{part.summary}</span>
+                  </div>
+                ) : null}
+                {part.files && part.files.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', margin: '8px 0' }}>
+                    {part.files.map((f, fi) => (
+                      <div
+                        key={fi}
+                        role="button"
+                        tabIndex={0}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '0.85rem',
+                          padding: '6px 10px',
+                          background: 'rgba(0, 0, 0, 0.15)',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          border: '1px solid rgba(255, 255, 255, 0.08)',
+                        }}
+                        onClick={async () => {
+                          if (!f.path) return
+                          try {
+                            const { openArtifact } = await import('../../lib/client/api')
+                            void openArtifact(f.path)
+                          } catch {}
+                          if (onOpenArtifact) {
+                            try {
+                              const { dispatchTool } = await import('../../lib/client/api')
+                              const raw = await dispatchTool('fs_read', { path: f.path }).catch(() => '')
+                              const code = typeof raw === 'string' ? raw : (raw as { output?: string })?.output ?? ''
+                              const ext = f.path.split('.').pop()?.toLowerCase() ?? 'text'
+                              const lang = ext === 'html' ? 'html' : ext === 'css' ? 'css' : ext === 'js' || ext === 'ts' || ext === 'jsx' || ext === 'tsx' ? 'javascript' : ext
+                              onOpenArtifact({ title: f.path, language: lang, code: code || `File: ${f.path}` })
+                            } catch {
+                              onOpenArtifact({ title: f.path, language: 'code', code: `File: ${f.path}` })
+                            }
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            const target = e.currentTarget
+                            target.click()
+                          }
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: '0.72rem',
+                            textTransform: 'uppercase',
+                            fontWeight: 700,
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: f.action === 'created' ? 'rgba(74, 222, 128, 0.18)' : f.action === 'modified' ? 'rgba(96, 165, 250, 0.18)' : 'rgba(255, 255, 255, 0.1)',
+                            color: f.action === 'created' ? '#4ade80' : f.action === 'modified' ? '#60a5fa' : '#94a3b8',
+                          }}
+                        >
+                          {f.action || 'file'}
+                        </span>
+                        <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.84rem', fontWeight: 600, color: '#fff', textDecoration: 'underline' }}>{f.path}</code>
+                        {f.description ? <span style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>— {f.description}</span> : null}
+                        <button
+                          type="button"
+                          style={{
+                            marginLeft: 'auto',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(96, 165, 250, 0.4)',
+                            background: 'rgba(96, 165, 250, 0.15)',
+                            color: '#60a5fa',
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Open ↗
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {part.details ? (
+                  <div style={{ marginTop: '8px', fontSize: '0.9rem', lineHeight: 1.5 }}>
+                    {renderMarkdown(part.details)}
+                  </div>
+                ) : null}
+              </div>
+            )
+          }
+
+          if (!part.text.trim()) return null
           return (
             <div key={`${id}-text-${index}`} style={{ width: '100%' }}>
               {renderMarkdown(part.text)}

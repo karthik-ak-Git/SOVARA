@@ -2,6 +2,7 @@
 
 import type { ReactElement } from 'react'
 import { Copy, RefreshCw, Pencil } from 'lucide-react'
+import { copyToClipboard } from '@/lib/client/api'
 
 interface MessageActionsProps {
   role: 'user' | 'assistant'
@@ -23,25 +24,25 @@ export function MessageActions({
   busy = false,
 }: MessageActionsProps): ReactElement | null {
   const handleCopy = async (): Promise<void> => {
+    // Main-process clipboard (deterministic under contextIsolation); the api
+    // helper falls back to navigator.clipboard in non-Electron dev.
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content)
-      } else {
-        // Fallback
+      await copyToClipboard(content)
+    } catch {
+      // last-resort in-page fallback so the button never dead-ends
+      try {
         const ta = document.createElement('textarea')
         ta.value = content
         ta.style.position = 'fixed'
         ta.style.opacity = '0'
         document.body.appendChild(ta)
+        ta.focus()
         ta.select()
         document.execCommand('copy')
         document.body.removeChild(ta)
-      }
-      onCopy?.(content)
-    } catch {
-      // clipboard best-effort; still notify caller
-      onCopy?.(content)
+      } catch { /* clipboard unavailable */ }
     }
+    onCopy?.(content)
   }
 
   // User actions: Copy + Edit

@@ -557,6 +557,15 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB, vramTotalMB: gpu.totalMB }, 'error')
         throw new Error(msg)
       }
+      // Proactive cancellation: if the user requested a new model while another
+      // model is STILL loading, they likely changed their mind or it hung. Kill it.
+      for (const t of this.instances.values()) {
+        if (String(t.id) !== key && t.state === 'LOADING') {
+          appendLlamaLog(this.baseDir, 'proactive-cancel-loading', { evicting: t.modelId, for: modelId })
+          await this.unloadInner(t.id).catch(() => {})
+        }
+      }
+
       // Make room: evict LRU eligible residents until under the cap.
       // Fix instant "resource-pressure / runtime unavailable": same-model re-send reuses pendingLoads, so don't block.
       // For different model while previous is still LOADING/BUSY, wait briefly for it to settle before refusing.
@@ -604,7 +613,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const vramBefore = (await this.deps.queryVram().catch(() => null))?.freeMB
     appendLlamaLog(this.baseDir, 'load-start', {
       modelId, modelPath, fileSizeMB: Math.round(fileSize / (1024 * 1024)),
-      estimatedVramMB, plan, ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
+      estimatedVramMB, plan: JSON.stringify(plan), ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
       offloadedLayers: ngl, totalLayers: (plan as unknown as { totalLayers?: number })?.totalLayers ?? (ngl === 999 ? ngl : 32), allLayers: `${ngl === 999 ? 'all' : `${ngl}/${(plan as unknown as { totalLayers?: number })?.totalLayers ?? 32} GPU + ${((plan as unknown as { totalLayers?: number })?.totalLayers ?? 32) - ngl} CPU`} = all layers loaded (CPU spill)`,
       partialOffload, autoFallback, vramFreeBeforeMB: vramBefore ?? 'unknown',
     })
@@ -789,9 +798,9 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     let victim: TrackedInstance | null = null
     for (const t of this.instances.values()) {
       if (String(t.id) === excludeKey) continue
-      if (t.state === 'LOADING' || t.state === 'EVICTING' || t.state === 'FAILED') continue
-      if ((t.activeRequests ?? 0) > 0) continue // currently generating
-      if (t.state !== 'ACTIVE' && t.state !== 'BUSY_DECODE') continue
+      if (t.state === 'EVICTING') continue // already being evicted
+      // Allow eviction of FAILED, LOADING, ACTIVE, and BUSY_DECODE (if 0 active requests)
+      if (t.state !== 'FAILED' && t.state !== 'LOADING' && (t.activeRequests ?? 0) > 0) continue // currently generating
       if (!victim || (t.lastActiveAt ?? t.startedAt ?? 0) < (victim.lastActiveAt ?? victim.startedAt ?? 0)) victim = t
     }
     return victim

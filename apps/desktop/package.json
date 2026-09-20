@@ -14,11 +14,13 @@
     "build:win:dir": "electron-vite build && electron-builder --win --x64 --dir",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "llama:download": "node-llama-cpp download --gpu cuda --arch x64 || npx --yes node-llama-cpp download --gpu cuda || true",
-    "postinstall": "npm run llama:download || true"
+    "llama:download": "node-llama-cpp download --gpu cuda --arch x64 || npx --yes node-llama-cpp download --gpu cuda || exit 0",
+    "postinstall": "npm run llama:download || exit 0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "lucide-react": "0.511.0",
+    "node-addon-api": "^8.9.2",
     "node-llama-cpp": "^3.20.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

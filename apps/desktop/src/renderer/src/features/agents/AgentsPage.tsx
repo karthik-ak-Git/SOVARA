@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
-import { listMcpServers, getMcpDir, openMcpFolder, installMcpFromUrl, toggleMcpServer, probeMcpServer, removeMcpServer, type McpServerView } from '@/lib/client/api'
+import { listMcpServers, getMcpDir, openMcpFolder, installMcpFromUrl, toggleMcpServer, probeMcpServer, removeMcpServer, listSessions, getSessionEvents, type McpServerView } from '@/lib/client/api'
 import {
   Bot,
   Star,
@@ -155,6 +155,7 @@ function lifecycleClass(l: AgentLifecycle): string {
 function Sparkline({ values, color = 'var(--accent)' }: { values: number[]; color?: string }): React.JSX.Element {
   const w = 84
   const h = 28
+  if (values.length < 2) return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden />
   const max = Math.max(...values)
   const min = Math.min(...values)
   const range = max - min || 1
@@ -166,31 +167,143 @@ function Sparkline({ values, color = 'var(--accent)' }: { values: number[]; colo
   )
 }
 
+// ── Real usage metrics (no fake numbers) ─────────────────────────
+// Computed live from persisted session events via IPC. Renders an honest
+// empty state when no local run history exists yet.
+interface UsageStats {
+  loading: boolean
+  totalMessages: number
+  last7d: number[] // messages per day, oldest → newest
+  errors: number
+  avgChars: number
+}
+
+function useUsageStats(): UsageStats {
+  const [stats, setStats] = useState<UsageStats>({ loading: true, totalMessages: 0, last7d: [], errors: 0, avgChars: 0 })
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const sessions = await listSessions()
+        const recent = sessions.slice(0, 25)
+        const eventLists = await Promise.all(recent.map((s) => getSessionEvents(s.id).catch(() => [])))
+        if (!alive) return
+        const now = Date.now()
+        const days = Array<number>(7).fill(0)
+        let total = 0
+        let errors = 0
+        let chars = 0
+        for (const events of eventLists) {
+          for (const e of events) {
+            if (e.type === 'user/message' || e.type === 'assistant/message') {
+              const content = typeof e.data === 'object' && e.data !== null && typeof (e.data as Record<string, unknown>)['content'] === 'string'
+                ? (e.data as Record<string, unknown>)['content'] as string : ''
+              total++
+              chars += content.length
+              const ageDays = Math.floor((now - e.time) / 86_400_000)
+              if (ageDays >= 0 && ageDays < 7) days[6 - ageDays]++
+            }
+            if (e.type === 'task:error' || e.type === 'error') errors++
+          }
+        }
+        setStats({ loading: false, totalMessages: total, last7d: days, errors, avgChars: total > 0 ? Math.round(chars / total) : 0 })
+      } catch {
+        if (alive) setStats({ loading: false, totalMessages: 0, last7d: [], errors: 0, avgChars: 0 })
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  return stats
+}
+
+function MetricOrEmpty({ stats, children }: { stats: UsageStats; children: (s: UsageStats) => React.JSX.Element }): React.JSX.Element {
+  if (stats.loading) return <div className="as-metric-foot"><span className="small muted">Loading local run history…</span></div>
+  if (stats.totalMessages === 0) return <div className="as-metric-foot"><span className="small muted">No local runs yet — metrics appear after you chat.</span></div>
+  return children(stats)
+}
+
+// Real hardware recommendation from SystemResources IPC — never a hardcoded rig.
+function HardwareReco(): React.JSX.Element {
+  const [reco, setReco] = useState<{ loading: boolean; text: React.JSX.Element | null }>({ loading: true, text: null })
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const { getSystemResources, listDiscoveredModels } = await import('@/lib/client/api')
+        const [hw, models] = await Promise.all([getSystemResources(), listDiscoveredModels()])
+        if (!alive) return
+        const vramGB = hw.vram?.totalMB != null && hw.vram.totalMB > 0 ? hw.vram.totalMB / 1024 : null
+        const ramGB = hw.ram?.totalMB != null ? hw.ram.totalMB / 1024 : null
+        if (vramGB == null && ramGB == null) {
+          setReco({ loading: false, text: <p className="as-reco-body">Hardware detection unavailable.</p> })
+          return
+        }
+        const fitText = vramGB != null
+          ? `Your rig has ${ramGB != null ? `${ramGB.toFixed(0)} GB RAM · ` : ''}${vramGB.toFixed(1)} GB VRAM.`
+          : `Your rig has ${ramGB?.toFixed(0)} GB RAM (no dedicated GPU detected).`
+        // Largest available discovered model by real file size that fits free VRAM (fallback RAM).
+        const budgetMb = vramGB != null && (hw.vram?.freeMB ?? 0) > 0 ? (hw.vram?.freeMB ?? 0) : (hw.ram?.freeMB ?? 0)
+        const sizeMb = (m: typeof models[number]): number => {
+          const st = m as unknown as { fileSizeBytes?: number; sizeBytes?: number }
+          if (typeof st.fileSizeBytes === 'number' && st.fileSizeBytes > 0) return st.fileSizeBytes / (1024 * 1024)
+          if (typeof st.sizeBytes === 'number' && st.sizeBytes > 0) return st.sizeBytes / (1024 * 1024)
+          const pm = m.modelId.match(/([\d.]+)\s*b\b/i)
+          return (pm ? parseFloat(pm[1]) : 7) * 550
+        }
+        const fitting = models
+          .filter((m) => m.available)
+          .map((m) => ({ m, mb: sizeMb(m) }))
+          .filter((x) => x.mb > 0 && x.mb <= budgetMb * 0.9)
+          .sort((a, b) => b.mb - a.mb)[0]
+        setReco({
+          loading: false,
+          text: fitting ? (
+            <p className="as-reco-body">{fitText} <strong>{fitting.m.displayName}</strong> is the best available fit on this machine (~{(fitting.mb / 1024).toFixed(1)} GB, measured against free memory).</p>
+          ) : (
+            <p className="as-reco-body">{fitText} No downloaded model fits in free memory yet — download a smaller quant from Explore.</p>
+          ),
+        })
+      } catch {
+        if (alive) setReco({ loading: false, text: <p className="as-reco-body">Recommendation unavailable — open Models to check hardware.</p> })
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  return reco.loading ? <p className="as-reco-body">Detecting hardware…</p> : (reco.text ?? <p className="as-reco-body">Recommendation unavailable.</p>)
+}
+
 // ── Workspaces ──────────────────────────────────────────────────
 
 function OverviewWorkspace({ agent }: { agent: AgentRecord }): React.JSX.Element {
+  const stats = useUsageStats()
   return (
     <div className="as-overview">
       <div className="as-metrics">
         <div className="as-metric">
-          <div className="as-metric-head"><span className="as-metric-icon"><Activity size={14} aria-hidden /></span><span className="as-metric-label">Total runs · 7d</span><span className="as-trend up"><TrendingUp size={11} aria-hidden /> +12%</span></div>
-          <div className="as-metric-value">1,284</div>
-          <div className="as-metric-foot"><span className="small muted">98.1% success · 3 failed</span><Sparkline values={[6, 8, 5, 9, 7, 11, 9]} /></div>
+          <div className="as-metric-head"><span className="as-metric-icon"><Activity size={14} aria-hidden /></span><span className="as-metric-label">Messages · recent sessions</span></div>
+          <div className="as-metric-value">{stats.loading ? '…' : stats.totalMessages}</div>
+          <MetricOrEmpty stats={stats}>{(s) => (
+            <div className="as-metric-foot"><span className="small muted">{s.errors} error event{s.errors === 1 ? '' : 's'} · avg {s.avgChars} chars/msg</span><Sparkline values={s.last7d.length >= 2 ? s.last7d : [0, 0]} /></div>
+          )}</MetricOrEmpty>
         </div>
         <div className="as-metric">
-          <div className="as-metric-head"><span className="as-metric-icon"><Gauge size={14} aria-hidden /></span><span className="as-metric-label">Avg latency</span><span className="as-trend down">p95 2.4s</span></div>
-          <div className="as-metric-value">1.1<span className="as-metric-unit">s</span></div>
-          <div className="as-metric-foot"><span className="small muted">p50 0.7s</span><Sparkline values={[9, 7, 8, 6, 5, 6, 4]} color="#10b981" /></div>
+          <div className="as-metric-head"><span className="as-metric-icon"><Gauge size={14} aria-hidden /></span><span className="as-metric-label">Activity · 7d</span></div>
+          <div className="as-metric-value">{stats.loading ? '…' : stats.last7d.reduce((a, b) => a + b, 0)}</div>
+          <MetricOrEmpty stats={stats}>{(s) => (
+            <div className="as-metric-foot"><span className="small muted">messages per day, last 7 days</span><Sparkline values={s.last7d.length >= 2 ? s.last7d : [0, 0]} color="#10b981" /></div>
+          )}</MetricOrEmpty>
         </div>
         <div className="as-metric">
-          <div className="as-metric-head"><span className="as-metric-icon"><BookOpen size={14} aria-hidden /></span><span className="as-metric-label">Knowledge</span><span className="as-trend neutral">12 files</span></div>
-          <div className="as-metric-value">94<span className="as-metric-unit">%</span></div>
-          <div className="as-metric-foot"><span className="small muted">Indexed · 10.5k chunks</span><Sparkline values={[70, 72, 80, 78, 85, 90, 94]} color="#7c3aed" /></div>
+          <div className="as-metric-head"><span className="as-metric-icon"><BookOpen size={14} aria-hidden /></span><span className="as-metric-label">Avg message size</span></div>
+          <div className="as-metric-value">{stats.loading ? '…' : stats.avgChars}<span className="as-metric-unit">chars</span></div>
+          <MetricOrEmpty stats={stats}>{() => (
+            <div className="as-metric-foot"><span className="small muted">derived from persisted session events</span></div>
+          )}</MetricOrEmpty>
         </div>
         <div className="as-metric">
-          <div className="as-metric-head"><span className="as-metric-icon"><Plug2 size={14} aria-hidden /></span><span className="as-metric-label">MCP health</span><span className="as-pill as-pill--ok">3/3 ok</span></div>
-          <div className="as-metric-value">All systems</div>
-          <div className="as-metric-foot"><span className="small muted">Filesystem · Brave · SQLite</span><Sparkline values={[1, 1, 1, 0.8, 1, 1, 1]} color="#22c55e" /></div>
+          <div className="as-metric-head"><span className="as-metric-icon"><Plug2 size={14} aria-hidden /></span><span className="as-metric-label">Sovereignty</span><span className="as-pill as-pill--ok">local</span></div>
+          <div className="as-metric-value">Offline</div>
+          <div className="as-metric-foot"><span className="small muted">No cloud · no telemetry · local models only</span></div>
         </div>
       </div>
 
@@ -203,8 +316,7 @@ function OverviewWorkspace({ agent }: { agent: AgentRecord }): React.JSX.Element
 
       <div className="as-reco">
         <div className="as-reco-head"><Cpu size={13} aria-hidden /><span>System-aware recommendation</span><span className="as-pill">local</span></div>
-        <p className="as-reco-body">Your rig has 32 GB RAM · 8 GB VRAM. <strong>Qwen3 8B Q4_K_M (~4.9 GB)</strong> is the best fit for this agent — good quality, fits in VRAM. <span className="muted">Larger Q5/Q6 will spill to RAM and double latency.</span></p>
-        <div className="as-reco-actions"><button type="button" className="btn btn-sm primary">Apply recommended model</button><button type="button" className="btn btn-sm">View alternatives</button></div>
+        <HardwareReco />
       </div>
 
       <div className="as-two">
@@ -616,14 +728,20 @@ function TestingWorkspace(): React.JSX.Element {
 }
 
 function AnalyticsWorkspace(): React.JSX.Element {
+  const stats = useUsageStats()
   return (
     <div className="as-ws">
       <div className="as-metrics">
-        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><BarChart3 size={14} aria-hidden /></span><span className="as-metric-label">Runs (7d)</span></div><div className="as-metric-value">342</div><div className="as-metric-foot"><span className="small muted">+12% vs prior</span><Sparkline values={[30, 42, 28, 50, 38, 60, 48]} /></div></div>
-        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><CheckCircle2 size={14} aria-hidden /></span><span className="as-metric-label">Success</span></div><div className="as-metric-value">98.1<span className="as-metric-unit">%</span></div><div className="as-metric-foot"><span className="small muted">3 failures</span><Sparkline values={[96, 97, 98, 97, 98, 99, 98]} color="#22c55e" /></div></div>
-        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><Clock3 size={14} aria-hidden /></span><span className="as-metric-label">Avg latency</span></div><div className="as-metric-value">1.1<span className="as-metric-unit">s</span></div><div className="as-metric-foot"><span className="small muted">p50 0.7s · p95 2.4s</span><Sparkline values={[1.4, 1.2, 1.3, 1.1, 1.0, 1.1, 1.1]} color="#4a90d9" /></div></div>
+        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><BarChart3 size={14} aria-hidden /></span><span className="as-metric-label">Messages (7d)</span></div><div className="as-metric-value">{stats.loading ? '…' : stats.last7d.reduce((a, b) => a + b, 0)}</div>
+          <MetricOrEmpty stats={stats}>{(s) => <div className="as-metric-foot"><span className="small muted">from local session events</span><Sparkline values={s.last7d.length >= 2 ? s.last7d : [0, 0]} /></div>}</MetricOrEmpty></div>
+        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><CheckCircle2 size={14} aria-hidden /></span><span className="as-metric-label">Errors</span></div><div className="as-metric-value">{stats.loading ? '…' : stats.errors}</div>
+          <MetricOrEmpty stats={stats}>{(s) => <div className="as-metric-foot"><span className="small muted">error events across recent sessions</span><Sparkline values={s.last7d.length >= 2 ? s.last7d : [0, 0]} color="#22c55e" /></div>}</MetricOrEmpty></div>
+        <div className="as-metric"><div className="as-metric-head"><span className="as-metric-icon"><Clock3 size={14} aria-hidden /></span><span className="as-metric-label">Total messages</span></div><div className="as-metric-value">{stats.loading ? '…' : stats.totalMessages}</div>
+          <MetricOrEmpty stats={stats}>{(s) => <div className="as-metric-foot"><span className="small muted">avg {s.avgChars} chars per message</span></div>}</MetricOrEmpty></div>
       </div>
-      <div className="as-panel"><div className="as-panel-head"><span className="as-panel-title"><BarChart3 size={13} aria-hidden /> Recent runs</span><span className="small muted">last 50 · resumable ingest included</span></div><div className="as-table-wrap"><table className="as-table"><thead><tr><th>When</th><th>Input</th><th>Status</th><th>Latency</th></tr></thead><tbody><tr><td className="small">2h ago</td><td className="small">Research Q3 roadmap</td><td><span className="as-pill as-pill--ok">Success</span></td><td className="small muted">1.3s</td></tr><tr><td className="small">5h ago</td><td className="small">Summarize handbook.pdf</td><td><span className="as-pill as-pill--ok">Success</span></td><td className="small muted">0.9s</td></tr><tr><td className="small">1d ago</td><td className="small">Draft support reply</td><td><span className="as-pill as-pill--warn">Retry</span></td><td className="small muted">2.8s</td></tr></tbody></table></div></div>
+      <div className="as-panel"><div className="as-panel-head"><span className="as-panel-title"><BarChart3 size={13} aria-hidden /> Usage</span><span className="small muted">derived live from persisted session events — no fabricated data</span></div>
+        <div className="as-metric-foot" style={{ padding: '10px 14px' }}><span className="small muted">{stats.loading ? 'Loading…' : stats.totalMessages === 0 ? 'No local runs yet — chat to populate analytics.' : `Tracking ${stats.totalMessages} messages across recent local sessions. ${stats.errors} error event${stats.errors === 1 ? '' : 's'} recorded.`}</span></div>
+      </div>
     </div>
   )
 }

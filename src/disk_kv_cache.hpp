@@ -1,77 +1,124 @@
+// disk_kv_cache.hpp — Layer-Ahead Disk-Pre-fetching KV-Cache Engine.
+//
+// Streams llama.cpp KV-cache blocks straight from NVMe into page-aligned
+// recycling double buffers in system RAM (Direct I/O — no OS page cache),
+// staying exactly one layer ahead of inference. Blocks the execution thread
+// ONLY when disk throughput falls behind the engine.
+//
+// Thread model:
+//   engine thread : GetLayerKV(layer) → wait on cv_engine → consume → ReleaseLayer
+//   disk thread   : prefetch_loop() → read layer N+1 into the back buffer → flip
+//
+// Alignment contract: every buffer is 4096-byte page aligned (mandatory for
+// O_DIRECT on Linux and FILE_FLAG_NO_BUFFERING on Windows), and every read
+// size/offset is a multiple of 4096.
 #pragma once
-#include <string>
-#include <vector>
-#include <thread>
-#include <mutex>
+
+#include <cstddef>
 #include <condition_variable>
 #include <atomic>
+#include <mutex>
+#include <string>
+#include <thread>
+
 #ifdef _WIN32
-#include <windows.h>
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <windows.h>
 #else
-#include <fcntl.h>
-#include <unistd.h>
+  #include <fcntl.h>
+  #include <unistd.h>
 #endif
 
-template<typename T, size_t Align>
-struct AlignedAllocator {
-  using value_type = T;
-  AlignedAllocator() noexcept {}
-  template<typename U> AlignedAllocator(const AlignedAllocator<U,Align>&) noexcept {}
-  T* allocate(size_t n){ void* p=null;
-#ifdef _WIN32
-    p=_aligned_malloc(n*sizeof(T), Align);
-    if(!p) throw std::bad_alloc();
-#else
-    if(posix_memalign(&p, Align, n*sizeof(T))!=0) throw std::bad_alloc();
-#endif
-    return reinterpret_cast<T*>(p);
-  }
-  void deallocate(T* p, size_t){ 
-#ifdef _WIN32
-    _aligned_free(p);
-#else
-    free(p);
-#endif
-  }
-  bool operator==(const AlignedAllocator&) const noexcept { return true; }
-  bool operator!=(const AlignedAllocator&) const noexcept { return false; }
-};
+// Page-aligned raw allocation helpers (Direct I/O requires 4096 alignment).
+void* aligned_alloc_pages(size_t size);          // throws std::bad_alloc
+void  aligned_free_pages(void* ptr) noexcept;
 
 struct KVCacheBlock {
-  size_t layer_id = 0;
-  std::vector<char, AlignedAllocator<char,4096>> data;
-  std::atomic<bool> is_ready{false};
-  KVCacheBlock(){}
+  std::size_t layer_id = 0;
+  void*       data     = nullptr;   // page-aligned, block_size bytes, owned
+  std::size_t bytes    = 0;
+  std::atomic<bool> is_ready{ false };
+
+  KVCacheBlock() = default;
+  ~KVCacheBlock();
+  KVCacheBlock(const KVCacheBlock&) = delete;
+  KVCacheBlock& operator=(const KVCacheBlock&) = delete;
+  KVCacheBlock(KVCacheBlock&& other) noexcept;
+  KVCacheBlock& operator=(KVCacheBlock&& other) noexcept;
 };
 
 class DiskKVCacheManager {
 public:
-  DiskKVCacheManager(std::string path, size_t b_size, size_t layers);
+  // Opens `path` with platform Direct-I/O flags and starts the prefetch thread.
+  // Throws std::runtime_error when the file cannot be opened or block_size is
+  // not 4096-aligned. `layers` is the KV layer count of the loaded model.
+  DiskKVCacheManager(std::string path, std::size_t b_size, std::size_t layers);
+
+  // RAII: signals stop, wakes both CVs, joins the worker, closes the handle.
   ~DiskKVCacheManager();
-  char* GetLayerKV(size_t layer_id);
-  void ReleaseLayer(size_t layer_id);
+
+  DiskKVCacheManager(const DiskKVCacheManager&) = delete;
+  DiskKVCacheManager& operator=(const DiskKVCacheManager&) = delete;
+
+  // Returns a page-aligned buffer holding layer `layer_id`'s KV bytes.
+  // Blocks until the data is resident. If the prefetcher already loaded it
+  // (layer-ahead), this returns immediately — RAM-level latency.
+  char* GetLayerKV(std::size_t layer_id);
+
+  // Marks `layer_id` consumed so the buffer slot can be recycled by the
+  // prefetcher. Call after the layer's inference step finishes.
+  void ReleaseLayer(std::size_t layer_id);
+
+  // Telemetry for the UI state matrix.
+  double disk_read_mbps() const noexcept { return disk_read_mbps_.load(std::memory_order_relaxed); }
+  std::size_t prefetched_layer() const noexcept { return prefetched_layer_.load(std::memory_order_relaxed); }
+  std::size_t current_layer() const noexcept { return current_layer_.load(std::memory_order_relaxed); }
+  std::size_t total_layers() const noexcept { return total_layers_; }
+  std::size_t block_bytes() const noexcept { return block_size_; }
+
 private:
   void prefetch_loop();
-  std::string file_path;
-  size_t block_size;
-  size_t total_layers;
-  std::atomic<size_t> current_layer{0};
-  std::vector<char, AlignedAllocator<char,4096>> buf_a;
-  std::vector<char, AlignedAllocator<char,4096>> buf_b;
-  char* front_buf = nullptr;
-  char* back_buf = nullptr;
-  std::atomic<size_t> front_layer{SIZE_MAX};
-  std::atomic<size_t> back_layer{SIZE_MAX};
-  std::atomic<bool> front_ready{false};
-  std::atomic<bool> back_ready{false};
+  bool read_layer_into(void* dst, std::size_t layer_id) noexcept;
+  void close_handle() noexcept;
+
+  std::string file_path_;
+  std::size_t block_size_   = 0;   // bytes per layer block (4096-aligned)
+  std::size_t total_layers_ = 0;
+  std::size_t aligned_size_ = 0;   // block_size_ rounded up to 4096
+
+  // Engine pointer + the two recycling buffers. front_ serves the engine,
+  // back_ is what the disk thread is (or just finished) filling.
+  std::atomic<std::size_t> current_layer_{ 0 };
+  std::atomic<std::size_t> prefetched_layer_{ static_cast<std::size_t>(-1) };
+  void*  front_buf_ = nullptr;
+  void*  back_buf_  = nullptr;
+  std::atomic<std::size_t> front_layer_{ static_cast<std::size_t>(-1) };
+  std::atomic<std::size_t> back_layer_{ static_cast<std::size_t>(-1) };
+  std::atomic<bool> front_ready_{ false };
+  std::atomic<bool> back_ready_{ false };
+
+  // Telemetry (relaxed — UI only).
+  std::atomic<double> disk_read_mbps_{ 0.0 };
+  std::atomic<std::uint64_t> bytes_read_{ 0 };
+  std::atomic<std::uint64_t> last_read_ms_{ 0 };
+
 #ifdef _WIN32
-  HANDLE file_handle = INVALID_HANDLE_VALUE;
+  HANDLE file_handle_ = INVALID_HANDLE_VALUE;
 #else
-  int file_descriptor = -1;
+  int    file_descriptor_ = -1;
 #endif
-  std::mutex mtx;
-  std::condition_variable cv_disk;
-  std::condition_variable cv_engine;
-  std::thread worker_thread;
-  std::atomic<bool> stop_signal{false};
+
+  // Sync: mtx_ guards buffer slot swaps; cv_disk_ wakes the disk thread when
+  // the engine advances or stops; cv_engine_ wakes the engine when its layer
+  // is resident. stop_signal_ terminates the loop.
+  std::mutex mtx_;
+  std::condition_variable cv_disk_;
+  std::condition_variable cv_engine_;
+  std::thread worker_thread_;
+  std::atomic<bool> stop_signal_{ false };
 };

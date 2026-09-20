@@ -199,9 +199,13 @@ export class ToolStubAdapter implements ToolPort {
           timeout: this.getTimeoutForTool(tool.name),
           tags: [tool.toolset],
         },
-        async (args, context) => {
+        async (args, _context) => {
           const result = await this.dispatch(tool.name, args as Record<string, unknown>)
-          return JSON.parse(result)
+          try {
+            return JSON.parse(result)
+          } catch {
+            return result
+          }
         }
       )
     }
@@ -258,7 +262,7 @@ export class ToolStubAdapter implements ToolPort {
     executionStatus: any
   } | null {
     if (!this.toolInfrastructure) return null
-    return this.toolInfrastructure.getStatus()
+    return this.toolInfrastructure.getStatus() as any
   }
 
   /**
@@ -315,6 +319,26 @@ export class ToolStubAdapter implements ToolPort {
   list(): ToolDefinition[] {
     const base: ToolDefinition[] = [
       {
+        name: 'search_skills',
+        toolset: 'skills',
+        description: 'Search available enterprise skills by keyword. Input: { query: string }. Returns a list of matching skill names and their sources. Use this when you need specialized knowledge but it is not in your immediate context.',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string', description: 'Keyword to search for in skill names (e.g. "image", "python")' } },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'read_skill',
+        toolset: 'skills',
+        description: 'Read the full instructions of a specific skill. Input: { skill_name: string }. Returns the full Markdown content of the skill.',
+        parameters: {
+          type: 'object',
+          properties: { skill_name: { type: 'string', description: 'The exact name of the skill to read' } },
+          required: ['skill_name'],
+        },
+      },
+      {
         name: 'web_search',
         toolset: 'web',
         description: 'Search the web for current information. Input: { queries: string[] } (1-4 queries). Returns cited sources with page content. No API key needed.',
@@ -337,7 +361,7 @@ export class ToolStubAdapter implements ToolPort {
       {
         name: 'ocr',
         toolset: 'vision',
-        description: 'OCR — extract text from image/PDF. Input: { image_base64?: string, file_path?: string, model?: string }. Model is unlimited: "baidu/Unlimited-OCR" (best, document parsing via SGLang as in test/infer.py) or "rapidocr" (offline) or any HF id. Works offline if SGLang not running (falls back to RapidOCR).',
+        description: 'OCR — extract text from image/PDF. Input: { image_base64?: string, file_path?: string, model?: string }. Use THIS ONLY for READING images. DO NOT use this to generate or create images! Model is unlimited: "baidu/Unlimited-OCR" or "rapidocr" (offline).',
         parameters: {
           type: 'object',
           properties: {
@@ -390,6 +414,40 @@ export class ToolStubAdapter implements ToolPort {
           type: 'object' as const,
           properties: { path: { type: 'string' as const, description: 'Relative file path' } },
           required: ['path'] as const,
+        },
+      },
+      {
+        name: 'fs_write',
+        toolset: 'fs' as const,
+        description:
+          'Create or overwrite a file in the workspace. Input: { path: string, content: string }. ' +
+          'Creates all parent directories automatically. Path must be relative to workspace root. ' +
+          'Gated by Permissions — requires review or allow mode.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            path: { type: 'string' as const, description: 'Relative path inside workspace, e.g. "src/main.ts"' },
+            content: { type: 'string' as const, description: 'Full file content to write (UTF-8)' },
+          },
+          required: ['path', 'content'] as const,
+        },
+      },
+      {
+        name: 'fs_patch',
+        toolset: 'fs' as const,
+        description:
+          'Apply a surgical search-and-replace edit to a file. Input: { path: string, search: string, replace: string }. ' +
+          'Replaces the FIRST exact occurrence of `search` in the file with `replace`. ' +
+          'Use for targeted edits without rewriting the whole file. Fails if `search` is not found. ' +
+          'Gated by Permissions — requires review or allow mode.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            path: { type: 'string' as const, description: 'Relative file path' },
+            search: { type: 'string' as const, description: 'Exact text to find (first occurrence). Must match character-for-character.' },
+            replace: { type: 'string' as const, description: 'Text to insert in place of `search`.' },
+          },
+          required: ['path', 'search', 'replace'] as const,
         },
       },
       {
@@ -465,11 +523,12 @@ export class ToolStubAdapter implements ToolPort {
     const t0=Date.now()
     try {
       let out:string
-      if (name === 'web_search') out = await this.dispatchSearch(args)
+      if (name === 'search_skills' || name === 'read_skill') out = await this.dispatchSkills(name, args)
+      else if (name === 'web_search') out = await this.dispatchSearch(args)
       else if (name === 'web_fetch') out = await this.dispatchFetch(args)
       else if (name === 'ocr') out = await this.dispatchOcr(args)
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
-      else if (name === 'fs_list' || name === 'fs_read') out = await this.dispatchFs(name, args)
+      else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
       else if (name === 'shell_exec') out = await this.dispatchShell(args)
       else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
@@ -547,6 +606,59 @@ export class ToolStubAdapter implements ToolPort {
     return JSON.stringify({ error: 'mcp server has no transport target' })
   }
 
+  private async dispatchSkills(toolName: string, args: Record<string, unknown>): Promise<string> {
+    const { scanSkillsSources, listBionicSkills } = await import('../../services/skillsScanner')
+    const { readFile, readdir } = await import('fs/promises')
+    const { join } = await import('path')
+
+    try {
+      const sources = await scanSkillsSources()
+      const bionic = await listBionicSkills()
+      const allSkills: Array<{ name: string, srcName: string, path: string }> = []
+      
+      for (const skill of bionic) {
+        allSkills.push({ name: skill.name, srcName: 'Bionic', path: skill.path })
+      }
+      for (const src of sources) {
+        if (!src.enabled) continue
+        try {
+          const entries = await readdir(src.path, { withFileTypes: true })
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              allSkills.push({ name: entry.name, srcName: src.name, path: join(src.path, entry.name) })
+            }
+          }
+        } catch {}
+      }
+
+      if (toolName === 'search_skills') {
+        const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
+        const matches = allSkills.filter(s => s.name.toLowerCase().includes(query))
+        if (matches.length === 0) return JSON.stringify({ error: `No skills found matching "${query}". Try a different keyword.` })
+        return JSON.stringify({ 
+          matches: matches.slice(0, 50).map(s => ({ name: s.name, source: s.srcName })),
+          totalCount: matches.length,
+          hint: 'Use read_skill with the exact name to see full instructions.'
+        })
+      }
+
+      if (toolName === 'read_skill') {
+        const skillName = typeof args.skill_name === 'string' ? args.skill_name : ''
+        const match = allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase())
+        if (!match) return JSON.stringify({ error: `Skill "${skillName}" not found. Try using search_skills.` })
+        try {
+          const content = await readFile(join(match.path, 'SKILL.md'), 'utf8')
+          return JSON.stringify({ name: match.name, source: match.srcName, content: content.slice(0, 10000) })
+        } catch {
+          return JSON.stringify({ error: `Failed to read SKILL.md for ${skillName}` })
+        }
+      }
+      return JSON.stringify({ error: 'unknown tool' })
+    } catch (e) {
+      return JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
   private async dispatchSearch(args: Record<string, unknown>): Promise<string> {
     const rt = this.guard()
     const queries = parseSearchQueries(args['queries'], WEB_SEARCH_MAX_QUERIES)
@@ -584,8 +696,10 @@ export class ToolStubAdapter implements ToolPort {
     let b64 = typeof args['image_base64'] === 'string' ? args['image_base64'] as string : ''
     if (!b64 && typeof args['file_path'] === 'string') {
       const fs = await import('fs')
+      const { resolveWorkspacePath } = await import('../../capabilities/fs')
       const fp = args['file_path'] as string
-      b64 = fs.readFileSync(fp).toString('base64')
+      const absPath = resolveWorkspacePath(this.getWorkspace(), fp)
+      b64 = fs.readFileSync(absPath).toString('base64')
     }
     if (!b64) return JSON.stringify({ error: 'ocr requires image_base64 or file_path' })
     // strip data URL prefix if present
@@ -619,13 +733,13 @@ export class ToolStubAdapter implements ToolPort {
   }
 
   private async dispatchFs(name: string, args: Record<string, unknown>): Promise<string> {
-    const { dispatchFs } = await import('../../capabilities/fs/index.ts')
+    const { dispatchFs } = await import('../../capabilities/fs/index')
     const ws = this.getWorkspace()
     return dispatchFs(name, args, ws)
   }
 
   private async dispatchShell(args: Record<string, unknown>): Promise<string> {
-    const { dispatchShell } = await import('../../capabilities/shell/index.ts')
+    const { dispatchShell } = await import('../../capabilities/shell/index')
     const ws = this.getWorkspace()
     return dispatchShell(args, ws)
   }

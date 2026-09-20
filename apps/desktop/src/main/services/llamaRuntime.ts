@@ -695,8 +695,8 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     //  • Adaptive: 8192 ctx → 4096/2048 to keep 6k-token PPT in 2 batches.
     '-b', String(batch),
     '--ubatch-size', String(ubatch),
-    '--cache-type-k', 'q4_0',
-    '--cache-type-v', 'q4_0',
+    '--cache-type-k', 'q8_0',
+    '--cache-type-v', 'q8_0',
     // `--mlock` is dangerous on Windows partial offload — when only some
     // layers are on GPU and the rest stay in RAM, mlock requests
     // `weightsMB - gpuWeightsMB` of locked memory that the OS often refuses

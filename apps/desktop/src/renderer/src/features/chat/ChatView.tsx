@@ -27,9 +27,11 @@ import {
   FileText,
   Sparkles,
   MoreHorizontal,
+  Shield,
 } from 'lucide-react'
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
+import { preparePreviewHtml } from '../../utils/previewBundler'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -49,6 +51,7 @@ interface ChatViewProps {
   onCancel?: () => void
   onRegenerate?: () => void
   onEditAndResend?: (content: string) => void
+  onApproveTool?: (toolCallId: string, approved: boolean, modifiedArgs?: any) => void
   onCopy?: (content: string) => void
   onCreateSession: () => void
   onSwitchSession: (id: string) => void
@@ -73,6 +76,42 @@ interface ChatViewProps {
   onOpenArtifactFile?: (path: string) => void
 }
 
+function ApprovalCard({ execution, onApproveTool }: { execution: AgentExecutionState; onApproveTool?: (id: string, approved: boolean, args?: any) => void }) {
+  const [editedArgs, setEditedArgs] = useState(() => JSON.stringify(execution.args ?? {}, null, 2))
+  
+  if (!execution.toolCallId) return null
+
+  const handleApprove = () => {
+    try {
+      const parsed = JSON.parse(editedArgs)
+      onApproveTool?.(execution.toolCallId!, true, parsed)
+    } catch {
+      alert('Invalid JSON arguments')
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 12, marginBottom: 12, padding: 16, border: '1px solid var(--stitch-border, #E8E4DE)', borderRadius: 8, background: '#FDFBFA' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <Shield size={16} color="#D97757" />
+        <strong style={{ fontSize: 13, color: '#2B2624' }}>Permission Required</strong>
+      </div>
+      <div style={{ fontSize: 12, color: '#4A423A', marginBottom: 12 }}>
+        The agent wants to execute <code>{execution.toolName}</code>. Do you approve?
+      </div>
+      <textarea 
+        value={editedArgs} 
+        onChange={e => setEditedArgs(e.target.value)}
+        style={{ width: '100%', minHeight: 80, fontSize: 11, fontFamily: 'monospace', padding: 8, border: '1px solid #E8E4DE', borderRadius: 4, marginBottom: 12, resize: 'vertical' }} 
+      />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={handleApprove} className="sv-btn sv-btn-primary" style={{ padding: '6px 12px', fontSize: 12 }}>Approve</button>
+        <button onClick={() => onApproveTool?.(execution.toolCallId!, false)} className="sv-btn sv-btn-ghost" style={{ padding: '6px 12px', fontSize: 12 }}>Deny</button>
+      </div>
+    </div>
+  )
+}
+
 /**
  * ChatView — SOVARA chat view (commit 257ec52 visual style).
  * sv-chat-main layout with workspace controls in a clean header row.
@@ -95,6 +134,7 @@ export function ChatView({
   onCancel = (): void => {},
   onRegenerate = (): void => {},
   onEditAndResend = (): void => {},
+  onApproveTool,
   onCopy = (): void => {},
   onCreateSession: _onCreateSession,
   onSwitchSession: _onSwitchSession,
@@ -151,6 +191,26 @@ export function ChatView({
   const [activeArtifact, setActiveArtifact] = useState<ArtifactInfo | null>(null)
   const [artifactTab, setArtifactTab] = useState<'code' | 'preview'>('code')
   const [copiedArtifact, setCopiedArtifact] = useState(false)
+  const [bundledHtml, setBundledHtml] = useState<string>('')
+
+  useEffect(() => {
+    if (!activeArtifact) {
+      setBundledHtml('')
+      return
+    }
+    const lang = activeArtifact.language.toLowerCase()
+    if (lang === 'html' || lang === 'svg') {
+      let isCancelled = false
+      preparePreviewHtml(activeArtifact.code, events as never, selectedId ?? undefined).then((res) => {
+        if (!isCancelled) setBundledHtml(res)
+      })
+      return () => {
+        isCancelled = true
+      }
+    } else {
+      setBundledHtml('')
+    }
+  }, [activeArtifact, events, selectedId])
 
   useEffect(() => {
     if (!streaming) return
@@ -184,11 +244,28 @@ export function ChatView({
 
   const handleOpenArtifactInPanel = useCallback((art: ArtifactInfo) => { setActiveArtifact(art); setArtifactsPanelOpen(true) }, [])
 
+  const handleOpenArtifactFileWithPanel = useCallback(async (filePath: string) => {
+    onOpenArtifactFile(filePath)
+    try {
+      const { dispatchTool } = await import('../../lib/client/api')
+      const raw = await dispatchTool('fs_read', { path: filePath }).catch(() => '')
+      const code = typeof raw === 'string' ? raw : (raw as { output?: string })?.output ?? ''
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? 'text'
+      const lang = ext === 'html' ? 'html' : ext === 'css' ? 'css' : ext === 'js' || ext === 'ts' || ext === 'jsx' || ext === 'tsx' ? 'javascript' : ext
+      setActiveArtifact({ title: filePath, language: lang, code: code || `File: ${filePath}` })
+      setArtifactsPanelOpen(true)
+    } catch {
+      setActiveArtifact({ title: filePath, language: 'code', code: `File: ${filePath}` })
+      setArtifactsPanelOpen(true)
+    }
+  }, [onOpenArtifactFile])
+
   const handleCopyArtifact = useCallback(() => {
-    if (activeArtifact && navigator.clipboard) {
-      void navigator.clipboard.writeText(activeArtifact.code)
-      setCopiedArtifact(true)
-      setTimeout(() => setCopiedArtifact(false), 2000)
+    if (activeArtifact) {
+      void window.sovara.invoke('clipboard:write', { text: activeArtifact.code }).then(() => {
+        setCopiedArtifact(true)
+        setTimeout(() => setCopiedArtifact(false), 2000)
+      })
     }
   }, [activeArtifact])
 
@@ -336,7 +413,8 @@ export function ChatView({
             ) : null}
           </div>
           <div className="sv-composer">
-            <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy} busy={busy} phase={phase}
+            {execution?.toolCallId && onApproveTool ? <ApprovalCard execution={execution} onApproveTool={onApproveTool} /> : null}
+            <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy && !execution?.toolCallId} busy={busy} phase={phase}
               active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
               execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
               onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} projectName={projectName} />
@@ -390,11 +468,11 @@ export function ChatView({
           {generatedFiles.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 24px' }} aria-label="Generated files">
               {generatedFiles.map((f) => (
-                <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--stitch-parchment, #F7F5F2)', fontSize: 12 }}>
+                <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 8, background: 'var(--stitch-parchment, #F7F5F2)', fontSize: 12, cursor: 'pointer' }} onClick={() => handleOpenArtifactFileWithPanel(f.path)}>
                   <FileText size={14} aria-hidden />
-                  <span style={{ fontWeight: 600 }}>{f.fileName}</span>
+                  <span style={{ fontWeight: 600, textDecoration: 'underline' }}>{f.fileName}</span>
                   <span style={{ opacity: 0.55 }}>{f.kind}{typeof f.bytes === 'number' ? ` • ${(f.bytes / 1024).toFixed(1)}KB` : ''}</span>
-                  <button type="button" className="sv-btn sv-btn-ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={() => onOpenArtifactFile(f.path)}>Open</button>
+                  <button type="button" className="sv-btn sv-btn-ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={(e) => { e.stopPropagation(); handleOpenArtifactFileWithPanel(f.path) }}>Open ↗</button>
                 </div>
               ))}
             </div>
@@ -431,7 +509,8 @@ export function ChatView({
           </div>
 
           <div className="sv-composer">
-            <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy} busy={busy} phase={phase}
+            {execution?.toolCallId && onApproveTool ? <ApprovalCard execution={execution} onApproveTool={onApproveTool} /> : null}
+            <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy && !execution?.toolCallId} busy={busy} phase={phase}
               active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
               execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
               onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} projectName={projectName} />
@@ -476,8 +555,12 @@ export function ChatView({
               artifactTab === 'preview' ? (
                 <div style={{ flex: 1, overflow: 'auto' }}>
                   {activeArtifact.language.toLowerCase() === 'html' || activeArtifact.language.toLowerCase() === 'svg' ? (
-                    <iframe srcDoc={activeArtifact.code} title={activeArtifact.title} sandbox="allow-scripts"
-                      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }} />
+                    <iframe
+                      srcDoc={bundledHtml || activeArtifact.code}
+                      title={activeArtifact.title}
+                      sandbox="allow-scripts allow-same-origin allow-modals"
+                      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
+                    />
                   ) : (
                     <div style={{ padding: 16, fontSize: 13, color: 'var(--stitch-muted, #8A8279)' }}>
                       <div>Interactive render of <strong>{activeArtifact.title}</strong></div>

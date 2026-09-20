@@ -95,30 +95,34 @@ export async function createMainWindow(): Promise<BrowserWindow> {
   // ── New window block ──
   win.webContents.setWindowOpenHandler(({ url }) => {
     // Allowlist: Hugging Face + GitHub only — everything else denied
-    try {
-      const u = new URL(url)
-      const allowedHosts = new Set<string>([
-        'huggingface.co',
-        'www.huggingface.co',
-        'cdn-lfs.huggingface.co',
-        'huggingface.s3.amazonaws.com',
-        'github.com',
-        'www.github.com',
-        'raw.githubusercontent.com',
-      ])
-      const isAllowedHost =
-        allowedHosts.has(u.hostname) ||
-        u.hostname.endsWith('.huggingface.co') ||
-        u.hostname.endsWith('.hf.co')
-      if (u.protocol === 'https:' && isAllowedHost) {
-        void shell.openExternal(u.toString())
-      } else if (url !== 'about:blank') {
-        console.warn(`[security] blocked window.open to ${url}`)
+      try {
+        if (url.startsWith('blob:')) {
+          return { action: 'allow' }
+        }
+        
+        const u = new URL(url)
+        const allowedHosts = new Set<string>([
+          'huggingface.co',
+          'www.huggingface.co',
+          'cdn-lfs.huggingface.co',
+          'huggingface.s3.amazonaws.com',
+          'github.com',
+          'www.github.com',
+          'raw.githubusercontent.com',
+        ])
+        const isAllowedHost =
+          allowedHosts.has(u.hostname) ||
+          u.hostname.endsWith('.huggingface.co') ||
+          u.hostname.endsWith('.hf.co')
+        if (u.protocol === 'https:' && isAllowedHost) {
+          void shell.openExternal(u.toString())
+        } else if (url !== 'about:blank') {
+          console.warn(`[security] blocked window.open to ${url}`)
+        }
+      } catch {
+        console.warn(`[security] rejected invalid window.open url: ${url}`)
       }
-    } catch {
-      console.warn(`[security] rejected invalid window.open url: ${url}`)
-    }
-    return { action: 'deny' }
+      return { action: 'deny' }
   })
 
   // ── Block webview attachment ──

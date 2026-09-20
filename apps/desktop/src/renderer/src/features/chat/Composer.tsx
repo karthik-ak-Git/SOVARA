@@ -105,6 +105,43 @@ export function Composer({
   const [dragActive, setDragActive] = useState(false)
   const showStop = streaming && onCancel
 
+  // Autocomplete state
+  const [mentionType, setMentionType] = useState<'slash' | 'at' | null>(null)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const [mentionItems, setMentionItems] = useState<{ id: string, label: string, desc?: string }[]>([])
+  const [mentionIndex, setMentionIndex] = useState(0)
+
+  useEffect(() => {
+    if (mentionType === 'slash') {
+      const all = [
+        { id: '/compact', label: '/compact', desc: 'Keep context in English & under 8192' },
+        { id: '/skill', label: '/skill <url>', desc: 'Import an enterprise skill from URL' },
+        { id: '/mcp', label: '/mcp', desc: 'Manage MCP servers in Settings' },
+        { id: '/help', label: '/help', desc: 'List commands' }
+      ]
+      setMentionItems(all.filter(i => i.id.startsWith(mentionQuery)))
+      setMentionIndex(0)
+    } else if (mentionType === 'at') {
+      const query = mentionQuery.slice(1).toLowerCase()
+      window.sovara.invoke('tools:dispatch', { name: 'fs_list', args: { path: '.' } }).then((raw: unknown) => {
+        try {
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+          if (data.entries) {
+            const files = data.entries
+              .filter((e: any) => e.name.toLowerCase().includes(query))
+              .map((e: any) => ({
+                id: '@' + e.name + (e.isDirectory ? '/' : ''), 
+                label: e.name + (e.isDirectory ? '/' : ''), 
+                desc: e.isDirectory ? 'Directory' : 'Workspace file'
+              })).slice(0, 10)
+            setMentionItems(files)
+            setMentionIndex(0)
+          }
+        } catch {}
+      })
+    }
+  }, [mentionType, mentionQuery])
+
   const estimatedTokens = value.trim() ? Math.round(value.trim().length / 4) : 0
   const contextMaxTokens = 8192
 
@@ -263,6 +300,27 @@ export function Composer({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (mentionType && mentionItems.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % mentionItems.length); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => (i - 1 + mentionItems.length) % mentionItems.length); return }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        const selected = mentionItems[mentionIndex]
+        if (selected) {
+          const v = value.replace(/(?:^|\s)[/@][\w-.-]*$/, (match) => {
+            const prefix = match.slice(0, match.search(/[/@]/))
+            return prefix + selected.id + ' '
+          })
+          onChange(v)
+        }
+        setMentionType(null)
+        requestAnimationFrame(() => areaRef.current?.focus())
+        return
+      }
+      if (e.key === 'Escape') { e.preventDefault(); setMentionType(null); return }
+    }
+
+    if (e.key === 'Escape' && showStop) { e.preventDefault(); onCancel?.(); return }
     if (e.key !== 'Enter') return
     if (showStop && !e.shiftKey) { e.preventDefault(); onCancel?.(); return }
     if (e.shiftKey) {
@@ -376,15 +434,14 @@ export function Composer({
           onChange={(e) => {
             const v = e.target.value.slice(0, MAX_LENGTH)
             onChange(v)
-            // "/" command palette + "@" file context — previously dead (no handler, so "/" and "@" did nothing)
-            const last = v.slice(-1)
-            if (last === '/') {
-              // Show minimal command hint: /compact is the main one that keeps 8192 in budget
-              ;(window as unknown as { __sovaraSlashHint?: boolean }).__sovaraSlashHint = true
-            }
-            if (last === '@') {
-              // Trigger file picker for workspace context (so "@" actually does something)
-              fileInputRef.current?.click()
+            
+            const match = /(?:^|\s)([/@][\w-.-]*)$/.exec(v)
+            if (match) {
+              const str = match[1]
+              setMentionType(str.startsWith('/') ? 'slash' : 'at')
+              setMentionQuery(str)
+            } else {
+              setMentionType(null)
             }
           }}
           onKeyDown={handleKeyDown}
@@ -394,10 +451,27 @@ export function Composer({
           rows={2}
           data-testid="composer-input"
         />
-        {value.endsWith('/') ? (
-          <div role="listbox" aria-label="Commands" style={{ position: 'absolute', bottom: '100%', left: 12, background: '#fff', border: '1px solid #E8E4DE', borderRadius: 8, padding: 6, font: '12px Manrope', boxShadow: '0 8px 24px rgba(0,0,0,0.08)', zIndex: 5 }}>
-            <div style={{ padding: '4px 8px', cursor: 'pointer' }} onMouseDown={(e) => { e.preventDefault(); onChange(value.slice(0, -1) + '/compact '); areaRef.current?.focus() }}>/compact — keep context in English & under 8192</div>
-            <div style={{ padding: '4px 8px', opacity: 0.6 }}>/help — list commands</div>
+        {mentionType && mentionItems.length > 0 ? (
+          <div role="listbox" aria-label="Autocomplete" style={{ position: 'absolute', bottom: '100%', left: 12, background: '#fff', border: '1px solid #E8E4DE', borderRadius: 8, padding: 6, font: '12px Manrope', boxShadow: '0 8px 24px rgba(0,0,0,0.08)', zIndex: 5, minWidth: 200 }}>
+            {mentionItems.map((item, i) => (
+              <div
+                key={item.id}
+                style={{ padding: '6px 10px', cursor: 'pointer', borderRadius: 4, background: i === mentionIndex ? 'var(--stitch-parchment, #F7F5F2)' : 'transparent', display: 'flex', flexDirection: 'column' }}
+                onMouseEnter={() => setMentionIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  const v = value.replace(/(?:^|\s)[/@][\w-.-]*$/, (m) => {
+                    return m.slice(0, m.search(/[/@]/)) + item.id + ' '
+                  })
+                  onChange(v)
+                  setMentionType(null)
+                  requestAnimationFrame(() => areaRef.current?.focus())
+                }}
+              >
+                <span style={{ fontWeight: i === mentionIndex ? 600 : 400 }}>{item.label}</span>
+                {item.desc ? <span style={{ opacity: 0.6, fontSize: 11, marginTop: 2 }}>{item.desc}</span> : null}
+              </div>
+            ))}
           </div>
         ) : null}
 
@@ -421,12 +495,6 @@ export function Composer({
                   </button>
                   <button type="button" role="menuitem" onClick={() => { setAttachMenuOpen(false); folderInputRef.current?.click() }}>
                     <Folder size={15} aria-hidden /> Attach folder
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setAttachMenuOpen(false); onOpenSettings?.() }}>
-                    <Sparkles size={15} aria-hidden /> Use skill
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => setAttachMenuOpen(false)}>
-                    <Hash size={15} aria-hidden /> Add context
                   </button>
                 </div>
               ) : null}

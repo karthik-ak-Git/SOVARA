@@ -147,7 +147,9 @@ export class ToolInfrastructure {
   async executeParallel(
     calls: Array<{ toolName: string; args: Record<string, unknown> }>
   ): Promise<ReturnType<ToolExecutionScheduler['scheduleParallel']>> {
-    return this.scheduler.scheduleParallel(calls);
+    return this.scheduler.scheduleParallel(
+      calls.map((c) => ({ toolName: c.toolName, arguments: c.args }))
+    );
   }
 
   // =========================================================================
@@ -340,6 +342,27 @@ export class ToolInfrastructure {
       })),
       executionStatus: this.scheduler.getStatus(),
     };
+  }
+
+  /**
+   * Get total registered tool count
+   */
+  getToolCount(): number {
+    return this.registry.list().length;
+  }
+
+  /**
+   * Get recent tool execution log entries
+   */
+  getExecutionLogs(limit: number = 100): Array<{
+    id: string;
+    toolName: string;
+    status: 'success' | 'error' | 'cancelled';
+    durationMs: number;
+    timestamp: number;
+    sessionId?: string;
+  }> {
+    return this.registry.getExecutionLogs(limit);
   }
 }
 

@@ -71,6 +71,8 @@ export interface AgentExecutionState {
   artifactPath?: string
   /** Generated artifact kind: 'pdf' | 'xlsx' | 'docx' | 'code'. */
   artifactKind?: string
+  toolCallId?: string
+  args?: Record<string, unknown>
 }
 
 export function useChatSession() {
@@ -223,6 +225,11 @@ export function useChatSession() {
         if (!isSelected) return
         setExecution({ taskKind: null, phase: 'tool', toolName: ev.toolName, detail: ev.detail ?? ev.text, stepIndex: ev.stepIndex })
         setPhase('tool')
+        return
+      }
+      if (ev.kind === 'agent:needs-approval') {
+        if (!isSelected) return
+        setExecution({ taskKind: null, phase: 'tool', toolName: ev.toolName, detail: 'Waiting for permission...', toolCallId: ev.toolCallId, args: ev.args })
         return
       }
       if (ev.kind === 'task:complete') {
@@ -398,12 +405,42 @@ export function useChatSession() {
     async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
-      // /compact command — local + server compaction
+      
+      // Slash commands
       if (text === '/compact' || text.startsWith('/compact ')) {
         await handleCompact()
         setDraft('')
         return
       }
+      if (text.startsWith('/skill')) {
+        const url = text.split(' ')[1]
+        if (url && url.startsWith('http')) {
+          try {
+            setBusy(true)
+            setPhase('tool')
+            setExecution({ taskKind: 'tool-use', phase: 'tool', toolName: 'import_skill', detail: `Importing skill from ${url}` })
+            const res = await window.sovara.invoke('skills:importFromUrl', { url })
+            setError(`Skill imported successfully: ${(res as any).name || url}`)
+          } catch (err: any) {
+            setError(`Failed to import skill: ${err.message || String(err)}`)
+          } finally {
+            setBusy(false)
+            setPhase('idle')
+            setDraft('')
+          }
+        } else {
+          setError('Usage: /skill <https://url-to-skill>')
+        }
+        setTimeout(() => setError(null), 3000)
+        return
+      }
+      if (text.startsWith('/help') || text.startsWith('/mcp')) {
+        setError('/compact — keep context under 8192 tokens\n/skill <url> — import a skill\nFor MCP, configure via Settings UI.')
+        setTimeout(() => setError(null), 4000)
+        setDraft('')
+        return
+      }
+
       // Auto-compact when approaching context limit (~80% of 8192 tokens ≈ 6400 tokens ≈ 25600 chars)
       const totalChars = getTotalChars() + text.length
       if (estimateTokens(totalChars) > 6400) {
@@ -566,6 +603,15 @@ export function useChatSession() {
     setError(null)
   }, [])
 
+  const approveTool = useCallback(
+    async (toolCallId: string, approved: boolean, modifiedArgs?: any) => {
+      if (!selectedId) return
+      setExecution((prev) => ({ ...prev, toolCallId: undefined, args: undefined }))
+      await import('../../lib/client/api').then((m) => m.sendChatApprove(selectedId, toolCallId, approved, modifiedArgs))
+    },
+    [selectedId]
+  )
+
   return {
     sessions,
     globalSessions,
@@ -593,5 +639,6 @@ export function useChatSession() {
     switchSession,
     clearSelection,
     refreshModelStatus,
+    approveTool,
   }
 }

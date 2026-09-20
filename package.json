@@ -8,6 +8,8 @@
   },
   "scripts": {
     "dev": "pnpm --filter @sovara/desktop dev",
+    "addon:build": "node-gyp rebuild",
+    "addon:configure": "node-gyp configure",
     "dev:web": "pnpm --filter @sovara/web dev",
     "dev:all": "pnpm --parallel --filter @sovara/desktop --filter @sovara/web dev",
     "build": "pnpm -r build",
@@ -15,6 +17,10 @@
     "build:web": "pnpm --filter @sovara/web build",
     "start:web": "pnpm --filter @sovara/web start",
     "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.3.1",
+    "node-gyp": "^11.0.0"
   },
   "pnpm": {}
 }

@@ -1,10 +1,10 @@
-import { ipcMain, BrowserWindow, dialog, shell } from 'electron'
+import { ipcMain, BrowserWindow, dialog, shell, clipboard } from 'electron'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zClipboardWrite, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
 import { getSessionsDir, getSovaraDataDir } from '../storage/paths'
 import path from 'node:path'
 import fs from 'node:fs'
@@ -55,6 +55,16 @@ export function registerIpcHandlers(): void {
   getBackend().chat.setEmit(broadcastChat)
   // Orchestrator is the Chat execution surface — keep emit in sync
   try { getBackend().orchestrator.setEmit(broadcastChat) } catch { /* tests */ }
+  // Clipboard write goes through Main: renderer's navigator.clipboard is
+  // focus/permission sensitive under contextIsolation and fails silently —
+  // the Electron clipboard API is deterministic.
+  ipcMain.handle('clipboard:write', async (_e, raw: unknown) => {
+    const parsed = zClipboardWrite.safeParse(raw ?? {})
+    if (!parsed.success) throw new Error(`invalid clipboard:write payload: ${parsed.error.message}`)
+    clipboard.writeText(parsed.data.text)
+    return { ok: true }
+  })
+
   ipcMain.handle('app:getInfo', async () => {
     return getBackend().getInfo()
   })
@@ -188,18 +198,52 @@ export function registerIpcHandlers(): void {
     const parsed = zArtifactOpen.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid artifacts:open payload: ${parsed.error.message}`)
     try {
-      const root = path.resolve(getSessionsDir())
-      const resolved = path.resolve(root, path.relative(root, path.resolve(parsed.data.path)))
-      let real = resolved
+      // Primary: sessions dir (existing contract). Also allow workspace files
+      // (D:\data\rewards\dashboard.html) so deterministic harness output can be opened.
+      const rawPath = path.resolve(parsed.data.path)
+      let real: string
       try {
-        real = fs.realpathSync(resolved)
+        real = fs.realpathSync(rawPath)
       } catch {
-        throw new Error('artifact not found')
+        // fallback for not-yet-realpathed (sessions symlink case)
+        const root = path.resolve(getSessionsDir())
+        const resolved = path.resolve(root, path.relative(root, rawPath))
+        real = fs.realpathSync(resolved)
       }
-      if (real !== root && !real.startsWith(root + path.sep)) throw new Error('artifact path not allowed')
-      if (!fs.statSync(real).isFile()) throw new Error('artifact not found')
       const allowed = ['.pdf', '.xlsx', '.docx', '.txt', '.md', '.csv', '.json', '.py', '.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.sh', '.sql', '.rs', '.go', '.java']
       if (!allowed.includes(path.extname(real).toLowerCase())) throw new Error('artifact type not allowed')
+      if (!fs.statSync(real).isFile()) throw new Error('artifact not found')
+      const sessionsRoot = path.resolve(getSessionsDir())
+      const insideSessions = real === sessionsRoot || real.startsWith(sessionsRoot + path.sep)
+      let insideWorkspace = false
+      if (!insideSessions) {
+        // Allow files inside the visually-selected workspace — resolved globally, no hard-coded paths.
+        // Uses the same project/global resolution the chat harness uses (getProjectWorkspace / getGlobalWorkspace)
+        // plus enumeration of all persisted projects so any selected project is authorized.
+        try {
+          const backend = getBackend()
+          const bAny = backend as unknown as {
+            getGlobalWorkspace?: () => string
+            runtimeConfig?: { getAppSetting?: (k: string) => string | null }
+          }
+          const candidates: string[] = []
+          try { const g = bAny.getGlobalWorkspace?.(); if (g) candidates.push(path.resolve(g)) } catch {}
+          try { const g2 = bAny.runtimeConfig?.getAppSetting?.('global_workspace_root'); if (g2) candidates.push(path.resolve(g2)) } catch {}
+          try {
+            const rows = await backend.ports.persistence.listProjects()
+            for (const r of rows as Array<{ rootPath?: string }>) {
+              if (r.rootPath) candidates.push(path.resolve(r.rootPath))
+            }
+          } catch {}
+          for (const c of candidates) {
+            try {
+              const norm = path.resolve(c)
+              if (real === norm || real.startsWith(norm + path.sep)) { insideWorkspace = true; break }
+            } catch {}
+          }
+        } catch { /* ignore */ }
+      }
+      if (!insideSessions && !insideWorkspace) throw new Error('artifact path not allowed')
       await shell.openPath(real)
       return { ok: true, path: real }
     } catch (e) {
@@ -219,6 +263,18 @@ export function registerIpcHandlers(): void {
     const legacy = backend.chat.cancel(sid)
     const viaOrch = orch ? orch.cancel(sid) : { cancelled: false }
     return { cancelled: legacy.cancelled || viaOrch.cancelled }
+  })
+
+  ipcMain.handle('chat:approve', async (_e, raw: unknown) => {
+    const { zChatApprove } = await import('@shared/ipc/schemas')
+    const parsed = zChatApprove.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid approve payload: ${parsed.error.message}`)
+    const backend = getBackend()
+    const orch = (backend as any).orchestrator
+    if (orch) {
+      orch.resolveToolApproval(parsed.data.toolCallId, parsed.data.approved, parsed.data.modifiedArgs)
+    }
+    return { ok: true }
   })
 
   ipcMain.handle('chat:regenerate', async (_e, raw: unknown) => {
@@ -507,6 +563,10 @@ export function registerIpcHandlers(): void {
       return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message, toolName: parsed.data.name, toolArgs: parsed.data.args }
     }
     const cleanArgs = { ...args }; delete (cleanArgs as Record<string,unknown>)._forceApprove
+    if (typeof cleanArgs['sessionId'] === 'string') {
+      try { (getBackend().ports.tools as unknown as { _setSession?: (id: string) => void })._setSession?.(cleanArgs['sessionId'] as string) } catch {}
+      delete cleanArgs['sessionId']
+    }
     const result = await getBackend().ports.tools.dispatch(
       parsed.data.name,
       cleanArgs

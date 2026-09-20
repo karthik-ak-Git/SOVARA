@@ -121,10 +121,14 @@ export class SqlitePersistenceAdapter implements PersistencePort {
     return this.db.listArchivedSessions().map((r) => ({ id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }))
   }
 
-  async get(id: SessionId): Promise<SessionHeader | null> {
-    const r = this.db.getSession(id)
+  getSync(id: SessionId | string): SessionHeader | null {
+    const r = this.db.getSession(id as never)
     if (!r) return null
     return { id: brand<'SessionId'>(r.id), title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, archived: r.archived, projectId: r.projectId ?? null }
+  }
+
+  async get(id: SessionId): Promise<SessionHeader | null> {
+    return this.getSync(id)
   }
 
   async archive(id: SessionId): Promise<void> {

@@ -13,8 +13,10 @@
  * faked from a buffered body.
  */
 import {
-  consumeSseBody,
+  consumeSseBodyFull,
   extractDelta,
+  extractDeltaFull,
+  mergeToolCallDeltas,
   isLoopbackUrl,
   postLoopback,
   readBoundedBody,
@@ -137,29 +139,63 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       throw new ChatInferenceError('model-not-found', 'model-not-found: empty model id')
     }
     const url = chatCompletionsUrl(request.endpoint)
-    // 3x tuning: prompt-cache reuse (~40% faster on 2nd turn) + large max_tokens so 6-slide PPT (8k chars) is not truncated at 512 (observed cut at </div)
-    const needsLongOutput = request.messages.some((m) => /build.*ppt|presentation|6 slides|\.ppt/i.test(m.content))
+
+    // ── Dynamic max_tokens ──────────────────────────────────────────────────
+    // Previously hardcoded to 2048 (or 4096 for PPT). Now the orchestrator
+    // computes the ceiling from: nCtx - promptEstimate - reserved. We honour it.
+    // Fallback 4096 is generous for one-turn chat before orchestrator catches up.
+    const maxTokens = request.maxCompletionTokens ?? 4096
+
+    // ── Serialize messages — support role:'tool' for tool result turns ──────
+    const serializedMessages = request.messages.map((m) => {
+      if (m.role === 'tool') {
+        // Tool result: llama-server needs tool_call_id to correlate with the request
+        return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content }
+      }
+      if (m.role === 'assistant' && (m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls'])) {
+        const rawCalls = m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls']
+        return {
+          role: 'assistant',
+          content: m.content || null,
+          tool_calls: rawCalls,
+        }
+      }
+      if (m.images && m.images.length > 0) {
+        return {
+          role: m.role,
+          content: [
+            ...(m.content ? [{ type: 'text' as const, text: m.content }] : []),
+            ...m.images.map((img) => ({
+              type: 'image_url' as const,
+              image_url: { url: `data:${img.mime};base64,${img.base64}` },
+            })),
+          ],
+        }
+      }
+      return { role: m.role, content: m.content }
+    })
+
     const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages.map((m) =>
-        !m.images || m.images.length === 0
-          ? { role: m.role, content: m.content }
-          : {
-            role: m.role,
-            content: [
-              ...(m.content ? [{ type: 'text' as const, text: m.content }] : []),
-              ...m.images.map((img) => ({
-                type: 'image_url' as const,
-                image_url: { url: `data:${img.mime};base64,${img.base64}` },
-              })),
-            ],
-          }
-      ),
+      messages: serializedMessages,
       stream: request.stream,
-      // llama.cpp OpenAI compat: cache_prompt reuses KV for system prompt, n_predict caps length
+      // llama.cpp: cache_prompt reuses KV for system prompt (~40% faster on 2nd turn)
       cache_prompt: true,
-      max_tokens: needsLongOutput ? 4096 : 2048,
+      max_tokens: maxTokens,
       temperature: 0.7,
+    }
+
+    // ── Native tool calling ─────────────────────────────────────────────────
+    // Only send native tools array to remote APIs. For local llama-server endpoints,
+    // sending body['tools'] forces native Jinja tool grammar that freezes/stops local models.
+    // Local models use prompt toolCatalog + fenceTools for 100% reliable execution.
+    const isLocalServer = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(request.endpoint)
+    if (request.tools && request.tools.length > 0 && !isLocalServer) {
+      body['tools'] = request.tools.map((t) => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }))
+      body['tool_choice'] = 'auto'
     }
 
     let opened: { res: Response; latencyMs: number }
@@ -172,11 +208,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     try {
       await checkStatusWithBody(res)
     } catch (e) {
-      try {
-        await res.body?.cancel()
-      } catch {
-        // ignore
-      }
+      try { await res.body?.cancel() } catch { /* ignore */ }
       throw e
     }
 
@@ -185,8 +217,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       yield* this.yieldLive(res)
       return
     }
-    // Server answered streaming with plain JSON (or caller asked
-    // non-streaming): exactly one bounded read, honestly marked.
+    // Non-streaming fallback: one bounded read
     let text: string
     try {
       text = await readBoundedBody(res)
@@ -199,49 +230,56 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     } catch {
       throw new ChatInferenceError('invalid-response', 'invalid-response: runtime did not return a chat reply')
     }
-    const content = extractDelta(json)
+    const { content, toolCallDeltas } = extractDeltaFull(json)
+    if (toolCallDeltas.length > 0) {
+      const toolCalls = mergeToolCallDeltas(toolCallDeltas)
+      if (content) yield { type: 'text-delta', text: content }
+      yield { type: 'done', note: 'non-stream-fallback', toolCalls, usage: extractUsage(json) }
+      return
+    }
     if (content === null || content === '') {
       throw new ChatInferenceError('invalid-response', 'invalid-response: reply carried no assistant text')
     }
     yield { type: 'text-delta', text: content }
-    const usage = extractUsage(json)
-    yield { type: 'done', note: 'non-stream-fallback', usage }
+    yield { type: 'done', note: 'non-stream-fallback', usage: extractUsage(json) }
   }
 
   /**
-   * Bridge callback-driven SSE delivery into progressive generator yields.
-   * A deferred queue carries each delta to the drain loop as it arrives —
-   * one POST, no buffering of the whole reply before display.
+   * Bridge SSE delivery into progressive generator yields.
+   *
+   * Tool calling: llama-server streams tool_call deltas across many chunks
+   * (partial id, partial name, partial arguments). We accumulate by index,
+   * then deliver the complete LlmToolCall[] on the 'done' chunk.
+   * Text deltas are still yielded immediately for live display.
    */
   private async *yieldLive(res: Response): AsyncIterable<LlmChunk> {
     const queue: string[] = []
+    const toolCallAccumulator = new Map<number, {
+      id: string; type: string; name: string; argumentsChunks: string[]
+    }>()
     let settled = false
     let failed: unknown = null
-    let sseResult: { usage?: { promptTokens: number; completionTokens: number; totalTokens: number } } | undefined
+    let sseUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
     let wake: () => void = () => {}
-    const notify = (): void => {
-      const w = wake
-      wake = () => {}
-      w()
-    }
-    const pump = consumeSseBody(res, {
-      onDelta: (t) => {
-        queue.push(t)
-        notify()
+    const notify = (): void => { const w = wake; wake = () => {}; w() }
+
+    const pump = consumeSseBodyFull(res, {
+      onDelta: (t) => { queue.push(t); notify() },
+      onToolCallDelta: (delta) => {
+        const existing = toolCallAccumulator.get(delta.index) ?? {
+          id: '', type: 'function', name: '', argumentsChunks: [],
+        }
+        if (delta.id) existing.id = delta.id
+        if (delta.type) existing.type = delta.type
+        if (delta.function?.name) existing.name += delta.function.name
+        if (delta.function?.arguments) existing.argumentsChunks.push(delta.function.arguments)
+        toolCallAccumulator.set(delta.index, existing)
       },
+      onUsage: (u) => { sseUsage = u },
     }).then(
-      (result) => {
-        sseResult = result
-        settled = true
-        notify()
-      },
-      (e: unknown) => {
-        settled = true
-        failed = e
-        notify()
-      }
+      () => { settled = true; notify() },
+      (e: unknown) => { settled = true; failed = e; notify() }
     )
-    // Avoid an unhandled rejection while the drain loop is parked.
     pump.catch(() => {})
     try {
       for (;;) {
@@ -250,15 +288,24 @@ export class LocalOpenAIChatAdapter implements LlmPort {
           if (text !== undefined) yield { type: 'text-delta', text }
         }
         if (settled) break
-        await new Promise<void>((resolve) => {
-          wake = resolve
-        })
+        await new Promise<void>((resolve) => { wake = resolve })
       }
       await pump
     } catch (e) {
       throw classifyChatError(failed ?? e)
     }
     if (failed) throw classifyChatError(failed)
-    yield { type: 'done', usage: sseResult?.usage }
+
+    const toolCalls = toolCallAccumulator.size > 0
+      ? Array.from(toolCallAccumulator.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([, tc]) => ({
+            id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: tc.argumentsChunks.join('') },
+          }))
+      : undefined
+
+    yield { type: 'done', usage: sseUsage, toolCalls }
   }
 }

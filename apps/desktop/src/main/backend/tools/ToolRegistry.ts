@@ -22,6 +22,15 @@ interface RegisteredTool {
   hooks: Map<string, ToolHook[]>;
 }
 
+interface ExecutionLogEntry {
+  id: string;
+  toolName: string;
+  status: 'success' | 'error' | 'cancelled';
+  durationMs: number;
+  timestamp: number;
+  context?: { sessionId?: string };
+}
+
 const DEFAULT_TIMEOUT = 30000; // 30 seconds
 const MAX_CONCURRENT = 10;
 
@@ -32,6 +41,15 @@ export class ToolRegistry implements IToolRegistry {
   private tools: Map<string, RegisteredTool> = new Map();
   private options: Required<ToolRegistryOptions>;
   private globalHooks: Map<string, ToolHook[]> = new Map();
+  private executionLog: ExecutionLogEntry[] = [];
+  private readonly MAX_LOG_ENTRIES = 500;
+
+  private pushLog(entry: ExecutionLogEntry): void {
+    this.executionLog.push(entry);
+    if (this.executionLog.length > this.MAX_LOG_ENTRIES) {
+      this.executionLog = this.executionLog.slice(-this.MAX_LOG_ENTRIES);
+    }
+  }
 
   constructor(options: ToolRegistryOptions = {}) {
     this.options = {
@@ -238,6 +256,9 @@ export class ToolRegistry implements IToolRegistry {
       // Result hooks
       await this.runResultHooks(toolName, hookContext, execResult);
 
+      // Capture in execution log
+      this.pushLog({ id: toolCallId, toolName, status: 'success', durationMs: execResult.executionTime, timestamp: startTime, context: { sessionId: context.sessionId } });
+
       return execResult;
     } catch (error) {
       const executionTime = Date.now() - startTime;
@@ -256,6 +277,9 @@ export class ToolRegistry implements IToolRegistry {
       // Still run post-execute and result hooks on error
       await this.runPostExecuteHooks(toolName, hookContext, execResult).catch(() => {});
       await this.runResultHooks(toolName, hookContext, execResult).catch(() => {});
+
+      // Capture in execution log
+      this.pushLog({ id: toolCallId, toolName, status: 'error', durationMs: executionTime, timestamp: startTime, context: { sessionId: context.sessionId } });
 
       return execResult;
     }
@@ -524,6 +548,13 @@ export class ToolRegistry implements IToolRegistry {
    */
   exportToolsSchema(): object[] {
     return this.list().map((tool) => this.toJsonSchema(tool));
+  }
+
+  /**
+   * Get recent execution log entries (newest last)
+   */
+  getExecutionLogs(limit: number = 100): ExecutionLogEntry[] {
+    return this.executionLog.slice(-limit);
   }
 }
 

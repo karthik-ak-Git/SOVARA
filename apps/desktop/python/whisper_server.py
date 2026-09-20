@@ -460,7 +460,10 @@ def ocr():
         if "image_base64" not in data:
             return jsonify({"error": "missing image_base64"}), 400
         import base64
-        raw = base64.b64decode(data["image_base64"])
+        b64_str = data["image_base64"]
+        # Fix padding issues
+        b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
+        raw = base64.b64decode(b64_str)
     else:
         # multipart or raw bytes
         if "file" in request.files:

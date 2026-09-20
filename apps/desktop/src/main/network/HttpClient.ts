@@ -228,28 +228,195 @@ export async function consumeSseBody(
   return { finished, deltas, malformed, usage }
 }
 
+/**
+ * Extended SSE consumer that fires callbacks for text deltas, tool_call
+ * deltas, AND usage — used by LocalOpenAIChatAdapter.yieldLive() to support
+ * native tool calling without breaking callers of consumeSseBody().
+ */
+export async function consumeSseBodyFull(
+  res: Response,
+  opts: {
+    maxBytes?: number
+    onDelta: (text: string) => void
+    onToolCallDelta: (delta: {
+      index: number
+      id?: string
+      type?: string
+      function?: { name?: string; arguments?: string }
+    }) => void
+    onUsage: (u: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
+  }
+): Promise<SseConsumeResult> {
+  const maxBytes = opts.maxBytes ?? MAX_RUNTIME_RESPONSE_BYTES
+  if (!res.body) throw new Error('invalid-response: empty stream body')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let total = 0
+  let deltas = 0
+  let malformed = 0
+  let finished = false
+  let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) throw new Error('response-too-large: streamed reply exceeded the local cap')
+      buf += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim()
+        buf = buf.slice(idx + 1)
+        if (line === '' || line.startsWith(':')) continue
+        const payload = line.startsWith('data:') ? line.slice(5).trim() : null
+        if (payload === null) { malformed += 1; continue }
+        if (payload === '[DONE]') { finished = true; break }
+        let json: unknown
+        try { json = JSON.parse(payload) } catch { malformed += 1; continue }
+
+        const { content, toolCallDeltas, finishReason: _fr } = extractDeltaFull(json)
+        // Fire text delta
+        if (content !== null && content !== '') {
+          deltas += 1
+          opts.onDelta(content)
+        }
+        // Fire each tool_call delta individually
+        for (const tcd of toolCallDeltas) opts.onToolCallDelta(tcd)
+        // Fire usage when present
+        const chunkUsage = extractUsageFromJson(json)
+        if (chunkUsage) { usage = chunkUsage; opts.onUsage(chunkUsage) }
+        if (malformed > 200) throw new Error('invalid-response: too many malformed stream chunks')
+      }
+      if (finished) break
+    }
+  } finally {
+    try { await reader.cancel() } catch { /* ignore */ }
+  }
+  return { finished, deltas, malformed, usage }
+}
+
+
 /** Read a bounded text body from a loopback response. */
 export async function readBoundedBody(res: Response, maxBytes?: number): Promise<string> {
   return readBounded(res, maxBytes ?? MAX_RUNTIME_RESPONSE_BYTES)
 }
 
-/** OpenAI `choices[0].delta.content` (or `message.content`); null if absent. */
-export function extractDelta(json: unknown): string | null {
-  if (json === null || typeof json !== 'object') return null
+/**
+ * Full result from parsing one SSE JSON chunk.
+ * Contains text content AND any tool calls the model requested.
+ */
+export interface DeltaResult {
+  /** Text delta from delta.content or message.content. Null if absent. */
+  content: string | null
+  /**
+   * Tool calls from delta.tool_calls (accumulate across chunks — llama-server
+   * streams argument tokens incrementally, so we merge by index).
+   */
+  toolCallDeltas: Array<{
+    index: number
+    id?: string
+    type?: string
+    function?: { name?: string; arguments?: string }
+  }>
+  /**
+   * 'stop' = normal end, 'tool_calls' = model wants to call a tool,
+   * 'length' = hit max_tokens (truncated!), null = not final chunk.
+   */
+  finishReason: string | null
+}
+
+/**
+ * Parse an OpenAI SSE JSON chunk into content, tool call deltas, and finish reason.
+ * Supersedes the old extractDelta() — use this wherever tool calling matters.
+ */
+export function extractDeltaFull(json: unknown): DeltaResult {
+  const empty: DeltaResult = { content: null, toolCallDeltas: [], finishReason: null }
+  if (json === null || typeof json !== 'object') return empty
   const choices = (json as Record<string, unknown>)['choices']
-  if (!Array.isArray(choices) || choices.length === 0) return null
+  if (!Array.isArray(choices) || choices.length === 0) return empty
   const first = choices[0] as Record<string, unknown>
+
+  // finish_reason (present on the last chunk for that choice)
+  const finishReason = typeof first['finish_reason'] === 'string' ? first['finish_reason'] : null
+
+  // Content — try delta first (streaming), then message (non-streaming)
+  let content: string | null = null
   const delta = first['delta']
   if (delta !== null && typeof delta === 'object') {
     const c = (delta as Record<string, unknown>)['content']
-    if (typeof c === 'string') return c
+    if (typeof c === 'string') content = c
   }
-  const message = first['message']
-  if (message !== null && typeof message === 'object') {
-    const c = (message as Record<string, unknown>)['content']
-    if (typeof c === 'string') return c
+  if (content === null) {
+    const message = first['message']
+    if (message !== null && typeof message === 'object') {
+      const c = (message as Record<string, unknown>)['content']
+      if (typeof c === 'string') content = c
+    }
   }
-  return null
+
+  // Tool call deltas — llama-server streams tool_calls as incremental patches
+  // indexed by `index`. Each chunk may carry partial name or partial arguments.
+  const toolCallDeltas: DeltaResult['toolCallDeltas'] = []
+  const src = delta ?? first['message']
+  if (src !== null && typeof src === 'object') {
+    const tcRaw = (src as Record<string, unknown>)['tool_calls']
+    if (Array.isArray(tcRaw)) {
+      for (const tc of tcRaw) {
+        if (tc === null || typeof tc !== 'object') continue
+        const t = tc as Record<string, unknown>
+        const idx = typeof t['index'] === 'number' ? t['index'] : 0
+        const id = typeof t['id'] === 'string' ? t['id'] : undefined
+        const type = typeof t['type'] === 'string' ? t['type'] : undefined
+        let fn: { name?: string; arguments?: string } | undefined
+        if (t['function'] !== null && typeof t['function'] === 'object') {
+          const f = t['function'] as Record<string, unknown>
+          fn = {
+            ...(typeof f['name'] === 'string' ? { name: f['name'] } : {}),
+            ...(typeof f['arguments'] === 'string' ? { arguments: f['arguments'] } : {}),
+          }
+        }
+        toolCallDeltas.push({ index: idx, id, type, function: fn })
+      }
+    }
+  }
+
+  return { content, toolCallDeltas, finishReason }
+}
+
+/** OpenAI `choices[0].delta.content` (or `message.content`); null if absent.
+ *  @deprecated Use extractDeltaFull() for new code — this wrapper exists for
+ *  callers that only need content and have no tool-call interest. */
+export function extractDelta(json: unknown): string | null {
+  return extractDeltaFull(json).content
+}
+
+/**
+ * Collapse an array of tool_call delta patches (from a non-streaming response
+ * or fully accumulated streaming session) into complete LlmToolCall objects.
+ *
+ * Non-streaming responses deliver the full tool_call in a single object, but
+ * its `index` field still groups calls — so we reuse the same merge logic.
+ */
+export function mergeToolCallDeltas(
+  deltas: DeltaResult['toolCallDeltas']
+): import('@shared/types/ports').LlmToolCall[] {
+  const map = new Map<number, { id: string; type: string; name: string; argsChunks: string[] }>()
+  for (const d of deltas) {
+    const existing = map.get(d.index) ?? { id: '', type: 'function', name: '', argsChunks: [] }
+    if (d.id) existing.id = d.id
+    if (d.type) existing.type = d.type
+    if (d.function?.name) existing.name += d.function.name
+    if (d.function?.arguments) existing.argsChunks.push(d.function.arguments)
+    map.set(d.index, existing)
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, tc]) => ({
+      id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: tc.argsChunks.join('') },
+    }))
 }
 
 /** Extract OpenAI `usage` object from a JSON chunk; null if absent. */

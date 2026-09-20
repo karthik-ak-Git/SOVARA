@@ -45,7 +45,7 @@ export function dispatchShell(
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { cwd: workdir, timeout: timeoutMs, windowsHide: true, maxBuffer: 256 * 1024 }, (err, stdout, stderr) => {
       const out = String(stdout ?? '').slice(0, 8000)
       const errStr = String(stderr ?? '').slice(0, 2000)
-      if (err && (err as NodeJS.ErrnoException).killed) {
+      if (err && (err as any).killed) {
         resolve(JSON.stringify({ error: `timeout after ${timeoutMs}ms`, command, workdir: workdirRel, stdout: out, stderr: errStr }))
         return
       }

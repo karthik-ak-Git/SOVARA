@@ -102,6 +102,7 @@ export class PTCToolHandler {
    */
   createToolCaller(rootToolCallId?: string) {
     const context = this.contextManager.createRootContext(rootToolCallId);
+    const self = this;
     
     return {
       /**
@@ -112,14 +113,14 @@ export class PTCToolHandler {
         args: Record<string, unknown> = {}
       ): Promise<T> {
         // Check nesting level
-        if (context.nestingLevel >= this.options.maxNestingLevel) {
+        if (context.nestingLevel >= self.options.maxNestingLevel) {
           throw new Error(
-            `Maximum nesting level (${this.options.maxNestingLevel}) exceeded`
+            `Maximum nesting level (${self.options.maxNestingLevel}) exceeded`
           );
         }
 
         // Validate tool exists
-        if (!this.registry.has(toolName)) {
+        if (!self.registry.has(toolName)) {
           throw new Error(`Tool '${toolName}' is not registered`);
         }
 
@@ -127,7 +128,7 @@ export class PTCToolHandler {
         
         try {
           // Execute tool
-          const result = await this.registry.execute(toolName, args, {
+          const result = await self.registry.execute(toolName, args, {
             toolCallId: uuidv4(),
             metadata: {
               ptcContext: context.toolCallId,
@@ -142,7 +143,7 @@ export class PTCToolHandler {
             timestamp,
           };
 
-          this.contextManager.addResult(context.toolCallId, ptcResult);
+          self.contextManager.addResult(context.toolCallId, ptcResult);
 
           if (!result.success) {
             ptcResult.error = result.error;
@@ -161,7 +162,7 @@ export class PTCToolHandler {
             timestamp,
           };
 
-          this.contextManager.addResult(context.toolCallId, ptcResult);
+          self.contextManager.addResult(context.toolCallId, ptcResult);
           throw error;
         }
       },
@@ -182,7 +183,7 @@ export class PTCToolHandler {
        * Get all results from this PTC context
        */
       getResults(): PTCToolResult[] {
-        return this.contextManager.getAllResults(context.toolCallId);
+        return self.contextManager.getAllResults(context.toolCallId);
       },
 
       /**
@@ -196,7 +197,7 @@ export class PTCToolHandler {
        * Create a nested tool caller (for sub-agents)
        */
       createNested(parentToolCallId: string) {
-        const childContext = this.contextManager.createChildContext(
+        const childContext = self.contextManager.createChildContext(
           parentToolCallId,
           context.nestingLevel + 1
         );
@@ -207,7 +208,7 @@ export class PTCToolHandler {
 
         return {
           call: this.call.bind(this),
-          getResults: () => this.contextManager.getAllResults(childContext.toolCallId),
+          getResults: () => self.contextManager.getAllResults(childContext.toolCallId),
           getContextId: () => childContext.toolCallId,
         };
       },
@@ -237,7 +238,7 @@ export class PTCToolHandler {
       const toolsObject: Record<string, Function> = {};
       
       for (const name of toolNames) {
-        toolsObject[name] = async (...args: unknown[]) => caller.call(name, args[0] || {});
+        toolsObject[name] = async (...args: unknown[]) => caller.call(name, (args[0] as Record<string, unknown>) || {});
       }
 
       // Execute code in a sandbox-like manner
@@ -280,6 +281,13 @@ export class PTCToolHandler {
       description: tool.description,
     }));
   }
+
+  /**
+   * Check if PTC is enabled (run_code tool is registered)
+   */
+  isEnabled(): boolean {
+    return this.registry.has('run_code');
+  }
 }
 
 /**
@@ -287,9 +295,10 @@ export class PTCToolHandler {
  */
 export function createRunCodeToolHandler(
   ptcHandler: PTCToolHandler
-): (args: { code: string; language?: string }, context: ToolExecutionContext) => Promise<unknown> {
-  return async (args, context) => {
-    const { code, language = 'javascript' } = args;
+): import('./types').ToolHandler {
+  return async (rawArgs, context) => {
+    const args = rawArgs as { code?: string; language?: string };
+    const { code = '', language = 'javascript' } = args;
 
     if (language !== 'javascript' && language !== 'js') {
       throw new Error(`Unsupported language: ${language}. Only JavaScript is supported.`);

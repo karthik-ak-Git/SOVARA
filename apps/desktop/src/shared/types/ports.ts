@@ -140,14 +140,37 @@ export interface LlmUsage {
   completionTokens: number
   totalTokens: number
 }
+
+/**
+ * A single tool call the model wants to make (OpenAI-compatible).
+ * Comes from `choices[0].delta.tool_calls` in the SSE stream.
+ */
+export interface LlmToolCall {
+  /** Unique ID for this call — used when posting the tool result back. */
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    /** Raw JSON string of the arguments object. */
+    arguments: string
+  }
+}
+
 export interface LlmChunk {
   type: 'text-delta' | 'done'
   text?: string
+  /**
+   * Tool calls the model emitted during this stream.
+   * Present only on the 'done' chunk when the model requested tool use
+   * (finish_reason === 'tool_calls').
+   */
+  toolCalls?: LlmToolCall[]
   /** Delivery note, e.g. 'non-stream-fallback'. Never content. */
   note?: string
   /** Token usage from the API response (available on 'done' chunk). */
   usage?: LlmUsage
 }
+
 /** Image part for vision-capable runtimes (OpenAI-compatible image_url). */
 export interface LlmImagePart {
   /** Original file name (advisory, never sent to the model). */
@@ -161,9 +184,19 @@ export interface LlmImagePart {
   /** Pixel height when known (advisory, for token estimation). */
   height?: number
 }
+
 export interface LlmChatMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /**
+   * For role='tool': the tool_call_id that triggered this result.
+   * Required by llama-server to correlate results with requests.
+   */
+  tool_call_id?: string
+  /**
+   * For role='assistant': native tool calls requested by the model.
+   */
+  tool_calls?: LlmToolCall[]
   /**
    * Optional vision payload. Adapters that serve text-only models MUST
    * ignore it; OpenAI-compatible adapters serialize it as image_url parts.
@@ -171,6 +204,7 @@ export interface LlmChatMessage {
    */
   images?: LlmImagePart[]
 }
+
 export interface LlmChatRequest {
   /** Loopback base URL, revalidated by the adapter at request time. */
   endpoint: string
@@ -180,6 +214,18 @@ export interface LlmChatRequest {
   timeoutMs: number
   stream: boolean
   signal?: AbortSignal
+  /**
+   * Tool definitions to send in the HTTP body so the model knows which
+   * tools it may call. When provided, the adapter adds a `tools` + `tool_choice`
+   * field to the request body (OpenAI function-calling format).
+   */
+  tools?: ToolDefinition[]
+  /**
+   * Hard cap on completion tokens sent as `max_tokens`.
+   * Computed by AgentOrchestrator from the model context window minus
+   * the estimated prompt size. Never hardcoded in the adapter.
+   */
+  maxCompletionTokens?: number
 }
 export interface LlmPort {
   /** Legacy stub facet (Commit 5 mock). Real path is streamChat. */

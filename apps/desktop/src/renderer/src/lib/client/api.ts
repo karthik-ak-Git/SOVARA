@@ -137,8 +137,29 @@ export async function sendChatMessage(
   return ipcInvoke('chat:send', { sessionId, content, webSearch: opts?.webSearch, reasoning: opts?.reasoning, ...(normalized ? { attachments: normalized } : {}) })
 }
 
+export async function sendChatApprove(sessionId: string, toolCallId: string, approved: boolean, modifiedArgs?: any): Promise<{ ok: boolean }> {
+  return ipcInvoke('chat:approve', { sessionId, toolCallId, approved, modifiedArgs })
+}
+
 export async function openArtifact(filePath: string): Promise<{ ok: boolean; path: string }> {
   return ipcInvoke('artifacts:open', { path: filePath })
+}
+
+/** Copy via Main's clipboard — deterministic under contextIsolation (renderer
+ *  navigator.clipboard needs window focus and can fail silently). */
+export async function copyToClipboard(text: string): Promise<{ ok: boolean }> {
+  try {
+    return await ipcInvoke('clipboard:write', { text })
+  } catch {
+    // Non-Electron dev fallback (browser/Next dev server).
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return { ok: true }
+      }
+    } catch { /* fall through */ }
+    return { ok: false }
+  }
 }
 
 export async function cancelChatMessage(sessionId: string): Promise<{ cancelled: boolean }> {

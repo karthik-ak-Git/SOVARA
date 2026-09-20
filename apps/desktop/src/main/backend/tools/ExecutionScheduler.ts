@@ -94,27 +94,31 @@ export class ToolExecutionScheduler {
   ): Promise<ToolExecutionResult[]> {
     const limit = maxConcurrent || this.maxConcurrent;
     const results: ToolExecutionResult[] = [];
-    const pending: Promise<ToolExecutionResult>[] = [];
+    const pool = new Set<Promise<void>>();
 
     for (const call of calls) {
-      const promise = this.schedule(call.toolName, call.arguments, { mode: 'parallel' }, call.context || {});
-      pending.push(promise);
-
-      // Respect concurrency limit
-      if (pending.length >= limit) {
-        const result = await Promise.race(pending);
-        const index = pending.findIndex((p) => p === result.then);
-        if (index !== -1) {
-          pending.splice(index, 1);
-        }
-        results.push(await result);
+      const p: Promise<void> = this.schedule(call.toolName, call.arguments, { mode: 'parallel' }, call.context || {})
+        .then((res) => {
+          results.push(res);
+          pool.delete(p);
+        })
+        .catch((err) => {
+          results.push({
+            toolCallId: 'err',
+            toolName: call.toolName,
+            success: false,
+            error: String(err),
+            executionTime: 0,
+          });
+          pool.delete(p);
+        });
+      pool.add(p);
+      if (pool.size >= limit) {
+        await Promise.race(pool);
       }
     }
 
-    // Wait for remaining
-    const remaining = await Promise.all(pending);
-    results.push(...remaining);
-
+    await Promise.all(Array.from(pool));
     return results;
   }
 
@@ -339,6 +343,20 @@ export class ToolExecutionScheduler {
    */
   setMaxConcurrent(max: number): void {
     this.maxConcurrent = max;
+  }
+
+  /**
+   * Get the current max concurrency setting
+   */
+  getMaxConcurrent(): number {
+    return this.maxConcurrent;
+  }
+
+  /**
+   * Get number of tools managed by the attached registry
+   */
+  getToolCount(): number {
+    return this.registry.list().length;
   }
 }
 

@@ -10,6 +10,88 @@ import type { DiscoveredModel } from '@shared/types/models'
 import type { SystemResources } from '@shared/types/ports'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
 import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
+import { DEFAULT_TUNING, pickTierAtOrBelow } from '../config/tuning'
+
+/**
+ * Hardware-aware context sizing (test/main.js parity): the largest discrete
+ * tier that fits free VRAM (with GPU) or free RAM (CPU-only), at the given
+ * KV cost, with the configured safety margin. Never hard-codes a GPU size.
+ */
+export function suggestContextSize(
+  resources: Pick<SystemResources, 'vram' | 'ram'>,
+  modelSizeMb: number,
+  opts?: { kvMbPer1kTokens?: number; margin?: number; tiers?: readonly number[] }
+): number {
+  const t = DEFAULT_TUNING
+  const kv = opts?.kvMbPer1kTokens ?? t.kvMbPer1kTokens
+  const margin = opts?.margin ?? t.memorySafetyMargin
+  const tiers = opts?.tiers ?? t.contextTiers
+  const vramTotalMb = resources.vram.totalMB ?? 0
+  const gpuOk = vramTotalMb > 0 && (resources.vram.freeMB ?? 0) > modelSizeMb * 0.5
+  const usableMb = gpuOk
+    ? Math.max(256, ((resources.vram.freeMB ?? vramTotalMb) - modelSizeMb) * margin)
+    : Math.max(256, (resources.ram.freeMB ?? 0) * margin)
+  return pickTierAtOrBelow(usableMb, kv, tiers)
+}
+
+/**
+ * Dynamic fitting-model fallback — replaces hardcoded name-regex fallbacks.
+ * Ranks available models by how well their on-disk size fits the machine's
+ * ACTUAL free VRAM (then RAM), using the real resource snapshot. No model
+ * names are ever hardcoded.
+ *
+ * @param estimatedSizeBytes per-model weight size (from discovery stats); when
+ *        unknown, falls back to parameter-count heuristic from the id.
+ */
+export function pickFittingModel(
+  models: DiscoveredModel[],
+  resources: SystemResources,
+  opts?: { excludeModelId?: string; kvMbPer1kTokens?: number; margin?: number; ctxLenNeeded?: number }
+): { model: DiscoveredModel; fitMb: number; gpu: boolean } | null {
+  const t = DEFAULT_TUNING
+  const margin = opts?.margin ?? t.memorySafetyMargin
+  const kv = opts?.kvMbPer1kTokens ?? t.kvMbPer1kTokens
+  const ctxTokens = opts?.ctxLenNeeded ?? 8192
+  const vramFreeMb = resources.vram.freeMB ?? 0
+  const vramTotalMb2 = resources.vram.totalMB ?? 0
+  const ramFreeMb = resources.ram.freeMB ?? 0
+
+  const sizeOf = (m: DiscoveredModel): number => {
+    const st = (m as unknown as { fileSizeBytes?: number; sizeBytes?: number })
+    if (typeof st.fileSizeBytes === 'number' && st.fileSizeBytes > 0) return st.fileSizeBytes / (1024 * 1024)
+    if (typeof st.sizeBytes === 'number' && st.sizeBytes > 0) return st.sizeBytes / (1024 * 1024)
+    // parameter-count heuristic: "7B" → ~0.55 bytes/param at Q4-class quant
+    const pm = m.modelId.match(/([\d.]+)\s*b\b/i)
+    const paramsB = pm ? parseFloat(pm[1]) : 7
+    return paramsB * 550
+  }
+
+  const cands = models.filter((m) =>
+    m.available && m.runtimeId === 'local' && m.modelId !== opts?.excludeModelId
+  )
+  if (cands.length === 0) return null
+
+  const kvMb = (ctxTokens / 1024) * kv
+  let best: { model: DiscoveredModel; fitMb: number; gpu: boolean; need: number } | null = null
+  for (const m of cands) {
+    const need = sizeOf(m) + kvMb
+    if (vramTotalMb2 > 0 && need <= vramFreeMb * margin) {
+      if (!best || need < best.need || (need === best.need && m.available && !best.model.available)) {
+        best = { model: m, fitMb: need, gpu: true, need }
+      }
+    }
+  }
+  if (best) return { model: best.model, fitMb: best.fitMb, gpu: true }
+
+  // No GPU fit — prefer the smallest model that fits in free RAM (CPU path).
+  for (const m of cands) {
+    const need = sizeOf(m) + kvMb
+    if (need <= ramFreeMb * margin) {
+      if (!best || need < best.need) best = { model: m, fitMb: need, gpu: false, need }
+    }
+  }
+  return best ? { model: best.model, fitMb: best.fitMb, gpu: false } : null
+}
 
 export interface RouterContext {
   task: TaskClassification

@@ -84,20 +84,34 @@ export class ModelWorkbench {
    */
   private ensureExternalRuntimes(): void {
     try {
-      const want: Array<{ id: string; displayName: string; type: 'lmstudio' | 'ollama'; endpoint: string }> = [
-        { id: 'lmstudio', displayName: 'LM Studio — file discovery only (not a runner)', type: 'lmstudio', endpoint: 'http://127.0.0.1:1234/v1' },
-        { id: 'ollama', displayName: 'Ollama — file discovery only (not a runner)', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1' },
+      // Endpoints are user-editable defaults (persisted via app settings), not literals.
+      // Once a row exists, the user's stored endpoint always wins.
+      const want: Array<{ id: string; displayName: string; type: 'lmstudio' | 'ollama'; endpointKey: string; defaultEndpoint: string }> = [
+        { id: 'lmstudio', displayName: 'LM Studio — file discovery only (not a runner)', type: 'lmstudio', endpointKey: 'runtime_endpoint_lmstudio', defaultEndpoint: 'http://127.0.0.1:1234/v1' },
+        { id: 'ollama', displayName: 'Ollama — file discovery only (not a runner)', type: 'ollama', endpointKey: 'runtime_endpoint_ollama', defaultEndpoint: 'http://127.0.0.1:11434/v1' },
       ]
       for (const w of want) {
         const existing = this.config.getRuntime(w.id)
         if (!existing) {
-          this.config.upsertRuntime({ id: w.id, displayName: w.displayName, type: w.type, endpoint: w.endpoint, enabled: false, timeoutMs: 8000 })
+          const stored = this.config.getAppSetting(w.endpointKey)
+          this.config.upsertRuntime({ id: w.id, displayName: w.displayName, type: w.type, endpoint: stored ?? w.defaultEndpoint, enabled: false, timeoutMs: 8000 })
         } else if (existing.entry.enabled) {
           // Force-disable even if an older install left it enabled — sovereign invariant.
           this.config.upsertRuntime({ ...existing.entry, enabled: false })
         }
       }
     } catch { /* never block listing */ }
+  }
+
+  /** Update the discovery endpoint for a detect-only external runtime (LM Studio / Ollama). */
+  setExternalRuntimeEndpoint(runtimeId: 'lmstudio' | 'ollama', endpoint: string): ModelRuntimeEntry {
+    const normalized = normalizeEndpoint(endpoint)
+    const snap = this.config.getRuntime(runtimeId)
+    if (!snap) throw new ModelWorkbenchError('unknown runtime: external runtime not initialized yet')
+    const entry: ModelRuntimeEntry = { ...snap.entry, endpoint: normalized }
+    this.config.upsertRuntime(entry)
+    this.config.setAppSetting(`runtime_endpoint_${runtimeId}`, normalized)
+    return entry
   }
 
   /** Read-only entry lookup for inference-time resolution (no network). */

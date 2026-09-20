@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, type ReactElement } from 'react'
+import { useState, useEffect, type ReactElement } from 'react'
 import { Code2, Copy, Check, ExternalLink } from 'lucide-react'
+import { preparePreviewHtml } from '../../utils/previewBundler'
 
 interface Props {
   title: string
@@ -18,11 +19,26 @@ interface Props {
  */
 export function ArtifactCard({ title, language, code, onOpenSplit }: Props): ReactElement {
   const [copied, setCopied] = useState(false)
+  const [bundledHtml, setBundledHtml] = useState<string>('')
   const lang = language.toLowerCase()
   const isDiagram = code.includes('<svg') && code.includes('</svg>')
   const isHtml = lang === 'html' || lang === 'svg' || isDiagram
   const defaultTab: 'code' | 'preview' = isDiagram || lang === 'html' || lang === 'svg' ? 'preview' : 'code'
   const [tab, setTab] = useState<'code' | 'preview'>(defaultTab)
+
+  useEffect(() => {
+    if (isHtml) {
+      let isCancelled = false
+      preparePreviewHtml(code).then((res) => {
+        if (!isCancelled) setBundledHtml(res)
+      })
+      return () => {
+        isCancelled = true
+      }
+    } else {
+      setBundledHtml('')
+    }
+  }, [code, isHtml])
 
   const handleCopy = (): void => {
     if (navigator.clipboard?.writeText) {
@@ -91,9 +107,9 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
       {tab === 'preview' && isHtml && !onOpenSplit ? (
         <div className="stitch-artifact-preview" style={{ background: '#fffefa', borderRadius: '8px', overflow: 'hidden', border: '1px solid #E8E4DE' }}>
           <iframe
-            srcDoc={code}
+            srcDoc={bundledHtml || code}
             title={title}
-            sandbox="allow-scripts allow-same-origin"
+            sandbox="allow-scripts allow-same-origin allow-modals"
             loading="lazy"
             style={{ width: '100%', height: isDiagram ? '520px' : '420px', border: 'none', display: 'block', background: '#fffefa' }}
           />

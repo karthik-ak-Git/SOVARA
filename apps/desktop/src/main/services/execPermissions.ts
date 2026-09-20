@@ -7,7 +7,7 @@
  * - review: safe read-only tools auto-run; risky ones need approval.
  * - allow:  full access — everything runs without prompting (warn in UI).
  *
- * Mode persists in SovaraDb app_meta (`exec_mode`, default 'ask').
+ * Mode persists in SovaraDb app_meta (`exec_mode`, default 'review').
  * Approval flow is Phase 2; until then needs-approval surfaces as a
  * structured denial the renderer can turn into a prompt.
  */
@@ -26,8 +26,17 @@ const SAFE_PREFIXES = [
   'show', 'check', 'fetch', 'inspect', 'scan', 'detect',
 ]
 
+/** Explicit read-only safe tools that always auto-run under `review`. */
+const SAFE_EXPLICIT_TOOLS = new Set([
+  'fs_list', 'fs_read', 'web_search', 'web_fetch', 'ocr'
+])
+
 export function isSafeTool(toolName: string): boolean {
-  const n = toolName.trim().toLowerCase().replace(/^[^a-z0-9]+/, '')
+  const n = toolName.trim().toLowerCase().replace(/^[^a-z0-9_.-]+/, '')
+  if (SAFE_EXPLICIT_TOOLS.has(n)) return true
+  // Check if any sub-word separated by _, -, or . is in SAFE_PREFIXES (e.g. fs_list, project_read)
+  const parts = n.split(/[_\-.]/)
+  if (parts.some((part) => SAFE_PREFIXES.includes(part))) return true
   return SAFE_PREFIXES.some((p) => n === p || n.startsWith(`${p}_`) || n.startsWith(`${p}-`) || n.startsWith(`${p}.`) || n.startsWith(p))
 }
 

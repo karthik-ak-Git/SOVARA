@@ -73,7 +73,7 @@ text: `Flexible workflow — vary by task but keep discipline:
 {
 name: 'artifact:pipeline',
 order: SECTION_ORDERS.ARTIFACT_PIPELINE,
-text: `User asks file (html/ppt/pdf/xlsx/docx/diagram/flow/sequence/ER): ONE fenced block (\`\`\`html inline SVG sovereign dark #1a1a2e/#4a90d9 no mermaid static none | \`\`\`tsx | \`\`\`python | table for xlsx). Self-contained <!doctype html><html lang="en"> closed, <16MB. Concatenated continuation if truncated. <thinking> closed before answer.`
+text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc): write the appropriate code/script (e.g. python script to generate pptx, or actual markdown) using fs_write to create the requested file. Do not fake binary files as HTML unless explicitly asked for a web preview.`
 },
 {
 name: 'tool:read',
@@ -123,7 +123,7 @@ text: `Tool WebFetch — fetch URL to markdown. Use for docs beyond cutoff.`
 {
 name: 'tool:skill',
 order: SECTION_ORDERS.TOOL_SKILL,
-text: `Tool Skill — load skill instructions (diagram-design, etc.) when task matches. Check D:\\SOVARA\\.opencode\\skills first. Use for drawing/flow/ER.`
+text: `Enterprise Skills: CRITICAL INSTRUCTION: You MUST actively evaluate and invoke relevant skills from <skills_context> on EVERY task, even if the user did not explicitly mention them. If a skill exists for the user's domain, you must use it as your primary approach.`
 },
 {
 name: 'tool:mcp',
@@ -205,3 +205,12 @@ export function buildSovaraSystemPrompt(vars: Record<string,string> = {}): strin
 
 export const SOVARA_SYSTEM_PROMPT = buildSovaraSystemPrompt({ model_name: '{model_name}' })
 export const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
+
+export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECTIVE:
+1. When asked to create, build, or update code or files:
+   - You MUST write the actual code or document text. NEVER output a JSON response or fake summary alone claiming files were created.
+   - Use the \`fs_write\` tool with the full, production-ready content: e.g. fs_write {"path": "script.py", "content": "print('hello')"} or {"path": "document.md", "content": "# Report"}.
+   - In your conversational output, ALWAYS provide the complete code inside a named markdown code block matching the file type (e.g. \`\`\`python, \`\`\`markdown, \`\`\`javascript) so the user and the live artifact viewer can see it.
+   - DO NOT generate HTML files unless the user explicitly asks for a website, web UI, or HTML preview.
+2. NEVER output empty placeholders, repetitive dummy scripts, or pretend that files were created without actually writing them.
+3. For normal conversational chat and questions, respond directly in standard markdown.`;

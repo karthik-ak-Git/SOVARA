@@ -23,6 +23,7 @@ export type ChatStreamKind =
   | 'task:planning'
   | 'task:reading'
   | 'task:prompting'
+  | 'agent:needs-approval'
   | 'task:thinking'
   | 'model:selecting'
   | 'model:loading'
@@ -69,4 +70,6 @@ export interface ChatStreamEvent {
   artifactPath?: string
   /** Generated artifact kind: 'pdf' | 'xlsx' | 'docx' | 'code' */
   artifactKind?: string
+  toolCallId?: string
+  args?: Record<string, unknown>
 }

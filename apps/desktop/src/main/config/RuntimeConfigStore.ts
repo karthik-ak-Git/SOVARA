@@ -312,7 +312,7 @@ export class RuntimeConfigStore {
 
   getExecMode(): string {
     const raw = this.db.getMeta('exec_mode')
-    return raw ?? 'ask'
+    return raw ?? 'review'
   }
 
   setExecMode(mode: string): void {

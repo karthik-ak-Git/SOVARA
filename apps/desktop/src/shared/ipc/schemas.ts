@@ -55,6 +55,15 @@ export const zChatCancel = z
   .object({ sessionId: zSessionId })
   .strict()
 
+export const zChatApprove = z
+  .object({
+    sessionId: zSessionId,
+    toolCallId: z.string(),
+    approved: z.boolean(),
+    modifiedArgs: z.any().optional(),
+  })
+  .strict()
+
 export const zChatRegenerate = z
   .object({ sessionId: z.string().min(1).max(128), reasoning: z.boolean().optional() })
   .strict()
@@ -72,6 +81,11 @@ export const zChatEditResend = z
 /** Open a generated artifact with the OS default app. Main validates the path. */
 export const zArtifactOpen = z
   .object({ path: z.string().min(1).max(2048) })
+  .strict()
+
+/** Write text to the system clipboard via Main (renderer clipboard is flaky under contextIsolation). */
+export const zClipboardWrite = z
+  .object({ text: z.string().max(1_000_000) })
   .strict()
 
 export const zModelsProbe = z.string().min(1).max(64)
