@@ -69,7 +69,7 @@ Perfect for testing the UI and chat capabilities without downloading the app.
 Unlocks the full autonomous experience with local file editing and hardware-optimized AI models.
 
 **Method A: Direct Download (Easiest)**
-Click the button at the top of this page to download the `.exe` from our releases page!
+👉 **[Download the .exe from our Release Page](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)**
 
 **Method B: 1-Line PowerShell Install**
 Open PowerShell and run:
