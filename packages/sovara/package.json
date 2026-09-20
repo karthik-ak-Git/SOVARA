@@ -1,0 +1,13 @@
+{
+  "name": "sovara",
+  "version": "0.1.0",
+  "description": "Installer for Sovara Autonomous Local-First Agent",
+  "bin": {
+    "sovara": "./bin/install.js"
+  },
+  "scripts": {
+    "start": "node ./bin/install.js"
+  },
+  "author": "Karthik AK",
+  "license": "MIT"
+}
