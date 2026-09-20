@@ -2,9 +2,10 @@
   <h1>🌌 SOVARA: Autonomous Local-First Agent</h1>
   <p>A sovereign, privacy-first AI coding companion optimized for consumer hardware.</p>
   
+  [![Download .exe](https://img.shields.io/badge/Download-Windows_.exe-0078D6?style=for-the-badge&logo=windows)](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)
+  
   ![NPM Version](https://img.shields.io/npm/v/sovara?color=blue&label=npx%20sovara)
   ![License](https://img.shields.io/badge/License-MIT-green.svg)
-  ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows)
   ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20Next.js-black)
 </div>
 
@@ -12,7 +13,7 @@
 
 ## 🚀 Live Demo (Sandbox)
 
-👉 **[Try the Web Sandbox Demo](https://sovara.vercel.app/)** *(Replace this with your actual Vercel URL)*
+👉 **[Try the Web Sandbox Demo](https://sovara-eight.vercel.app)**
 
 > **Note:** The web version operates in a restricted browser sandbox. Local shell commands and filesystem edits are disabled. For the true, autonomous local experience, install the Desktop version below.
 
@@ -62,18 +63,21 @@ This platform is built to demonstrate:
 
 ### Option 1 — Web Sandbox (No Setup Required)
 Perfect for testing the UI and chat capabilities without downloading the app.
-👉 **[Open Web Demo](https://sovara.vercel.app/)**
+👉 **[Open Web Demo](https://sovara-eight.vercel.app)**
 
 ### Option 2 — True Local Execution (Windows Only)
 Unlocks the full autonomous experience with local file editing and hardware-optimized AI models.
 
-**Method A: 1-Line PowerShell Install (Recommended)**
+**Method A: Direct Download (Easiest)**
+Click the button at the top of this page to download the `.exe` from our releases page!
+
+**Method B: 1-Line PowerShell Install**
 Open PowerShell and run:
 ```powershell
 iwr -useb https://raw.githubusercontent.com/karthik-ak-Git/SOVARA/main/install.ps1 | iex
 ```
 
-**Method B: Node.js / NPM Install**
+**Method C: Node.js / NPM Install**
 If you have Node.js installed, simply run:
 ```bash
 npx sovara

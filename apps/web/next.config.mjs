@@ -29,6 +29,7 @@ const nextConfig = {
   },
   // Server-only packages with native/Node built-ins must stay external.
   // (node:sqlite / child_process are externalized automatically.)
+  serverComponentsExternalPackages: ['@modelcontextprotocol/sdk'],
 }
 
 export default nextConfig
