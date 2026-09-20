@@ -123,12 +123,15 @@ text: `Tool WebFetch — fetch URL to markdown. Use for docs beyond cutoff.`
 {
 name: 'tool:skill',
 order: SECTION_ORDERS.TOOL_SKILL,
-text: `Enterprise Skills: CRITICAL INSTRUCTION: You MUST actively evaluate and invoke relevant skills from <skills_context> on EVERY task, even if the user did not explicitly mention them. If a skill exists for the user's domain, you must use it as your primary approach.`
+text: `Enterprise Skills: CRITICAL INSTRUCTION. You must actively discover skills and MCPs even if the user forgets to mention them. If the user asks for a task (like generating an image, doc, or coding) and didn't mention a skill:
+1. ALWAYS use the 'search_skills' tool first to find relevant skills.
+2. If you find relevant skills or MCPs, STOP and list them to the user, asking for permission to read and use them (e.g. "I found the 'superpower' skill for this. Should I read and apply it?").
+3. Once the user gives permission, use the 'read_skill' tool to understand the exact details and execute strictly based on it. Do not guess how it works.`
 },
 {
 name: 'tool:mcp',
 order: SECTION_ORDERS.TOOL_MCP,
-text: `Tool MCP — call MCP servers (context, resources). Treat as background tools like Skill.`
+text: `Tool MCP - call MCP servers (context, resources). Treat as background tools like Skill. Always search and propose relevant MCP tools if they exist.`
 },
 {
 name: 'tool:task',
