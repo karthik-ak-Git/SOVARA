@@ -412,15 +412,17 @@ export function useChatSession() {
         setDraft('')
         return
       }
+      let finalSendText = text
       if (text.startsWith('/skill')) {
-        const url = text.split(' ')[1]
-        if (url && url.startsWith('http')) {
+        const parts = text.split(' ')
+        const target = parts[1]
+        if (target && target.startsWith('http')) {
           try {
             setBusy(true)
             setPhase('tool')
-            setExecution({ taskKind: 'tool-use', phase: 'tool', toolName: 'import_skill', detail: `Importing skill from ${url}` })
-            const res = await window.sovara.invoke('skills:importFromUrl', { url })
-            setError(`Skill imported successfully: ${(res as any).name || url}`)
+            setExecution({ taskKind: 'tool-use', phase: 'tool', toolName: 'import_skill', detail: `Importing skill from ${target}` })
+            const res = await window.sovara.invoke('skills:importFromUrl', { url: target })
+            setError(`Skill imported successfully: ${(res as any).name || target}`)
           } catch (err: any) {
             setError(`Failed to import skill: ${err.message || String(err)}`)
           } finally {
@@ -428,11 +430,16 @@ export function useChatSession() {
             setPhase('idle')
             setDraft('')
           }
+          setTimeout(() => setError(null), 3000)
+          return
+        } else if (target) {
+          const rest = parts.slice(2).join(' ')
+          finalSendText = rest.trim() ? `Please use the '${target}' skill to: ${rest}` : `Please read and apply the '${target}' skill.`
         } else {
-          setError('Usage: /skill <https://url-to-skill>')
+          setError('Usage: /skill <https://url-to-skill> OR /skill <name>')
+          setTimeout(() => setError(null), 3000)
+          return
         }
-        setTimeout(() => setError(null), 3000)
-        return
       }
       if (text.startsWith('/help') || text.startsWith('/mcp')) {
         setError('/compact — keep context under 8192 tokens\n/skill <url> — import a skill\nFor MCP, configure via Settings UI.')
@@ -442,7 +449,7 @@ export function useChatSession() {
       }
 
       // Auto-compact when approaching context limit (~80% of 8192 tokens ≈ 6400 tokens ≈ 25600 chars)
-      const totalChars = getTotalChars() + text.length
+      const totalChars = getTotalChars() + finalSendText.length
       if (estimateTokens(totalChars) > 6400) {
         // Fire compact before send to keep prompt in English and within budget
         await handleCompact()
@@ -456,7 +463,7 @@ export function useChatSession() {
         setStreamingReasoning('')
         setError(null)
         const optimisticSeq = Date.now()
-        setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
+        setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: finalSendText } } as unknown as SessionEventView])
         try {
           const h = await createSession(`Session ${sessions.length + 1}`, null)
           await refreshSessions()
@@ -479,7 +486,7 @@ export function useChatSession() {
         setStreamingReasoning('')
         setError(null)
         const optimisticSeq = Date.now()
-        setEvents((prev) => [...prev, { seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: text } } as unknown as SessionEventView])
+        setEvents((prev) => [...prev, { seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: finalSendText } } as unknown as SessionEventView])
       }
       setDraft('')
       // Fire-and-forget: do NOT await sendChatMessage. It is a long-lived
@@ -489,7 +496,7 @@ export function useChatSession() {
       // state in real-time. Awaiting it here would block the event loop and
       // prevent React from re-rendering until the request completes, making
       // the stream invisible to the user.
-      sendChatMessage(targetId, text, opts)
+      sendChatMessage(targetId, finalSendText, opts)
         .then(() => {
           setDraft('')
           if (selectedRef.current === targetId) {

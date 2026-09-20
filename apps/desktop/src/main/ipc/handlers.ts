@@ -895,6 +895,18 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('shell:showItemInFolder', async (_e, raw: unknown) => {
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (parsed?.path) {
+        shell.showItemInFolder(parsed.path)
+      }
+      return { ok: true }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : 'could not show file')
+    }
+  })
+
   ipcMain.handle('library:delete', async (_e, raw: unknown) => {
     const parsed = zLibraryDelete.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid library:delete payload: ${parsed.error.message}`)

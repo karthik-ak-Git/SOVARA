@@ -472,7 +472,7 @@ export function ChatView({
                   <FileText size={14} aria-hidden />
                   <span style={{ fontWeight: 600, textDecoration: 'underline' }}>{f.fileName}</span>
                   <span style={{ opacity: 0.55 }}>{f.kind}{typeof f.bytes === 'number' ? ` • ${(f.bytes / 1024).toFixed(1)}KB` : ''}</span>
-                  <button type="button" className="sv-btn sv-btn-ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={(e) => { e.stopPropagation(); handleOpenArtifactFileWithPanel(f.path) }}>Open ↗</button>
+                  <button type="button" className="sv-btn sv-btn-ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={(e) => { e.stopPropagation(); void window.sovara.invoke('shell:showItemInFolder', { path: f.path }) }}>Open Folder</button>
                 </div>
               ))}
             </div>
@@ -556,7 +556,7 @@ export function ChatView({
                 <div style={{ flex: 1, overflow: 'auto' }}>
                   {activeArtifact.language.toLowerCase() === 'html' || activeArtifact.language.toLowerCase() === 'svg' ? (
                     <iframe
-                      srcDoc={bundledHtml || activeArtifact.code}
+                      srcDoc={bundledHtml || (activeArtifact.language.toLowerCase() === 'svg' ? `<!doctype html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff;padding:16px;}svg{max-width:100%;max-height:100%;width:100%;height:auto;}</style></head><body>${activeArtifact.code}</body></html>` : activeArtifact.code)}
                       title={activeArtifact.title}
                       sandbox="allow-scripts allow-same-origin allow-modals"
                       style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
