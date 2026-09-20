@@ -106,7 +106,7 @@ export function Composer({
   const showStop = streaming && onCancel
 
   // Autocomplete state
-  const [mentionType, setMentionType] = useState<'slash' | 'at' | null>(null)
+  const [mentionType, setMentionType] = useState<'slash' | 'at' | 'skill' | null>(null)
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionItems, setMentionItems] = useState<{ id: string, label: string, desc?: string }[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
@@ -115,29 +115,56 @@ export function Composer({
     if (mentionType === 'slash') {
       const all = [
         { id: '/compact', label: '/compact', desc: 'Keep context in English & under 8192' },
-        { id: '/skill', label: '/skill <url>', desc: 'Import an enterprise skill from URL' },
+        { id: '/skill ', label: '/skill <name>', desc: 'Apply a skill (add space to list)' },
         { id: '/mcp', label: '/mcp', desc: 'Manage MCP servers in Settings' },
         { id: '/help', label: '/help', desc: 'List commands' }
       ]
       setMentionItems(all.filter(i => i.id.startsWith(mentionQuery)))
       setMentionIndex(0)
+    } else if (mentionType === 'skill') {
+      const query = mentionQuery.slice(7).trim().toLowerCase()
+      window.sovara.invoke('skills:listDetailed').then((raw: any) => {
+        try {
+          const allSkills = raw.flatMap((r: any) => r.skills || [])
+          const filtered = allSkills.filter((s: any) => s.name.toLowerCase().includes(query))
+          setMentionItems(filtered.map((s: any) => ({
+            id: `/skill ${s.name}`,
+            label: s.name,
+            desc: s.description || 'Skill'
+          })).slice(0, 15))
+          setMentionIndex(0)
+        } catch {}
+      })
     } else if (mentionType === 'at') {
       const query = mentionQuery.slice(1).toLowerCase()
-      window.sovara.invoke('tools:dispatch', { name: 'fs_list', args: { path: '.' } }).then((raw: unknown) => {
+      window.sovara.invoke('tools:dispatch', { name: 'shell_exec', args: { command: 'git ls-files' } }).then((raw: any) => {
         try {
-          const data = typeof raw === 'string' ? JSON.parse(raw) : raw
-          if (data.entries) {
-            const files = data.entries
-              .filter((e: any) => e.name.toLowerCase().includes(query))
-              .map((e: any) => ({
-                id: '@' + e.name + (e.isDirectory ? '/' : ''), 
-                label: e.name + (e.isDirectory ? '/' : ''), 
-                desc: e.isDirectory ? 'Directory' : 'Workspace file'
-              })).slice(0, 10)
-            setMentionItems(files)
+          const out = (typeof raw === 'string' ? raw : (raw.stdout || '')).trim()
+          if (out && !out.includes('not a git repository')) {
+            const files = out.split('\n').map(l => l.trim()).filter(Boolean)
+            const matched = files.filter(f => f.toLowerCase().includes(query)).slice(0, 15)
+            setMentionItems(matched.map(f => ({ id: '@' + f, label: f, desc: 'Workspace file' })))
             setMentionIndex(0)
+            return
           }
         } catch {}
+        // Fallback to fs_list
+        window.sovara.invoke('tools:dispatch', { name: 'fs_list', args: { path: '.' } }).then((rawFallback: any) => {
+          try {
+            const data = typeof rawFallback === 'string' ? JSON.parse(rawFallback) : rawFallback
+            if (data.entries) {
+              const files = data.entries
+                .filter((e: any) => e.name.toLowerCase().includes(query))
+                .map((e: any) => ({
+                  id: '@' + e.name + (e.isDirectory ? '/' : ''), 
+                  label: e.name + (e.isDirectory ? '/' : ''), 
+                  desc: e.isDirectory ? 'Directory' : 'Workspace file'
+                })).slice(0, 10)
+              setMentionItems(files)
+              setMentionIndex(0)
+            }
+          } catch {}
+        })
       })
     }
   }, [mentionType, mentionQuery])
@@ -434,11 +461,16 @@ export function Composer({
           onChange={(e) => {
             const v = e.target.value.slice(0, MAX_LENGTH)
             onChange(v)
-            
-            const match = /(?:^|\s)([/@][\w-.-]*)$/.exec(v)
+            const match = /(?:^|\s)(\/skill(?:\s+[\w-.-]*)?|[/@][\w-.-]*)$/.exec(v)
             if (match) {
               const str = match[1]
-              setMentionType(str.startsWith('/') ? 'slash' : 'at')
+              if (str.startsWith('/skill ')) {
+                setMentionType('skill')
+              } else if (str.startsWith('/')) {
+                setMentionType('slash')
+              } else {
+                setMentionType('at')
+              }
               setMentionQuery(str)
             } else {
               setMentionType(null)

@@ -272,21 +272,32 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     out.push({ toolName, args, raw: m[0], index: m.index })
   }
 
-  // Pattern 3: <tool_call><function=name><parameter=key>val</parameter>...</function></tool_call>
-  // Note: We use (?:<\/tool_call>|$) to handle truncated outputs where the model stops before closing the tag.
+  // Pattern 3: <tool_call><function>name</function><parameter name="key">val</parameter>...</tool_call>
   const toolCallXmlRe = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/gi
   guard = 0
   while (guard++ < 64 && (m = toolCallXmlRe.exec(text)) !== null) {
     const raw = m[0]
     const content = m[1]
-    const fnMatch = /<function=([^>]+)>/i.exec(content)
+    const fnMatch = /<function(?:>|\s+name=["']?([^>]+?)["']?>)([\s\S]*?)<\/?function>|<function=([^>]+)>/i.exec(content)
     if (fnMatch) {
-      const toolName = fnMatch[1].trim().toLowerCase()
+      // Find the tool name from the name attribute, or from the inner text (stripping child tags)
+      let toolName = fnMatch[1] || fnMatch[3]
+      if (!toolName && fnMatch[2]) {
+        // If no name attribute, it might be <function>fs_write<parameter>...</parameter></function>
+        toolName = fnMatch[2].replace(/<[^>]+>[\s\S]*/, '').trim()
+      }
+      toolName = (toolName || '').toLowerCase()
       const args: Record<string, unknown> = {}
-      const paramRe = /<parameter=([^>]+)>([\s\S]*?)(?:<\/parameter>|$)/gi
+      // Match both <parameter=key>val</parameter> AND <parameter name="key">val</parameter>
+      const paramRe = /<parameter(?:=|\s+name=["'])([^>]+?)(?:["']|)?>([\s\S]*?)(?:<\/parameter>|$)/gi
       let p: RegExpExecArray | null
       while ((p = paramRe.exec(content)) !== null) {
         args[p[1].trim()] = p[2].trim()
+      }
+      // If it just dumped everything in <parameter>, map to content
+      if (Object.keys(args).length === 0) {
+        const rawParam = /<parameter>([\s\S]*?)(?:<\/parameter>|$)/i.exec(content)
+        if (rawParam) args['content'] = rawParam[1].trim()
       }
       if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
       out.push({ toolName, args, raw, index: m.index })
