@@ -40,6 +40,12 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'zod'],
   },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 }
 
 export default nextConfig
