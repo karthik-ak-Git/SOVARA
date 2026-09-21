@@ -9,3 +9,5 @@ allowBuilds:
   onnxruntime-node: true
   protobufjs: true
   sharp: true
+patchedDependencies:
+  zod@3.24.3: patches/zod@3.24.3.patch

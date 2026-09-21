@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  zod@3.24.3: f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c
+
 importers:
 
   .:
@@ -19,7 +22,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
-        version: 1.30.0(supports-color@7.2.0)(zod@3.24.3)
+        version: 1.30.0(supports-color@7.2.0)(zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c))
       lucide-react:
         specifier: 0.511.0
         version: 0.511.0(react@18.3.1)
@@ -83,7 +86,7 @@ importers:
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(jsdom@26.1.0(supports-color@7.2.0))(supports-color@7.2.0)
       zod:
         specifier: ^3.24.3
-        version: 3.24.3
+        version: 3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c)
 
   apps/web:
     dependencies:
@@ -104,7 +107,7 @@ importers:
         version: 0.0.1
       zod:
         specifier: 3.24.3
-        version: 3.24.3
+        version: 3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c)
       zustand:
         specifier: 4.5.2
         version: 4.5.2(@types/react@18.3.18)(react@18.3.1)
@@ -3659,7 +3662,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@3.24.3)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c))':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.8)
       ajv: 8.20.0
@@ -3676,8 +3679,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.24.3
-      zod-to-json-schema: 3.25.2(zod@3.24.3)
+      zod: 3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c)
+      zod-to-json-schema: 3.25.2(zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c))
     transitivePeerDependencies:
       - supports-color
 
@@ -6607,11 +6610,11 @@ snapshots:
       compress-commons: 4.1.2
       readable-stream: 3.6.2
 
-  zod-to-json-schema@3.25.2(zod@3.24.3):
+  zod-to-json-schema@3.25.2(zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c)):
     dependencies:
-      zod: 3.24.3
+      zod: 3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c)
 
-  zod@3.24.3: {}
+  zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c): {}
 
   zustand@4.5.2(@types/react@18.3.18)(react@18.3.1):
     dependencies:

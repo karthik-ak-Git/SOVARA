@@ -1,4 +1,6 @@
 Write-Host ""
+$ProgressPreference = 'SilentlyContinue'
+
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host "      Downloading Sovara (Local AI Agent)    " -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan

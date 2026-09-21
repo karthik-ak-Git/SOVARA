@@ -18,18 +18,28 @@ const nextConfig = {
       ...(config.resolve.alias ?? {}),
       '@shared': path.resolve(__dirname, '../desktop/src/shared'),
       '@sovara-main': path.resolve(__dirname, '../desktop/src/main'),
+      'zod/v3': 'zod',
+      'zod/v4-mini': 'zod',
     }
     if (isServer) {
       config.resolve.alias['electron'] = path.resolve(
         __dirname,
         'src/lib/server/electron-shim.ts'
       )
+      // Force Next.js to externalize these packages in API routes to prevent deep import resolution errors
+      config.externals.push(
+        '@modelcontextprotocol/sdk',
+        'zod-to-json-schema',
+        'zod'
+      )
     }
     return config
   },
   // Server-only packages with native/Node built-ins must stay external.
   // (node:sqlite / child_process are externalized automatically.)
-  serverComponentsExternalPackages: ['@modelcontextprotocol/sdk'],
+  experimental: {
+    serverComponentsExternalPackages: ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'zod'],
+  },
 }
 
 export default nextConfig
