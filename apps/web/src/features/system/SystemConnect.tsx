@@ -75,14 +75,12 @@ export function SystemConnect() {
       try { localStorage.setItem('sovara:localUrl', localUrl); localStorage.setItem('sovara:connected','1') } catch {}
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e)
-      // ERR_CONNECTION_REFUSED / Failed to fetch → companion not running — surface friendly guidance instead of raw net error
       const friendly = /Failed to fetch|ERR_CONNECTION_REFUSED|NetworkError|Load failed/i.test(raw)
-        ? `Desktop companion not reachable at ${localUrl}. Start it with: pnpm --filter @sovara/desktop dev  (serves http://localhost:51841/__sovara/ping). Also check firewall/antivirus isn't blocking 51841.`
+        ? `Desktop app not reachable. 1) Ensure Sovara.exe is running in the background. 2) Because this is a secure web app (HTTPS) trying to talk to your local computer (HTTP), your browser might block it. Click the 🔒 icon in your URL bar, go to Site Settings, and set "Insecure content" to Allow.`
         : raw
       setStatus('failed'); setMsg(friendly)
       await fetch('/api/system/connect', { method:'DELETE' }).catch(()=>{})
       try { localStorage.removeItem('sovara:connected') } catch {}
-      // Avoid noisy unhandled rejection console spam for expected offline case
       console.warn('[SystemConnect] probe failed:', raw)
     }
   }, [localUrl, probeLocal])
@@ -94,15 +92,28 @@ export function SystemConnect() {
   }, [])
 
   return (
-    <div style={{ border:'1px solid var(--border)', borderRadius:10, padding:12, display:'flex', flexDirection:'column', gap:8 }}>
-      <div style={{ fontWeight:600 }}>System Connect (Web → Your Hardware)</div>
-      <div style={{ fontSize:12, opacity:0.7 }}>Vercel app uses your network to reach your local Sovara companion. Validates via cookie; if not valid, no connection. {browserHw ? `Detected: ${browserHw.label}${browserHw.vramHint !== 'Unknown GPU' ? ` • ${browserHw.vramHint}` : ''}` : ''}</div>
-      <div style={{ display:'flex', gap:6 }}>
-        <input value={localUrl} onChange={e=> setLocalUrl(e.target.value)} placeholder="http://localhost:51841" style={{ flex:1, padding:'6px 8px', borderRadius:6, border:'1px solid var(--border)' }} />
-        {status==='connected' ? <button onClick={disconnect} style={{ padding:'6px 12px', borderRadius:6 }}>Disconnect</button> : <button onClick={connect} disabled={status==='connecting'} style={{ padding:'6px 12px', borderRadius:6, background:'var(--accent)', color:'#fff' }}>{status==='connecting'?'Connecting…':'Connect'}</button>}
+    <div style={{ border:'1px solid var(--border)', borderRadius:10, padding:12, display:'flex', flexDirection:'column', gap:8, background: 'var(--bg-secondary)' }}>
+      <div style={{ fontWeight:600, display: 'flex', alignItems: 'center', gap: 6 }}>
+        🔌 System Connect (Web ⟷ Your Hardware)
       </div>
-      {msg ? <div style={{ fontSize:12, color: status==='failed' ? '#c0392b' : status==='connected' ? '#0a0' : '#888' }}>{msg}</div> : null}
-      <div style={{ fontSize:11, opacity:0.5 }}>Requires desktop running (`pnpm dev` exposes http://localhost:51841/__sovara/ping). When connected, chat & model run proxy to your hardware.</div>
+      <div style={{ fontSize:13, opacity:0.8 }}>
+        This Vercel demo can securely bridge to your local system hardware to run AI models offline, just like native companion apps from laptop manufacturers.
+        <br/><br/>
+        <strong>Requirement:</strong> The Sovara Desktop App (`.exe`) must be running in the background.
+      </div>
+      <div style={{ display:'flex', gap:6, marginTop: 4 }}>
+        <input value={localUrl} onChange={e=> setLocalUrl(e.target.value)} placeholder="http://127.0.0.1:51841" style={{ flex:1, padding:'8px', borderRadius:6, border:'1px solid var(--border)' }} />
+        {status==='connected' ? 
+          <button onClick={disconnect} style={{ padding:'8px 16px', borderRadius:6, background:'#333', color:'#fff' }}>Disconnect</button> : 
+          <button onClick={connect} disabled={status==='connecting'} style={{ padding:'8px 16px', borderRadius:6, background:'var(--accent)', color:'#fff', fontWeight:600 }}>{status==='connecting'?'Probing...':'Connect Hardware'}</button>
+        }
+      </div>
+      {msg ? <div style={{ fontSize:12, padding: '8px', borderRadius: '6px', background: status==='failed' ? '#ffebee' : status==='connected' ? '#e8f5e9' : 'transparent', color: status==='failed' ? '#c0392b' : status==='connected' ? '#2e7d32' : '#888' }}>{msg}</div> : null}
+      {status === 'failed' && (
+        <div style={{ fontSize:12, marginTop: 4, color: '#d35400' }}>
+          <strong>Browser Blocked?</strong> Browsers block HTTPS sites from talking to your local HTTP hardware. To fix this: Click the padlock (🔒) next to the Vercel URL at the top of your browser ➞ <strong>Site settings</strong> ➞ Find <strong>Insecure content</strong> ➞ Change it to <strong>Allow</strong>, then reload the page!
+        </div>
+      )}
     </div>
   )
 }
