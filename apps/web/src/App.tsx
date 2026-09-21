@@ -8,7 +8,6 @@ import { useModelWorkbench } from './features/models/useModelWorkbench'
 import { ChatView } from './features/chat/ChatView'
 import type { FileAttachment } from './features/chat/Composer'
 import { CreateProjectModal } from './components/modals/CreateProjectModal'
-import { SystemConnect } from './features/system/SystemConnect'
 import { ModelsPage } from './features/models/ModelsPage'
 import { ExplorePage } from './features/explore/ExplorePage'
 import { LibraryPage } from './features/library/LibraryPage'
@@ -63,11 +62,11 @@ export function App(): React.JSX.Element {
     getAppSettings()
       .then((s) => {
         const resolved =
-          s.theme === 'system'
+          (s.theme || 'light') === 'system'
             ? window.matchMedia('(prefers-color-scheme: dark)').matches
               ? 'dark'
               : 'light'
-            : s.theme
+            : (s.theme || 'light')
         document.documentElement.setAttribute('data-theme', resolved)
         document.documentElement.setAttribute('data-sidebar', s.sidebarBackground)
         document.documentElement.setAttribute('data-diff', s.inlineDiffLayout)
@@ -425,7 +424,7 @@ export function App(): React.JSX.Element {
 
         {activeNav === 'connections' ? <ConnectionsPage onBack={() => setActiveNav('chat')} /> : null}
 
-        {activeNav === 'settings' ? <><SystemConnect /><SettingsPage onBack={() => setActiveNav('chat')} /></> : null}
+        {activeNav === 'settings' ? <SettingsPage onBack={() => setActiveNav('chat')} /> : null}
 
         <CreateProjectModal
           open={projectModalOpen}

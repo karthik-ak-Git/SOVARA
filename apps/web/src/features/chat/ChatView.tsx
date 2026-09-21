@@ -288,7 +288,26 @@ export function ChatView({
             </div>
             <div className="eyebrow">WORKSPACE / {eyebrowProject}</div>
             <h1 className="sv-empty-title">What will you work on?</h1>
-            <p className="sv-empty-sub" style={{ color: 'var(--muted-2)', fontSize: 12 }}>
+            
+            <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--accent)', background: 'rgba(216, 237, 248, 0.2)', maxWidth: 640, width: '100%', textAlign: 'left', lineHeight: 1.5 }} role="alert">
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--accent)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={16} /> Web Sandbox Demo Mode
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--foreground)' }}>
+                <strong>Why does this Web Demo use Cloud Requests?</strong> 
+                <br />
+                Because you are accessing Sovara through a web browser on Vercel, strict browser security sandboxes prevent websites from accessing your local system hardware. A browser tab simply cannot download 8GB machine learning models or execute native terminal commands on your laptop.
+                <br /><br />
+                <strong>How to use this Web Demo:</strong> Please connect an external Cloud API key (Groq, OpenAI, or Anthropic) in the Models tab to handle the AI processing requests in the cloud. Note that filesystem tools and native shell execution are disabled in this sandbox mode.
+                <br /><br />
+                <strong>The True Local Experience:</strong> For the full, 100% offline experience running AI models directly on your own consumer hardware (no cloud APIs needed!), please download the official Desktop application:
+                <div style={{ marginTop: 8, padding: '10px 14px', background: 'var(--bg-2)', borderRadius: 6, fontFamily: 'monospace', fontSize: 12, border: '1px solid var(--border)', userSelect: 'all' }}>
+                  powershell -c "iwr https://github.com/karthik-ak-Git/SOVARA/releases/download/Sovara-versions/install.ps1 | iex"
+                </div>
+              </div>
+            </div>
+
+            <p className="sv-empty-sub" style={{ color: 'var(--muted-2)', fontSize: 12, marginTop: 24 }}>
               Private, local-first intelligence for your workspace. {model.available
                 ? 'Replies stream from your local model directly on your hardware.'
                 : 'No model runtime available — connect or load a local model from Models to start chatting.'}
