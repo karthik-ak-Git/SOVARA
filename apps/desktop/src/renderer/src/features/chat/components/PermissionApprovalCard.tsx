@@ -104,24 +104,25 @@ export function PermissionApprovalCard({
       className="sv-permission-card w-full max-w-2xl my-3 p-4 rounded-xl border font-sans shadow-sm transition-all border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
       role="region"
       aria-label="Permission request"
+      style={{ maxWidth: '640px', margin: '12px auto', background: '#fff', border: '1px solid #e4e4e7', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 mb-3">
-        <div className="flex items-center justify-center w-6 h-6 rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200">
+      <div className="flex items-center gap-2 mb-3" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <div className="flex items-center justify-center w-6 h-6 rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200" style={{ width: '24px', height: '24px', borderRadius: '6px', background: '#f4f4f5', border: '1px solid #d4d4d8', display: 'grid', placeItems: 'center' }}>
           <Terminal size={14} />
         </div>
-        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 m-0 leading-snug">
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 m-0 leading-snug" style={{ fontSize: '14px', fontWeight: 600, color: '#18181b', margin: 0 }}>
           {actionTitle}
         </h3>
       </div>
 
       {/* Monospace Code snippet box */}
-      <div className="p-2.5 mb-3 rounded-lg border font-mono text-xs leading-relaxed overflow-x-hidden break-all whitespace-pre-wrap border-zinc-200 dark:border-zinc-800 bg-zinc-100/90 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+      <div className="p-2.5 mb-3 rounded-lg border font-mono text-xs leading-relaxed overflow-x-hidden break-all whitespace-pre-wrap border-zinc-200 dark:border-zinc-800 bg-zinc-100/90 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100" style={{ padding: '10px', background: '#fafafa', border: '1px solid #e4e4e7', borderRadius: '8px', fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
         {commandStr}
       </div>
 
-      {/* 5 Selectable Options — click to select, double-click to submit */}
-      <div className="flex flex-col gap-1 mb-3.5" role="radiogroup" aria-label="Permission options">
+      {/* 5 Selectable Options — click selects, double-click submits */}
+      <div className="flex flex-col gap-1 mb-3.5" role="radiogroup" aria-label="Permission options" style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '14px' }}>
         {options.map((opt) => {
           const isSelected = selectedOption === opt.index
           return (
@@ -146,22 +147,40 @@ export function PermissionApprovalCard({
                   handleSubmit(opt.index)
                 }
               }}
-              className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors select-none border ${
-                isSelected
-                  ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium border-zinc-300 dark:border-zinc-700 shadow-sm'
-                  : 'hover:bg-zinc-100/70 dark:hover:bg-zinc-800/40 text-zinc-700 dark:text-zinc-300 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700'
-              }`}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px',
+                padding: '9px 10px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                userSelect: 'none',
+                border: isSelected ? '1px solid #d4d4d8' : '1px solid transparent',
+                background: isSelected ? '#e4e4e7' : 'transparent',
+                color: isSelected ? '#18181b' : '#3f3f46',
+                fontWeight: isSelected ? 500 : 400,
+                transition: 'all 120ms ease',
+              }}
             >
               <div
-                className={`flex items-center justify-center w-5 h-5 min-w-[20px] rounded text-xs font-semibold font-mono mt-0.5 ${
-                  isSelected
-                    ? 'bg-zinc-300 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100'
-                    : 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
-                }`}
+                style={{
+                  width: '20px',
+                  height: '20px',
+                  minWidth: '20px',
+                  borderRadius: '4px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  fontFamily: 'ui-monospace, monospace',
+                  background: isSelected ? '#d4d4d8' : '#f4f4f5',
+                  color: isSelected ? '#18181b' : '#71717a',
+                  marginTop: '1px',
+                }}
               >
                 {opt.index}
               </div>
-              <div className="text-xs leading-relaxed pt-0.5 flex-1">
+              <div style={{ fontSize: '12px', lineHeight: '1.4', flex: 1, paddingTop: '2px' }}>
                 {opt.label}
               </div>
             </div>
