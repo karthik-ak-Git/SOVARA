@@ -49,6 +49,7 @@ export function App(): React.JSX.Element {
   const [activeTab, setActiveTab] = useState('session')
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [globalWorkspaceRoot, setGlobalWorkspaceRoot] = useState<string | null>(null)
   const [execMode, setExecModeState] = useState<ExecMode>('ask')
   const [reasoningEnabled, setReasoningEnabled] = useState(true)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
@@ -109,6 +110,7 @@ export function App(): React.JSX.Element {
     getExecMode().then(setExecModeState).catch(() => {})
     getAppSettings()
       .then((s) => {
+        setGlobalWorkspaceRoot(s.globalWorkspaceRoot || null)
         const resolved =
           s.theme === 'system'
             ? window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -302,6 +304,16 @@ export function App(): React.JSX.Element {
     return pid
   }, [chat.selectedId, chat.sessions, selectedProjectId, projects])
 
+  const activeWorkspaceRoot = useMemo(() => {
+    const activeSess = chat.sessions.find((s) => s.id === chat.selectedId)
+    const pid = activeSess?.projectId ?? selectedProjectId
+    if (pid && pid !== '__global__') {
+      const found = projects.find((p) => p.id === pid)
+      if (found?.rootPath) return found.rootPath
+    }
+    return globalWorkspaceRoot
+  }, [chat.selectedId, chat.sessions, selectedProjectId, projects, globalWorkspaceRoot])
+
   const activeModelDisplay = useMemo(() => {
     if (workbench.active.displayName) return workbench.active.displayName
     if (workbench.active.selection) {
@@ -417,6 +429,7 @@ export function App(): React.JSX.Element {
         splitOpen={contextOpen}
         onToggleSplit={() => setContextOpen((v) => !v)}
         onShare={handleShareSession}
+        workspaceRoot={activeWorkspaceRoot}
         contextPanel={
           activeNav === 'chat' && contextOpen ? (
             <ContextPanel

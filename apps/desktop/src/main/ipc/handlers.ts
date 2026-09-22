@@ -211,7 +211,7 @@ export function registerIpcHandlers(): void {
         const resolved = path.resolve(root, path.relative(root, rawPath))
         real = fs.realpathSync(resolved)
       }
-      const allowed = ['.pdf', '.xlsx', '.docx', '.txt', '.md', '.csv', '.json', '.py', '.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.sh', '.sql', '.rs', '.go', '.java']
+      const allowed = ['.pdf', '.xlsx', '.docx', '.pptx', '.ppt', '.txt', '.md', '.csv', '.json', '.py', '.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.sh', '.sql', '.rs', '.go', '.java']
       if (!allowed.includes(path.extname(real).toLowerCase())) throw new Error('artifact type not allowed')
       if (!fs.statSync(real).isFile()) throw new Error('artifact not found')
       const sessionsRoot = path.resolve(getSessionsDir())

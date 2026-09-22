@@ -43,6 +43,7 @@ interface Props {
   artifactTitle?: string
   events?: import('@/lib/client/api').SessionEventView[]
   onOpenSettings?: (section?: string, projectId?: string) => void
+  workspaceRoot?: string | null
 }
 
 export function AppShell({
@@ -85,6 +86,7 @@ export function AppShell({
   artifactTitle,
   events = [],
   onOpenSettings,
+  workspaceRoot,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isAuxExpanded, setIsAuxExpanded] = useState(false)
@@ -161,6 +163,7 @@ export function AppShell({
             artifactTitle={artifactTitle}
             events={events}
             sessionId={selectedSessionId || selectedChatId || undefined}
+            workspaceRoot={workspaceRoot}
           />
         ) : (
           contextPanel ?? null

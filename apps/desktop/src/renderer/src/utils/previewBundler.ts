@@ -132,9 +132,15 @@ export function bundleLocalhostPreview(url: string): string {
 </html>`
 }
 
+export function isBinaryArtifact(code: string, lang?: string): boolean {
+  const l = (lang || '').toLowerCase()
+  return l === 'pptx' || l === 'xlsx' || l === 'docx' || l === 'pdf' || l === 'ppt' || l === 'xls' || l === 'doc'
+}
+
 export function isVisualArtifact(code: string, lang?: string): boolean {
   if (!code || typeof code !== 'string') return false
   const l = (lang || '').toLowerCase()
+  if (isBinaryArtifact(code, lang)) return false
   if (l === 'html' || l === 'svg' || l === 'tsx' || l === 'jsx' || l === 'react' || l === 'mermaid' || l === 'url' || l === 'server' || l === 'devserver') return true
   if (code.includes('<svg') && code.includes('</svg>')) return true
   if (isLocalhostArtifact(code, lang) || !!extractLocalhostUrl(code)) return true
@@ -142,6 +148,11 @@ export function isVisualArtifact(code: string, lang?: string): boolean {
   if (isMermaidArtifact(code, lang)) return true
   if (code.includes('<!DOCTYPE') || code.includes('<html') || (code.includes('<div') && code.includes('</div>'))) return true
   return false
+}
+
+export function bundleBinaryPreview(fileName: string, lang: string): string {
+  const ext = (lang || fileName.split('.').pop() || '').toUpperCase()
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>body{margin:0;padding:32px;background:#f8fafc;color:#0f172a;font-family:Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;} .card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:28px;max-width:420px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.08);} .icon{width:56px;height:56px;margin:0 auto 16px;background:#0f172a;color:#fff;border-radius:14px;display:flex;align-items:center;justify-content:center;font:700 20px/1 Inter;} .title{font:700 16px/1.3 Inter;margin:0 0 6px;} .sub{font:400 13px/1.5 Inter;color:#64748b;margin:0 0 18px;} .btn{appearance:none;border:none;background:#0f172a;color:#fff;padding:10px 18px;border-radius:10px;font:600 13px/1 Inter;cursor:pointer;}</style></head><body><div class="card"><div class="icon">${ext.slice(0,2)}</div><div class="title">${fileName}</div><div class="sub">Binary ${ext} file — generated in workspace. Open it via the Download/Open button in the chat file list or the system file manager.</div><button class="btn" onclick="alert('Use Open Folder in chat to locate '+fileName)">Locate file →</button></div></body></html>`
 }
 
 export function bundleReactPreview(code: string): string {
@@ -413,6 +424,12 @@ export async function preparePreviewHtml(
   language?: string
 ): Promise<string> {
   if (!html || typeof html !== 'string') return ''
+
+  // Binary files never preview as visual HTML — return dedicated download card
+  if (isBinaryArtifact(html, language) && html.length < 800) {
+    // html param is actually file path / short name for binary placeholder
+    return bundleBinaryPreview(html, language || 'pptx')
+  }
 
   // 0. Live Local Dev Server URL / Port preview
   if (isLocalhostArtifact(html, language) || (extractLocalhostUrl(html) && !html.includes('<html') && !isReactArtifact(html, language))) {

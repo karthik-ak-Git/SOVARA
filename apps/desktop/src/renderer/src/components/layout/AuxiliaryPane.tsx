@@ -55,6 +55,7 @@ interface Props {
   events?: SessionEventView[]
   sessionTitle?: string
   sessionId?: string
+  workspaceRoot?: string | null
 }
 
 export function AuxiliaryPane({
@@ -74,6 +75,7 @@ export function AuxiliaryPane({
   events = [],
   sessionTitle = 'Current Conversation',
   sessionId,
+  workspaceRoot,
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
   const [internalExpanded, setInternalExpanded] = useState(false)
@@ -198,22 +200,91 @@ export function AuxiliaryPane({
     return list
   }, [events])
 
+  // Skills — dynamic from actual enabled sources (Settings → Skill Directory Sources), not hardcoded.
+  // Shows both explicitly called skills (tool/call) AND the injected top-scored skills for this chat prompt.
+  const [injectedSkills, setInjectedSkills] = useState<Array<{ name: string; path?: string; source: string }>>([])
+  useEffect(() => {
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      try {
+        const w: any = window as any
+        if (!w.sovara?.invoke) return
+        // Fetch enabled detailed skills — represents what is truly configured in Settings
+        const detailed = (await w.sovara.invoke('skills:listDetailed').catch(() => [])) as Array<{ name: string; path: string; skills: Array<{ name: string; path: string }> }>
+        // Also fetch scan to know which sources are enabled (we keep only enabled sources)
+        const scanned = (await w.sovara.invoke('skills:scan').catch(() => [])) as Array<{ name: string; enabled: boolean }>
+        const enabledSet = new Set(scanned.filter((s) => s.enabled).map((s) => s.name))
+        const flat: Array<{ name: string; path?: string; source: string }> = []
+        for (const grp of detailed) {
+          if (enabledSet.size > 0 && !enabledSet.has(grp.name)) continue
+          for (const s of grp.skills ?? []) {
+            if (!flat.some((x) => x.name.toLowerCase() === s.name.toLowerCase())) {
+              flat.push({ name: s.name, path: s.path, source: grp.name })
+            }
+          }
+        }
+        // If user typed a PPT/prompt, prioritize those skills in display (same heuristics as backend)
+        const chatText = events
+          .filter((e) => e.type === 'user/message' || e.type === 'assistant/message')
+          .map((e) => {
+            const d: any = e.data
+            return typeof d === 'string' ? d : typeof d?.content === 'string' ? d.content : ''
+          })
+          .join(' ')
+          .toLowerCase()
+        const isPpt = /\b(ppt|pptx|presentation|slides|deck|powerpoint)\b/.test(chatText)
+        const ordered = isPpt
+          ? flat.sort((a, b) => {
+              const score = (x: typeof a) => {
+                const n = x.name.toLowerCase()
+                if (n.includes('pptx') || n === 'pptx-official') return 100
+                if (n.includes('python-pptx')) return 95
+                if (n.includes('frontend-design')) return 40
+                if (n.includes('superpower')) return 30
+                return 0
+              }
+              return score(b) - score(a)
+            })
+          : flat
+        if (!cancelled) setInjectedSkills(ordered.slice(0, 8))
+      } catch {}
+    }
+    void load()
+    // Reload when events change (new chat prompt may change prioritization)
+    const t = setTimeout(load, 300)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [events])
+
   const dynamicSkills = useMemo(() => {
-    const list: Array<{ name: string; path?: string }> = []
+    const fromCalls: Array<{ name: string; path?: string; source?: string }> = []
     for (const e of events) {
-      if (e.type === 'tool/call') {
+      if (e.type === 'tool/call' || e.type === 'tool/result') {
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
-        if (toolName === 'use_skill' || toolName === 'scan_skills' || toolName === 'read_skill') {
-          const name = d.args?.skillName || d.args?.name || 'skill'
-          if (!list.some((s) => s.name === name)) {
-            list.push({ name: String(name), path: d.args?.path })
+        const isSkillTool = toolName === 'use_skill' || toolName === 'scan_skills' || toolName === 'read_skill' || toolName === 'search_skills' || toolName === 'read_skill'
+        if (isSkillTool) {
+          const name = d.args?.skillName || d.args?.skill_name || d.args?.name || d.args?.query || 'skill'
+          if (!fromCalls.some((s) => s.name === name)) {
+            fromCalls.push({ name: String(name), path: d.args?.path, source: 'tool' })
+          }
+        }
+        // Also capture search_skills/read_skill from native tool_calls if present
+        if (toolName === 'search_skills' || toolName === 'read_skill') {
+          const name2 = d.args?.query || d.args?.skill_name || d.args?.skillName || ''
+          if (name2 && !fromCalls.some((s) => s.name === name2)) {
+            fromCalls.push({ name: String(name2), source: 'tool' })
           }
         }
       }
     }
-    return list
-  }, [events])
+    // Merge explicit calls (highest priority) + injected enabled skills
+    const merged: Array<{ name: string; path?: string }> = [...fromCalls]
+    for (const s of injectedSkills) {
+      if (!merged.some((m) => m.name.toLowerCase() === s.name.toLowerCase())) merged.push(s)
+    }
+    // De-duplicate and cap for sidebar
+    return merged.slice(0, 10)
+  }, [events, injectedSkills])
 
   // --- Dynamic Terminal Sessions & Command Execution with Full Persistence ---
   interface TerminalInstance {
@@ -342,19 +413,37 @@ export function AuxiliaryPane({
 
   const [commandInput, setCommandInput] = useState('')
 
-  // Stream AI tool execution outputs into the active terminal instance!
+  const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
+
+  const workspaceLabel = useMemo(() => {
+    if (!workspaceRoot) return 'SOVARA'
+    const base = workspaceRoot.replace(/\\/g, '/').split('/').pop() || 'SOVARA'
+    return base
+  }, [workspaceRoot])
+
+  const promptPrefix = useMemo(() => {
+    const st = activeTerminal?.shellType || 'powershell'
+    const ws = workspaceRoot || 'D:\\SOVARA'
+    if (st === 'cmd') return `${ws}>`
+    if (st === 'bash') return `user@sovara:~/${workspaceLabel}$`
+    if (st === 'python') return '>>>'
+    if (st === 'node') return '>'
+    return `PS ${ws}>`
+  }, [activeTerminal?.shellType, workspaceRoot, workspaceLabel])
+
+  // Stream AI tool execution outputs into the active terminal instance
   useEffect(() => {
     for (const e of events) {
       if (e.type === 'tool/call') {
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
-        if (toolName === 'run_command' || toolName === 'exec_shell_command') {
-          const cmd = d.args?.CommandLine || d.args?.cmd || ''
+        if (toolName === 'run_command' || toolName === 'exec_shell_command' || toolName === 'shell_exec') {
+          const cmd = d.args?.CommandLine || d.args?.cmd || d.args?.command || ''
           if (cmd) {
             setTerminalInstances((prev) =>
               prev.map((t) =>
                 t.id === activeTerminalId
-                  ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`, 'Running command via AI assistant...'] }
+                  ? { ...t, logs: [...t.logs, `${promptPrefix} ${cmd}`, 'Running command via AI assistant...'] }
                   : t
               )
             )
@@ -362,24 +451,13 @@ export function AuxiliaryPane({
         }
       }
     }
-  }, [events, activeTerminalId])
+  }, [events, activeTerminalId, promptPrefix])
 
   useEffect(() => {
     if (tab === 'terminal' && terminalContainerRef.current) {
       terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight
     }
   }, [tab, terminalInstances, activeTerminalId])
-
-  const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
-
-  const promptPrefix = useMemo(() => {
-    const st = activeTerminal?.shellType || 'powershell'
-    if (st === 'cmd') return 'D:\\SOVARA>'
-    if (st === 'bash') return 'user@sovara:~/SOVARA$'
-    if (st === 'python') return '>>>'
-    if (st === 'node') return '>'
-    return 'PS D:\\SOVARA>'
-  }, [activeTerminal?.shellType])
 
   const handleRunCommand = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -406,10 +484,10 @@ export function AuxiliaryPane({
     setCommandInput('')
 
     try {
-      const res: any = await dispatchTool('run_command', {
-        CommandLine: cmd,
-        Cwd: 'd:\\SOVARA',
-        WaitMsBeforeAsync: 5000,
+      const effectiveCwd = workspaceRoot || undefined
+      const res: any = await dispatchTool('shell_exec', {
+        command: cmd,
+        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         _forceApprove: true,
         ...(sessionId ? { sessionId } : {}),
       })

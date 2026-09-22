@@ -351,7 +351,7 @@ export function markdownToSlides(text: string): Array<{ title: string; bullets: 
   return slides
 }
 
-/** Minimal valid OpenXML .pptx presentation (16:9 widescreen, clean typographic theme). */
+/** Premium OpenXML .pptx — 16:9 widescreen, editorial system: slate-900 title, accent bar, comfortable spacing, footer. */
 export function writePptxFile(filePath: string, slides: Array<{ title: string; bullets: string[] }>): void {
   const slideParts: Array<{ name: string; data: string }> = []
   const contentTypesSlides: string[] = []
@@ -369,30 +369,37 @@ export function writePptxFile(filePath: string, slides: Array<{ title: string; b
     presentationRels.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${sId}.xml"/>`)
     presentationSlideList.push(`<p:sldId id="${255 + sId}" r:id="${rId}"/>`)
 
-    const bulletXml = slide.bullets.map((b) => `
+    const isCover = idx === 0
+    const bulletXml = slide.bullets.slice(0, 8).map((b) => `
       <a:p>
-        <a:pPr lvl="0"><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr>
+        <a:pPr marL="0" indent="0" lvl="0" algn="l"><a:buFont typeface="Calibri"/><a:buChar char="•"/><a:spcBef><a:spcPts val="600"/></a:spcBef><a:lnSpc><a:spcPct val="110000"/></a:lnSpc></a:pPr>
         <a:r>
-          <a:rPr lang="en-US" sz="1800"><a:solidFill><a:srgbClr val="333333"/></a:solidFill></a:rPr>
-          <a:t>${escapeXml(b)}</a:t>
+          <a:rPr lang="en-US" sz="1700" b="0"><a:solidFill><a:srgbClr val="334155"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr>
+          <a:t>${escapeXml(b.slice(0, 180))}</a:t>
         </a:r>
       </a:p>`).join('')
 
+    // Accent bar + title + footer
+    const accentBar = `<p:sp><p:nvSpPr><p:cNvPr id="10" name="accent"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="838200" y="520000"/><a:ext cx="900000" cy="70000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="0284C7"/></a:solidFill></p:spPr></p:sp>`
+    const footer = `<p:sp><p:nvSpPr><p:cNvPr id="11" name="footer"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="838200" y="6400000"/><a:ext cx="10515600" cy="200000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn="r"/><a:r><a:rPr lang="en-US" sz="900"><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></a:rPr><a:t>${sId} / ${slides.length}  •  SOVARA</a:t></a:r></a:p></p:txBody></p:sp>`
+
     const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
+  <p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>
     <p:spTree>
       <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
       <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+      ${isCover ? '' : accentBar}
       <p:sp>
         <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
-        <p:spPr><a:xfrm><a:off x="838200" y="685800"/><a:ext cx="10515600" cy="1143000"/></a:xfrm></p:spPr>
+        <p:spPr><a:xfrm><a:off x="838200" y="${isCover ? '900000' : '700000'}"/><a:ext cx="10515600" cy="${isCover ? '1400000' : '1100000'}"/></a:xfrm></p:spPr>
         <p:txBody>
-          <a:bodyPr/>
+          <a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="ctr"/>
           <a:lstStyle/>
           <a:p>
+            <a:pPr algn="${isCover ? 'ctr' : 'l'}"><a:spcBef><a:spcPts val="${isCover ? '0' : '200'}"/></a:spcBef></a:pPr>
             <a:r>
-              <a:rPr lang="en-US" sz="3200" b="1"><a:solidFill><a:srgbClr val="0F172A"/></a:solidFill></a:rPr>
+              <a:rPr lang="en-US" sz="${isCover ? '3600' : '2800'}" b="1"><a:solidFill><a:srgbClr val="${isCover ? '0F172A' : '0F172A'}"/></a:solidFill><a:latin typeface="Calibri"/><a:ea typeface="Calibri"/></a:rPr>
               <a:t>${escapeXml(slide.title)}</a:t>
             </a:r>
           </a:p>
@@ -400,15 +407,17 @@ export function writePptxFile(filePath: string, slides: Array<{ title: string; b
       </p:sp>
       <p:sp>
         <p:nvSpPr><p:cNvPr id="3" name="Content"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
-        <p:spPr><a:xfrm><a:off x="838200" y="2057400"/><a:ext cx="10515600" cy="4343400"/></a:xfrm></p:spPr>
+        <p:spPr><a:xfrm><a:off x="838200" y="${isCover ? '2500000' : '1900000'}"/><a:ext cx="10515600" cy="${isCover ? '3200000' : '4200000'}"/></a:xfrm></p:spPr>
         <p:txBody>
-          <a:bodyPr/>
+          <a:bodyPr lIns="12000" rIns="12000" tIns="6000" bIns="6000" anchor="${isCover ? 'ctr' : 't'}"/>
           <a:lstStyle/>
-          ${bulletXml}
+          ${bulletXml || '<a:p><a:r><a:rPr lang="en-US" sz="1700"><a:solidFill><a:srgbClr val="64748B"/></a:solidFill></a:rPr><a:t>Key insights on this topic — add your narrative here.</a:t></a:r></a:p>'}
         </p:txBody>
       </p:sp>
+      ${footer}
     </p:spTree>
   </p:cSld>
+  <p:transition spd="med" advClick="1"><p:fade thruBlk="1"/></p:transition>
 </p:sld>`
 
     slideParts.push({ name: `ppt/slides/slide${sId}.xml`, data: slideXml })
@@ -504,8 +513,17 @@ export interface GeneratedArtifact {
  * assistant's final reply text. Returns null when nothing sensible can be
  * built (caller then skips the artifact honestly — chat reply stands).
  */
+function stripThinkingTags(s: string): string {
+  return s
+    .replace(/<\/?think>/gi, '')
+    .replace(/<\/?thinking>/gi, '')
+    .replace(/<\/?\/think>/gi, '')
+    .replace(/<\/?thought>/gi, '')
+    .trim()
+}
+
 export function generateArtifactFile(kind: ArtifactKind, filePath: string, assistantText: string, userContent: string): GeneratedArtifact | null {
-  const text = (assistantText ?? '').trim()
+  const text = stripThinkingTags((assistantText ?? '').trim())
   if (!text) return null
   if (kind === 'pdf') {
     const title = userContent.trim().split('\n')[0]?.slice(0, 120) ?? 'Sovara output'

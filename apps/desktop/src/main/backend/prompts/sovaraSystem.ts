@@ -64,15 +64,19 @@ text: `English only <html lang="en">. Warm concise, lead with answer, no emojis 
 name: 'workflow:think-todo-compact',
 order: SECTION_ORDERS.THINK_TODO_COMPACT,
 text: `Flexible workflow — vary by task:
-1. Think & Plan — understand the request, clarify steps mentally or in <thinking>.
-2. Direct Execution — For app/code/file requests, proceed directly to create and write the files and code using fs_write or markdown code blocks without stopping at planning.
-3. Todo — Use todo_write only when the user explicitly asks for a todo list or for long multi-step investigations.
-4. Autonomous Completion — Always provide the complete working code and files. Never end on a plan — do the work.`
+1. Think & Plan — understand the request, clarify steps in <thinking>.
+2. Skill-First — Before any file generation, run search_skills (query e.g. "pptx python" or "diagram mermaid") and read_skill for the top hit. Obey its template exactly.
+3. Todo — For multi-step builds (PPTX/XLSX/code app) use todo_write with whole-list shape {todos:[{content,status}]} to plan steps BEFORE writing.
+4. Workspace-Aware Execution — FS tools are workspace-relative (path:"." = project or global workspace, never D:\\SOVARA repo). Under exec mode 'review' fs_write/shell_exec require user approval — do not bypass; surface the approval card.
+5. Autonomous Completion — Provide full working code/files.`
 },
 {
 name: 'artifact:pipeline',
 order: SECTION_ORDERS.ARTIFACT_PIPELINE,
-text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc): write the appropriate code/script (e.g. python script to generate pptx, or actual markdown) using fs_write to create the requested file. Do not fake binary files as HTML unless explicitly asked for a web preview.`
+text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc):
+- For PPTX/XLSX/DOCX/PDF: write a Python script (e.g. generate_pptx.py) using python-pptx/openpyxl/etc. with fs_write, then execute it via shell_exec {"command":"python generate_pptx.py"} in the workspace root so the binary is materialized. Never output raw markdown as "pptx" — always generate real binary.
+- For HTML/React artifacts: write single-file code in a fenced \`\`\`html or \`\`\`tsx block so Artifacts sidebar Preview renders (isVisualArtifact). Binary PPTX files show as download cards, not HTML preview.
+- Always emit full code in a named block for live viewer.`
 },
 {
 name: 'tool:read',
@@ -122,10 +126,11 @@ text: `Tool WebFetch — fetch URL to markdown. Use for docs beyond cutoff.`
 {
 name: 'tool:skill',
 order: SECTION_ORDERS.TOOL_SKILL,
-text: `Enterprise Skills: When skills are injected in <skills_context> or discovered, you MUST read and obey their exact design guidelines, code templates, CSS variables, and architectural standards.
+text: `Enterprise Skills: When skills are injected in <skills_context> or discovered via search_skills, you MUST read_skill and obey exact templates, CSS variables, and architectural standards.
 1. NEVER invent fake pseudo-code, dummy sketches, or non-functional placeholder code. Write complete, production-grade, bug-free implementations.
-2. For UI/Frontend (generative_ui, tailwind-patterns, frontend-design): Use modern Tailwind CSS styling, correct semantic tags, valid syntax, complete event handlers, and self-contained executable code.
-3. For single-file HTML/React artifacts: ensure all script tags (Babel, React, Tailwind) have matching syntax, zero unclosed tags, and valid JavaScript syntax so the in-browser compiler runs cleanly.`
+2. Before ANY artifact: search_skills with query matching artifact kind (e.g. "pptx" → python-pptx-generator, "dashboard" → frontend-design). Then read_skill the top result and follow its code template verbatim.
+3. For UI/Frontend (generative_ui, tailwind-patterns, frontend-design): Use modern Tailwind CSS styling, correct semantic tags, valid syntax, complete event handlers, self-contained executable code, per frontend-design DFII ≥8 and ui-ux-pro-max checks.
+4. For single-file HTML/React artifacts: ensure all script tags (Babel, React, Tailwind) have matching syntax, zero unclosed tags, valid JS so in-browser compiler runs cleanly. Binary artifacts (pptx/xlsx/docx/pdf) use Python libs, not HTML fakery.`
 },
 {
 name: 'tool:mcp',

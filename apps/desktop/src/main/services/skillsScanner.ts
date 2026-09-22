@@ -239,11 +239,9 @@ export async function getAllDiscoveredSkills(
 
   // 3. Workspace-local skills
   if (workspaceRoot) {
-    // Standard candidates relative to workspace root
     const wsCandidates = [
       '.skills', 'skills',
       '.agents/skills', '.gemini/skills', '.opencode/skills',
-      // Also scan monorepo desktop app skills folder
       'apps/desktop/skills',
     ]
     for (const rel of wsCandidates) {
@@ -257,6 +255,33 @@ export async function getAllDiscoveredSkills(
       }
     }
   }
+
+  // 4. Fallback: bundled desktop skills (absolute repo path) — ensures superpower etc. always available regardless of workspace location
+  try {
+    const { app } = await import('electron')
+    const isPackaged = app.isPackaged
+    if (!isPackaged) {
+      // Dev mode: repo-relative
+      const bundled = join(process.cwd(), 'apps', 'desktop', 'skills')
+      const skills = await listSkillsInDir(bundled)
+      for (const s of skills) {
+        if (!seenPaths.has(s.path)) {
+          seenPaths.add(s.path)
+          all.push({ ...s, source: 'Bundled (dev)' })
+        }
+      }
+    } else {
+      // Packaged: resources path
+      const bundledPkg = join((process as unknown as { resourcesPath: string }).resourcesPath, 'app', 'apps', 'desktop', 'skills')
+      const skills = await listSkillsInDir(bundledPkg)
+      for (const s of skills) {
+        if (!seenPaths.has(s.path)) {
+          seenPaths.add(s.path)
+          all.push({ ...s, source: 'Bundled' })
+        }
+      }
+    }
+  } catch {}
 
   return all
 }

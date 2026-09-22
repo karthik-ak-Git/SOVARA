@@ -139,6 +139,11 @@ export function dispatchShell(
   if (!command || typeof command !== 'string' || command.trim().length === 0) {
     return Promise.resolve(JSON.stringify({ error: 'shell_exec requires { command: string }' }))
   }
+  const trimmed = command.trim().toLowerCase()
+  // Guard: bare python repl hangs forever — give instant error instead of 20s timeout
+  if (trimmed === 'python' || trimmed === 'python3' || trimmed === 'python.exe' || trimmed === 'py') {
+    return Promise.resolve(JSON.stringify({ error: 'bare python repl would hang — use "python --version" or "python script.py" instead', command, hint: 'pass a script file or --version/--help' }))
+  }
   const workdirRel = typeof args['workdir'] === 'string' ? (args['workdir'] as string) : '.'
   const workdir = path.resolve(workspaceRoot, workdirRel)
   const rel = path.relative(path.resolve(workspaceRoot), workdir)

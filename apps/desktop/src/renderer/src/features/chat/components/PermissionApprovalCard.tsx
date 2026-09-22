@@ -53,18 +53,18 @@ export function PermissionApprovalCard({
     { index: 5, label: 'No (tell the agent what to do instead)' },
   ]
 
-  const handleSubmit = (): void => {
-    if (selectedOption === 5) {
+  const handleSubmit = (overrideIdx?: number): void => {
+    const idx = overrideIdx ?? selectedOption
+    if (idx === 5) {
       onApprove(5, feedbackText)
     } else {
-      onApprove(selectedOption)
+      onApprove(idx)
     }
   }
 
   // Keyboard navigation: 1-5 to select option, Enter to submit, Escape to skip
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
-      // If user is actively typing in the feedback textarea, allow normal typing unless Ctrl+Enter
       const isTextareaFocused = document.activeElement === textareaRef.current
       if (isTextareaFocused) {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -77,14 +77,11 @@ export function PermissionApprovalCard({
         }
         return
       }
-
       if (e.key >= '1' && e.key <= '5') {
         e.preventDefault()
         const idx = parseInt(e.key, 10)
         setSelectedOption(idx)
-        if (idx === 5) {
-          setTimeout(() => textareaRef.current?.focus(), 50)
-        }
+        if (idx === 5) setTimeout(() => textareaRef.current?.focus(), 50)
       } else if (e.key === 'Enter') {
         e.preventDefault()
         handleSubmit()
@@ -93,7 +90,6 @@ export function PermissionApprovalCard({
         onSkip()
       }
     }
-
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedOption, feedbackText, onSkip])
@@ -114,40 +110,55 @@ export function PermissionApprovalCard({
         </h3>
       </div>
 
-      {/* Monospace Code snippet box */}
-      <div className="p-2.5 mb-3 rounded-lg border font-mono text-xs leading-relaxed overflow-x-hidden break-all whitespace-pre-wrap border-zinc-200 dark:border-zinc-800 bg-zinc-100/90 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
+      {/* Monospace Code snippet box — contained, scrollable, not interfering with option selection */}
+      <div className="p-2.5 mb-3 rounded-lg border font-mono text-xs leading-relaxed overflow-x-auto overflow-y-auto max-h-28 whitespace-pre-wrap break-all border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 select-text">
         {commandStr}
       </div>
 
-      {/* 5 Selectable Options */}
-      <div className="flex flex-col gap-1 mb-3.5">
+      {/* 5 Selectable Options — single click selects, double-click selects + submits */}
+      <div className="flex flex-col gap-1 mb-3.5" role="radiogroup" aria-label="Permission options">
         {options.map((opt) => {
           const isSelected = selectedOption === opt.index
           return (
             <div
               key={opt.index}
+              role="radio"
+              aria-checked={isSelected}
+              tabIndex={0}
               onClick={() => {
                 setSelectedOption(opt.index)
                 if (opt.index === 5) {
                   setTimeout(() => textareaRef.current?.focus(), 50)
                 }
               }}
-              className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors select-none ${
+              onDoubleClick={() => {
+                setSelectedOption(opt.index)
+                setTimeout(() => handleSubmit(opt.index), 30)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setSelectedOption(opt.index)
+                  if (opt.index === 5) setTimeout(() => textareaRef.current?.focus(), 50)
+                  else handleSubmit(opt.index)
+                }
+              }}
+              className={`flex items-start gap-2.5 p-2.5 rounded-lg cursor-pointer transition-all select-none border ${
                 isSelected
-                  ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium'
-                  : 'hover:bg-zinc-100/70 dark:hover:bg-zinc-800/40 text-zinc-700 dark:text-zinc-300'
+                  ? 'bg-blue-50 dark:bg-sky-950/40 border-blue-300 dark:border-sky-700 text-zinc-900 dark:text-zinc-100 font-medium shadow-sm ring-1 ring-blue-200 dark:ring-sky-800'
+                  : 'bg-transparent border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800/50 text-zinc-700 dark:text-zinc-300 hover:border-zinc-200 dark:hover:border-zinc-700'
               }`}
             >
               <div
-                className={`flex items-center justify-center w-5 h-5 min-w-[20px] rounded text-xs font-semibold font-mono mt-0.5 ${
+                className={`flex items-center justify-center w-5 h-5 min-w-[20px] rounded-full text-xs font-bold font-mono mt-0.5 border ${
                   isSelected
-                    ? 'bg-zinc-300 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100'
-                    : 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                    ? 'bg-[#0078D4] border-[#0078D4] text-white shadow-sm'
+                    : 'bg-white dark:bg-zinc-900 border-zinc-300 dark:border-zinc-600 text-zinc-600 dark:text-zinc-400'
                 }`}
               >
-                {opt.index}
+                {isSelected ? '✓' : opt.index}
               </div>
-              <div className="text-xs leading-relaxed pt-0.5">
+              <div className="text-xs leading-relaxed pt-0.5 flex-1">
                 {opt.label}
               </div>
             </div>
@@ -169,22 +180,22 @@ export function PermissionApprovalCard({
         </div>
       ) : null}
 
-      {/* Action Footer */}
-      <div className="flex items-center justify-end gap-3 pt-1">
+      {/* Action Footer — clear affordance: click or press Enter */}
+      <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-800 mt-1">
+        <span className="mr-auto text-[11px] text-zinc-400 dark:text-zinc-500 hidden sm:inline select-none">Click to select • Double-click or Enter to submit</span>
         <button
           type="button"
           onClick={onSkip}
-          className="text-xs font-medium px-2 py-1.5 cursor-pointer bg-transparent border-none text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors"
+          className="text-xs font-medium px-3 py-2 cursor-pointer bg-transparent border border-zinc-200 dark:border-zinc-700 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-300 dark:focus:ring-zinc-600"
         >
           Skip
         </button>
-
         <button
           type="button"
-          onClick={handleSubmit}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md border-none cursor-pointer bg-[#0078D4] hover:bg-[#006cc1] text-white shadow-sm transition-all"
+          onClick={() => handleSubmit()}
+          className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-md border-none cursor-pointer bg-[#0078D4] hover:bg-[#0063b1] active:bg-[#005a9e] text-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1"
         >
-          Submit <CornerDownLeft size={13} />
+          Submit <CornerDownLeft size={14} />
         </button>
       </div>
     </div>

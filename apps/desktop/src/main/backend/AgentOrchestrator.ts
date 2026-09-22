@@ -1274,7 +1274,8 @@ export class AgentOrchestrator {
                   reasoningBuffer = ''
                 }
                 inReasoning = false
-                console.log(`[SOVARA][THINKING] Completed thinking block (${allReasoning.length} chars)`)
+                // Rate-limit: only log every 800 chars to avoid spam
+                if (allReasoning.length % 800 < 100) console.log(`[SOVARA][THINKING] block closed (${allReasoning.length} chars)`)
                 delta = parts.slice(1).join('')
                 if (!delta) continue
               }
@@ -1727,6 +1728,19 @@ export class AgentOrchestrator {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
         executedSignatures.add(sig)
+        // Enforce exec permission gate — do not auto-run risky tools under review/ask
+        try {
+          const mode = this.deps.getExecMode?.() ?? 'review'
+          const verdict = gateDispatch(mode as any, tName)
+          if (!verdict.allowed) {
+            const tid = `${tName}-${Date.now()}-${Math.floor(Math.random()*1000)}`
+            this.deps.emit({ sessionId: sid, kind: 'agent:needs-approval' as any, toolCallId: tid, toolName: tName, args } as never)
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/call' as never, { toolCallId: tid as never, name: tName, args } as never) } catch {}
+            // Blocked — surface approval card, do not auto-dispatch
+            inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\nBLOCKED: ${verdict.reason} — ${verdict.message}`)
+            return false
+          }
+        } catch {}
         try {
           this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName: tName, detail: `post-stream ${tName} — dispatching` } as never)
           const r = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tName, args)
@@ -1931,11 +1945,21 @@ export class AgentOrchestrator {
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 1, detail: `continuation ${cont.length} chars — total ${text.length}` })
     }
-      // ── Required-output artifact: the user asked for a FILE (pdf / excel /
-      // word / code). Derive it from the final reply, persist an audit event,
-      // and append the saved path to the reply so the timeline keeps it. ──
+      // ── Required-output artifact: fallback ONLY if model didn't already create the file via fs_write/shell_exec.
+      // This prevents hardcoded duplication when the skill-driven flow (search_skills→read_skill→todo_write→fs_write→shell_exec) already materialized the file.
       const detected = detectOutputFormat(content)
       if (detected) {
+        const alreadyHasArtifact = (() => {
+          const needle = `.${detected.kind}`.toLowerCase()
+          const hay = inlineToolOutputs.join(' ').toLowerCase()
+          if (hay.includes(needle) && hay.includes('"ok":true')) return true
+          // Also consider any artifact path already in inline outputs
+          if (hay.includes(needle) && hay.includes('path')) return true
+          return false
+        })()
+        if (alreadyHasArtifact) {
+          appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `artifact ${detected.kind} already created via tools — skipping fallback hardcoded generation` })
+        } else {
         this.emit(sid, 'artifact:writing', {
           taskKind: classification.kind,
           modelId: routing.modelId!,
@@ -1975,6 +1999,7 @@ export class AgentOrchestrator {
             error: `artifact generation failed: ${e instanceof Error ? e.message : String(e)}`,
             modelId: model, runtimeId: routing.runtimeId!,
           })
+        }
         }
       }
 

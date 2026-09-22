@@ -2,7 +2,7 @@
 
 import { useState, useEffect, type ReactElement } from 'react'
 import { Code2, Copy, Check, ExternalLink } from 'lucide-react'
-import { preparePreviewHtml, isVisualArtifact } from '../../utils/previewBundler'
+import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact, bundleBinaryPreview } from '../../utils/previewBundler'
 
 interface Props {
   title: string
@@ -20,7 +20,8 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
   const [copied, setCopied] = useState(false)
   const [bundledHtml, setBundledHtml] = useState<string>('')
   const lang = language.toLowerCase()
-  const canPreview = isVisualArtifact(code, lang)
+  const isBinary = isBinaryArtifact(code, lang) || /\.(pptx|xlsx|docx|pdf)$/i.test(title)
+  const canPreview = !isBinary && isVisualArtifact(code, lang)
   const defaultTab: 'code' | 'preview' = canPreview ? 'preview' : 'code'
   const [tab, setTab] = useState<'code' | 'preview'>(defaultTab)
 
@@ -104,7 +105,16 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
           ) : null}
         </div>
       </div>
-      {tab === 'preview' && canPreview && !onOpenSplit ? (
+      {isBinary ? (
+        <div style={{ padding: '16px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 12, borderRadius: '0 0 8px 8px' }}>
+          <div style={{ width: 44, height: 44, background: '#0f172a', color: '#fff', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', font: '700 13px/1 Inter' }}>{lang.toUpperCase().slice(0,4)}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ font: '600 13px/1.3 Inter', color: '#0f172a' }}>{title}</div>
+            <div style={{ font: '400 12px/1.4 Inter', color: '#64748b', marginTop: 2 }}>Binary file — generated in workspace. Use “Open Folder” to locate on disk.</div>
+          </div>
+          {onOpenSplit ? <button type="button" onClick={onOpenSplit} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#fff', font: '600 12px/1 Inter', cursor: 'pointer' }}>Open</button> : null}
+        </div>
+      ) : tab === 'preview' && canPreview && !onOpenSplit ? (
         <div className="stitch-artifact-preview" style={{ background: '#090d16', borderRadius: '8px', overflow: 'hidden', border: '1px solid #1e293b' }}>
           {bundledHtml ? (
             <iframe
