@@ -20,6 +20,7 @@ import {
 
 export type NavId =
   | 'chat'
+  | 'history'
   | 'models'
   | 'explore'
   | 'library'
@@ -421,8 +422,8 @@ export function Sidebar({
       <div className="sidebar-quick-nav" style={{ padding: '4px 0 12px', borderBottom: '1px solid #f1f5f9' }}>
         <button
           type="button"
-          className={`nav-item ${activeId === 'chat' ? 'selected' : ''}`}
-          onClick={() => onNavigate('chat')}
+          className={`nav-item ${activeId === 'history' ? 'selected' : ''}`}
+          onClick={() => onNavigate('history')}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -431,8 +432,8 @@ export function Sidebar({
             padding: '7px 8px',
             borderRadius: 6,
             border: 'none',
-            background: activeId === 'chat' ? '#f1f5f9' : 'transparent',
-            color: activeId === 'chat' ? '#0f172a' : '#475569',
+            background: activeId === 'history' ? '#f1f5f9' : 'transparent',
+            color: activeId === 'history' ? '#0f172a' : '#475569',
             fontSize: 13,
             fontWeight: 500,
             cursor: 'pointer',

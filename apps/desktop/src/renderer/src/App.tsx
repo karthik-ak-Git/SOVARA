@@ -16,6 +16,7 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { AgentsPage } from './features/agents/AgentsPage'
 import { SkillsPage } from './features/skills/SkillsPage'
 import { ConnectionsPage } from './features/connections/ConnectionsPage'
+import { ConversationHistoryPage } from './features/chat/ConversationHistoryPage'
 import { ContextPanel } from './features/chat/ContextPanel'
 import {
   createProject,
@@ -413,6 +414,13 @@ export function App(): React.JSX.Element {
             projects={projects.map((p) => ({ id: p.id, name: p.name }))}
             onSelectProject={setSelectedProjectId}
             onOpenArtifactFile={handleOpenArtifact}
+          />
+        ) : null}
+
+        {activeNav === 'history' ? (
+          <ConversationHistoryPage
+            onSelectSession={openChat}
+            onNewSession={handleNewSession}
           />
         ) : null}
 
