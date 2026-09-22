@@ -258,21 +258,19 @@ export function App(): React.JSX.Element {
     chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
 
   const availableProjects = useMemo(() => {
-    if (projects.length > 0) return projects.map((p) => ({ id: p.id, name: p.name }))
+    const list = projects.map((p) => ({ id: p.id, name: p.name }))
     return [
-      { id: 'sovara-main', name: 'SOVARA' },
-      { id: 'sovara-landingpage', name: 'sovara-landingpage' },
+      { id: '__global__', name: 'SOVARA Workspace' },
+      ...list,
     ]
   }, [projects])
 
   const activeProjectName = useMemo(() => {
     const activeSess = chat.sessions.find((s) => s.id === chat.selectedId)
     const pid = activeSess?.projectId ?? selectedProjectId
-    if (!pid || pid === '__global__') return 'SOVARA'
+    if (!pid || pid === '__global__') return 'SOVARA Workspace'
     const found = projects.find((p) => p.id === pid)
     if (found) return found.name
-    if (pid === 'sovara-main') return 'SOVARA'
-    if (pid === 'sovara-landingpage') return 'sovara-landingpage'
     return pid
   }, [chat.selectedId, chat.sessions, selectedProjectId, projects])
 
@@ -304,14 +302,12 @@ export function App(): React.JSX.Element {
   const displayProjects = useMemo(() => {
     const base = projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))
     const global = chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))
-    if (global.length > 0) {
-      const idx = base.findIndex((p) => p.name.toLowerCase() === 'sovara')
-      if (idx >= 0) {
-        const existing = base[idx] as { id: string; name: string; sessions: { id: string; title: string }[] }
-        base[idx] = { ...existing, sessions: [...(existing.sessions as { id: string; title: string }[]), ...global] }
-      } else {
-        base.unshift({ id: '__global__', name: 'SOVARA', sessions: global })
-      }
+    const idx = base.findIndex((p) => p.id === '__global__' || p.name.toLowerCase() === 'sovara' || p.name.toLowerCase() === 'sovara workspace')
+    if (idx >= 0) {
+      const existing = base[idx] as { id: string; name: string; sessions: { id: string; title: string }[] }
+      base[idx] = { ...existing, sessions: [...(existing.sessions as { id: string; title: string }[]), ...global] }
+    } else {
+      base.unshift({ id: '__global__', name: 'SOVARA Workspace', sessions: global })
     }
     return base
   }, [projects, chat.globalSessions, projectChats])

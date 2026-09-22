@@ -420,20 +420,12 @@ export function Sidebar({
     if (projects.length > 0) return projects
     return [
       {
-        id: 'sovara-main',
-        name: 'SOVARA',
-        durationBadge: '13m',
-        sessions: selectedSessionId || selectedChatId
-          ? [{ id: selectedSessionId || selectedChatId || 's1', title: 'Fixing App Generator UI Skills' }]
-          : [{ id: 's1', title: 'Fixing App Generator UI Skills' }],
-      },
-      {
-        id: 'sovara-landingpage',
-        name: 'sovara-landingpage',
+        id: '__global__',
+        name: 'SOVARA Workspace',
         sessions: [],
       },
     ]
-  }, [projects, selectedSessionId, selectedChatId])
+  }, [projects])
 
   const filteredProjects = useMemo(() => {
     if (!searchQuery.trim()) return defaultProjects

@@ -30,10 +30,7 @@ export function ProjectSelector({
 
   const defaultProjects = projects.length > 0
     ? projects
-    : [
-        { id: 'sovara-main', name: 'SOVARA' },
-        { id: 'sovara-landingpage', name: 'sovara-landingpage' },
-      ]
+    : [{ id: '__global__', name: 'SOVARA Workspace' }]
 
   const activeProject = selectedProjectId
     ? defaultProjects.find((p) => p.id === selectedProjectId)
@@ -43,7 +40,7 @@ export function ProjectSelector({
     ? activeProject.name
     : selectedProjectId && selectedProjectId !== '__global__'
     ? selectedProjectId
-    : currentProjectName || 'SOVARA'
+    : currentProjectName || 'SOVARA Workspace'
 
   return (
     <div
