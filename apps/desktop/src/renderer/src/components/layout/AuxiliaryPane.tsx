@@ -213,7 +213,7 @@ export function AuxiliaryPane({
     return list
   }, [events])
 
-  // --- Dynamic Terminal Sessions & Command Execution ---
+  // --- Dynamic Terminal Sessions & Command Execution with Full Persistence ---
   interface TerminalInstance {
     id: string
     name: string
@@ -221,19 +221,75 @@ export function AuxiliaryPane({
     logs: string[]
   }
 
-  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>([
-    {
-      id: 'term-1',
-      name: 'powershell.exe',
-      pid: 'PID 15680',
-      logs: [
-        'Windows PowerShell',
-        'Copyright (C) Microsoft Corporation. All rights reserved.',
-        '',
-      ],
-    },
-  ])
-  const [activeTerminalId, setActiveTerminalId] = useState<string>('term-1')
+  const storageKey = useMemo(
+    () => `sovara_terminals_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    [sessionTitle]
+  )
+  const activeKey = useMemo(
+    () => `sovara_active_term_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    [sessionTitle]
+  )
+
+  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(() => {
+    try {
+      const saved = localStorage.getItem(storageKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      }
+    } catch {}
+    return [
+      {
+        id: 'term-1',
+        name: 'powershell.exe',
+        pid: 'PID 15680',
+        logs: [
+          'Windows PowerShell',
+          'Copyright (C) Microsoft Corporation. All rights reserved.',
+          '',
+        ],
+      },
+    ]
+  })
+
+  const [activeTerminalId, setActiveTerminalId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(activeKey)
+      if (saved) return saved
+    } catch {}
+    return 'term-1'
+  })
+
+  // Sync state when sessionTitle changes (switching chats)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setTerminalInstances(parsed)
+        }
+      }
+      const savedActive = localStorage.getItem(activeKey)
+      if (savedActive) {
+        setActiveTerminalId(savedActive)
+      }
+    } catch {}
+  }, [storageKey, activeKey])
+
+  // Automatically save terminal instances and active terminal ID on updates
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(terminalInstances))
+    } catch {}
+  }, [terminalInstances, storageKey])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(activeKey, activeTerminalId)
+    } catch {}
+  }, [activeTerminalId, activeKey])
+
   const [commandInput, setCommandInput] = useState('')
 
   // Stream AI tool execution outputs into the active terminal instance!
