@@ -527,16 +527,40 @@ export class ToolStubAdapter implements ToolPort {
     return this.web
   }
 
-  private readonly circuit = new Map<string,{ fails:number; openedAt:number|null }>()
-  private checkCircuit(name:string): string|null {
-    const s=this.circuit.get(name)
-    if(s && s.openedAt && Date.now()-s.openedAt < 60000 && s.fails>=3) return JSON.stringify({ error:'circuit-open', tool:name, hint:'3 consecutive fails — paused 60s' })
+  private isShellTool(name: string): boolean {
+    return (
+      name === 'run_command' ||
+      name === 'shell_exec' ||
+      name === 'cmd' ||
+      name === 'powershell' ||
+      name === 'exec_shell_command' ||
+      name === 'terminal_exec' ||
+      name === 'bash'
+    )
+  }
+
+  private readonly circuit = new Map<string, { fails: number; openedAt: number | null }>()
+  private checkCircuit(name: string): string | null {
+    if (this.isShellTool(name)) return null
+    const s = this.circuit.get(name)
+    if (s && s.openedAt && Date.now() - s.openedAt < 60000 && s.fails >= 3)
+      return JSON.stringify({ error: 'circuit-open', tool: name, hint: '3 consecutive fails — paused 60s' })
     return null
   }
-  private noteResult(name:string, ok:boolean){
-    const s=this.circuit.get(name) ?? {fails:0, openedAt:null}
-    if(ok){ s.fails=0; s.openedAt=null } else { s.fails++; if(s.fails>=3) s.openedAt=Date.now() }
-    this.circuit.set(name,s)
+  private noteResult(name: string, ok: boolean) {
+    if (this.isShellTool(name)) {
+      this.circuit.delete(name)
+      return
+    }
+    const s = this.circuit.get(name) ?? { fails: 0, openedAt: null }
+    if (ok) {
+      s.fails = 0
+      s.openedAt = null
+    } else {
+      s.fails++
+      if (s.fails >= 3) s.openedAt = Date.now()
+    }
+    this.circuit.set(name, s)
   }
 
   async dispatch(name: string, args: Record<string, unknown>): Promise<string> {
