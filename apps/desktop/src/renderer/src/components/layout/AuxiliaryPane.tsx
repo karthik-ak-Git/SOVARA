@@ -332,23 +332,47 @@ export function AuxiliaryPane({
     setCommandInput('')
 
     try {
-      const res: any = await dispatchTool('run_command', { CommandLine: cmd, Cwd: 'd:\\SOVARA', WaitMsBeforeAsync: 5000, _forceApprove: true })
+      const res: any = await dispatchTool('run_command', {
+        CommandLine: cmd,
+        Cwd: 'd:\\SOVARA',
+        WaitMsBeforeAsync: 5000,
+        _forceApprove: true,
+      })
+
       let text = ''
-      if (res?.result) {
-        text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
-      } else if (res?.message) {
-        text = res.message
-      } else if (res?.ok) {
-        text = 'Command executed successfully.'
+      const raw = res?.result || res?.message || res
+      if (typeof raw === 'string') {
+        try {
+          const parsed = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object') {
+            text = parsed.stdout || parsed.stderr || parsed.message || parsed.error || raw
+          } else {
+            text = raw
+          }
+        } catch {
+          text = raw
+        }
+      } else if (raw && typeof raw === 'object') {
+        text = raw.stdout || raw.stderr || raw.message || raw.error || JSON.stringify(raw)
       } else {
         text = 'Done.'
       }
+
+      const formatted = String(text).trim()
       setTerminalInstances((prev) =>
-        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, String(text), ''] } : t))
+        prev.map((t) =>
+          t.id === activeTerminalId
+            ? { ...t, logs: formatted ? [...t.logs, formatted] : t.logs }
+            : t
+        )
       )
     } catch (err: any) {
       setTerminalInstances((prev) =>
-        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, String(err?.message || err), ''] } : t))
+        prev.map((t) =>
+          t.id === activeTerminalId
+            ? { ...t, logs: [...t.logs, String(err?.message || err)] }
+            : t
+        )
       )
     }
   }
