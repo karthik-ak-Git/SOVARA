@@ -230,7 +230,6 @@ export function AuxiliaryPane({
         'Windows PowerShell',
         'Copyright (C) Microsoft Corporation. All rights reserved.',
         '',
-        'PS D:\\SOVARA> ',
       ],
     },
   ])
@@ -302,7 +301,6 @@ export function AuxiliaryPane({
             'Windows PowerShell',
             'Copyright (C) Microsoft Corporation. All rights reserved.',
             '',
-            'PS D:\\SOVARA> ',
           ],
         }
         setActiveTerminalId(newId)
@@ -325,7 +323,6 @@ export function AuxiliaryPane({
         'Windows PowerShell',
         'Copyright (C) Microsoft Corporation. All rights reserved.',
         '',
-        'PS D:\\SOVARA> ',
       ],
     }
     setTerminalInstances((prev) => [...prev, newTerm])
@@ -1040,53 +1037,51 @@ export function AuxiliaryPane({
                     lineHeight: 1.5,
                     color: '#0f172a',
                     background: '#ffffff',
+                    cursor: 'text',
                   }}
                 >
                   {activeTerminal ? (
                     activeTerminal.logs.map((logLine, idx) => (
-                      <div key={idx} style={{ color: logLine.startsWith('PS') ? '#0284c7' : '#334155' }}>
+                      <div key={idx} style={{ color: logLine.startsWith('PS') ? '#0284c7' : '#334155', whiteSpace: 'pre-wrap' }}>
                         {logLine}
                       </div>
                     ))
                   ) : (
                     <div style={{ color: '#94a3b8' }}>Terminal console output ready.</div>
                   )}
-                </div>
 
-                {/* Terminal Shell Input Prompt - Direct Native Shell UX */}
-                <form
-                  onSubmit={handleRunCommand}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 12px',
-                    background: '#ffffff',
-                    borderTop: '1px solid #f1f5f9',
-                  }}
-                >
-                  <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontWeight: 600, flexShrink: 0 }}>
-                    PS D:\SOVARA&gt;
-                  </span>
-                  <input
-                    ref={terminalInputRef}
-                    type="text"
-                    value={commandInput}
-                    onChange={(e) => setCommandInput(e.target.value)}
-                    placeholder="Type command and press Enter..."
-                    autoFocus
+                  {/* Terminal Shell Input Prompt - Integrated directly inside console stream */}
+                  <form
+                    onSubmit={handleRunCommand}
                     style={{
-                      flex: 1,
-                      background: 'transparent',
-                      border: 'none',
-                      outline: 'none',
-                      color: '#0f172a',
-                      fontSize: 12,
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                      padding: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      marginTop: 2,
                     }}
-                  />
-                </form>
+                  >
+                    <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontWeight: 600, flexShrink: 0, marginRight: 6 }}>
+                      PS D:\SOVARA&gt;
+                    </span>
+                    <input
+                      ref={terminalInputRef}
+                      type="text"
+                      value={commandInput}
+                      onChange={(e) => setCommandInput(e.target.value)}
+                      autoFocus
+                      style={{
+                        flex: 1,
+                        background: 'transparent',
+                        border: 'none',
+                        outline: 'none',
+                        color: '#0f172a',
+                        fontSize: 12,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                        padding: 0,
+                        margin: 0,
+                      }}
+                    />
+                  </form>
+                </div>
               </div>
 
               {/* Right Sub-Sidebar: Active Terminal Sessions grouped under Conversations */}
