@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
+import { ProjectSelector } from './ProjectSelector'
 import { preparePreviewHtml, isVisualArtifact } from '../../utils/previewBundler'
 
 interface ChatViewProps {
@@ -368,70 +369,51 @@ export function ChatView({
       <div className="sv-chat-content">
       {/* Main chat area */}
       {showEmpty ? (
-        <div className="sv-empty-state" role="status" aria-label="Start a conversation">
-          <div className="sv-empty-hero">
-            <div className="sv-empty-icon empty-mark" aria-hidden>
-              <Sparkles size={20} aria-hidden />
-            </div>
-            <div className="eyebrow">WORKSPACE / {eyebrowProject}</div>
-            <h1 className="sv-empty-title">What will you work on?</h1>
-            <p className="sv-empty-sub" style={{ color: 'var(--muted-2)', fontSize: 12 }}>
-              Private, local-first intelligence for your workspace. {model.available
-                ? 'Replies stream from your local model directly on your hardware.'
-                : 'No model runtime available — connect or load a local model from Models to start chatting.'}
-            </p>
-            {!model.available ? (
-              <button type="button" className="sv-btn sv-btn-primary" onClick={onOpenModels} aria-label="Open Models to load a model">
-                Open Models
-              </button>
-            ) : null}
-            {actionable ? (
-              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid var(--stitch-danger, #C04040)', background: 'var(--stitch-danger-bg, #FFF5F5)', maxWidth: 560, width: '100%', textAlign: 'left' }} role="alert">
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--stitch-danger, #C04040)' }}>{actionable.title}</div>
-                <div style={{ fontSize: 12, color: 'var(--stitch-muted, #8A8279)', marginTop: 2, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{actionable.hint}</div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                  {actionable.action === 'models' ? (
-                    <>
-                      <button type="button" className="sv-btn sv-btn-primary" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onOpenModels}>Open Models</button>
-                      <button type="button" className="sv-btn sv-btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onOpenModels}>Choose another model</button>
-                    </>
-                  ) : null}
-                  {onDismissError ? (
-                    <button type="button" className="sv-btn sv-btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={onDismissError}>Dismiss</button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            {showExecution && executionLabel ? (
-              <div style={{ marginTop: 10, padding: '8px 12px', fontSize: 12, color: 'var(--stitch-muted, #8A8279)', display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 560, width: '100%' }} role="status" aria-live="polite">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span aria-hidden>
-                    {exec.phase === 'loading' || exec.phase === 'planning' ? <Loader2 size={14} className="spin" /> :
-                     exec.phase === 'tool' ? <Wrench size={14} /> :
-                     exec.phase === 'reading' ? <FileSearch size={14} /> :
-                     exec.phase === 'prompting' ? <ListChecks size={14} /> :
-                     exec.phase === 'selecting' ? <Route size={14} /> :
-                     exec.phase === 'thinking' || exec.phase === 'streaming' ? <Brain size={14} /> :
-                     exec.phase === 'artifact' ? <FileDown size={14} /> :
-                     exec.phase === 'error' ? <XCircle size={14} /> :
-                     exec.phase === 'ready' ? <CheckCircle2 size={14} /> : null}
-                  </span>
-                  <span>{executionLabel}</span>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="sv-composer">
+        <div
+          className="sv-empty-state"
+          role="status"
+          aria-label="Start a conversation"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flex: 1,
+            padding: 24,
+            width: '100%',
+          }}
+        >
+          <ProjectSelector
+            projects={projects}
+            selectedProjectId={null}
+            onSelectProject={(id) => { if (id && onSelectProject) onSelectProject(id) }}
+            onNewProject={onNewProject}
+            currentProjectName={projectName}
+          />
+          <div className="sv-composer" style={{ width: '100%', maxWidth: 720 }}>
             {execution?.toolCallId && onApproveTool ? <ApprovalCard execution={execution} onApproveTool={onApproveTool} /> : null}
-            <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy && !execution?.toolCallId} busy={busy} phase={phase}
-              active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
-              execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
-              onReasoningToggle={onReasoningToggle} onSelectModel={onSelectModel} onOpenSettings={onOpenModels} projectName={projectName} />
-          </div>
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--stitch-muted, #8A8279)', display: 'flex', gap: 6, justifyContent: 'center' }}>
-            <span>Shift+Enter for newline • Enter to send • Esc to stop</span>
-            <span aria-hidden>·</span>
-            <span>Sovereign &amp; Private • No cloud telemetry</span>
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              onSend={onSend}
+              onCancel={onCancel}
+              disabled={busy && !execution?.toolCallId}
+              busy={busy}
+              phase={phase}
+              active={activeModel}
+              runtimes={runtimes}
+              models={discoveredModels}
+              projectCount={projectCount}
+              onNewProject={onNewProject}
+              execMode={execMode}
+              onExecModeChange={onExecModeChange}
+              execAvailable={execAvailable}
+              reasoningEnabled={reasoningEnabled}
+              onReasoningToggle={onReasoningToggle}
+              onSelectModel={onSelectModel}
+              onOpenSettings={onOpenModels}
+              projectName={projectName}
+            />
           </div>
         </div>
       ) : (

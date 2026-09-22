@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import {
   Plus,
-  Globe,
   Mic,
   ArrowUp,
+  ArrowRight,
+  ArrowDown,
   Square,
   Paperclip,
   X,
@@ -455,7 +456,7 @@ export function Composer({
           placeholder={
             streaming ? 'Sovora is thinking… (Esc to stop)' :
             disabled ? 'Waiting…' :
-            'Ask anything, / for commands, @ for context...'
+            'Ask anything, @ to mention, / for actions'
           }
           value={value}
           onChange={(e) => {
@@ -531,26 +532,15 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <button
-              type="button"
-              className="sv-composer-icon-btn"
-              aria-label="Execution permissions"
-              title="Execution permissions"
-              onClick={() => onExecModeChange(execMode === 'off' ? 'ask' : 'off')}
-              style={{ color: execMode === 'off' ? undefined : '#D97757' }}
-            >
-              <Shield size={15} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className={`sv-composer-icon-btn${webSearch ? ' sv-btn-active' : ''}`}
-              aria-label={webSearch ? 'Web search on' : 'Web search off'}
-              title={webSearch ? 'Web search enabled' : 'Toggle web search'}
-              onClick={() => setWebSearch((v) => !v)}
-              style={webSearch ? { color: '#D97757' } : undefined}
-            >
-              <Globe size={14} aria-hidden />
-            </button>
+            <ModelSelector
+              active={active}
+              models={models}
+              runtimes={runtimes}
+              onSelect={(rid, mid) => onSelectModel?.(rid, mid)}
+              reasoningEnabled={reasoningEnabled}
+              onReasoningToggle={onReasoningToggle}
+              onOpenSettings={onOpenSettings}
+            />
             <input ref={fileInputRef} type="file" className="sr-only" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.json,.csv" multiple onChange={handleFileSelect} aria-label="Select files to attach" />
             <input ref={folderInputRef} type="file" className="sr-only" {...{ webkitdirectory: '' } as unknown as Record<string, string>} multiple onChange={handleFileSelect} aria-label="Select folder to attach" />
           </div>
@@ -576,13 +566,25 @@ export function Composer({
             >
               {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
             </button>
+            <button
+              type="button"
+              className="sv-composer-icon-btn"
+              aria-label="Scroll down"
+              title="Scroll down"
+              onClick={() => {
+                const el = document.querySelector('.sv-chat-content')
+                if (el) el.scrollTop = el.scrollHeight
+              }}
+            >
+              <ArrowDown size={15} aria-hidden />
+            </button>
             {showStop ? (
               <button type="button" className="sv-send-btn" style={{ background: '#8A8279' }} onClick={() => onCancel?.()} aria-label="Stop generating" title="Stop generating (Esc)" data-testid="stop-button">
                 <Square size={14} aria-hidden />
               </button>
             ) : (
               <button type="button" className="sv-send-btn" style={{ opacity: canSend ? 1 : 0.4 }} onClick={submit} disabled={!canSend} aria-label="Send message" title="Send prompt (Enter)" data-testid="send-button">
-                <ArrowUp size={16} aria-hidden />
+                <ArrowRight size={15} aria-hidden />
               </button>
             )}
           </div>
