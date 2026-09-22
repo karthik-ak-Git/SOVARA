@@ -99,7 +99,7 @@ export function classifyTaskEnhanced(
   return { ...base, skillsNeeded, needsMultimodal: types.length>0, requiresArtifact, artifactType, requiresVision: base.requiresVision || needsVision }
 }
 
-export function classifyTask(
+function classifyTaskBase(
   content: string,
   hints?: { reasoning?: boolean; webSearch?: boolean; hasImage?: boolean; attachmentChars?: number }
 ): TaskClassification {
@@ -221,4 +221,21 @@ export function classifyTask(
     reasoningRequired: needsReasoning(text),
     reason: 'default chat',
   }
+}
+
+export function classifyTask(
+  content: string,
+  hints?: { reasoning?: boolean; webSearch?: boolean; hasImage?: boolean; attachmentChars?: number }
+): TaskClassification {
+  const base = classifyTaskBase(content, hints)
+  const skillsNeeded = detectSkillNeeds(content, hints?.hasImage ? [{ mimeType: 'image/png' }] : undefined)
+  const requiresArtifact = skillsNeeded.some((s) => ['pptx','docx','xlsx','pdf','code','html','diagram'].includes(s))
+  let artifactType: TaskClassification['artifactType']
+  if (skillsNeeded.includes('pptx')) artifactType='pptx'
+  else if (skillsNeeded.includes('docx')) artifactType='docx'
+  else if (skillsNeeded.includes('xlsx')) artifactType='xlsx'
+  else if (skillsNeeded.includes('pdf')) artifactType='pdf'
+  else if (skillsNeeded.includes('diagram')) artifactType='pdf'
+  else if (skillsNeeded.includes('code')) artifactType='code'
+  return { ...base, skillsNeeded, requiresArtifact, artifactType, needsMultimodal: !!hints?.hasImage }
 }

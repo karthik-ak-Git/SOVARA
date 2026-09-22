@@ -304,7 +304,7 @@ export async function loadEnabledSkillsContent(
   if (allSkills.length === 0) return null
 
   const parts: string[] = []
-  let budget = 6000 // bounded context budget for skills to prevent prompt overflow
+  let budget = 14000 // increased to allow full SKILL.md for top skills (Audit §6) — still bounded vs 32k nCtx
 
   // Scoring function for relevance
   const promptLower = (userPrompt ?? '').toLowerCase()
@@ -409,13 +409,18 @@ export async function loadEnabledSkillsContent(
     }
   }
 
-  // Load content of selected skills within budget
-  for (const skill of selected) {
+  // Load FULL SKILL.md for matched skills (no truncation) — critical workflow steps must not be cut off (Audit §6)
+  // Budget is still bounded but we prioritize full content for top matches; tail skills are summarized
+  for (let idx = 0; idx < selected.length; idx++) {
     if (budget <= 0) break
+    const skill = selected[idx]!
     try {
       const text = await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-      const sliceSize = Math.min(2200, budget)
-      const block = `## Skill: ${skill.name} (${skill.source})\n${text.slice(0, sliceSize)}`
+      // Top 2 skills: load FULL file (up to 12k) with authoritative fences; remaining: sliced summary
+      const isTop = idx < 2
+      const sliceSize = isTop ? Math.min(text.length, 12000) : Math.min(2200, budget)
+      const content = isTop ? text.slice(0, sliceSize) : text.slice(0, sliceSize) + (text.length > sliceSize ? '\n\n…[truncated — see full SKILL.md on disk]' : '')
+      const block = `// === SKILL.md START: ${skill.name} (${skill.source}) ===\n${content}\n// === SKILL.md END: ${skill.name} ===`
       parts.push(block)
       budget -= block.length
     } catch {}

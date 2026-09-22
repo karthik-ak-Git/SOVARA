@@ -40,6 +40,49 @@ import type {
   ToolExecutionResult,
 } from './tools/types'
 
+/** Audit: per-turn execution trace (model, skills, tools, gates, artifact) */
+export interface SovaraExecutionTrace {
+  sessionId: string
+  classification: TaskClassification
+  routing: ModelRoutingDecision | null
+  skillsNeeded: string[]
+  skillsRead: string[]
+  toolCalls: Array<{ name: string; args: Record<string, unknown>; step: number }>
+  toolResults: Array<{ toolName: string; success: boolean }>
+  gateChecks: Array<{ gate: string; passed: boolean; message: string }>
+  networkCalls: Array<{ url: string; blocked: boolean }>
+  artifactPath?: string
+  startTime: number
+  endTime?: number
+  success: boolean
+}
+
+function buildGateMessage(missing: string[]): string {
+  return `GATE FAILED: Must read skills before generating artifacts. Missing: ${missing.join(', ')}. Call search_skills then read_skill {skill_name: '${missing[0]}'}`
+}
+
+// Skill-read gate — mirrors EnhancedAgentOrchestrator.SkillReadingGate
+function checkSkillReadGate(classification: TaskClassification & { skillsNeeded?: string[] }, toolHistory: Array<{ name: string; args: Record<string, unknown> }>, skillsReadSet: Set<string>): { passed: boolean; missing: string[]; message: string } {
+  const needed = (classification as any).skillsNeeded as string[] | undefined
+  if (!needed || needed.length === 0) return { passed: true, missing: [], message: 'No skills needed' }
+  // Filter to artifact-relevant skills (pptx/docx/xlsx/pdf — code/rag use broader handling)
+  const artifactSkills = needed.filter((s) => ['pptx','docx','xlsx','pdf','diagram','code'].includes(s))
+  if (artifactSkills.length === 0) return { passed: true, missing: [], message: 'No artifact skills needed' }
+  const hasSearch = toolHistory.some((t) => t.name === 'search_skills')
+  const read = new Set<string>(toolHistory.filter((t) => t.name === 'read_skill').map((t) => String((t.args as any).skill_name ?? (t.args as any).skillName ?? '').toLowerCase()))
+  for (const s of skillsReadSet) read.add(s.toLowerCase())
+  const missing = artifactSkills.filter((s) => !read.has(s.toLowerCase()) && !read.has(s))
+  if (missing.length > 0 && !hasSearch) return { passed: false, missing, message: `GATE FAILED: Must read skills before artifacts. Missing: ${missing.join(', ')}. Call search_skills {query: '${missing[0]}'}` }
+  if (missing.length > 0) return { passed: false, missing, message: buildGateMessage(missing) }
+  return { passed: true, missing: [], message: 'Skill gate passed' }
+}
+
+function checkTaskCompletionGate(classification: TaskClassification & { requiresArtifact?: boolean; artifactType?: string }, hasArtifact: boolean): { passed: boolean; message: string } {
+  if (!classification.requiresArtifact) return { passed: true, message: 'No artifact required' }
+  if (!hasArtifact) return { passed: false, message: `GATE FAILED: Artifact '${classification.artifactType ?? classification.kind}' required but not yet generated — fs_write/shell_exec needed` }
+  return { passed: true, message: `Artifact generated: ${classification.artifactType}` }
+}
+
 /** 64 MB buffer headroom for local agent code generation & reasoning traces. */
 const AGENT_MAX_RESPONSE_BYTES = 64_000_000
 
@@ -1155,8 +1198,37 @@ export class AgentOrchestrator {
       )
       const toolsForRequest = shouldSendTools ? this.deps.tools.list() : []
 
+      // Execution trace for audit (Todo3/5)
+      const trace: SovaraExecutionTrace = {
+        sessionId: sid,
+        classification: classification as TaskClassification,
+        routing,
+        skillsNeeded: (classification as any).skillsNeeded ?? [],
+        skillsRead: [],
+        toolCalls: [],
+        toolResults: [],
+        gateChecks: [],
+        networkCalls: [],
+        startTime: Date.now(),
+        success: false,
+      }
+      const skillsReadSet = new Set<string>()
+      const toolHistoryForGate: Array<{ name: string; args: Record<string, unknown> }> = []
+
       toolLoop: while (loopSteps++ < MAX_LOOP) {
         shouldContinueLoop = false
+        // GATE 1: Skill-read enforcement — block artifact generation until required skills are read
+        {
+          const gate = checkSkillReadGate(classification as any, toolHistoryForGate, skillsReadSet)
+          trace.gateChecks.push({ gate: 'skill_read_gate', passed: gate.passed, message: gate.message })
+          if (!gate.passed) {
+            this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: loopSteps, detail: gate.message })
+            // Inject mandatory system note so LLM is forced to call search_skills → read_skill
+            messages.push({ role: 'user', content: `SYSTEM GATE: ${gate.message}\nYou must call search_skills and read_skill now. Do not generate files yet.` })
+            this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: loopSteps, detail: 'injected skill-read mandate' })
+            continue
+          }
+        }
         if (classification.reasoningRequired || opts?.reasoning) {
         this.emit(sid, 'task:thinking', {
           taskKind: classification.kind,
@@ -1457,6 +1529,20 @@ export class AgentOrchestrator {
               }
 
               console.log(`[SOVARA][TOOL_DISPATCH] Completed tool="${toolName}" resultLen=${toolResult.length} preview="${toolResult.slice(0, 150).replace(/\s+/g, ' ')}"`)
+              // Trace for audit + gate history
+              trace.toolCalls.push({ name: toolName, args: toolArgs, step: loopSteps - 1 })
+              trace.toolResults.push({ toolName, success: !toolResult.includes('"error"'), })
+              toolHistoryForGate.push({ name: toolName, args: toolArgs })
+              if (toolName === 'read_skill') {
+                const readName = String((toolArgs as any).skill_name ?? (toolArgs as any).skillName ?? '').toLowerCase()
+                if (readName) {
+                  skillsReadSet.add(readName)
+                  trace.skillsRead.push(readName)
+                }
+              }
+              if (toolName === 'fs_write' || toolName === 'fs_patch') {
+                trace.gateChecks.push({ gate: 'fs_write', passed: true, message: `wrote ${String((toolArgs as any).path ?? '')}` })
+              }
 
               try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, content: toolResult }) } catch {}
               this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `${toolName} → ${toolResult.slice(0, 120)}` })

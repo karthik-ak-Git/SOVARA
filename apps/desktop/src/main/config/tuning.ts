@@ -57,7 +57,7 @@ export const DEFAULT_TUNING: TuningConfig = {
   chunkSizeChars: 6000,
   historyMaxChars: 24_000,
   historyMaxMessages: 50,
-  maxToolLoopSteps: 8,
+  maxToolLoopSteps: 32,
   contextTiers: [...CONTEXT_TIERS],
   memorySafetyMargin: 0.85,
   kvMbPer1kTokens: 8,
