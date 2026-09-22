@@ -99,62 +99,132 @@ export function TopBar({
     <header className="topbar" role="banner" style={{ background: '#ffffff', borderBottom: '1px solid #e2e8f0', height: 48, padding: '0 12px' }}>
       <div className="topbar-drag-region" />
       
-      <div className="brand-group" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="brand-group" style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, height: '100%' }}>
         <button
           type="button"
           className="topbar-icon-btn"
           aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
           onClick={onToggleSidebar}
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b' }}
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
         >
           <Menu size={16} aria-hidden />
         </button>
-        
-        <div className="sv-breadcrumb" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#334155', fontWeight: 500 }}>
-          <span style={{ color: '#64748b' }}>{activeProjectName}</span>
-          <span style={{ color: '#94a3b8' }}>/</span>
-          <strong style={{ fontWeight: 600, color: '#0f172a' }}>{sessionTitle}</strong>
-        </div>
 
-        {selectedChatId ? (
-          <div className="sv-session-menu-wrap" ref={menuRef} style={{ position: 'relative' }}>
-            <button
-              type="button"
-              className="topbar-icon-btn"
-              aria-label="Session actions"
-              onClick={() => setSessionMenuOpen((v) => !v)}
-              style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4 }}
-            >
-              <MoreVertical size={16} />
-            </button>
-            {sessionMenuOpen ? (
-              <div className="sv-popover-menu" role="menu" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, width: 170, background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 100, padding: '4px 0' }}>
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); const t = prompt('Rename session:', sessionTitle); if (t && t.trim()) onRenameChat?.(selectedChatId, t.trim()) }}>
-                  <Pencil size={13} /> Rename
-                </button>
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => setSessionMenuOpen(false)}>
-                  <Pin size={13} /> Pin
-                </button>
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); onArchiveChat?.(selectedChatId) }}>
-                  <Archive size={13} /> Archive
-                </button>
-                <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); onToggleSplit?.() }}>
-                  <Columns size={13} /> Split
-                </button>
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); void navigator.clipboard.writeText(sessionTitle) }}>
-                  <Copy size={13} /> Copy
-                </button>
-                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => setSessionMenuOpen(false)}>
-                  <Terminal size={13} /> Terminal
-                </button>
+        {/* VS Code Style Tab Management Bar */}
+        <div
+          className="topbar-tabs-wrapper"
+          style={{
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: 2,
+            overflowX: 'auto',
+            flex: 1,
+            minWidth: 0,
+            height: '100%',
+            paddingLeft: 4,
+            scrollbarWidth: 'none',
+          }}
+        >
+          {(chats.length > 0 ? chats : (selectedChatId ? [{ id: selectedChatId, title: sessionTitle }] : [])).map((tab) => {
+            const isSelected = tab.id === selectedChatId
+            return (
+              <div
+                key={tab.id}
+                role="tab"
+                aria-selected={isSelected}
+                tabIndex={0}
+                onClick={() => onSelectChat?.(tab.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectChat?.(tab.id)
+                  }
+                }}
+                className={`topbar-tab ${isSelected ? 'active' : ''}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 12px',
+                  borderRadius: '6px 6px 0 0',
+                  background: isSelected ? '#ffffff' : '#f8fafc',
+                  border: isSelected ? '1px solid #e2e8f0' : '1px solid transparent',
+                  borderBottom: isSelected ? '2px solid #0284c7' : '1px solid transparent',
+                  color: isSelected ? '#0f172a' : '#64748b',
+                  fontWeight: isSelected ? 600 : 400,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  maxWidth: 180,
+                  minWidth: 90,
+                  userSelect: 'none',
+                  height: 36,
+                  boxShadow: isSelected ? '0 -1px 3px rgba(0,0,0,0.04)' : 'none',
+                  transition: 'background 120ms ease, color 120ms ease',
+                }}
+              >
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    flex: 1,
+                  }}
+                  title={tab.title}
+                >
+                  {tab.title}
+                </span>
+                {chats.length > 1 ? (
+                  <button
+                    type="button"
+                    className="topbar-tab-close"
+                    aria-label={`Close ${tab.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onCloseChat?.(tab.id)
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '2px',
+                      borderRadius: 3,
+                      cursor: 'pointer',
+                      color: isSelected ? '#64748b' : '#94a3b8',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                ) : null}
               </div>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+            )
+          })}
 
-      <div style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="topbar-tab-add"
+            aria-label="New tab"
+            title="New Conversation"
+            onClick={onNewChat}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: '6px 8px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              color: '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              alignSelf: 'center',
+            }}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      </div>
 
       <div className="header-status" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div className="status-popover-wrap" ref={modelRef}>
