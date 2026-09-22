@@ -64,21 +64,30 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     // 1) Remove <thinking>...</thinking> and <think>...</think> entirely (including content) — that is reasoning, not answer
     let out = s.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     out = out.replace(/<think>[\s\S]*?<\/think>/gi, '')
-    // 2) Remove any stray opening/closing thinking tags that were split across chunks
+    // 2) Remove XML tags from prompt/tool injection leaks (<system_message>, <context_summary>, <user_request>, <implementation_plan>, <walkthrough>)
+    out = out.replace(/<system_message>[\s\S]*?<\/system_message>/gi, '')
+    out = out.replace(/<context_summary>[\s\S]*?<\/context_summary>/gi, '')
+    out = out.replace(/<user_request>[\s\S]*?<\/user_request>/gi, '')
+    out = out.replace(/<\/?system_message>/gi, '')
+    out = out.replace(/<\/?context_summary>/gi, '')
+    out = out.replace(/<\/?user_request>/gi, '')
+    out = out.replace(/<\/?implementation_plan>/gi, '')
+    out = out.replace(/<\/?walkthrough>/gi, '')
+    out = out.replace(/<\/?artifact[^>]*>/gi, '')
+    // 3) Remove any stray opening/closing thinking tags that were split across chunks
     out = out.replace(/<\/?thinking>/gi, '').replace(/<\/?think>/gi, '')
-    // 3) Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
+    // 4) Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
     out = out.replace(/<atem:invoke[^>]*>[\s\S]*?<\/atem:invoke>/gi, ' ')
     out = out.replace(/<\/?atem:[^>]*>/gi, '')
-    // 4) Remove <tool_call>...</tool_call>, <function>...</function>, <invoke>...</invoke>,
+    // 5) Remove <tool_call>...</tool_call>, <function>...</function>, <invoke>...</invoke>,
     //    <parameter>...</parameter> tags that Nemotron and similar models emit as raw tool syntax.
-    //    These should have been caught by fenceTools in the backend but can leak in partial streams.
     out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
     out = out.replace(/<invoke[^>]*>[\s\S]*?<\/invoke>/gi, '')
     out = out.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '')
     // Stray closing tags from split/partial blocks
     out = out.replace(/<\/parameter>/gi, '').replace(/<\/function>/gi, '').replace(/<\/tool_call>/gi, '').replace(/<\/invoke>/gi, '')
     out = out.replace(/<parameter\s[^>]*>/gi, '').replace(/<function\s[^>]*>/gi, '').replace(/<tool_call>/gi, '')
-    // 5) Collapse "— used tool —" chip duplication and the repeated "I'll read..." / "Let me explore..." that Qwen 7/32 repeats
+    // 6) Collapse "— used tool —" chip duplication and repeated text
     out = out.replace(/—\s*used tool\s*—/gi, ' ')
     out = out.replace(/(I'll read the workspace root to list all files and folders in the codebase\.)\s*\1/gi, '$1')
     out = out.replace(/(Let me explore the workspace to understand the codebase structure and list all the files\.)\s*\1/gi, '$1')

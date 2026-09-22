@@ -384,6 +384,7 @@ export function App(): React.JSX.Element {
         hardwareStatus={hardwareStatus}
         artifactsOpen={artifactsOpen}
         onToggleArtifacts={() => setArtifactsOpen((v) => !v)}
+        events={chat.events}
         splitOpen={contextOpen}
         onToggleSplit={() => setContextOpen((v) => !v)}
         onShare={handleShareSession}

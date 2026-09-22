@@ -41,6 +41,7 @@ interface Props {
   contextPanel?: ReactNode
   artifactContent?: string
   artifactTitle?: string
+  events?: import('@/lib/client/api').SessionEventView[]
 }
 
 export function AppShell({
@@ -81,6 +82,7 @@ export function AppShell({
   contextPanel,
   artifactContent,
   artifactTitle,
+  events = [],
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -137,6 +139,7 @@ export function AppShell({
             onClose={() => onToggleArtifacts?.()}
             artifactContent={artifactContent}
             artifactTitle={artifactTitle}
+            events={events}
           />
         ) : (
           contextPanel ?? null
