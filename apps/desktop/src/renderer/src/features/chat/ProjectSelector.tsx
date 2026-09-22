@@ -43,7 +43,7 @@ export function ProjectSelector({
     ? activeProject.name
     : selectedProjectId && selectedProjectId !== '__global__'
     ? selectedProjectId
-    : currentProjectName || 'SOVARA Workspace'
+    : currentProjectName || 'SOVARA'
 
   return (
     <div

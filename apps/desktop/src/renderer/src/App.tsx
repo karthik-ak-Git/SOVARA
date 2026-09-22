@@ -257,10 +257,18 @@ export function App(): React.JSX.Element {
   const projectChats = (projectId: string): Array<{ id: string; title: string }> =>
     chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
 
+  const availableProjects = useMemo(() => {
+    if (projects.length > 0) return projects.map((p) => ({ id: p.id, name: p.name }))
+    return [
+      { id: 'sovara-main', name: 'SOVARA' },
+      { id: 'sovara-landingpage', name: 'sovara-landingpage' },
+    ]
+  }, [projects])
+
   const activeProjectName = useMemo(() => {
     const activeSess = chat.sessions.find((s) => s.id === chat.selectedId)
     const pid = activeSess?.projectId ?? selectedProjectId
-    if (!pid || pid === '__global__') return 'SOVARA Workspace'
+    if (!pid || pid === '__global__') return 'SOVARA'
     const found = projects.find((p) => p.id === pid)
     if (found) return found.name
     if (pid === 'sovara-main') return 'SOVARA'
@@ -441,9 +449,9 @@ export function App(): React.JSX.Element {
             projectName={activeProjectName}
             artifactsPanelOpen={artifactsOpen}
             onToggleArtifacts={setArtifactsOpen}
-            projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            projects={availableProjects}
             selectedProjectId={selectedProjectId}
-            onSelectProject={setSelectedProjectId}
+            onSelectProject={handleSelectProjectWrapped}
             onOpenArtifactFile={handleOpenArtifact}
           />
         ) : null}
