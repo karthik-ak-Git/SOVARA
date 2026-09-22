@@ -97,6 +97,25 @@ export async function dispatchFs(
       console.warn(`[SOVARA][FS] fs_read called without valid path:`, args)
       return JSON.stringify({ error: 'fs_read requires { path: string }' })
     }
+    // Allow absolute external paths (e.g. C:/Users/.../Downloads/file.md) for reading only — workspace is for writes
+    const isAbs = path.isAbsolute(rel) || /^[a-z]:[\\/]/i.test(rel)
+    if (isAbs) {
+      const extAbs = path.resolve(rel)
+      if (fs.existsSync(extAbs)) {
+        try {
+          const stat = fs.statSync(extAbs)
+          if (stat.isDirectory()) return JSON.stringify({ error: `is a directory, use fs_list: ${rel}` })
+          if (stat.size > 2 * 1024 * 1024) return JSON.stringify({ error: `file too large (${stat.size} bytes)` })
+          const text = fs.readFileSync(extAbs, 'utf8').slice(0, 8000)
+          console.log(`[SOVARA][FS] fs_read external success: rel="${rel}" extAbs="${extAbs}" size=${stat.size}`)
+          return JSON.stringify({ workspace: root, path: rel, external: true, size: stat.size, content: text })
+        } catch (e) {
+          console.error(`[SOVARA][FS] fs_read external error ${extAbs}:`, e)
+          return JSON.stringify({ error: `read failed: ${e instanceof Error ? e.message : String(e)}` })
+        }
+      }
+      // If absolute but not found, fall through to workspace resolution to give hint
+    }
     let abs: string
     try {
       abs = resolveWorkspacePath(root, rel)
