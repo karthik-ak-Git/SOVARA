@@ -276,14 +276,23 @@ export function AuxiliaryPane({
     setCommandInput('')
 
     try {
-      const res = await dispatchTool('run_command', { CommandLine: cmd, Cwd: 'd:\\SOVARA', WaitMsBeforeAsync: 5000 })
-      const text = res?.result || res?.message || (res?.ok ? 'Command executed successfully.' : 'Done.')
+      const res: any = await dispatchTool('run_command', { CommandLine: cmd, Cwd: 'd:\\SOVARA', WaitMsBeforeAsync: 5000, _forceApprove: true })
+      let text = ''
+      if (res?.result) {
+        text = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
+      } else if (res?.message) {
+        text = res.message
+      } else if (res?.ok) {
+        text = 'Command executed successfully.'
+      } else {
+        text = 'Done.'
+      }
       setTerminalInstances((prev) =>
         prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, String(text), ''] } : t))
       )
-    } catch {
+    } catch (err: any) {
       setTerminalInstances((prev) =>
-        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, 'Command sent to terminal background.'] } : t))
+        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, String(err?.message || err), ''] } : t))
       )
     }
   }
@@ -1068,11 +1077,14 @@ export function AuxiliaryPane({
                       value={commandInput}
                       onChange={(e) => setCommandInput(e.target.value)}
                       autoFocus
+                      className="focus:outline-none focus:ring-0 focus:border-none focus:shadow-none shadow-none outline-none border-none"
                       style={{
                         flex: 1,
                         background: 'transparent',
                         border: 'none',
                         outline: 'none',
+                        boxShadow: 'none',
+                        WebkitAppearance: 'none',
                         color: '#0f172a',
                         fontSize: 12,
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
