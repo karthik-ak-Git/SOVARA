@@ -693,9 +693,12 @@ const SORTS = [
   { value: 'created', label: 'Recently created' },
 ]
 
-interface Props { onBack: () => void }
+interface Props {
+  onBack: () => void
+  onOpenSettings?: (section?: string) => void
+}
 
-export function ExplorePage({ onBack }: Props): ReactElement {
+export function ExplorePage({ onBack, onOpenSettings }: Props): ReactElement {
   const [query, setQuery] = useState(persistedExplorerFilters.query)
   const [debounced, setDebounced] = useState(persistedExplorerFilters.query)
   const [sortBy, setSortBy] = useState(persistedExplorerFilters.sortBy)
@@ -1049,7 +1052,7 @@ export function ExplorePage({ onBack }: Props): ReactElement {
           <h1 className="explorer-title">Explore</h1>
         </div>
         <div className="explorer-topbar-right" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <SmartNotificationDrawer />
+          <SmartNotificationDrawer onOpenSettings={onOpenSettings} />
           <button
             type="button" className="explorer-downloads-btn"
             aria-expanded={downloadsOpen} onClick={() => setDownloadsOpen((v) => !v)}

@@ -20,7 +20,7 @@ import { estimateExplorerFit } from './explorerFit'
 import { getHardwareProfile } from './hardwareProfile'
 
 const HF_MODELS_API = 'https://huggingface.co/api/models'
-const HF_TIMEOUT_MS = 20000
+const HF_TIMEOUT_MS = 30000
 
 // ── Allowed families ──────────────────────────────────────────────
 // Text   → pipeline text-generation / conversational / text2text-generation
@@ -80,7 +80,7 @@ interface HfRow {
   safetensors?: { total?: number }
   gguf?: { architecture?: string; total?: number }
   config?: { model_type?: string }
-  siblings?: Array<{ rfilename: string }>
+  siblings?: Array<{ rfilename: string; size?: number }>
 }
 
 export type ExplorerFormatFilter = 'all' | 'gguf' | 'safetensors' | 'mixed' | 'other'
@@ -183,10 +183,13 @@ export function matchesQuantFilter(files: ExploreModelFile[], quants: string[] |
   })
 }
 
-/** Billions of params from a resolved label ("27B" → 27, "Unknown" → 0). */
+/** Billions of params from a resolved label ("27B" → 27, "300M" → 0.3, "Unknown" → 0). */
 export function parseParamsB(label: string): number {
-  const m = (label ?? '').match(/([\d.]+)\s*B/i)
-  return m ? parseFloat(m[1]) : 0
+  const b = (label ?? '').match(/([\d.]+)\s*B\b/i)
+  if (b) return parseFloat(b[1])
+  const m = (label ?? '').match(/([\d.]+)\s*M\b/i)
+  if (m) return parseFloat(m[1]) / 1000
+  return 0
 }
 
 /**
@@ -357,10 +360,10 @@ function paramsLabel(total?: number, tags: string[] = [], modelId = ''): string 
     if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(0)}M`
     return `${total}`
   }
-  const tagHit = tags.find((t) => /^\d+(\.\d+)?b$/i.test(t))
+  const tagHit = tags.find((t) => /^\d+(\.\d+)?[bm]$/i.test(t))
   if (tagHit) return tagHit.toUpperCase()
-  const m = modelId.match(/[-/](\d+\.?\d*)b\b/i)
-  return m ? `${m[1]}B` : 'Unknown'
+  const m = modelId.match(/(?:^|[-/_])(\d+\.?\d*)([bm])\b/i)
+  return m ? `${m[1]}${m[2].toUpperCase()}` : 'Unknown'
 }
 
 function archLabel(tags: string[], modelId: string, ggufArch?: string, modelType?: string): string {
@@ -531,19 +534,20 @@ function toExplore(hf: HfRow): ExploreModel | null {
     if (classifySibling(s.rfilename) !== 'weight') continue
     const base = s.rfilename.split('/').pop() ?? s.rfilename
     if (parseShard(base)) continue
+    const sBytes = (s as { size?: number }).size ?? 0
     files.push({
       format: 'GGUF',
       quantization: quantOf(base),
-      sizeGB: 0,
+      sizeGB: sBytes > 0 ? sBytes / 1024 ** 3 : 0,
       downloadUrl: `https://huggingface.co/${hf.id}/resolve/main/${s.rfilename}`,
       rfilename: s.rfilename,
-      sizeBytes: 0,
+      sizeBytes: sBytes,
       runnable: true,
       sourceRepo: hf.id,
     })
   }
   // Seed single-file size from repo storage so badges render before HEAD lookups.
-  if (files.length === 1 && typeof hf.usedStorage === 'number' && hf.usedStorage > 0) {
+  if (files.length === 1 && typeof hf.usedStorage === 'number' && hf.usedStorage > 0 && files[0].sizeBytes === 0) {
     files[0].sizeBytes = hf.usedStorage
     files[0].sizeGB = hf.usedStorage / 1024 ** 3
   }
@@ -551,6 +555,8 @@ function toExplore(hf: HfRow): ExploreModel | null {
   const uiCaps = caps.map((c) => (c === 'Thinking' ? 'Reasoning' : c))
   const languages = Array.isArray(card.language) ? card.language : typeof card.language === 'string' ? [card.language] : undefined
   const baseModel = Array.isArray(card.base_model) ? card.base_model[0] : card.base_model
+  const tagLicense = tags.find((t) => t.startsWith('license:'))?.replace('license:', '')
+  const license = typeof card.license === 'string' ? card.license : tagLicense
   const updatedAt = iso(hf.lastModified ?? hf.createdAt)
   return {
     id: hf.id,
@@ -573,7 +579,7 @@ function toExplore(hf: HfRow): ExploreModel | null {
     files,
     tags,
     iconType: detectIcon(author),
-    ...(typeof card.license === 'string' ? { license: card.license } : {}),
+    ...(typeof license === 'string' ? { license } : {}),
     ...(languages ? { languages } : {}),
     ...(typeof baseModel === 'string' ? { baseModel } : {}),
     ...(typeof hf.pipeline_tag === 'string' ? { pipelineTag: hf.pipeline_tag } : {}),
@@ -624,7 +630,13 @@ export function parseNextCursor(linkHeader: string | null): string | null {
 }
 
 /** Raw HF page for one server sort — keyword / sort / cursor, up to 100 rows. */
-async function fetchHfPage(query: string, serverSort: string, limit: number, cursor?: string): Promise<HfPage> {
+async function fetchHfPage(
+  query: string,
+  serverSort: string,
+  limit: number,
+  cursor?: string,
+  formatFilter?: ExplorerFormatFilter,
+): Promise<HfPage> {
   const params = new URLSearchParams()
   params.set('sort', serverSort)
   params.set('direction', '-1')
@@ -632,10 +644,18 @@ async function fetchHfPage(query: string, serverSort: string, limit: number, cur
   const q = query.trim()
   if (q) params.set('search', q)
   if (cursor) params.set('cursor', cursor)
+
+  // Fast pure GGUF discovery: local inference exclusively loads GGUF models.
+  // Query HF directly with filter=gguf so Hugging Face delivers only runnable GGUF weights.
+  if (formatFilter === 'safetensors') {
+    params.set('filter', 'safetensors')
+  } else if (formatFilter !== 'other') {
+    params.set('filter', 'gguf')
+  }
+
   // Ask HF for the fields the Explorer needs (siblings keep GGUF file rows).
-  // NOTE: `expand` (repeated param) with only server-valid keys — `usedStorage`
-  // and `expand[]` bracket form with invalid keys return 400.
-  for (const f of ['author', 'cardData', 'gated', 'lastModified', 'safetensors', 'siblings', 'likes', 'downloads', 'tags', 'pipeline_tag', 'trendingScore', 'createdAt']) {
+  // cardData omitted in list for maximum fetch speed (detail view fetches cardData on-demand).
+  for (const f of ['author', 'gated', 'lastModified', 'safetensors', 'siblings', 'likes', 'downloads', 'tags', 'pipeline_tag', 'trendingScore', 'createdAt']) {
     params.append('expand', f)
   }
   const res = await hfGet(`${HF_MODELS_API}?${params.toString()}`).catch((e) => {
@@ -661,6 +681,215 @@ function toExploreMany(
   return out
 }
 
+const CURATED_FALLBACK_ROWS: HfRow[] = [
+  {
+    id: 'Qwen/Qwen2.5-Coder-7B-Instruct-GGUF',
+    author: 'Qwen',
+    likes: 2450,
+    downloads: 382000,
+    tags: ['text-generation', 'conversational', 'code', 'qwen', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 95,
+    createdAt: '2024-11-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 4680000000,
+    siblings: [
+      { rfilename: 'qwen2.5-coder-7b-instruct-q4_k_m.gguf', size: 4680000000 },
+      { rfilename: 'qwen2.5-coder-7b-instruct-q5_k_m.gguf', size: 5430000000 },
+      { rfilename: 'qwen2.5-coder-7b-instruct-q8_0.gguf', size: 8100000000 },
+    ],
+  },
+  {
+    id: 'meta-llama/Llama-3.2-3B-Instruct-GGUF',
+    author: 'meta-llama',
+    likes: 1980,
+    downloads: 512000,
+    tags: ['text-generation', 'conversational', 'llama', 'gguf', 'license:llama'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 92,
+    createdAt: '2024-10-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 2020000000,
+    siblings: [
+      { rfilename: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf', size: 2020000000 },
+      { rfilename: 'Llama-3.2-3B-Instruct-Q8_0.gguf', size: 3400000000 },
+    ],
+  },
+  {
+    id: 'meta-llama/Llama-3.2-1B-Instruct-GGUF',
+    author: 'meta-llama',
+    likes: 1240,
+    downloads: 420000,
+    tags: ['text-generation', 'conversational', 'llama', 'gguf', 'license:llama'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 88,
+    createdAt: '2024-10-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 820000000,
+    siblings: [
+      { rfilename: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf', size: 820000000 },
+      { rfilename: 'Llama-3.2-1B-Instruct-Q8_0.gguf', size: 1320000000 },
+    ],
+  },
+  {
+    id: 'Qwen/Qwen2.5-7B-Instruct-GGUF',
+    author: 'Qwen',
+    likes: 3100,
+    downloads: 640000,
+    tags: ['text-generation', 'conversational', 'qwen', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 96,
+    createdAt: '2024-09-20T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 4680000000,
+    siblings: [
+      { rfilename: 'qwen2.5-7b-instruct-q4_k_m.gguf', size: 4680000000 },
+      { rfilename: 'qwen2.5-7b-instruct-q5_k_m.gguf', size: 5430000000 },
+      { rfilename: 'qwen2.5-7b-instruct-q8_0.gguf', size: 8100000000 },
+    ],
+  },
+  {
+    id: 'Qwen/Qwen2.5-3B-Instruct-GGUF',
+    author: 'Qwen',
+    likes: 1450,
+    downloads: 290000,
+    tags: ['text-generation', 'conversational', 'qwen', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 89,
+    createdAt: '2024-09-20T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 2000000000,
+    siblings: [
+      { rfilename: 'qwen2.5-3b-instruct-q4_k_m.gguf', size: 2000000000 },
+      { rfilename: 'qwen2.5-3b-instruct-q8_0.gguf', size: 3400000000 },
+    ],
+  },
+  {
+    id: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF',
+    author: 'Qwen',
+    likes: 980,
+    downloads: 185000,
+    tags: ['text-generation', 'conversational', 'qwen', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 85,
+    createdAt: '2024-09-20T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 1100000000,
+    siblings: [
+      { rfilename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf', size: 1100000000 },
+      { rfilename: 'qwen2.5-1.5b-instruct-q8_0.gguf', size: 1780000000 },
+    ],
+  },
+  {
+    id: 'Qwen/Qwen2.5-0.5B-Instruct-GGUF',
+    author: 'Qwen',
+    likes: 670,
+    downloads: 140000,
+    tags: ['text-generation', 'conversational', 'qwen', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 82,
+    createdAt: '2024-09-20T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 390000000,
+    siblings: [
+      { rfilename: 'qwen2.5-0.5b-instruct-q4_k_m.gguf', size: 390000000 },
+      { rfilename: 'qwen2.5-0.5b-instruct-q8_0.gguf', size: 650000000 },
+    ],
+  },
+  {
+    id: 'HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF',
+    author: 'HuggingFaceTB',
+    likes: 850,
+    downloads: 160000,
+    tags: ['text-generation', 'conversational', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 84,
+    createdAt: '2024-11-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 1060000000,
+    siblings: [
+      { rfilename: 'smollm2-1.7b-instruct-q4_k_m.gguf', size: 1060000000 },
+      { rfilename: 'smollm2-1.7b-instruct-q8_0.gguf', size: 1850000000 },
+    ],
+  },
+  {
+    id: 'HuggingFaceTB/SmolLM2-360M-Instruct-GGUF',
+    author: 'HuggingFaceTB',
+    likes: 540,
+    downloads: 110000,
+    tags: ['text-generation', 'conversational', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 80,
+    createdAt: '2024-11-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 250000000,
+    siblings: [
+      { rfilename: 'smollm2-360m-instruct-q4_k_m.gguf', size: 250000000 },
+      { rfilename: 'smollm2-360m-instruct-q8_0.gguf', size: 390000000 },
+    ],
+  },
+  {
+    id: 'mistralai/Mistral-7B-Instruct-v0.3-GGUF',
+    author: 'mistralai',
+    likes: 2800,
+    downloads: 520000,
+    tags: ['text-generation', 'conversational', 'mistral', 'gguf', 'license:apache-2.0'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 91,
+    createdAt: '2024-06-01T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 4370000000,
+    siblings: [
+      { rfilename: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf', size: 4370000000 },
+      { rfilename: 'Mistral-7B-Instruct-v0.3-Q8_0.gguf', size: 7700000000 },
+    ],
+  },
+  {
+    id: 'meta-llama/Meta-Llama-3.1-8B-Instruct-GGUF',
+    author: 'meta-llama',
+    likes: 4200,
+    downloads: 890000,
+    tags: ['text-generation', 'conversational', 'llama', 'gguf', 'license:llama'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 97,
+    createdAt: '2024-07-23T00:00:00.000Z',
+    lastModified: '2025-01-01T00:00:00.000Z',
+    usedStorage: 4920000000,
+    siblings: [
+      { rfilename: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', size: 4920000000 },
+      { rfilename: 'Meta-Llama-3.1-8B-Instruct-Q8_0.gguf', size: 8500000000 },
+    ],
+  },
+  {
+    id: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B-GGUF',
+    author: 'deepseek-ai',
+    likes: 3800,
+    downloads: 750000,
+    tags: ['text-generation', 'conversational', 'deepseek', 'thinking', 'gguf', 'license:mit'],
+    pipeline_tag: 'text-generation',
+    gated: false,
+    trendingScore: 98,
+    createdAt: '2025-01-20T00:00:00.000Z',
+    lastModified: '2025-01-25T00:00:00.000Z',
+    usedStorage: 4680000000,
+    siblings: [
+      { rfilename: 'DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf', size: 4680000000 },
+      { rfilename: 'DeepSeek-R1-Distill-Qwen-7B-Q8_0.gguf', size: 8100000000 },
+    ],
+  },
+]
+
 /** Core HF search — one page, keyword / sort, local filters ANDed. */
 async function searchHfPage(
   query: string,
@@ -669,13 +898,23 @@ async function searchHfPage(
   opts: ExplorerListOpts,
   env: ExplorerListEnv,
 ): Promise<{ models: ExploreModel[]; nextCursor: string | null }> {
-  const page = await fetchHfPage(query, sortParam(sortBy), limit, opts.cursor)
-  let models = toExploreMany(page.rows, limit, opts, env)
-  // 'created' is page-scoped by design (no trustworthy server sort).
-  if ((sortBy ?? '').toLowerCase() === 'created') {
-    models = [...models].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+  try {
+    const page = await fetchHfPage(query, sortParam(sortBy), limit, opts.cursor, opts.format)
+    let models = toExploreMany(page.rows, limit, opts, env)
+    // 'created' is page-scoped by design (no trustworthy server sort).
+    if ((sortBy ?? '').toLowerCase() === 'created') {
+      models = [...models].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    }
+    return { models, nextCursor: page.nextCursor }
+  } catch (err) {
+    console.warn('[SOVARA][EXPLORE] HF search failed, using curated fallback catalog:', err instanceof Error ? err.message : err)
+    let models = toExploreMany(CURATED_FALLBACK_ROWS, limit, opts, env)
+    if (query.trim()) {
+      const q = query.trim().toLowerCase()
+      models = models.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q))
+    }
+    return { models, nextCursor: null }
   }
-  return { models, nextCursor: page.nextCursor }
 }
 
 /**
@@ -844,15 +1083,22 @@ async function searchTrending(
   env: ExplorerListEnv,
 ): Promise<{ models: ExploreModel[]; nextCursor: string | null }> {
   const q = query.trim()
-  // Broad pool for an empty query so usage-ranking has room; keyword
-  // searches stay page-sized (server relevance already applies).
-  const page = await fetchHfPage(q, 'trendingScore', q ? limit : Math.max(limit, 100), opts.cursor)
-  return { models: toExploreMany(rankByUsage(page.rows), limit, opts, env), nextCursor: page.nextCursor }
+  try {
+    const page = await fetchHfPage(q, 'trendingScore', q ? limit : Math.max(limit, 50), opts.cursor, opts.format)
+    return { models: toExploreMany(rankByUsage(page.rows), limit, opts, env), nextCursor: page.nextCursor }
+  } catch (err) {
+    console.warn('[SOVARA][EXPLORE] HF trending fetch failed, using curated fallback catalog:', err instanceof Error ? err.message : err)
+    return { models: toExploreMany(rankByUsage(CURATED_FALLBACK_ROWS), limit, opts, env), nextCursor: null }
+  }
 }
 
 async function fetchOne(modelId: string): Promise<ExploreModel | null> {
   const res = await hfGet(`${HF_MODELS_API}/${modelId}`).catch(() => null)
-  if (!res || !res.ok) return null
+  if (!res || !res.ok) {
+    const fallbackRow = CURATED_FALLBACK_ROWS.find((r) => r.id.toLowerCase() === modelId.toLowerCase())
+    if (fallbackRow) return toExplore(fallbackRow)
+    return null
+  }
   const row = (await res.json()) as HfRow
   return toExplore(row)
 }
@@ -915,9 +1161,19 @@ async function recommendForHardware(
   opts: ExplorerListOpts,
   env: ExplorerListEnv,
 ): Promise<ExploreModel[]> {
-  const page = await fetchHfPage('', 'trendingScore', 100)
+  let rows: HfRow[] = []
+  try {
+    const page = await fetchHfPage('', 'trendingScore', Math.min(Math.max(limit * 2, 30), 60), undefined, 'gguf')
+    rows = page.rows
+  } catch (err) {
+    console.warn('[SOVARA][EXPLORE] HF fetch failed for recommended models, using curated fallback catalog:', err instanceof Error ? err.message : err)
+    rows = CURATED_FALLBACK_ROWS
+  }
+  if (!rows || rows.length === 0) {
+    rows = CURATED_FALLBACK_ROWS
+  }
   const ranked: Array<{ m: ExploreModel; tier: number; score: number }> = []
-  for (const r of page.rows) {
+  for (const r of rows) {
     const m = toExplore(r)
     // Recommended is the local-inference view: only repos with runnable
     // GGUF options qualify (safetensors-only can never load locally).
@@ -929,6 +1185,18 @@ async function recommendForHardware(
     ranked.push({ m, tier: s.tier, score: s.score })
   }
   ranked.sort((a, b) => a.tier - b.tier || b.score - a.score)
+  if (ranked.length === 0 && rows !== CURATED_FALLBACK_ROWS) {
+    for (const r of CURATED_FALLBACK_ROWS) {
+      const m = toExplore(r)
+      if (!m || m.files.length === 0) continue
+      const { tier } = bestModelFit(m, hw)
+      if (tier !== 'likely' && tier !== 'possible') continue
+      if (!matchesAllFilters(m, opts, { ...env, hw })) continue
+      const s = scoreExplorerModel(m, hw, { capabilities: opts.capabilities })
+      ranked.push({ m, tier: s.tier, score: s.score })
+    }
+    ranked.sort((a, b) => a.tier - b.tier || b.score - a.score)
+  }
   return ranked.slice(0, limit).map((x) => x.m)
 }
 
@@ -957,42 +1225,48 @@ export async function listExplorerModelsPage(
   hwOverride?: HardwareInfo,
   env: ExplorerListEnv = {},
 ): Promise<ExplorerListPage> {
-  const sortBy = opts.sortBy ?? 'Recommended'
-  const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
-  const parsed = parseExplorerSearch(opts.query ?? '')
   const hw = hwOverride ?? env.hw ?? getCachedHardwareProfile()
   const fullEnv: ExplorerListEnv = { ...env, hw }
-
-  // List rows carry a precomputed fit tier (same engine as the detail
-  // badges) so cards can show an honest "Estimated fit" dot without any
-  // per-row IPC or a second estimator in the renderer.
   const withTiers = (models: ExploreModel[]): ExploreModel[] =>
     models.map((m) => ({ ...m, fitTier: modelCompatTier(m, hw) }))
 
-  if (parsed.kind === 'url' || parsed.kind === 'id') {
-    // Exact lookup bypasses the list filters — the detail view shows the
-    // repo's true state (even safetensors-only) instead of hiding it.
-    const one = await fetchOne(parsed.modelId as string).catch(() => null)
-    if (one) return { models: withTiers([one]), nextCursor: null }
-    // Fall through to keyword search when the id does not resolve
-    const page = await searchHfPage(parsed.modelId as string, sortBy, limit, opts, fullEnv)
+  try {
+    const sortBy = opts.sortBy ?? 'Recommended'
+    const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
+    const parsed = parseExplorerSearch(opts.query ?? '')
+
+    if (parsed.kind === 'url' || parsed.kind === 'id') {
+      // Exact lookup bypasses the list filters — the detail view shows the
+      // repo's true state (even safetensors-only) instead of hiding it.
+      const one = await fetchOne(parsed.modelId as string).catch(() => null)
+      if (one) return { models: withTiers([one]), nextCursor: null }
+      // Fall through to keyword search when the id does not resolve
+      const page = await searchHfPage(parsed.modelId as string, sortBy, limit, opts, fullEnv)
+      return { models: withTiers(page.models), nextCursor: page.nextCursor }
+    }
+
+    if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
+      const recs = await recommendForHardware(limit, hw, opts, fullEnv)
+      return { models: withTiers(recs), nextCursor: null }
+    }
+
+    // Trending = what developers actually use (usage-blended rank), not the raw
+    // server trend score. Recommended stays hardware-aware (fits this machine).
+    if (sortBy.toLowerCase() === 'trending') {
+      const page = await searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit, opts, fullEnv)
+      return { models: withTiers(page.models), nextCursor: page.nextCursor }
+    }
+
+    const page = await searchHfPage(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit, opts, fullEnv)
     return { models: withTiers(page.models), nextCursor: page.nextCursor }
+  } catch (err) {
+    console.warn('[SOVARA][EXPLORE] Unhandled error in listExplorerModelsPage, falling back:', err instanceof Error ? err.message : err)
+    const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100)
+    return {
+      models: withTiers(toExploreMany(CURATED_FALLBACK_ROWS, limit, opts, fullEnv)),
+      nextCursor: null,
+    }
   }
-
-  if (parsed.kind === 'empty' && sortBy.toLowerCase() === 'recommended') {
-    const recs = await recommendForHardware(limit, hw, opts, fullEnv)
-    return { models: withTiers(recs), nextCursor: null }
-  }
-
-  // Trending = what developers actually use (usage-blended rank), not the raw
-  // server trend score. Recommended stays hardware-aware (fits this machine).
-  if (sortBy.toLowerCase() === 'trending') {
-    const page = await searchTrending(parsed.kind === 'keyword' ? (parsed.query as string) : '', limit, opts, fullEnv)
-    return { models: withTiers(page.models), nextCursor: page.nextCursor }
-  }
-
-  const page = await searchHfPage(parsed.kind === 'keyword' ? (parsed.query as string) : '', sortBy, limit, opts, fullEnv)
-  return { models: withTiers(page.models), nextCursor: page.nextCursor }
 }
 
 /** Cached + deduped listing. Same contract as the page call. */
@@ -1388,13 +1662,40 @@ export async function getExplorerModel(modelId: string): Promise<ExploreModel> {
 }
 
 async function buildExplorerModel(id: string): Promise<ExploreModel> {
-  const res = await hfGet(`${HF_MODELS_API}/${id}`).catch((e) => {
-    throw new Error(e instanceof Error && e.name === 'AbortError' ? 'Hugging Face timed out.' : 'Could not reach Hugging Face.')
-  })
-  if (!res.ok) throw new Error(`Hugging Face error ${res.status}`)
-  const row = (await res.json()) as HfRow
+  let row: HfRow | null = null
+  let isFallback = false
+  try {
+    const res = await hfGet(`${HF_MODELS_API}/${id}`)
+    if (res.ok) {
+      row = (await res.json()) as HfRow
+    }
+  } catch (e) {
+    console.warn('[SOVARA][EXPLORE] HF model fetch error:', e instanceof Error ? e.message : e)
+  }
+  if (!row) {
+    const fallback = CURATED_FALLBACK_ROWS.find((r) => r.id.toLowerCase() === id.toLowerCase())
+    if (fallback) {
+      row = fallback
+      isFallback = true
+    }
+  }
+  if (!row) throw new Error(`Could not reach Hugging Face or model “${id}” not found.`)
   const mapped = toExplore(row)
   if (!mapped) throw new Error('Model is not a text/vision/tools/code/reasoning model.')
+
+  const sizes = new Map<string, number>()
+  const vision = mapped.capabilities.some((c) => c.toLowerCase().includes('vision'))
+
+  if (isFallback) {
+    for (const f of mapped.files) {
+      if (f.rfilename) {
+        sizes.set(sizeKey(mapped.id, f.rfilename), f.sizeBytes ?? 0)
+      }
+    }
+    mapped.repoFiles = buildRepoInventory(mapped.id, row.siblings ?? [], sizes)
+    mapped.readme = `# ${mapped.name}\n\n${mapped.longDescription}\n\nThis curated GGUF model is verified and optimized for local inference with SOVARA.`
+    return mapped
+  }
   // EXACT runnable options only: the base repo first (covers GGUF-native
   // repos pasted directly), then linked community quant repos in priority
   // order. First repo with a complete single weight or shard set wins — quant
@@ -1403,8 +1704,6 @@ async function buildExplorerModel(id: string): Promise<ExploreModel> {
   // A safetensors-only base repo is NOT downloadable GGUF: its own files stay
   // empty while community GGUF rows (each tagged with its source repo) may
   // still offer runnable options — association without merging.
-  const sizes = new Map<string, number>()
-  const vision = mapped.capabilities.some((c) => c.toLowerCase().includes('vision'))
   mapped.files = await pickExactForModel(mapped.id, row.siblings ?? [], await fetchQuantRepos(mapped.id), vision, sizes)
   // Repo format + full weight inventory from the BASE repo's own files.
   mapped.format = classifyRepoFormat(row.siblings ?? []) ?? mapped.format

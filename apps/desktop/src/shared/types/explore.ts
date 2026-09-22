@@ -120,6 +120,9 @@ export interface HardwareInfo {
   gpuAvailable: boolean
   /** Live GPU compute utilization 0-100 from nvidia-smi utilization.gpu (undefined when unavailable). */
   gpuUtilization?: number
+  /** Disk storage space (GB) available for local model weights. */
+  storageFreeGB?: number
+  storageTotalGB?: number
 }
 
 export interface CompatibilityResult {

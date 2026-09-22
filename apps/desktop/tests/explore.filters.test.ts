@@ -125,7 +125,10 @@ describe('params filter', () => {
   it('buckets boundaries without overlap; Unknown never matches', () => {
     expect(parseParamsB('7B')).toBe(7)
     expect(parseParamsB('0.5B')).toBe(0.5)
+    expect(parseParamsB('300M')).toBe(0.3)
+    expect(parseParamsB('135M')).toBe(0.135)
     expect(parseParamsB('Unknown')).toBe(0)
+    expect(matchesParamsFilter('300M', 'lt3')).toBe(true)
     expect(matchesParamsFilter('7B', 'b7to14')).toBe(true)
     expect(matchesParamsFilter('7B', 'b3to7')).toBe(false)
     expect(matchesParamsFilter('14B', 'b14to32')).toBe(true)

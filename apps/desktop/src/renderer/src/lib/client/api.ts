@@ -56,6 +56,7 @@ export interface AppInfoView {
   node: string
   platform: string
   arch: string
+  user?: { name: string; email: string }
 }
 
 export async function getAppInfo(): Promise<AppInfoView> {
@@ -651,6 +652,10 @@ export async function deleteLibraryModel(path: string): Promise<{ ok: boolean }>
   return ipcInvoke('library:delete', { path })
 }
 
+export async function revealInFolder(path: string): Promise<{ ok: boolean }> {
+  return ipcInvoke('library:revealInFolder', { path })
+}
+
 export type DownloadState = 'queued' | 'started' | 'progress' | 'paused' | 'done' | 'error' | 'cancelled'
 
 export interface DownloadEventView {
@@ -875,4 +880,8 @@ export function onInstanceEvents(callback: (event: InstanceEvent) => void): () =
 
 export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app' | 'chat' = 'all'): Promise<Record<string, string[]>> {
   return ipcInvoke('logs:getRecent', { kind })
+}
+
+export async function showSystemNotification(title: string, body: string): Promise<{ shown: boolean }> {
+  return ipcInvoke('notifications:show', { title, body })
 }

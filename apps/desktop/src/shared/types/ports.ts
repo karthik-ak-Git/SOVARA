@@ -318,6 +318,7 @@ export interface SystemResourceManagerPort {
   checkBeforeLoad(model: LocalModel, opts?: { ctxLen?: number }): Promise<ResourcePressure>
   getLimits(): Promise<SystemResources['limits']>
   setLimits(partial: Partial<SystemResources['limits']>): Promise<void>
+  clearHwCache?(): void
 }
 
 // ── Placeholders for future ports (interface-shaped, no impl) ──

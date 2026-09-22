@@ -255,6 +255,14 @@ export async function getAllDiscoveredSkills(
   return all
 }
 
+const STOP_WORDS = new Set([
+  'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'how', 'what', 'why',
+  'where', 'when', 'who', 'which', 'will', 'would', 'could', 'should', 'can', 'may',
+  'build', 'make', 'create', 'give', 'help', 'show', 'into', 'about', 'some', 'than',
+  'them', 'then', 'there', 'these', 'they', 'been', 'being', 'having', 'want', 'need',
+  'please', 'like', 'just', 'also', 'file', 'files',
+])
+
 // Load enabled SKILL.md contents for AI injection with keyword relevance matching
 export async function loadEnabledSkillsContent(
   store?: { getAppSetting: (k: string) => string | null },
@@ -265,16 +273,20 @@ export async function loadEnabledSkillsContent(
   if (allSkills.length === 0) return null
 
   const parts: string[] = []
-  let budget = 10000
+  let budget = 6000 // bounded context budget for skills to prevent prompt overflow
 
   // Scoring function for relevance
   const promptLower = (userPrompt ?? '').toLowerCase()
   const promptWords = promptLower
     .split(/[^a-z0-9_-]+/)
-    .filter((w) => w.length >= 3)
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
 
+  const isPptRequest = /\b(ppt|pptx|presentation|slides|slide|deck|powerpoint)\b/i.test(promptLower)
+  const isDocRequest = /\b(doc|docx|word|document|report|guide|article|manual|whitepaper)\b/i.test(promptLower)
+  const isDataRequest = /\b(excel|sheet|spreadsheet|csv|xlsx|data|analysis|table|metrics)\b/i.test(promptLower)
   const isUiRequest = /\b(react|tailwind|css|frontend|ui|ux|dashboard|timer|game|cyber|dark-mode|component|landing|web|widget|artifact|button|chart|visual)\b/i.test(promptLower)
   const isDiagramRequest = /\b(mermaid|flowchart|sequence|diagram|architecture|login|oauth|process|flow)\b/i.test(promptLower)
+  const isCodeRequest = /\b(code|script|api|function|refactor|backend|frontend|typescript|python|fastapi|test|debug)\b/i.test(promptLower)
 
   const scoredSkills = allSkills.map((skill) => {
     let score = 0
@@ -282,13 +294,37 @@ export async function loadEnabledSkillsContent(
     const descLower = (skill.description || '').toLowerCase()
 
     if (userPrompt && userPrompt.trim()) {
-      // Direct prompt token matches
+      // Direct prompt token matches (excluding stop words)
       for (const word of promptWords) {
-        if (nameLower.includes(word)) score += 15
-        if (descLower.includes(word)) score += 5
+        if (nameLower === word) score += 40
+        else if (nameLower.includes(word)) score += 18
+        if (descLower.includes(word)) score += 6
       }
 
-      // Domain thematic boosts
+      // Root Superpower Orchestrator meta-skill: always active for structured tasks
+      if (nameLower.includes('superpower')) score += 85
+
+      // Presentation & Slide Deck Boosts
+      if (isPptRequest) {
+        if (nameLower === 'pptx-official' || nameLower.includes('pptx')) score += 95
+        if (nameLower === 'python-pptx-generator' || nameLower.includes('presentation')) score += 90
+        if (nameLower === 'frontend-design') score += 35
+      }
+
+      // Document & Report Boosts
+      if (isDocRequest) {
+        if (nameLower === 'docx' || nameLower.includes('docx')) score += 95
+        if (nameLower.includes('document-writer') || nameLower.includes('report')) score += 80
+        if (nameLower === 'frontend-design') score += 30
+      }
+
+      // Data & Spreadsheet Boosts
+      if (isDataRequest) {
+        if (nameLower === 'xlsx' || nameLower.includes('excel')) score += 95
+        if (nameLower.includes('data-analysis')) score += 80
+      }
+
+      // UI/UX Boosts
       if (isUiRequest) {
         if (nameLower === 'frontend-design' || nameLower.includes('frontend-design')) score += 60
         if (nameLower === 'tailwind-patterns' || nameLower.includes('tailwind')) score += 55
@@ -298,10 +334,17 @@ export async function loadEnabledSkillsContent(
         if (nameLower.includes('dashboard') && promptLower.includes('dashboard')) score += 40
       }
 
+      // Diagram & Architecture Boosts
       if (isDiagramRequest) {
         if (nameLower.includes('mermaid') || nameLower.includes('diagram')) score += 60
         if (nameLower === 'generative_ui' || nameLower.includes('generative_ui')) score += 40
         if (nameLower.includes('architecture') || nameLower.includes('flowchart')) score += 35
+      }
+
+      // Coding & Engineering Boosts
+      if (isCodeRequest) {
+        if (nameLower.includes('software-engineer') || nameLower.includes('coding')) score += 50
+        if (nameLower.includes('debugging')) score += 45
       }
     }
 
@@ -311,22 +354,26 @@ export async function loadEnabledSkillsContent(
   // Sort descending by score
   scoredSkills.sort((a, b) => b.score - a.score)
 
-  // If we have relevant matches (score > 0), select top matching skills
-  const topMatches = scoredSkills.filter((s) => s.score > 0)
+  // Deduplicate by skill name and take top matches
+  const seenNames = new Set<string>()
   const selected: Array<BionicSkill & { source: string }> = []
 
+  const topMatches = scoredSkills.filter((s) => s.score > 0)
   if (topMatches.length > 0) {
-    for (const match of topMatches.slice(0, 5)) {
-      selected.push(match.skill)
+    for (const match of topMatches) {
+      if (!seenNames.has(match.skill.name.toLowerCase())) {
+        seenNames.add(match.skill.name.toLowerCase())
+        selected.push(match.skill)
+        if (selected.length >= 4) break
+      }
     }
   } else {
     // Fallback: take Bionic skills and a few general skills
-    for (const s of allSkills.filter((x) => x.source === 'Bionic').slice(0, 3)) {
-      selected.push(s)
-    }
-    for (const s of allSkills.filter((x) => x.source !== 'Bionic').slice(0, 3)) {
-      if (!selected.some((sel) => sel.path === s.path)) {
+    for (const s of allSkills) {
+      if (!seenNames.has(s.name.toLowerCase())) {
+        seenNames.add(s.name.toLowerCase())
         selected.push(s)
+        if (selected.length >= 3) break
       }
     }
   }
@@ -336,7 +383,7 @@ export async function loadEnabledSkillsContent(
     if (budget <= 0) break
     try {
       const text = await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-      const sliceSize = Math.min(3000, budget)
+      const sliceSize = Math.min(2200, budget)
       const block = `## Skill: ${skill.name} (${skill.source})\n${text.slice(0, sliceSize)}`
       parts.push(block)
       budget -= block.length
@@ -344,5 +391,6 @@ export async function loadEnabledSkillsContent(
   }
 
   if (parts.length === 0) return null
-  return `<skills_context>\nEnterprise Skills Available (Consult these instructions closely):\n\n${parts.join('\n\n---\n\n')}\n</skills_context>`
+  const skillNames = selected.map((s) => s.name).join(', ')
+  return `<skills_context>\n[Superpower Orchestrator Active Skills: ${skillNames}]\nExecution Rule: Follow the workflows and guidelines in the active skills below to plan and autonomously build the complete final deliverable.\n\n${parts.join('\n\n---\n\n')}\n</skills_context>`
 }

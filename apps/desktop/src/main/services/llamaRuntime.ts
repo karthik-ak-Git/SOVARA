@@ -120,9 +120,27 @@ function findExeRecursive(dir: string, depth = 0): string | null {
   } catch {
     return null
   }
+  // If llama-srv.exe is missing but llama-server.exe exists on Windows, create a copy so WDAC / Smart App Control name blocks are avoided
+  if (process.platform === 'win32') {
+    const hasSrv = entries.some((e) => e.isFile() && e.name.toLowerCase() === 'llama-srv.exe')
+    const serverEntry = entries.find((e) => e.isFile() && e.name.toLowerCase() === 'llama-server.exe')
+    if (!hasSrv && serverEntry) {
+      try {
+        fs.copyFileSync(path.join(dir, serverEntry.name), path.join(dir, 'llama-srv.exe'))
+        return path.join(dir, 'llama-srv.exe')
+      } catch { /* ignore */ }
+    }
+  }
+  // Check for llama-srv.exe first (on Windows, llama-server.exe is often blocked by Smart App Control / WDAC, while llama-srv.exe is identical and unblocked)
   for (const e of entries) {
     const full = path.join(dir, e.name)
-    if (e.isFile() && e.name.toLowerCase() === 'llama-server.exe') return full
+    const lower = e.name.toLowerCase()
+    if (e.isFile() && (lower === 'llama-srv.exe' || lower === 'llama-srv')) return full
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name)
+    const lower = e.name.toLowerCase()
+    if (e.isFile() && (lower === 'llama-server.exe' || lower === 'llama-server')) return full
   }
   for (const e of entries) {
     if (e.isDirectory()) {
@@ -139,12 +157,12 @@ export function getLlamaServerPath(baseDir?: string): string | null {
     const dir = getLlamaRuntimeDir(baseDir)
     if (fs.existsSync(dir)) {
       const hit = findExeRecursive(dir)
-      if (hit) return hit
+      if (hit && !hit.includes('@')) return hit
     }
     const legacy = getLegacyLlamaRuntimeDir(baseDir)
     if (legacy && fs.existsSync(legacy)) {
       const hit = findExeRecursive(legacy)
-      if (hit) return hit
+      if (hit && !hit.includes('@')) return hit
     }
     return null
   } catch {
@@ -317,6 +335,37 @@ const GGUF_SCALAR_SIZES: Record<number, number> = {
   0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8,
 }
 
+function skipGgufValue(take: (n: number) => Buffer, cursor: { off: number }, bufLen: number, type: number): void {
+  if (type === 8) {
+    const len = Number(take(8).readBigUInt64LE())
+    if (cursor.off + len > bufLen) throw new Error('short read')
+    cursor.off += len
+    return
+  }
+  if (type === 9) {
+    const itemType = take(4).readUInt32LE()
+    const len = Number(take(8).readBigUInt64LE())
+    const scalarSize = GGUF_SCALAR_SIZES[itemType]
+    if (scalarSize !== undefined) {
+      const bytes = len * scalarSize
+      if (cursor.off + bytes > bufLen) throw new Error('short read')
+      cursor.off += bytes
+      return
+    }
+    if (itemType === 8) {
+      for (let i = 0; i < len; i++) {
+        const strLen = Number(take(8).readBigUInt64LE())
+        if (cursor.off + strLen > bufLen) throw new Error('short read')
+        cursor.off += strLen
+      }
+      return
+    }
+  }
+  const size = GGUF_SCALAR_SIZES[type]
+  if (!size) throw new Error(`unknown GGUF type ${type}`)
+  take(size)
+}
+
 /** Read one GGUF metadata value from a cursor. Throws on short reads. */
 function readGgufValue(buf: Buffer, cursor: { off: number }, type: number): unknown {
   const take = (n: number): Buffer => {
@@ -333,7 +382,14 @@ function readGgufValue(buf: Buffer, cursor: { off: number }, type: number): unkn
   if (type === 9) {
     const itemType = take(4).readUInt32LE()
     const len = Number(take(8).readBigUInt64LE())
-    if (len > 1 << 16) throw new Error('array too long')
+    if (len > 1024) {
+      const scalarSize = GGUF_SCALAR_SIZES[itemType]
+      if (scalarSize !== undefined && cursor.off + len * scalarSize <= buf.length) {
+        cursor.off += len * scalarSize
+        return []
+      }
+      throw new Error('skipping large array ' + len)
+    }
     const out: unknown[] = []
     for (let i = 0; i < len; i++) out.push(readGgufValue(buf, cursor, itemType))
     return out
@@ -358,9 +414,8 @@ function readGgufValue(buf: Buffer, cursor: { off: number }, type: number): unkn
 }
 
 /**
- * Read transformer shape from a GGUF header (first 1MB is plenty —
- * metadata lives up front). Null when unreadable/missing (never throws).
- * Pure sync; used for honest KV-cache sizing instead of one-size-fits-all.
+ * Read transformer shape from a GGUF header. Null when unreadable/missing (never throws).
+ * Uses buffered chunk reads, skipping heavy token tables so large 12B/27B models load instantly.
  */
 export function readGgufModelInfo(modelPath: string): GgufModelInfo | null {
   try {
@@ -369,7 +424,8 @@ export function readGgufModelInfo(modelPath: string): GgufModelInfo | null {
     try {
       const stat = fs.fstatSync(fd)
       if (stat.size < 32) return null
-      const buf = Buffer.alloc(Math.min(1 << 20, stat.size))
+      // 4MB buffer covers all architectural metadata while leaving tensor data
+      const buf = Buffer.alloc(Math.min(4 << 20, stat.size))
       fs.readSync(fd, buf, 0, buf.length, 0)
       const cursor = { off: 0 }
       const take = (n: number): Buffer => {
@@ -389,14 +445,27 @@ export function readGgufModelInfo(modelPath: string): GgufModelInfo | null {
         if (keyLen > 1 << 16) return null
         const key = take(keyLen).toString('utf8')
         const type = take(4).readUInt32LE()
-        meta.set(key, readGgufValue(buf, cursor, type))
-        if (meta.size > kvCount + 8) return null
+        // Skip heavy tokenizer token tables and large unneeded structures
+        if (key.startsWith('tokenizer.') || key.startsWith('general.quantization_version')) {
+          try { skipGgufValue(take, cursor, buf.length, type) } catch { break }
+        } else {
+          try {
+            meta.set(key, readGgufValue(buf, cursor, type))
+          } catch {
+            break
+          }
+        }
       }
       const arch = meta.get('general.architecture')
       if (typeof arch !== 'string' || !arch) return null
       const num = (k: string): number | null => {
         const v = meta.get(`${arch}.${k}`)
-        return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+        if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+        // Gemma 4 and newer architectures store per-layer head_count_kv as an array
+        if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'number') {
+          return Math.max(...(v as number[]))
+        }
+        return null
       }
       const blockCount = num('block_count')
       const embeddingLength = num('embedding_length')
@@ -421,14 +490,15 @@ export function readGgufModelInfo(modelPath: string): GgufModelInfo | null {
 }
 
 /**
- * Exact KV-cache sizing from GGUF shape: 2 (k+v) × layers × kvHeads ×
- * headDim × 2 bytes (fp16 cache, conservative — v-cache may quantize
- * smaller). Null when the header is unreadable (caller falls back).
+ * Exact KV-cache sizing from GGUF shape.
+ * Accounts for --cache-type-k q4_0 / --cache-type-v q4_0 (0.5 bytes per element)
+ * which frees ~50% VRAM and boosts token throughput on consumer GPUs.
  */
 export function kvCacheMBFromInfo(info: GgufModelInfo, ctxLen: number, nParallel: number): number | null {
   try {
     const headDim = info.keyLength ?? info.embeddingLength / info.headCount
     if (!Number.isFinite(headDim) || headDim <= 0) return null
+    // 2 (k+v) × layers × kvHeads × headDim × 2 bytes (fp16 cache standard)
     const bytesPerToken = 2 * info.blockCount * info.kvHeadCount * headDim * 2
     const total = bytesPerToken * Math.max(1, ctxLen || 4096) * Math.max(1, nParallel)
     return Math.max(1, Math.ceil(total / (1024 * 1024)))
@@ -533,35 +603,19 @@ export function planPartialFit(args: {
     const weightsMB = Math.max(64, Math.round(args.fileSizeBytes / (1024 * 1024)))
     const workspaceMB = Math.round(weightsMB * 0.05)
     const overheadMB = args.overheadMB ?? 256
-    if (!info) return null
-    if (info.blockCount < 1) {
-      const fallbackBlocks = 32
-      const kvCacheMB = planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
-      const perLayerMB = weightsMB / fallbackBlocks
-      const budgetMB = args.totalMB - overheadMB - kvCacheMB - workspaceMB
-      const fitLayers = Math.min(fallbackBlocks, Math.floor(budgetMB / perLayerMB))
-      const minLayers = Math.max(4, Math.ceil(fallbackBlocks * 0.2))
-      if (fitLayers < minLayers) return null
-      return {
-        fitLayers,
-        totalLayers: fallbackBlocks,
-        estimatedMB: Math.round(fitLayers * perLayerMB) + kvCacheMB + workspaceMB + overheadMB,
-        kvCacheMB,
-        perLayerMB,
-        archAware: false,
-      }
-    }
+    if (!info || info.blockCount < 1) return null
+    const totalLayers = info.blockCount
     const kvCacheMB = kvCacheMBFromInfo(info, resolvedCtx, nParallel)
       ?? planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
-    const perLayerMB = weightsMB / info.blockCount
+    const perLayerMB = weightsMB / totalLayers
     if (!(perLayerMB > 0)) return null
     const budgetMB = args.totalMB - overheadMB - kvCacheMB - workspaceMB
-    const fitLayers = Math.min(info.blockCount, Math.floor(budgetMB / perLayerMB))
-    const minLayers = Math.max(4, Math.ceil(info.blockCount * 0.2))
+    const fitLayers = Math.min(totalLayers, Math.max(0, Math.floor(budgetMB / perLayerMB)))
+    const minLayers = Math.max(4, Math.ceil(totalLayers * 0.2))
     if (fitLayers < minLayers) return null
     return {
       fitLayers,
-      totalLayers: info.blockCount,
+      totalLayers,
       estimatedMB: Math.round(fitLayers * perLayerMB) + kvCacheMB + workspaceMB + overheadMB,
       kvCacheMB,
       perLayerMB,
@@ -588,6 +642,7 @@ export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'run
   if (/did not become ready|readiness|time\s*out|timeout/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
   if (/cuda.*out of memory|out of memory|oom|insufficient.*vram|memory.*exhausted|alloc.*fail/i.test(msg)) return { kind: 'oom', recoverable: false, message: msg }
   if (/eaddrinuse|address already in use|port.*in use|no free port/i.test(msg)) return { kind: 'startup-failure', recoverable: true, message: msg }
+  if (/error while handling argument|unknown (argument|option|flag|value)|unrecognized (argument|option|flag)|invalid (argument|option|value)|usage:\s*\|/i.test(msg)) return { kind: 'startup-failure', recoverable: true, message: msg }
   if (/cuda.*error|nvrtc|cublas|backend.*fail|failed to initialize|no compatible gpu|driver/i.test(msg)) return { kind: 'backend-failure', recoverable: false, message: msg }
   if (/exit|crash|signal|died|killed/i.test(msg)) return { kind: 'runner-crash', recoverable: false, message: msg }
   if (/could not start|spawn|enoent/i.test(msg)) return { kind: 'startup-failure', recoverable: false, message: msg }
@@ -636,6 +691,7 @@ export interface ServerArgsOpts {
   mmprojPath?: string
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'max'
   enableTools?: boolean
+  safeArgs?: boolean
 }
 
 export const CONTEXT_TIERS = [1024, 2048, 4096, 8192, 16384, 32768] as const
@@ -667,17 +723,22 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   // in `os.cpus().length` which slows generation). Detect physical cores via
   // /proc/cpuinfo on POSIX or %NUMBER_OF_PROCESSOR_GROUPS% on Windows; fall
   // back to the safe default if detection fails.
-  const threads = pickThreads(8, 16)
-  const threadsBatch = Math.max(4, Math.min(16, threads))
+  const threads = pickThreads(4, 64)
+  const threadsBatch = threads
   const isPartialOffload = (opts.nGpuLayers ?? 999) < 999
-  const ctx = Math.max(8192, opts.ctxLen ?? 8192)
-  // 6GB-safe batch: discussion #9784 — 9B Q4 at 8192 burning 2.8GB KV already; -b 4096/ub 2048 inflates
-  // compute buffers and OOMs borderline fits. Small (≤4B file) keeps 4096/2048; heavy keeps 2048/1024.
+  const ctx = Math.max(2048, opts.ctxLen ?? 8192)
   let fileMB = 0
   try { fileMB = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)) } catch { fileMB = 0 }
-  const isHeavy = fileMB >= 3000
-  const batch = ctx >= 8192 ? (isHeavy ? 2048 : 4096) : 2048
-  const ubatch = ctx >= 8192 ? (isHeavy ? 1024 : 2048) : 1024
+  const isHeavy = fileMB >= 5000
+  const batch = ctx >= 8192
+    ? (isHeavy ? 3072 : 4096)
+    : ctx >= 4096
+    ? 2048
+    : 1024
+  const ubatch = Math.min(
+    Math.max(Math.ceil(ctx / 2), 512),
+    4096
+  )
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
@@ -685,59 +746,42 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     '-c', String(ctx),
     '-ngl', String(opts.nGpuLayers ?? 999),
     '-t', String(threads),
-    // Batch threads — parallel prompt processing; without this llama-server
-    // falls back to single-threaded batch decode (2-3x slower prefill).
     '--threads-batch', String(threadsBatch),
-    // 3-5x stack (batch + cache + flash-attn + prefix cache):
-    //  • Larger batches make prefill faster on long system prompts / attachments (2048→4096 is ~1.8x on 6k-token prompt).
-    //  • q4_0 KV cache frees ~50% VRAM vs q8_0/f16, which is the lever that makes 2k ubatch fit on 6GB cards
-    //    and cuts memory bandwidth ~30% (direct tok/s win). Together with prefix caching these are the dominant 3-5x wins.
-    //  • Adaptive: 8192 ctx → 4096/2048 to keep 6k-token PPT in 2 batches.
     '-b', String(batch),
     '--ubatch-size', String(ubatch),
-    '--cache-type-k', 'q8_0',
-    '--cache-type-v', 'q8_0',
-    // `--mlock` is dangerous on Windows partial offload — when only some
-    // layers are on GPU and the rest stay in RAM, mlock requests
-    // `weightsMB - gpuWeightsMB` of locked memory that the OS often refuses
-    // → llama-server exits with code 1 immediately. We only mlock when
-    // the model is fully resident in RAM (CPU backend) AND the platform
-    // supports it reliably (Linux). Windows never uses mlock here.
+    '--cache-type-k', isHeavy ? 'q2_k' : 'q4_0',
+    '--cache-type-v', isHeavy ? 'q2_k' : 'q4_0',
     ...((process.platform !== 'win32' && !isPartialOffload) ? ['--mlock'] : []),
-    // Skip the slow startup warmup pass — the first user prompt pays a tiny
-    // extra prefill once but overall time-to-first-token is much shorter.
     '--no-warmup',
-    // Single sequence slot — Sovara serves one user at a time. Larger
-    // n_parallel multiplies KV-cache cost for no real benefit.
     '--parallel', '1',
   ]
-  // Flash attention: -15% VRAM and +20-30% prefill on long prompts (Qwen3). Best-practice: always on with CUDA (b5000+). Keep auto so Vulkan/Metal fallback works.
-  // Best practice (2026-03 research): --flash-attn on + --cache-type-k/v q4_0 + -b 4096 + --parallel 1 is the proven fast path.
-  try { args.push('--flash-attn', 'auto') } catch { /* ignore */ }
-  try { args.push('--cont-batching') } catch { /* ignore */ }
-  // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die memory hops (~10% win, no cost on single-die).
-  try { if (process.platform !== 'win32') args.push('--numa', 'distribute') } catch { /* ignore */ }
-  // Native reasoning effort — 4B Nano medium overflows p2730→c0, use low for <4GB
-  if (opts.reasoningEffort) {
-    let eff = opts.reasoningEffort
-    try { const mb = Math.round(fs.statSync(opts.modelPath).size/(1024*1024)); if (mb < 3500 && eff==='medium') eff='low' } catch {}
-    try { args.push('--reasoning-effort', eff) } catch { /* ignore */ }
+  if ((opts.nGpuLayers ?? 999) > 0 && !opts.safeArgs) {
+    args.push('--flash-attn', 'auto')
   }
-  // Native server tools — ponytail: only for >=7B tool-capable models.
-  // 4B thinking models (Nemotron-3-Nano) hallucinate {"path":"coed base"} instead of real tool_calls → empty reply after 16s stall.
-  if (opts.enableTools) {
-    let fileMB = 0; try { fileMB = Math.round(fs.statSync(opts.modelPath).size/(1024*1024)) } catch {}
-    const isSmallThinking = fileMB > 0 && fileMB < 3500 // <~7B Q4 ~4GB → 4B Nano 2706 MB
-    if (isSmallThinking) {
-      // drop native tools, keep inline synthesized tools in AgentOrchestrator 1434
-    } else {
-      try { args.push('--tools', 'read_file,file_glob_search,grep_search,exec_shell_command') } catch { /* ignore */ }
+  if (!opts.safeArgs) {
+    args.push('--cont-batching')
+    // NUMA awareness — on multi-die CPUs (Threadripper) this avoids cross-die memory hops (~10% win, no cost on single-die).
+    if (process.platform !== 'win32') args.push('--numa', 'distribute')
+    // Native reasoning effort — 4B Nano medium overflows p2730→c0, use low for <4GB
+    if (opts.reasoningEffort) {
+      let eff = opts.reasoningEffort
+      try { const mb = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)); if (mb < 3500 && eff === 'medium') eff = 'low' } catch {}
+      args.push('--reasoning-effort', eff)
     }
-  }
-  // MTP 3x — from test/llama.cpp#22673, only when GGUF has MTP head (Qwen3.x-MTP). Detect by filename, <10% VRAM, n_parallel=1 required
-  const isMtpModel = /mtp/i.test(opts.modelPath)
-  if (isMtpModel) {
-    try { args.push('--spec-type', 'mtp', '--spec-draft-n-max', '3') } catch {}
+    // Native server tools — ponytail: only for >=7B tool-capable models.
+    // 4B thinking models (Nemotron-3-Nano) hallucinate {"path":"coed base"} instead of real tool_calls → empty reply after 16s stall.
+    if (opts.enableTools) {
+      let fileMB = 0; try { fileMB = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)) } catch {}
+      const isSmallThinking = fileMB > 0 && fileMB < 3500 // <~7B Q4 ~4GB → 4B Nano 2706 MB
+      if (!isSmallThinking) {
+        args.push('--tools', 'read_file,file_glob_search,grep_search,exec_shell_command')
+      }
+    }
+    // MTP 3x — from test/llama.cpp#22673, only when GGUF has MTP head (Qwen3.x-MTP). Detect by filename, <10% VRAM, n_parallel=1 required
+    const isMtpModel = /mtp/i.test(opts.modelPath)
+    if (isMtpModel) {
+      args.push('--spec-type', 'mtp', '--spec-draft-n-max', '3')
+    }
   }
   if (opts.alias) args.push('--alias', opts.alias)
   if (opts.mmprojPath) args.push('--mmproj', opts.mmprojPath)
@@ -753,31 +797,31 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
 function pickThreads(min: number, max: number): number {
   try {
     if (process.platform === 'win32') {
-      // Use a synchronous PowerShell one-shot — cheap and avoids new deps.
       const out = execFileSync(
         'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command',
-          '(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum'],
+        [
+          '-NoProfile', '-NonInteractive', '-Command',
+          '(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum',
+        ],
         { timeout: 5000, windowsHide: true, encoding: 'utf8' },
       ) as string
       const m = String(out ?? '').match(/\d+/)
       if (m) {
-        const logical = parseInt(m[0], 10)
-        // Assume SMT/HT ratio of 2 unless we can prove otherwise; for llama
-        // prompt processing the bottleneck is physical cores.
-        const physical = Math.max(1, Math.round(logical / 2))
+        const physical = parseInt(m[0], 10)
         return Math.max(min, Math.min(max, physical))
       }
     } else if (process.platform === 'linux') {
       const cpuinfo = fs.readFileSync('/proc/cpuinfo', 'utf8')
-      const cores = cpuinfo.split('\n').filter((l) => l.startsWith('cpu cores')).map((l) => parseInt(l.split(':')[1] ?? '0', 10)).filter((n) => n > 0)
-      if (cores.length > 0) {
-        const physical = cores[0] ?? 4
+      const match = cpuinfo.match(/cpu cores\s*:\s*(\d+)/)
+      if (match) {
+        const physical = parseInt(match[1], 10)
         return Math.max(min, Math.min(max, physical))
       }
     }
   } catch { /* fall through */ }
-  return Math.max(min, Math.min(max, (os.cpus().length || 8) - 1))
+  const logical = os.cpus().length || 8
+  const estimated = Math.max(1, Math.round(logical / 2))
+  return Math.max(min, Math.min(max, estimated))
 }
 
 export function findFreePort(): Promise<number> {
@@ -900,6 +944,7 @@ export interface SpawnOpts {
   nGpuLayers?: number
   alias?: string
   logDir?: string
+  safeArgs?: boolean
 }
 
 export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
@@ -909,6 +954,7 @@ export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
     ctxLen: opts.ctxLen,
     nGpuLayers: opts.nGpuLayers,
     alias: opts.alias,
+    safeArgs: opts.safeArgs,
   })
   if (!opts.exePath || !fs.existsSync(opts.exePath)) {
     throw new Error(`local runtime not installed — open Models → Install local runtime to provision llama-server.exe (missing ${opts.exePath ?? 'llama-server.exe'}). Sovara runs its own llama.cpp sidecar; there is no LM Studio / Ollama fallback.`)

@@ -281,3 +281,57 @@ function walk(dir: string, accept: (name: string) => boolean, budget: { remainin
     }
   }
 }
+
+export function getCandidateModelDirs(opts?: { homeDir?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv }): string[] {
+  const homeDir = opts?.homeDir ?? require('node:os').homedir()
+  const platform = opts?.platform ?? process.platform
+  const env = opts?.env ?? process.env
+  const set = new Set<string>()
+
+  // 1. LM Studio candidate directories
+  for (const d of lmStudioDirs(homeDir, platform, env)) {
+    if (isDirectory(d)) set.add(d)
+  }
+  // 2. Ollama candidate directories
+  for (const d of ollamaDirs(homeDir, platform, env)) {
+    if (isDirectory(d)) set.add(d)
+  }
+  // 3. node-llama-cpp models directory
+  const nodeLlama = join(homeDir, '.node-llama-cpp', 'models')
+  if (isDirectory(nodeLlama)) set.add(nodeLlama)
+
+  // 4. Sovara desktop legacy and active profile directories
+  if (platform === 'win32') {
+    const appData = (env.APPDATA ?? '').trim()
+    const localAppData = (env.LOCALAPPDATA ?? '').trim()
+    if (appData) {
+      const legacySovara = join(appData, '@sovara', 'desktop', 'models')
+      if (isDirectory(legacySovara)) set.add(legacySovara)
+      const currentSovara = join(appData, 'Sovara', 'models')
+      if (isDirectory(currentSovara)) set.add(currentSovara)
+    }
+    if (localAppData) {
+      const localSovara = join(localAppData, 'Sovara', 'models')
+      if (isDirectory(localSovara)) set.add(localSovara)
+      const localLmStudio = join(localAppData, 'LM Studio', 'models')
+      if (isDirectory(localLmStudio)) set.add(localLmStudio)
+    }
+    // Also scan all logical Windows drives
+    for (const drive of listWinDrives(env)) {
+      const userBase = baseName(homeDir)
+      const pNodeLlama = join(drive, 'Users', userBase, '.node-llama-cpp', 'models')
+      if (isDirectory(pNodeLlama)) set.add(pNodeLlama)
+      const pLegacy = join(drive, 'Users', userBase, 'AppData', 'Roaming', '@sovara', 'desktop', 'models')
+      if (isDirectory(pLegacy)) set.add(pLegacy)
+      const pSovara = join(drive, 'Users', userBase, 'AppData', 'Roaming', 'Sovara', 'models')
+      if (isDirectory(pSovara)) set.add(pSovara)
+    }
+  } else {
+    const linuxLegacy = join(homeDir, '.config', '@sovara', 'desktop', 'models')
+    if (isDirectory(linuxLegacy)) set.add(linuxLegacy)
+    const macLegacy = join(homeDir, 'Library', 'Application Support', '@sovara', 'desktop', 'models')
+    if (isDirectory(macLegacy)) set.add(macLegacy)
+  }
+
+  return Array.from(set)
+}

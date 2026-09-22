@@ -12,6 +12,8 @@
 import { z } from 'zod'
 import { SovaraDb } from '../storage/db'
 import type { ModelRuntimeEntry, RuntimeType } from '@shared/types/models'
+import { getCandidateModelDirs } from '../services/modelLocations'
+
 
 const RUNTIME_TYPES: RuntimeType[] = ['openai-compatible', 'ollama', 'lmstudio', 'vllm', 'llama.cpp', 'custom']
 
@@ -145,8 +147,10 @@ const MAX_SNAPSHOT_MODELS = 200
 
 export class RuntimeConfigStore {
   private readonly db: SovaraDb
+  private readonly baseDir?: string
 
   constructor(baseDir?: string) {
+    this.baseDir = baseDir
     this.db = new SovaraDb(baseDir)
     this.db.raw.exec(`
       CREATE TABLE IF NOT EXISTS model_runtimes (
@@ -219,6 +223,95 @@ export class RuntimeConfigStore {
       this.db.raw.exec(`UPDATE model_downloads SET status = 'paused', updated_at = ${Date.now()} WHERE status IN ('downloading', 'verifying')`)
     } catch {
       // best-effort — table may be locked mid-migration
+    }
+    // Purge any legacy mmproj shards or audio/whisper files accidentally registered in model_registry
+    try {
+      this.db.raw.exec(`DELETE FROM model_registry WHERE lower(rfilename) LIKE 'mmproj%' OR lower(rfilename) LIKE '%.bin' OR lower(rfilename) LIKE '%.pt'`)
+    } catch {
+      // best-effort
+    }
+    if (!baseDir) {
+      this.migrateLegacyModelData()
+    }
+  }
+
+  private migrateLegacyModelData(): void {
+    try {
+      let legacyDir: string
+      if (process.platform === 'win32') {
+        legacyDir = require('node:path').join(process.env.APPDATA || '', '@sovara', 'desktop')
+      } else if (process.platform === 'darwin') {
+        legacyDir = require('node:path').join(require('node:os').homedir(), 'Library', 'Application Support', '@sovara', 'desktop')
+      } else {
+        legacyDir = require('node:path').join(require('node:os').homedir(), '.config', '@sovara', 'desktop')
+      }
+      const legacyDbPath = require('node:path').join(legacyDir, 'sovara.db')
+      const { existsSync } = require('node:fs') as typeof import('node:fs')
+      if (!existsSync(legacyDbPath)) return
+
+      const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
+      const legacyDb = new DatabaseSync(legacyDbPath, { readOnly: true })
+      try {
+        const dlCount = (this.db.raw.prepare('SELECT count(*) as c FROM model_downloads').get() as { c?: number })?.c ?? 0
+        if (dlCount === 0) {
+          try {
+            const rows = legacyDb.prepare('SELECT * FROM model_downloads').all() as Array<Record<string, unknown>>
+            const stmt = this.db.raw.prepare(`
+              INSERT OR IGNORE INTO model_downloads (
+                id, provider, repo_id, revision, rfilename, download_url, dest_path,
+                temp_path, total_bytes, downloaded_bytes, status, kind, parts,
+                companion, format, quantization, license, gated, error, speed_bps,
+                created_at, updated_at
+              ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?
+              )
+            `)
+            for (const r of rows) {
+              stmt.run(
+                r.id as string, r.provider as string, r.repo_id as string, r.revision as string, r.rfilename as string, r.download_url as string, r.dest_path as string,
+                r.temp_path as string, (r.total_bytes as number) ?? null, (r.downloaded_bytes as number) ?? 0, (r.status as string) ?? 'completed', (r.kind as string) ?? 'single', (r.parts as string) ?? null,
+                (r.companion as string) ?? null, (r.format as string) ?? null, (r.quantization as string) ?? null, (r.license as string) ?? null, (r.gated as number) ?? null, (r.error as string) ?? null, (r.speed_bps as number) ?? null,
+                r.created_at as number, r.updated_at as number
+              )
+            }
+          } catch {}
+        }
+
+        try {
+          const regRows = legacyDb.prepare('SELECT * FROM model_registry').all() as Array<Record<string, unknown>>
+          const stmtReg = this.db.raw.prepare(`
+            INSERT OR IGNORE INTO model_registry (
+              id, source_provider, repository, revision, rfilename, format,
+              quantization, architecture, parameter_count, context_length,
+              license, local_path, file_size_bytes, checksum, download_status,
+              installation_status, runtime_id, display_name, discovered_at,
+              updated_at, extra_json
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?
+            )
+          `)
+          for (const r of regRows) {
+            stmtReg.run(
+              r.id as string, r.source_provider as string, r.repository as string, r.revision as string, r.rfilename as string, (r.format as string) ?? null,
+              (r.quantization as string) ?? null, (r.architecture as string) ?? null, (r.parameter_count as string) ?? null, (r.context_length as number) ?? null,
+              (r.license as string) ?? null, r.local_path as string, (r.file_size_bytes as number) ?? null, (r.checksum as string) ?? null, (r.download_status as string) ?? 'completed',
+              (r.installation_status as string) ?? 'installed', (r.runtime_id as string) ?? null, (r.display_name as string) ?? '', r.discovered_at as number,
+              r.updated_at as number, (r.extra_json as string) ?? null
+            )
+          }
+        } catch {}
+      } finally {
+        legacyDb.close()
+      }
+    } catch (e) {
+      console.warn('[RuntimeConfigStore] Legacy model migration skipped:', e)
     }
   }
 
@@ -551,29 +644,98 @@ export class RuntimeConfigStore {
   }
 
   getExternalModelDirs(): string[] {
+    const list: string[] = []
+    const seen = new Set<string>()
+    let excluded = new Set<string>()
+    try {
+      const rawEx = this.db.getMeta('external_model_dirs_excluded')
+      if (rawEx) {
+        const exList = JSON.parse(rawEx) as unknown
+        if (Array.isArray(exList)) {
+          excluded = new Set(exList.map((x) => String(x).toLowerCase()))
+        }
+      }
+    } catch {}
+
+    // 1. User-persisted external dirs
     try {
       const raw = this.db.getMeta('external_model_dirs')
-      if (!raw) return []
-      const v = JSON.parse(raw) as unknown
-      if (!Array.isArray(v)) return []
-      return v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).slice(0, 20)
-    } catch { return [] }
+      if (raw) {
+        const v = JSON.parse(raw) as unknown
+        if (Array.isArray(v)) {
+          for (const x of v) {
+            if (typeof x === 'string' && x.trim().length > 0) {
+              const norm = x.trim().toLowerCase()
+              if (!seen.has(norm) && !excluded.has(norm)) { seen.add(norm); list.push(x.trim()) }
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+    // 2. Candidate well-known directories on system (C: drive, home, etc.) when running in app mode (not isolated test)
+    if (!this.baseDir) {
+      try {
+        for (const d of getCandidateModelDirs()) {
+          const norm = d.toLowerCase()
+          if (!seen.has(norm) && !excluded.has(norm)) { seen.add(norm); list.push(d) }
+        }
+      } catch { /* ignore */ }
+    }
+
+
+    return list.slice(0, 30)
   }
+
   addExternalModelDir(dir: string): string[] {
     const abs = dir.trim()
     if (!abs) throw new Error('directory must not be empty')
-    const list = this.getExternalModelDirs()
     const norm = abs.toLowerCase()
-    if (!list.some((d) => d.toLowerCase() === norm)) list.push(abs)
-    this.db.setMeta('external_model_dirs', JSON.stringify(list))
-    return list
+    // Un-exclude if previously excluded
+    try {
+      const rawEx = this.db.getMeta('external_model_dirs_excluded')
+      if (rawEx) {
+        const exList = JSON.parse(rawEx) as unknown
+        if (Array.isArray(exList)) {
+          const nextEx = exList.filter((x) => String(x).toLowerCase() !== norm)
+          this.db.setMeta('external_model_dirs_excluded', JSON.stringify(nextEx))
+        }
+      }
+    } catch {}
+
+    let persisted: string[] = []
+    try {
+      const raw = this.db.getMeta('external_model_dirs')
+      if (raw) persisted = JSON.parse(raw)
+    } catch {}
+    if (!persisted.some((d) => d.toLowerCase() === norm)) {
+      persisted.push(abs)
+      this.db.setMeta('external_model_dirs', JSON.stringify(persisted))
+    }
+    return this.getExternalModelDirs()
   }
+
   removeExternalModelDir(dir: string): string[] {
     const norm = dir.trim().toLowerCase()
-    const list = this.getExternalModelDirs().filter((d) => d.toLowerCase() !== norm)
-    this.db.setMeta('external_model_dirs', JSON.stringify(list))
-    return list
+    let exList: string[] = []
+    try {
+      const rawEx = this.db.getMeta('external_model_dirs_excluded')
+      if (rawEx) exList = JSON.parse(rawEx)
+    } catch {}
+    if (!exList.some((e) => e.toLowerCase() === norm)) {
+      exList.push(dir.trim())
+      this.db.setMeta('external_model_dirs_excluded', JSON.stringify(exList))
+    }
+    let persisted: string[] = []
+    try {
+      const raw = this.db.getMeta('external_model_dirs')
+      if (raw) persisted = JSON.parse(raw)
+    } catch {}
+    const updated = persisted.filter((d) => d.toLowerCase() !== norm)
+    this.db.setMeta('external_model_dirs', JSON.stringify(updated))
+    return this.getExternalModelDirs()
   }
+
 
   close(): void {
     this.db.close()

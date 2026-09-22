@@ -36,10 +36,11 @@ function needsReasoning(text: string, explicit?: boolean): boolean {
 }
 
 function estimateContextNeeded(text: string, extraChars = 0): number {
-  const tokens = Math.ceil((text.length + extraChars) / 4) + 2048
-  // Floor 12288 — sovereign prompt alone is 6460 tokens, plus history needs headroom (was 8192 still 6460+2730>8192).
-  const base = Math.max(12288, Math.min(131072, tokens))
-  return base
+  const contentTokens = Math.ceil((text.length + extraChars) / 4)
+  const historyTokens = extraChars > 500 ? Math.ceil(extraChars / 4) : 0
+  const needed = contentTokens + historyTokens + 512
+  const tiers = [512, 1024, 2048, 4096, 8192, 16384, 32768] as const
+  return tiers.find((t) => t >= Math.max(512, needed)) || 32768
 }
 
 export function classifyTask(

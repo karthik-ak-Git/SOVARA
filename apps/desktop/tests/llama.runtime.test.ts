@@ -16,6 +16,7 @@ import {
   planMemory,
   planPartialFit,
   readGgufModelInfo,
+  classifyLoadFailure,
 } from '../src/main/services/llamaRuntime'
 import { LlamaCppServerAdapter } from '../src/main/backend/ports/LlamaCppServerAdapter'
 import { SystemResourceStub } from '../src/main/backend/ports/SystemResourceStub'
@@ -91,6 +92,34 @@ describe('llamaRuntime — pure helpers', () => {
     expect(args).toContain('18777')
     expect(args).toContain('999') // -ngl all layers → VRAM, not CPU
     expect(args).not.toContain('0.0.0.0')
+    expect(args).toContain('--flash-attn')
+    expect(args).toContain('auto')
+    expect(args).not.toContain('v2')
+  })
+
+  it('builds safe args without optional flags when safeArgs is true', () => {
+    const args = buildServerArgs({
+      modelPath: 'C:\\m\\q.gguf',
+      port: 18777,
+      ctxLen: 4096,
+      alias: 'q',
+      enableTools: true,
+      reasoningEffort: 'medium',
+      safeArgs: true,
+    })
+    expect(args).toContain('127.0.0.1')
+    expect(args).toContain('18777')
+    expect(args).not.toContain('--flash-attn')
+    expect(args).not.toContain('--tools')
+    expect(args).not.toContain('--reasoning-effort')
+    expect(args).not.toContain('--cont-batching')
+  })
+
+  it('classifies CLI argument errors as recoverable startup-failure', () => {
+    const err = `error while handling argument "--flash-attn": error: unknown value for --flash-attn: 'v2'\nusage: -fa, --flash-attn [on|off|auto]`
+    const classified = classifyLoadFailure(err)
+    expect(classified.kind).toBe('startup-failure')
+    expect(classified.recoverable).toBe(true)
   })
 
   it('finds a bindable loopback port', async () => {

@@ -31,6 +31,7 @@ export interface DbProjectRow {
 export class SovaraDb {
   private db: DatabaseSync
   private readonly dbPath: string
+  private readonly baseDir?: string
 
   private stmtInsertSession!: ReturnType<DatabaseSync['prepare']>
   private stmtGetSession!: ReturnType<DatabaseSync['prepare']>
@@ -52,6 +53,7 @@ export class SovaraDb {
   private stmtGetRecentUsage!: ReturnType<DatabaseSync['prepare']>
 
   constructor(baseDir?: string) {
+    this.baseDir = baseDir
     const dataDir = getSovaraDataDir(baseDir)
     ensureDir(dataDir)
     this.dbPath = getDbPath(baseDir)
@@ -67,7 +69,9 @@ export class SovaraDb {
 
     this.migrate()
     this.prepareStatements()
+    this.migrateLegacyUserData()
   }
+
 
   private migrate(): void {
     this.db.exec(`
@@ -185,6 +189,82 @@ export class SovaraDb {
     this.stmtGetTotalUsage = this.db.prepare('SELECT SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens FROM token_usage')
     this.stmtGetUsageByModel = this.db.prepare('SELECT model, SUM(promptTokens) as promptTokens, SUM(completionTokens) as completionTokens, SUM(totalTokens) as totalTokens, COUNT(*) as requestCount FROM token_usage GROUP BY model')
     this.stmtGetRecentUsage = this.db.prepare('SELECT sessionId, model, promptTokens, completionTokens, totalTokens, timestamp FROM token_usage ORDER BY timestamp DESC LIMIT ?')
+  }
+
+  private migrateLegacyUserData(): void {
+    try {
+      if (this.baseDir) return
+      const currentDir = path.dirname(this.dbPath)
+      let legacyDir: string
+      if (process.platform === 'win32') {
+        legacyDir = path.join(process.env.APPDATA || '', '@sovara', 'desktop')
+      } else if (process.platform === 'darwin') {
+        legacyDir = path.join(require('node:os').homedir(), 'Library', 'Application Support', '@sovara', 'desktop')
+      } else {
+        legacyDir = path.join(require('node:os').homedir(), '.config', '@sovara', 'desktop')
+      }
+      if (path.resolve(currentDir).toLowerCase() === path.resolve(legacyDir).toLowerCase()) return
+      const legacyDbPath = path.join(legacyDir, 'sovara.db')
+      if (!fs.existsSync(legacyDbPath)) return
+
+      const countCurrent = (this.db.prepare('SELECT count(*) as c FROM sessions').get() as { c?: number })?.c ?? 0
+      const legacyDb = new DatabaseSync(legacyDbPath, { readOnly: true })
+      try {
+        const legacySessions = (legacyDb.prepare('SELECT count(*) as c FROM sessions').get() as { c?: number })?.c ?? 0
+        if (legacySessions > 0 && countCurrent === 0) {
+          const sessions = legacyDb.prepare('SELECT * FROM sessions').all() as Array<Record<string, unknown>>
+          const stmtInsert = this.db.prepare('INSERT OR IGNORE INTO sessions (id, title, createdAt, updatedAt, archived, projectId) VALUES (?, ?, ?, ?, ?, ?)')
+          for (const s of sessions) {
+            stmtInsert.run(s.id as string, s.title as string, s.createdAt as number, s.updatedAt as number, (s.archived as number) ?? null, (s.projectId as string) ?? null)
+          }
+          try {
+            const projects = legacyDb.prepare('SELECT * FROM projects').all() as Array<Record<string, unknown>>
+            const stmtProject = this.db.prepare('INSERT OR IGNORE INTO projects (id, name, rootPath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)')
+            for (const p of projects) {
+              stmtProject.run(p.id as string, p.name as string, p.rootPath as string, p.createdAt as number, p.updatedAt as number)
+            }
+          } catch {}
+          try {
+            const indexes = legacyDb.prepare('SELECT * FROM session_indexes').all() as Array<Record<string, unknown>>
+            const stmtIdx = this.db.prepare('INSERT OR IGNORE INTO session_indexes (sessionId, seq, offset) VALUES (?, ?, ?)')
+            for (const idx of indexes) {
+              stmtIdx.run(idx.sessionId as string, idx.seq as number, idx.offset as number)
+            }
+          } catch {}
+          try {
+            const usages = legacyDb.prepare('SELECT * FROM token_usage').all() as Array<Record<string, unknown>>
+            const stmtUsage = this.db.prepare('INSERT OR IGNORE INTO token_usage (id, sessionId, model, promptTokens, completionTokens, totalTokens, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            for (const u of usages) {
+              stmtUsage.run(u.id as number, u.sessionId as string, u.model as string, u.promptTokens as number, u.completionTokens as number, u.totalTokens as number, u.timestamp as number)
+            }
+          } catch {}
+          console.info(`[db] Migrated ${sessions.length} sessions from legacy @sovara/desktop database`)
+        }
+      } finally {
+        legacyDb.close()
+      }
+
+      // Copy session event files from legacy directory
+      const legacySessionsDir = path.join(legacyDir, 'sessions')
+      const currentSessionsDir = path.join(currentDir, 'sessions')
+      if (fs.existsSync(legacySessionsDir)) {
+        ensureDir(currentSessionsDir)
+        const entries = fs.readdirSync(legacySessionsDir)
+        for (const ent of entries) {
+          const src = path.join(legacySessionsDir, ent)
+          const dst = path.join(currentSessionsDir, ent)
+          if (!fs.existsSync(dst)) {
+            try {
+              fs.cpSync(src, dst, { recursive: true })
+            } catch (e) {
+              console.warn(`[db] Failed to copy legacy session directory ${ent}:`, e)
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[db] Legacy data migration skipped:', e)
+    }
   }
 
   insertSession(row: DbSessionRow): void {

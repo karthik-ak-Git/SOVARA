@@ -11,6 +11,8 @@ import { initVoiceServer } from './services/voiceServer'
 import { initCrawlServer } from './services/crawlServer'
 import { startCompanionServer, stopCompanionServer } from './services/companionServer'
 
+app.setName('Sovara')
+
 // Single-instance lock — second launch focuses existing window
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()

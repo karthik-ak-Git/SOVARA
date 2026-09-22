@@ -1,6 +1,7 @@
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+import { execSync } from 'node:child_process'
 import { app } from 'electron'
 import type { PersistencePort, LlmPort, ToolPort, ModelRuntimePort, SystemResourceManagerPort, DshPort, HermesPort } from '@shared/types/ports'
 import { SqlitePersistenceAdapter } from './ports/SqlitePersistenceAdapter'
@@ -274,14 +275,27 @@ export class AppBackend {
     await this.toolInfrastructure.shutdown()
   }
 
-  getInfo(): { name: string; version: string; electron: string; node: string; platform: NodeJS.Platform; arch: string } {
+  getInfo(): { name: string; version: string; electron: string; node: string; platform: NodeJS.Platform; arch: string; user?: { name: string; email: string } } {
+    let userName = 'Atinarapu Karthik'
+    let userEmail = 'karthik986340@gmail.com'
+    try {
+      const gName = execSync('git config user.name', { encoding: 'utf8', timeout: 500 }).trim()
+      const gEmail = execSync('git config user.email', { encoding: 'utf8', timeout: 500 }).trim()
+      if (gName) userName = gName
+      if (gEmail) userEmail = gEmail
+    } catch {
+      try {
+        userName = os.userInfo().username || userName
+      } catch {}
+    }
     return {
       name: 'Sovara',
       version: app.getVersion(),
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
-      arch: process.arch
+      arch: process.arch,
+      user: { name: userName, email: userEmail }
     }
   }
   getSystem(): { cpus: number; totalMemMB: number; freeMemMB: number; homedir: string; userData: string } {
@@ -329,6 +343,9 @@ export class AppBackend {
     const externals = scanLibraryFiles(abs)
     console.info(`[registerExternal] scanning ${abs} -> ${externals.length} files`)
     for (const f of externals) {
+      const baseLower = f.file.toLowerCase()
+      if (baseLower.startsWith('mmproj-') || baseLower === 'mmproj.gguf' || baseLower.startsWith('mmproj.')) continue
+      if (baseLower.endsWith('.bin') || baseLower.endsWith('.pt')) continue
       try {
         // Derive HF repo from folder like "Qwen__Qwen3-0.6B" -> "Qwen/Qwen3-0.6B" or "lmstudio-community/GLM-4.6V-Flash-GGUF"
         const parts = f.path.split(/[/\\]/)

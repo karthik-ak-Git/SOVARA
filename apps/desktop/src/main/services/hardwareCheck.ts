@@ -20,11 +20,15 @@ const DEFAULT_N_CTX = 4096
  * KV cache estimate: ~0.42GB per 1k tokens for 7B, scales with params.
  * 2048 → 0.8GB (7B) / 1.8GB (20B), 4096 → 1.7GB / 3.6GB
  */
-export function estimateKvCacheGB(nCtx: number, model?: ExploreModel): number {
+export function estimateKvCacheGB(nCtx: number, model?: ExploreModel, fileGB?: number): number {
   if (!nCtx || nCtx <= 0) return 0
-  const m = model?.parameters.match(/([\d.]+)B/i)
-  const paramsB = m ? parseFloat(m[1]) : 7
-  const scale = Math.min(2.2, Math.max(0.7, paramsB / 7))
+  const m = model?.parameters.match(/([\d.]+)B\b/i)
+  const mM = model?.parameters.match(/([\d.]+)M\b/i)
+  let paramsB = m ? parseFloat(m[1]) : mM ? parseFloat(mM[1]) / 1000 : (fileGB && fileGB > 0 ? Math.max(0.05, fileGB / 0.6) : 7)
+  if (fileGB && fileGB > 0 && fileGB < 1.0 && paramsB > 3) {
+    paramsB = Math.max(0.05, fileGB / 0.6)
+  }
+  const scale = Math.min(2.2, Math.max(0.05, paramsB / 7))
   const per1k = 0.42 * scale
   return (nCtx / 1024) * per1k
 }
@@ -33,7 +37,7 @@ function estimateNeedGB(file: ExploreModelFile, model: ExploreModel, nCtx: numbe
   const sizeGB = estimateFileGB(file, model)
   if (sizeGB <= 0) return 0
   const multiplier = file.format === 'MLX' ? 1.08 : 1.12
-  const kv = estimateKvCacheGB(nCtx, model)
+  const kv = estimateKvCacheGB(nCtx, model, sizeGB)
   return sizeGB * multiplier + kv
 }
 
@@ -53,8 +57,10 @@ export function estimateCompatibility(
   if (!model.files || model.files.length === 0) {
     const fallbackGB = (() => {
       if (model.repoSizeBytes) return model.repoSizeBytes / (1024 ** 3)
-      const m = model.parameters.match(/([\d.]+)B/i)
+      const m = model.parameters.match(/([\d.]+)B\b/i)
       if (m) return parseFloat(m[1]) * 2.2
+      const mM = model.parameters.match(/([\d.]+)M\b/i)
+      if (mM) return (parseFloat(mM[1]) / 1000) * 2.2
       return 0
     })()
     if (fallbackGB > 0) {
@@ -178,17 +184,23 @@ export function estimateCompatibility(
 function estimateFileGB(file: ExploreModelFile, model: ExploreModel): number {
   const bytes = file.sizeBytes ?? file.sizeGB * 1024 ** 3
   let sizeGB = bytes > 0 ? bytes / (1024 ** 3) : file.sizeGB
-  if (sizeGB > 0.1) return sizeGB
+  if (sizeGB > 0.05) return sizeGB
   if (model.repoSizeBytes && model.repoSizeBytes > 0) {
     const totalGB = model.repoSizeBytes / (1024 ** 3)
     const perFile = totalGB / Math.max(1, Math.min(model.files.length || 1, 4))
-    if (perFile > 0.5) return perFile
+    if (perFile > 0.05) return perFile
     return totalGB
   }
   if (model.parameters && model.parameters !== 'Unknown') {
-    const m = model.parameters.match(/([\d.]+)B/i)
+    const m = model.parameters.match(/([\d.]+)B\b/i)
     if (m) {
       const b = parseFloat(m[1])
+      const bytesPerB = file.format === 'GGUF' ? 0.62 : 2.2
+      return b * bytesPerB
+    }
+    const mM = model.parameters.match(/([\d.]+)M\b/i)
+    if (mM) {
+      const b = parseFloat(mM[1]) / 1000
       const bytesPerB = file.format === 'GGUF' ? 0.62 : 2.2
       return b * bytesPerB
     }

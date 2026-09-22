@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createZip } from './minizip'
 
-export type ArtifactKind = 'pdf' | 'xlsx' | 'docx' | 'code'
+export type ArtifactKind = 'pdf' | 'xlsx' | 'docx' | 'pptx' | 'code'
 
 export interface DetectedOutput {
   kind: ArtifactKind
@@ -62,16 +62,19 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
     const ext = (fileM[2] ?? '').toLowerCase()
     if (ext === 'pdf') return { kind: 'pdf', fileName: sanitizeFileName(raw, 'sovara-output.pdf'), explicitName: true }
     if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') return { kind: 'xlsx', fileName: sanitizeFileName(raw.replace(/\.(xls|csv)$/i, '.xlsx'), 'sovara-output.xlsx'), explicitName: true }
-    if (ext === 'doc' || ext === 'docx' || ext === 'ppt' || ext === 'pptx') return { kind: 'docx', fileName: sanitizeFileName(raw.replace(/\.(doc|ppt|pptx)$/i, '.docx'), 'sovara-output.docx'), explicitName: true }
+    if (ext === 'doc' || ext === 'docx') return { kind: 'docx', fileName: sanitizeFileName(raw.replace(/\.doc$/i, '.docx'), 'sovara-output.docx'), explicitName: true }
+    if (ext === 'ppt' || ext === 'pptx') return { kind: 'pptx', fileName: sanitizeFileName(raw.replace(/\.ppt$/i, '.pptx'), 'sovara-output.pptx'), explicitName: true }
     if (CODE_EXTS.includes(ext)) return { kind: 'code', fileName: sanitizeFileName(raw, `sovara-output.${ext}`), explicitName: true }
   }
   // 2. Generate/export/save verb aimed at a document kind — scan FULL prompt, not just 400ch head.
   const scan = text.toLowerCase()
+  const wantsPptx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(ppt|pptx|presentation|slide deck|slides|powerpoint)\b/i.test(text) || /\b(ppt|pptx|presentation|slide deck|powerpoint) (file|document|export|download|deck)\b/i.test(text)
+  if (wantsPptx) return { kind: 'pptx', fileName: `${slugify(text.slice(0,120))}.pptx`, explicitName: false }
   const wantsPdf = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(pdf|a pdf|as pdf|into pdf)\b/i.test(text) || /\bpdf (file|document|report|export|download)\b/i.test(text) || (/\b(pdf)\b/i.test(scan) && /\b(report|invoice|resume|document|file)\b/i.test(scan))
   if (wantsPdf) return { kind: 'pdf', fileName: `${slugify(text.slice(0,120))}.pdf`, explicitName: false }
   const wantsXlsx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(excel|spreadsheet|xlsx?|workbook|sheet)\b/i.test(text) || /\b(excel|spreadsheet) (file|sheet|export|download|report|table)\b/i.test(text) || /\b(table|data).*\b(excel|xlsx|spreadsheet)\b/i.test(text)
   if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(text.slice(0,120))}.xlsx`, explicitName: false }
-  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file|ppt|pptx|presentation|slide deck|slides)\b/i.test(text) || /\b(word|ppt|pptx|presentation) (file|document|export|download|deck)\b/i.test(text)
+  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file)\b/i.test(text) || /\b(word) (file|document|export|download)\b/i.test(text)
   if (wantsDocx) return { kind: 'docx', fileName: `${slugify(text.slice(0,120))}.docx`, explicitName: false }
   // 3. Code file — only trigger if the user explicitly asked to save to a specific filename
   const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(text)
@@ -275,6 +278,222 @@ export function writeDocxFile(filePath: string, title: string, paragraphs: strin
   fs.writeFileSync(filePath, createZip(parts.map((p) => ({ name: p.name, data: p.data }))))
 }
 
+/** Parse markdown or generated python-pptx code into structured presentation slides. */
+export function markdownToSlides(text: string): Array<{ title: string; bullets: string[] }> {
+  const slides: Array<{ title: string; bullets: string[] }> = []
+
+  // 1. If text contains python-pptx slide calls, extract titles and body text directly
+  const pythonSlideRe = /add_slide[\s\S]*?(?:title\.text|shapes\.title\.text)\s*=\s*["']([^"']+)["']([\s\S]*?)(?=add_slide|$)/g
+  let pm: RegExpExecArray | null
+  while ((pm = pythonSlideRe.exec(text)) !== null) {
+    const title = pm[1]!.trim()
+    const block = pm[2] || ''
+    const bullets: string[] = []
+    const paraRe = /(?:add_paragraph|text)\s*=\s*["']([^"']+)["']/g
+    let tm: RegExpExecArray | null
+    while ((tm = paraRe.exec(block)) !== null) {
+      const b = tm[1]!.trim()
+      if (b && !bullets.includes(b)) bullets.push(b)
+    }
+    slides.push({ title, bullets: bullets.length > 0 ? bullets : ['Key point overview'] })
+  }
+  if (slides.length >= 2) return slides
+
+  // 2. Parse standard markdown headers and lists
+  const lines = text.split('\n')
+  let curTitle = ''
+  let curBullets: string[] = []
+
+  const flush = (): void => {
+    if (curTitle) {
+      slides.push({
+        title: curTitle,
+        bullets: curBullets.length > 0 ? curBullets : ['Key point overview'],
+      })
+      curTitle = ''
+      curBullets = []
+    }
+  }
+
+  for (const raw of lines) {
+    const l = raw.trim()
+    if (!l) continue
+    if (/^```/.test(l)) continue
+
+    const headerMatch = /^(?:#{1,3}\s+|(?:\*{1,2})?Slide\s+\d+:?\s*(?:\*{1,2})?)(.+)$/i.exec(l)
+    if (headerMatch) {
+      flush()
+      curTitle = headerMatch[1]!.replace(/[*_`#]/g, '').trim()
+      continue
+    }
+
+    const bulletMatch = /^(?:[-*•+]|\d+[.)])\s+(.+)$/.exec(l)
+    if (bulletMatch) {
+      const b = bulletMatch[1]!.replace(/[*_`]/g, '').trim()
+      if (b) curBullets.push(b)
+      continue
+    }
+
+    if (!curTitle && l.length < 100 && !l.startsWith('import ') && !l.startsWith('def ')) {
+      curTitle = l.replace(/[*_`#]/g, '').trim()
+    } else if (curTitle && l.length > 10 && !l.startsWith('import ') && !l.startsWith('def ')) {
+      curBullets.push(l.replace(/[*_`]/g, '').trim())
+    }
+  }
+  flush()
+
+  if (slides.length === 0) {
+    slides.push({
+      title: 'Presentation',
+      bullets: markdownToParagraphs(text).slice(0, 6),
+    })
+  }
+  return slides
+}
+
+/** Minimal valid OpenXML .pptx presentation (16:9 widescreen, clean typographic theme). */
+export function writePptxFile(filePath: string, slides: Array<{ title: string; bullets: string[] }>): void {
+  const slideParts: Array<{ name: string; data: string }> = []
+  const contentTypesSlides: string[] = []
+  const presentationRels: string[] = []
+  const presentationSlideList: string[] = []
+
+  presentationRels.push(
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>'
+  )
+
+  slides.forEach((slide, idx) => {
+    const sId = idx + 1
+    const rId = `rId${sId + 1}`
+    contentTypesSlides.push(`<Override PartName="/ppt/slides/slide${sId}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`)
+    presentationRels.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${sId}.xml"/>`)
+    presentationSlideList.push(`<p:sldId id="${255 + sId}" r:id="${rId}"/>`)
+
+    const bulletXml = slide.bullets.map((b) => `
+      <a:p>
+        <a:pPr lvl="0"><a:buFont typeface="Arial"/><a:buChar char="•"/></a:pPr>
+        <a:r>
+          <a:rPr lang="en-US" sz="1800"><a:solidFill><a:srgbClr val="333333"/></a:solidFill></a:rPr>
+          <a:t>${escapeXml(b)}</a:t>
+        </a:r>
+      </a:p>`).join('')
+
+    const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="838200" y="685800"/><a:ext cx="10515600" cy="1143000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          <a:p>
+            <a:r>
+              <a:rPr lang="en-US" sz="3200" b="1"><a:solidFill><a:srgbClr val="0F172A"/></a:solidFill></a:rPr>
+              <a:t>${escapeXml(slide.title)}</a:t>
+            </a:r>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="3" name="Content"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="838200" y="2057400"/><a:ext cx="10515600" cy="4343400"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          ${bulletXml}
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>`
+
+    slideParts.push({ name: `ppt/slides/slide${sId}.xml`, data: slideXml })
+    slideParts.push({
+      name: `ppt/slides/_rels/slide${sId}.xml.rels`,
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>`,
+    })
+  })
+
+  const parts: Array<{ name: string; data: string }> = [
+    {
+      name: '[Content_Types].xml',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
+  <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
+  ${contentTypesSlides.join('\n  ')}
+</Types>`,
+    },
+    {
+      name: '_rels/.rels',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`,
+    },
+    {
+      name: 'ppt/presentation.xml',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>
+  <p:sldIdLst>${presentationSlideList.join('')}</p:sldIdLst>
+  <p:sldSz cx="12192000" cy="6858000" type="screen16x9"/>
+  <p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`,
+    },
+    {
+      name: 'ppt/_rels/presentation.xml.rels',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${presentationRels.join('\n  ')}
+</Relationships>`,
+    },
+    {
+      name: 'ppt/slideMasters/slideMaster1.xml',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld>
+  <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
+  <p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>
+</p:sldMaster>`,
+    },
+    {
+      name: 'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>`,
+    },
+    {
+      name: 'ppt/slideLayouts/slideLayout1.xml',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="titleAndContent">
+  <p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld>
+</p:sldLayout>`,
+    },
+    {
+      name: 'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
+</Relationships>`,
+    },
+    ...slideParts,
+  ]
+
+  fs.writeFileSync(filePath, createZip(parts))
+}
+
 export interface GeneratedArtifact {
   path: string
   bytes: number
@@ -297,6 +516,9 @@ export function generateArtifactFile(kind: ArtifactKind, filePath: string, assis
   } else if (kind === 'docx') {
     const title = userContent.trim().split('\n')[0]?.slice(0, 120) ?? 'Sovara document'
     writeDocxFile(filePath, title, markdownToParagraphs(text))
+  } else if (kind === 'pptx') {
+    const slides = markdownToSlides(text)
+    writePptxFile(filePath, slides)
   } else {
     const ext = path.extname(filePath).slice(1).toLowerCase()
     const block = extractCodeBlock(text, ext || undefined)

@@ -157,6 +157,7 @@ function compactForCtx(messages: import('@shared/types/ports').LlmChatMessage[],
   let chars = messages.reduce((n, m) => n + m.content.length, 0)
   if (chars <= budgetChars) return messages
   const out = [...messages]
+  // 1. Drop intermediate history turns first
   while (out.length > 2 && chars > budgetChars) {
     const dropIdx = 1
     chars -= out[dropIdx].content.length
@@ -165,6 +166,18 @@ function compactForCtx(messages: import('@shared/types/ports').LlmChatMessage[],
   if (chars > budgetChars && out.length > 2) {
     const excess = chars - budgetChars
     out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
+    chars = out.reduce((n, m) => n + m.content.length, 0)
+  }
+  // 2. If still over budget with only system + user message, truncate oversized system block or prompt
+  if (chars > budgetChars && out.length >= 1) {
+    const excess = chars - budgetChars
+    if (out.length > 1 && out[0].content.length > out[1].content.length) {
+      out[0].content = out[0].content.slice(0, Math.max(1000, out[0].content.length - excess - 100)) + '\n…[system prompt truncated for context budget]'
+    } else if (out.length > 1) {
+      out[1].content = out[1].content.slice(0, Math.max(500, out[1].content.length - excess - 100)) + '\n…[user prompt truncated for context budget]'
+    } else {
+      out[0].content = out[0].content.slice(0, Math.max(1000, out[0].content.length - excess - 100)) + '\n…[truncated]'
+    }
   }
   return out
 }
@@ -553,9 +566,9 @@ export class AgentOrchestrator {
           this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `auto-fallback to ${fallback.modelId}` })
           routing = fallback
         } else {
-          // Instead of hard-blocking when CPU/RAM is available, transparently allow offload
-          this.safeLog(`[SOVARA][ROUTER] VRAM full for ${routing.modelId!}, using partial/CPU offload`)
-          ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
+          const errMsg = `resource-pressure: ${msg}`
+          this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
+          throw new AgentOrchestratorError('resource-blocked', errMsg)
         }
       }
 
@@ -642,7 +655,8 @@ export class AgentOrchestrator {
         } else if (controller.signal.aborted) {
           throw new AgentOrchestratorError('cancelled', 'cancelled')
         }
-        // Re-read snapshot for accurate VRAM after load
+        // Invalidate cached hardware metrics to capture fresh post-load VRAM
+        this.deps.resources.clearHwCache?.()
         const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
         this.emit(sid, 'model:ready', {
           taskKind: classification.kind,
@@ -797,7 +811,11 @@ export class AgentOrchestrator {
       let skillsContext: string | null = null
       try { 
         skillsContext = (await this.deps.getSkillsContext?.(content, wsRoot ?? undefined)) ?? null
-        if (skillsContext) this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: 'Enterprise Skills', detail: 'Reading configured skills...' })
+        if (skillsContext) {
+          const matchSkillHeader = skillsContext.match(/\[Superpower Orchestrator Active Skills:\s*([^\]]+)\]/)
+          const skillList = matchSkillHeader ? matchSkillHeader[1] : 'Enterprise Skills'
+          this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: `Skills: ${skillList}`, detail: `Active skills: ${skillList}` })
+        }
       } catch { /* ignore */ }
       let todoContext: string | null = null
       try { todoContext = this.deps.getTodoContext?.() ?? null } catch { /* ignore */ }
@@ -2146,6 +2164,7 @@ export class AgentOrchestrator {
       } else if (controller.signal.aborted) {
         throw new AgentOrchestratorError('cancelled', 'cancelled')
       }
+      this.deps.resources.clearHwCache?.()
       const snapAfter = await this.deps.resources.getSnapshot().catch(() => resources)
       this.emit(sid, 'model:ready', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramUsedMB: snapAfter.models.totalVramUsedMB, vramTotalMB: snapAfter.vram.totalMB, detail: routing.reason, progress: 100 })
       if (controller.signal.aborted) throw new AgentOrchestratorError('cancelled', 'cancelled')

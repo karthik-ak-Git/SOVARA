@@ -42,6 +42,7 @@ interface Props {
   artifactContent?: string
   artifactTitle?: string
   events?: import('@/lib/client/api').SessionEventView[]
+  onOpenSettings?: (section?: string, projectId?: string) => void
 }
 
 export function AppShell({
@@ -83,6 +84,7 @@ export function AppShell({
   artifactContent,
   artifactTitle,
   events = [],
+  onOpenSettings,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isAuxExpanded, setIsAuxExpanded] = useState(false)
@@ -106,6 +108,8 @@ export function AppShell({
         splitOpen={splitOpen}
         onShare={onShare}
         hardwareStatus={hardwareStatus}
+        onOpenExplorer={() => (onOpenSettings ? onOpenSettings('explore') : onNavigate('explore'))}
+        onOpenSettings={onOpenSettings}
       />
       <div className="layout" style={{ minHeight: 0, flex: 1, display: 'flex' } as React.CSSProperties}>
         {sidebarOpen && !hideSidebar ? (
@@ -129,6 +133,7 @@ export function AppShell({
             recentChats={recentChats}
             selectedChatId={selectedChatId}
             onSelectChat={onSelectChat}
+            onOpenSettings={onOpenSettings}
           />
         ) : null}
         <main

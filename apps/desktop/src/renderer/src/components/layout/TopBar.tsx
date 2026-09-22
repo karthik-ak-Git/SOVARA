@@ -20,6 +20,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { minimizeWindow, maximizeWindow, closeWindow } from '@/lib/client/api'
+import { SmartNotificationDrawer } from '@/components/ui/SmartNotificationDrawer'
 
 const HAS_NATIVE_WINDOW =
   typeof window !== 'undefined' && 'sovara' in (window as unknown as Record<string, unknown>)
@@ -50,6 +51,8 @@ interface Props {
   onShare?: () => void
   hardwareStatus?: string
   activeProjectName?: string
+  onOpenExplorer?: () => void
+  onOpenSettings?: (section?: string) => void
 }
 
 export function TopBar({
@@ -73,6 +76,8 @@ export function TopBar({
   onShare,
   hardwareStatus,
   activeProjectName = 'SOVARA',
+  onOpenExplorer,
+  onOpenSettings,
 }: Props): React.JSX.Element {
   const [modelOpen, setModelOpen] = useState(false)
   const [gpuOpen, setGpuOpen] = useState(false)
@@ -241,6 +246,8 @@ export function TopBar({
             </div>
           ) : null}
         </div>
+
+        <SmartNotificationDrawer onOpenExplorer={onOpenExplorer} onOpenSettings={onOpenSettings} />
 
         {onToggleArtifacts ? (
           <button

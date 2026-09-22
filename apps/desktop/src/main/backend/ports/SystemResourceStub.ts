@@ -19,21 +19,32 @@ import { estimateVramMB, planPartialFit, readGgufModelInfo } from '../../service
 export class SystemResourceStub implements SystemResourceManagerPort {
   private limits: SystemResources['limits'] = { maxConcurrentModels: 1 }
   private readonly listInstances: () => Promise<ModelInstance[]>
+  private hwCache: { hw: ReturnType<typeof getHardwareProfile> | null; expiry: number } | null = null
 
   constructor(listInstances?: () => Promise<ModelInstance[]>) {
     this.listInstances = listInstances ?? (async () => [])
   }
 
+  clearHwCache(): void {
+    this.hwCache = null
+  }
+
   async getSnapshot(): Promise<SystemResources> {
     const totalMB = Math.round(os.totalmem() / (1024 * 1024))
     const freeMB = Math.round(os.freemem() / (1024 * 1024))
-    const hw = (() => {
+    const now = Date.now()
+    let hw: ReturnType<typeof getHardwareProfile> | null = null
+    if (this.hwCache && this.hwCache.expiry > now) {
+      hw = this.hwCache.hw
+    } else {
       try {
-        return getHardwareProfile()
+        hw = getHardwareProfile()
+        this.hwCache = { hw, expiry: now + 30_000 }
       } catch {
-        return null
+        hw = null
+        this.hwCache = null
       }
-    })()
+    }
     let instances: ModelInstance[] = []
     try {
       instances = await this.listInstances()
@@ -66,9 +77,15 @@ export class SystemResourceStub implements SystemResourceManagerPort {
     }
     const needMB = this.estimateNeedMB(model, opts?.ctxLen ?? 4096)
     let hw: ReturnType<typeof getHardwareProfile> | null = null
-    try {
-      hw = getHardwareProfile()
-    } catch { /* unknown hardware → fail open, loader gates for real */ }
+    const now = Date.now()
+    if (this.hwCache && this.hwCache.expiry > now) {
+      hw = this.hwCache.hw
+    } else {
+      try {
+        hw = getHardwareProfile()
+        this.hwCache = { hw, expiry: now + 30_000 }
+      } catch { /* unknown hardware → fail open, loader gates for real */ }
+    }
     const total = hw?.totalVramMB
     if (total && total > 0) {
       const usedByOthers = instances

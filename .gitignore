@@ -64,3 +64,6 @@ test/*
 
 # Local UI draft — do not commit
 sovara-newui/
+
+# Local llama runtime binaries
+runtime/

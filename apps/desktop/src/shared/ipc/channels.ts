@@ -133,6 +133,7 @@ export const IPC_CHANNELS = {
   'ocr:status': { type: 'invoke' as const },
   'ocr:listModels': { type: 'invoke' as const },
   'ocr:downloadModel': { type: 'invoke' as const },
+  'notifications:show': { type: 'invoke' as const },
   'logs:getRecent': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },
   'events:resources': { type: 'on' as const },

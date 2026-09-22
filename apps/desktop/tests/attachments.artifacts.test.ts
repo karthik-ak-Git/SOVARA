@@ -12,9 +12,11 @@ import {
   extractCodeBlock,
   markdownToSheets,
   markdownToParagraphs,
+  markdownToSlides,
   writePdfFile,
   writeXlsxFile,
   writeDocxFile,
+  writePptxFile,
   generateArtifactFile,
   sanitizeFileName,
 } from '../src/main/backend/artifacts'
@@ -201,6 +203,42 @@ describe('artifact writers', () => {
     const made = generateArtifactFile('code', file, 'here:\n```py\nprint("hi")\n```', 'write app.py')
     expect(made).not.toBeNull()
     expect(fs.readFileSync(file, 'utf8')).toContain('print("hi")')
+  })
+  it('detectOutputFormat detects pptx requests and keeps .pptx extension', () => {
+    const r = detectOutputFormat('build me the ppt on how to train ai models')
+    expect(r).not.toBeNull()
+    expect(r?.kind).toBe('pptx')
+    expect(r?.fileName).toMatch(/\.pptx$/)
+    expect(r?.fileName).not.toMatch(/\.docx$/)
+  })
+  it('writePptxFile generates a valid OpenXML presentation with slides', () => {
+    const dir = mkTmp()
+    const file = path.join(dir, 'presentation.pptx')
+    const slides = [
+      { title: 'Training AI Models', bullets: ['Overview of ML', 'Compute Scaling'] },
+      { title: 'Data Pipeline', bullets: ['Scraping & Filtering', 'Tokenization'] },
+    ]
+    writePptxFile(file, slides)
+    expect(fs.existsSync(file)).toBe(true)
+    const buf = fs.readFileSync(file)
+    expect(buf.length).toBeGreaterThan(1000)
+    // Verify PK zip header
+    expect(buf.subarray(0, 4).toString('binary')).toBe('PK\x03\x04')
+    // Verify slide XML unzips and contains title
+    const slide1Xml = unzipMember(buf, 'ppt/slides/slide1.xml')
+    expect(slide1Xml).not.toBeNull()
+    expect(slide1Xml?.toString('utf8')).toContain('Training AI Models')
+    expect(slide1Xml?.toString('utf8')).toContain('Overview of ML')
+  })
+  it('generateArtifactFile generates a .pptx file for pptx kind', () => {
+    const dir = mkTmp()
+    const file = path.join(dir, 'ai_models.pptx')
+    const content = `# Training Modern AI\n## Slide 1: Introduction\n- Supervised learning\n- Pretraining\n## Slide 2: Infrastructure\n- GPU clusters\n- InfiniBand networking`
+    const artifact = generateArtifactFile('pptx', file, content, 'build me the ppt on how to train ai models')
+    expect(artifact).not.toBeNull()
+    expect(artifact?.path).toMatch(/\.pptx$/)
+    expect(artifact?.bytes).toBeGreaterThan(1000)
+    expect(fs.existsSync(file)).toBe(true)
   })
   it('crc32 matches the well-known check value', () => {
     expect(crc32(Buffer.from('123456789', 'ascii'))).toBe(0xcbf43926)

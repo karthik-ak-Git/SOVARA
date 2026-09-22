@@ -1,6 +1,18 @@
 import os from 'node:os'
+import fs from 'node:fs'
 import { execSync } from 'node:child_process'
 import type { HardwareInfo } from '@shared/types/explore'
+
+function tryStorage(): { freeGB?: number; totalGB?: number } {
+  try {
+    const s = fs.statfsSync(process.cwd())
+    const freeGB = Math.round((s.bavail * s.bsize) / (1024 ** 3) * 10) / 10
+    const totalGB = Math.round((s.blocks * s.bsize) / (1024 ** 3) * 10) / 10
+    return { freeGB, totalGB }
+  } catch {
+    return {}
+  }
+}
 
 function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: number; gpuUtil?: number } | null {
   try {
@@ -99,6 +111,7 @@ export function getHardwareProfile(): HardwareInfo {
   const isDedicated = totalVramMB !== undefined && totalVramMB >= 1024
   const gpuAvailable = Boolean(isDedicated && gpu?.name)
 
+  const storage = tryStorage()
   return {
     totalRamMB,
     freeRamMB,
@@ -107,6 +120,8 @@ export function getHardwareProfile(): HardwareInfo {
     gpuName: gpu?.name,
     gpuAvailable,
     gpuUtilization: gpuAvailable ? gpuUtil : undefined,
+    storageFreeGB: storage.freeGB,
+    storageTotalGB: storage.totalGB,
   } as HardwareInfo & { gpuUtilization?: number }
 }
 

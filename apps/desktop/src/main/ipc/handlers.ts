@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, shell, clipboard } from 'electron'
+import { ipcMain, BrowserWindow, dialog, shell, clipboard, Notification } from 'electron'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
@@ -16,7 +16,7 @@ import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voi
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zExploreCompareModels, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zShellShowItemInFolder, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
-import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
+import { listExplorerModelsCached, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import type { HardwareInfo } from '@shared/types/explore'
 import { detectLocalRuntimes } from '../services/localRuntimeDetector'
@@ -705,7 +705,7 @@ export function registerIpcHandlers(): void {
     // read) so local filters stay synchronous and N+1-free in the catalog.
     const backend = getBackend()
     const hw = getCachedHardwareProfile()
-    return listExplorerModelsPage({
+    return listExplorerModelsCached({
       sortBy: parsed.data.sortBy ?? 'Recommended',
       query: scopeQuery,
       limit: parsed.data.limit ?? 30,
@@ -1072,5 +1072,21 @@ export function registerIpcHandlers(): void {
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'health check failed')
     }
+  })
+
+  ipcMain.handle('notifications:show', async (_e, raw: unknown) => {
+    const p = raw as { title?: string; body?: string } | undefined
+    const title = p?.title ?? 'SOVARA'
+    const body = p?.body ?? ''
+    try {
+      if (Notification.isSupported()) {
+        const notif = new Notification({ title, body, silent: false })
+        notif.show()
+        return { shown: true }
+      }
+    } catch {
+      // ignore
+    }
+    return { shown: false }
   })
 }

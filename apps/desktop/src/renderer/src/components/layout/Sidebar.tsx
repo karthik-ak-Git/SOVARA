@@ -23,6 +23,7 @@ import {
   Check,
 } from 'lucide-react'
 import { copyToClipboard } from '@/lib/client/api'
+import { SmartNotificationDrawer } from '@/components/ui/SmartNotificationDrawer'
 
 export type NavId =
   | 'chat'
@@ -70,6 +71,7 @@ interface Props {
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
   onToggleSidebar?: () => void
+  onOpenSettings?: (section?: string, projectId?: string) => void
 }
 
 function ChatRow({
@@ -444,6 +446,7 @@ export function Sidebar({
   selectedChatId,
   onSelectChat,
   onToggleSidebar,
+  onOpenSettings,
 }: Props): React.JSX.Element {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -616,6 +619,15 @@ export function Sidebar({
           <Clock size={16} aria-hidden style={{ color: '#64748b' }} />
           <span>Conversation History</span>
         </button>
+
+        <div style={{ marginTop: 2 }}>
+          <SmartNotificationDrawer
+            variant="sidebar-item"
+            placement="right-start"
+            onOpenExplorer={() => (onOpenSettings ? onOpenSettings('explore') : onNavigate('explore'))}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
       </div>
 
       {/* Projects Accordion Section */}
@@ -690,7 +702,10 @@ export function Sidebar({
                   onSelect={() => onSelectProject?.(project.id)}
                   onToggleCollapse={() => toggleProjectCollapse(project.id)}
                   onNewChat={onNewProjectChat}
-                  onOpenSettings={() => onNavigate('settings')}
+                  onOpenSettings={() => {
+                    if (onOpenSettings) onOpenSettings('general', project.id)
+                    else onNavigate('settings')
+                  }}
                 />
 
                 {!isCollapsed && project.sessions.length > 0 ? (
@@ -699,8 +714,8 @@ export function Sidebar({
                       <ChatRow
                         key={session.id}
                         chat={session}
-                        active={selectedSessionId === session.id || selectedChatId === session.id}
-                        isPinned={pinnedChatIds?.includes(session.id)}
+                        active={selectedSessionId === session.id}
+                        isPinned={pinnedChatIds.includes(session.id)}
                         onSelect={() => onSelectSession?.(session.id)}
                         onPin={() => onPinChat?.(session.id)}
                         onArchive={() => onArchiveChat?.(session.id)}
@@ -713,18 +728,27 @@ export function Sidebar({
           })}
         </div>
 
-        {/* Non-project recent chats if any */}
-        {filteredRecentChats.length > 0 ? (
-          <div className="side-section chat-section" style={{ borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
-            <div className="section-label" style={{ padding: '0 8px 6px', color: '#64748b', fontSize: 12, fontWeight: 600 }}>
-              <span>Recent Chats</span>
+        {/* Global/Recent Chats */}
+        {recentChats.length > 0 ? (
+          <div style={{ padding: '4px 0', borderTop: '1px solid #f1f5f9', marginTop: 4 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: '#94a3b8',
+                padding: '6px 8px 4px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+              }}
+            >
+              Recent Conversations
             </div>
             {filteredRecentChats.map((chat) => (
               <ChatRow
                 key={chat.id}
                 chat={chat}
                 active={selectedChatId === chat.id}
-                isPinned={pinnedChatIds?.includes(chat.id)}
+                isPinned={pinnedChatIds.includes(chat.id)}
                 onSelect={() => onSelectChat?.(chat.id)}
                 onPin={() => onPinChat?.(chat.id)}
                 onArchive={() => onArchiveChat?.(chat.id)}
@@ -740,7 +764,10 @@ export function Sidebar({
           type="button"
           className={`nav-item ${activeId === 'settings' ? 'selected' : ''}`}
           aria-current={activeId === 'settings' ? 'page' : undefined}
-          onClick={() => onNavigate('settings')}
+          onClick={() => {
+            if (onOpenSettings) onOpenSettings('general')
+            else onNavigate('settings')
+          }}
           style={{
             display: 'flex',
             alignItems: 'center',

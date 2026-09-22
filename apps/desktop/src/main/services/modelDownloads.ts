@@ -82,7 +82,7 @@ function isUnder(root: string, abs: string): boolean {
 }
 
 const HF_HOSTS = new Set(['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs.hf.co', 'huggingface.s3.amazonaws.com'])
-const MODEL_EXTENSIONS = new Set(['.gguf', '.safetensors', '.bin', '.pt', '.mlx'])
+const MODEL_EXTENSIONS = new Set(['.gguf', '.safetensors', '.mlx'])
 const MAX_CONCURRENT = 2
 
 const active = new Map<string, { ctrl: AbortController; modelId: string; rfilename: string; downloadUrl: string }>()
@@ -134,6 +134,9 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
       if ((ent as unknown as { isDirectory(): boolean }).isDirectory()) { walk(full); continue }
       const lower = full.toLowerCase()
       if (lower.endsWith('.part') || lower.endsWith('.json') || lower.endsWith('.set.json')) continue
+      const baseLower = basename(full).toLowerCase()
+      if (baseLower.startsWith('mmproj-') || baseLower === 'mmproj.gguf' || baseLower.startsWith('mmproj.')) continue
+      if (baseLower.endsWith('.bin') || baseLower.endsWith('.pt')) continue
       const dot = lower.lastIndexOf('.')
       if (dot < 0 || !MODEL_EXTENSIONS.has(lower.slice(dot))) continue
       // skip shard sidecars already handled by isDownloaded grouping
@@ -141,9 +144,15 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
       try {
         const st = statSync(full)
         const rel = relative(root, full)
-        const folder = dirname(rel) === '.' ? '' : dirname(rel).split(sep)[0] ?? ''
-        // repoFolder "author__name" -> display "author/name", file stays basename
-        const display = folder.includes('__') ? folder.replace('__', '/') : (folder || basename(full))
+        const parts = dirname(rel) === '.' ? [] : dirname(rel).split(sep).filter(Boolean)
+        let display = ''
+        if (parts.length >= 2) {
+          display = `${parts[0]}/${parts[1]}`
+        } else if (parts.length === 1) {
+          display = parts[0].includes('__') ? parts[0].replace('__', '/') : parts[0]
+        } else {
+          display = basename(full)
+        }
         out.push({ name: display, file: basename(full), sizeBytes: st.size, path: full, modifiedAt: st.mtimeMs, source: 'filesystem' })
       } catch {}
     }
@@ -167,6 +176,11 @@ export function scanLibrary(root: string, rows?: readonly ModelRegistryRow[], ex
   const out: LibraryEntry[] = []; const seen = new Set<string>()
   for (const row of rows) {
     if (!row.localPath) continue
+    const baseLower = basename(row.rfilename || row.localPath).toLowerCase()
+    if (baseLower.startsWith('mmproj-') || baseLower === 'mmproj.gguf' || baseLower.startsWith('mmproj.')) continue
+    if (baseLower.endsWith('.bin') || baseLower.endsWith('.pt')) continue
+    const dot = baseLower.lastIndexOf('.')
+    if (dot < 0 || !MODEL_EXTENSIONS.has(baseLower.slice(dot))) continue
     const under = isUnder(root, row.localPath) || extraRoots.some((er) => isUnder(er, row.localPath))
     if (!under) continue
     const key = resolve(row.localPath)

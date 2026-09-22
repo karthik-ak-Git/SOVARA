@@ -1,18 +1,45 @@
-import { useState, useEffect, useCallback, type ReactElement } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactElement } from 'react'
 import {
-  ArrowLeft, Search, Folder, Radar,
-  HardDrive, Trash2, Bot, Cpu, ExternalLink, FolderOpen, FileText
+  Folder,
+  FolderOpen,
+  Search,
+  Radar,
+  HardDrive,
+  Trash2,
+  Cpu,
+  ExternalLink,
+  RefreshCw,
+  Check,
+  Copy,
+  MessageSquare,
+  AlertCircle,
+  X,
+  Terminal,
+  ChevronDown,
+  ChevronRight,
+  Layers,
+  Sparkles,
 } from 'lucide-react'
 import {
-  listLibraryModels, getLibraryDirectory, setLibraryDirectory,
-  detectLibraryLocations, deleteLibraryModel, onDownloadEvents,
-  listDiscoveredModels, listRuntimes, getActiveModel, getRecentLogs,
-  type LibraryModel, type DetectedModelLocation,
+  listLibraryModels,
+  getLibraryDirectory,
+  setLibraryDirectory,
+  detectLibraryLocations,
+  deleteLibraryModel,
+  revealInFolder,
+  onDownloadEvents,
+  listRuntimes,
+  getActiveModel,
+  selectModel,
+  getRecentLogs,
+  openExternal,
+  type LibraryModel,
+  type DetectedModelLocation,
 } from '@/lib/client/api'
-import type { DiscoveredModel, ModelRuntimeEntry, ActiveModelState } from '@shared/types/models'
+import type { ModelRuntimeEntry, ActiveModelState } from '@shared/types/models'
 
 interface LibraryPageProps {
-  onBack: () => void
+  onBack?: () => void
 }
 
 function formatBytes(bytes: number): string {
@@ -22,54 +49,109 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-function InstallStatusChip({ status }: { status: NonNullable<LibraryModel['installStatus']> }): ReactElement | null {
-  if (status === 'installed') {
-    return <span className="library-model-chip library-model-chip--installed">Installed</span>
-  }
-  if (status === 'missing') {
-    return <span className="library-model-chip library-model-chip--missing">Missing</span>
-  }
-  return <span className="library-model-chip library-model-chip--unregistered">Unregistered</span>
+interface ParsedMeta {
+  quantization: string | null
+  paramSize: string | null
+  author: string | null
+  sourceLabel: 'LM Studio' | 'Ollama' | 'Sovara' | 'Hugging Face' | 'Local'
+  hfSearchUrl: string | null
 }
 
-function LibraryModelIcon(): ReactElement {
-  return (
-    <div className="library-model-icon">
-      <HardDrive size={16} />
-    </div>
-  )
+function parseModelMeta(model: LibraryModel): ParsedMeta {
+  const file = model.file
+  const lowerPath = model.path.toLowerCase()
+
+  // 1. Quantization extraction (e.g. Q4_K_M, Q8_0, Q5_K_S, IQ3_M, F16, etc.)
+  const quantMatch = file.match(/(Q[0-9]_[A-Z0-9_]+|IQ[0-9]_[A-Z0-9_]+|F16|F32|BF16)/i)
+  const quantization = quantMatch ? quantMatch[1].toUpperCase() : null
+
+  // 2. Parameter size extraction (e.g. 12B, 4B, 0.5B, 70B, 1.5B)
+  const paramMatch =
+    file.match(/[-_.]([0-9]+(?:\.[0-9]+)?B)[-_.]/i) || file.match(/^([0-9]+(?:\.[0-9]+)?B)[-_.]/i)
+  const paramSize = paramMatch ? paramMatch[1].toUpperCase() : null
+
+  // 3. Source folder / Origin
+  let sourceLabel: 'LM Studio' | 'Ollama' | 'Sovara' | 'Hugging Face' | 'Local' = 'Local'
+  if (lowerPath.includes('.lmstudio')) sourceLabel = 'LM Studio'
+  else if (lowerPath.includes('ollama')) sourceLabel = 'Ollama'
+  else if (lowerPath.includes('huggingface')) sourceLabel = 'Hugging Face'
+  else if (lowerPath.includes('sovara')) sourceLabel = 'Sovara'
+
+  // 4. Author / Repository parsing
+  let author: string | null = null
+  if (model.name && model.name !== model.file) {
+    if (model.name.includes(' — ')) {
+      author = model.name.split(' — ')[0].trim()
+    } else if (model.name.includes('/')) {
+      author = model.name.split('/')[0].trim()
+    } else {
+      author = model.name.trim()
+    }
+  }
+
+  // 5. Hugging Face search URL (safe, clean link)
+  let hfSearchUrl: string | null = null
+  if (author && !/^[A-Z]:[\\/]/i.test(author)) {
+    hfSearchUrl = `https://huggingface.co/models?search=${encodeURIComponent(author)}`
+  }
+
+  return { quantization, paramSize, author, sourceLabel, hfSearchUrl }
 }
 
-export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
+export function LibraryPage({ onBack: _onBack }: LibraryPageProps): ReactElement {
   const [models, setModels] = useState<LibraryModel[]>([])
   const [directory, setDirectory] = useState('')
   const [filterQuery, setFilterQuery] = useState('')
-  const [sortBy, setSortBy] = useState('latest')
+  const [sortBy, setSortBy] = useState<'latest' | 'name' | 'size-desc' | 'size-asc'>('latest')
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+
+  // External directory detection
   const [detectOpen, setDetectOpen] = useState(false)
   const [detectLocations, setDetectLocations] = useState<DetectedModelLocation[]>([])
   const [detectError, setDetectError] = useState<string | null>(null)
   const [detectLoading, setDetectLoading] = useState(false)
   const [applyingPath, setApplyingPath] = useState<string | null>(null)
+
+  // Connected runtimes & active model in workbench
   const [connectedRuntimes, setConnectedRuntimes] = useState<ModelRuntimeEntry[]>([])
-  const [connectedModels, setConnectedModels] = useState<DiscoveredModel[]>([])
   const [activeModel, setActiveModel] = useState<ActiveModelState>({ selection: null, available: false })
-  const [logs, setLogs] = useState<Record<string,string[]>>({})
+  const [selectingModelPath, setSelectingModelPath] = useState<string | null>(null)
+
+  // Deletion confirmation
+  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null)
+
+  // Clipboard copy feedback
+  const [copiedPath, setCopiedPath] = useState<string | null>(null)
+
+  // Logs diagnostics
+  const [logs, setLogs] = useState<Record<string, string[]>>({})
   const [logsOpen, setLogsOpen] = useState(false)
+  const [logsLoading, setLogsLoading] = useState(false)
 
   const refreshConnected = useCallback(async (): Promise<void> => {
     try {
-      const [rts, mods, act, lg] = await Promise.all([
-        listRuntimes().catch(()=>[] as ModelRuntimeEntry[]),
-        listDiscoveredModels().catch(()=>[] as DiscoveredModel[]),
-        getActiveModel().catch(()=>({ selection: null, available: false } as ActiveModelState)),
-        getRecentLogs('all').catch(()=>({})),
+      const [rts, act] = await Promise.all([
+        listRuntimes().catch(() => [] as ModelRuntimeEntry[]),
+        getActiveModel().catch(() => ({ selection: null, available: false } as ActiveModelState)),
       ])
       setConnectedRuntimes(rts)
-      setConnectedModels(mods)
       setActiveModel(act)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const refreshLogs = useCallback(async (): Promise<void> => {
+    setLogsLoading(true)
+    try {
+      const lg = await getRecentLogs('all').catch(() => ({}))
       setLogs(lg)
-    } catch { /* ignore */ }
+    } catch {
+      // ignore
+    } finally {
+      setLogsLoading(false)
+    }
   }, [])
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -87,28 +169,78 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
     }
   }, [])
 
+  const handleManualRefresh = async (): Promise<void> => {
+    setRefreshing(true)
+    await Promise.all([refresh(), refreshConnected()])
+    setTimeout(() => setRefreshing(false), 400)
+  }
+
   useEffect(() => {
     void refresh()
     void refreshConnected()
-    // A finished download lands a new file — rescan the directory.
     const dispose = onDownloadEvents((ev) => {
-      if (ev.state === 'done') { void refresh(); void refreshConnected() }
+      if (ev.state === 'done') {
+        void refresh()
+        void refreshConnected()
+      }
     })
     return dispose
   }, [refresh, refreshConnected])
 
-  const filteredModels = models
-    .filter((m) => {
-      if (!filterQuery.trim()) return true
-      const q = filterQuery.toLowerCase()
-      return m.name.toLowerCase().includes(q) || m.file.toLowerCase().includes(q)
-    })
-    .sort((a, b) => {
-      if (sortBy === 'name') return a.file.localeCompare(b.file)
-      if (sortBy === 'size') return b.sizeBytes - a.sizeBytes
-      return b.modifiedAt - a.modifiedAt
-    })
+  // Filter & sort
+  const filteredModels = useMemo(() => {
+    return models
+      .filter((m) => {
+        if (!filterQuery.trim()) return true
+        const q = filterQuery.toLowerCase()
+        return (
+          m.file.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q) ||
+          m.path.toLowerCase().includes(q)
+        )
+      })
+      .sort((a, b) => {
+        if (sortBy === 'name') return a.file.localeCompare(b.file)
+        if (sortBy === 'size-desc') return b.sizeBytes - a.sizeBytes
+        if (sortBy === 'size-asc') return a.sizeBytes - b.sizeBytes
+        return b.modifiedAt - a.modifiedAt
+      })
+  }, [models, filterQuery, sortBy])
 
+  // Total size calculation
+  const totalSizeBytes = useMemo(() => {
+    return models.reduce((acc, m) => acc + (m.sizeBytes || 0), 0)
+  }, [models])
+
+  // Check if model is currently active
+  const isModelActive = useCallback(
+    (model: LibraryModel): boolean => {
+      if (!activeModel.selection) return false
+      const selId = activeModel.selection.modelId
+      return selId.includes(model.file) || activeModel.displayName === model.file
+    },
+    [activeModel]
+  )
+
+  // Select model for chat
+  const handleSelectModel = async (model: LibraryModel): Promise<void> => {
+    setSelectingModelPath(model.path)
+    try {
+      let repo = model.name
+      if (model.name.includes(' — ')) repo = model.name.split(' — ')[0]
+      const modelId = repo && repo !== model.file ? `${repo}/${model.file}` : model.file
+      const runtimeId = model.runtimeId || connectedRuntimes[0]?.id || 'local'
+      const updated = await selectModel(runtimeId, modelId)
+      setActiveModel(updated)
+      await refreshConnected()
+    } catch (err) {
+      console.error('[library] select model error', err)
+    } finally {
+      setSelectingModelPath(null)
+    }
+  }
+
+  // Directory change dialog
   const handleChangeDirectory = useCallback(async (): Promise<void> => {
     try {
       const res = await setLibraryDirectory('')
@@ -117,22 +249,25 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
         void refresh()
       }
     } catch {
-      // dialog cancelled or failed — keep current directory
+      // dialog cancelled
     }
   }, [refresh])
 
-  const handleDetect = useCallback(async (): Promise<void> => {
+  // Scan external model locations
+  const handleToggleDetect = useCallback(async (): Promise<void> => {
     if (!detectOpen) {
       setDetectLoading(true)
       setDetectError(null)
       try {
         const locs = await detectLibraryLocations()
         setDetectLocations(locs)
-        if (locs.length === 0) setDetectError('Backend returned 0 candidates — detection failed. Try restarting the app.')
+        if (locs.length === 0) {
+          setDetectError('No existing LM Studio or Ollama model directories found on local drives.')
+        }
         void refreshConnected()
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        setDetectError(msg || 'Detection failed')
+        setDetectError(msg || 'Location detection failed')
         setDetectLocations([])
       } finally {
         setDetectLoading(false)
@@ -141,242 +276,577 @@ export function LibraryPage({ onBack }: LibraryPageProps): ReactElement {
     setDetectOpen((open) => !open)
   }, [detectOpen, refreshConnected])
 
-  const handleApplyLocation = useCallback(async (locPath: string): Promise<void> => {
-    setApplyingPath(locPath)
-    setDetectError(null)
-    try {
-      const { registerExternalDir } = await import('@/lib/client/api')
-      const res = await registerExternalDir(locPath)
-      if (res.ok) {
-        setDetectOpen(false)
-        setDetectLocations([])
-        await refresh()
-        await refreshConnected()
-      } else throw new Error('register failed')
-    } catch (e) {
-      setDetectError(e instanceof Error ? e.message : String(e))
-    } finally { setApplyingPath(null) }
-  }, [refresh, refreshConnected])
+  // Register external directory
+  const handleApplyLocation = useCallback(
+    async (locPath: string): Promise<void> => {
+      setApplyingPath(locPath)
+      setDetectError(null)
+      try {
+        const { registerExternalDir } = await import('@/lib/client/api')
+        const res = await registerExternalDir(locPath)
+        if (res.ok) {
+          await refresh()
+          await refreshConnected()
+        } else {
+          throw new Error('Directory registration failed')
+        }
+      } catch (e) {
+        setDetectError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setApplyingPath(null)
+      }
+    },
+    [refresh, refreshConnected]
+  )
 
-  const handleDelete = useCallback(async (entryPath: string): Promise<void> => {
-    try {
-      await deleteLibraryModel(entryPath)
-      setModels((prev) => prev.filter((m) => m.path !== entryPath))
-      void refreshConnected()
-    } catch { /* ignore */ }
-  }, [refreshConnected])
-
+  // Reveal file in Explorer
   const handleReveal = useCallback(async (entryPath: string): Promise<void> => {
     try {
-      const sov = (window as unknown as { sovara?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).sovara ?? (window as unknown as { api?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).api
-      if (sov) await sov.invoke('library:revealInFolder', entryPath) // highlights the actual .gguf file
-    } catch (e) { console.error('[library] reveal file failed', e) }
+      await revealInFolder(entryPath)
+    } catch (e) {
+      console.error('[library] reveal file failed', e)
+    }
   }, [])
 
-  const handleOpenCard = useCallback(async (model: LibraryModel): Promise<void> => {
-    try {
-      const sov = (window as unknown as { sovara?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).sovara ?? (window as unknown as { api?: { invoke:(c:string,...a:unknown[])=>Promise<unknown> }}).api
-      // Card click → show the model FOLDER (contains the .json sidecar built on Use), not the file
-      const folder = model.path.replace(/[/\\][^/\\]+$/, '')
-      if (sov) await sov.invoke('library:revealInFolder', folder)
-    } catch (e) { console.error('[library] open folder failed', e) }
-  }, [])
+  // Delete model
+  const handleDelete = useCallback(
+    async (entryPath: string): Promise<void> => {
+      try {
+        await deleteLibraryModel(entryPath)
+        setModels((prev) => prev.filter((m) => m.path !== entryPath))
+        setConfirmDeletePath(null)
+        void refreshConnected()
+      } catch (e) {
+        console.error('[library] delete model failed', e)
+      }
+    },
+    [refreshConnected]
+  )
 
-  const hfUrl = useCallback((name: string): string => {
-    // repository may be "Qwen/Qwen3-0.6B" or "lmstudio-community/GLM-4.6V-Flash-GGUF" or absolute win path
-    const isPath = /^[A-Z]:[\\/]/i.test(name) || name.includes(':\\')
-    if (!isPath && name.includes('/')) return `https://huggingface.co/${name}`
-    // try derive from file's parent: e.g. "C:\\...\\Qwen__Qwen3-0.6B\\file.gguf" already mapped, else search
-    return `https://huggingface.co/models?search=${encodeURIComponent(name.replace(/__/g,'/'))}`
-  }, [])
-  const cardStyleFor = useCallback((m: LibraryModel): { hf: string; cardUrl: string; hasJsonCard: boolean } => {
-    const hasJsonCard = !/^[A-Z]:[\\/]/i.test(m.name) // if name is a real repo, Explore JSON card exists; win-path means synthesized card
-    const repo = hasJsonCard ? m.name : m.path.split(/[/\\]/).find(p=> p.includes('__'))?.replace('__','/') ?? m.name
-    return { hf: hfUrl(repo), cardUrl: hasJsonCard ? `#/model/${encodeURIComponent(m.name)}/modelcards` : `#/model/${encodeURIComponent(repo)}/modelcards`, hasJsonCard }
-  }, [hfUrl])
+  // Copy path helper
+  const handleCopyPath = (path: string): void => {
+    void navigator.clipboard.writeText(path)
+    setCopiedPath(path)
+    setTimeout(() => setCopiedPath(null), 2000)
+  }
 
   return (
-    <div className="settings-content">
-      <h2 className="settings-section-title">Library</h2>
+    <div className="settings-modal-scroll library-page-root">
+      {/* ── HEADER ── */}
+      <div className="library-header-row">
+        <div>
+          <h1 className="settings-modal-title">Library</h1>
+          <p className="settings-modal-subtitle">
+            Manage downloaded GGUF weights, local storage directories, and scanned AI models.
+          </p>
+        </div>
+        <div className="library-header-stats">
+          <div className="library-stat-pill">
+            <Layers size={13} className="library-stat-icon" />
+            <span>
+              <strong>{models.length}</strong> {models.length === 1 ? 'Model' : 'Models'}
+            </span>
+          </div>
+          <div className="library-stat-pill">
+            <HardDrive size={13} className="library-stat-icon" />
+            <span>
+              <strong>{formatBytes(totalSizeBytes)}</strong>
+            </span>
+          </div>
+          <button
+            type="button"
+            className="library-btn-action library-btn-refresh"
+            title="Rescan model library"
+            onClick={() => void handleManualRefresh()}
+            disabled={refreshing}
+          >
+            <RefreshCw size={13} className={refreshing ? 'library-spin' : ''} />
+            <span>{refreshing ? 'Scanning…' : 'Rescan'}</span>
+          </button>
+        </div>
+      </div>
 
-      <div className="settings-group">
-        <h3 className="settings-section-subtitle">My Models</h3>
-
-        {/* Directory selector */}
-        <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-text">
-              <div className="settings-row-label">
-                <Folder size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-                Models directory
-              </div>
-              <div className="settings-row-desc">{directory || 'Not configured'}</div>
+      {/* ── STORAGE DIRECTORY CARD ── */}
+      <div className="settings-modal-group">
+        <div className="settings-modal-group-title">Storage &amp; Scanned Directories</div>
+        <div className="settings-modal-card library-storage-card">
+          <div className="library-storage-main">
+            <div className="library-storage-icon-wrap">
+              <Folder size={20} className="library-storage-icon" />
             </div>
-            <div className="settings-row-right">
-              <button type="button" className="settings-action-btn" onClick={handleChangeDirectory}>
-                Change
-              </button>
+            <div className="library-storage-info">
+              <div className="library-storage-title">Default Models Directory</div>
+              <div className="library-storage-path-row">
+                <span className="library-storage-path" title={directory}>
+                  {directory || 'Initializing default path…'}
+                </span>
+                {directory ? (
+                  <button
+                    type="button"
+                    className="library-btn-icon"
+                    title={copiedPath === directory ? 'Copied!' : 'Copy path'}
+                    onClick={() => handleCopyPath(directory)}
+                  >
+                    {copiedPath === directory ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="library-storage-actions">
               <button
                 type="button"
-                className="settings-action-btn"
-                title="Detect LM Studio or Ollama model folders"
-                onClick={() => void handleDetect()}
+                className="library-btn-action"
+                title="Change default model storage directory"
+                onClick={handleChangeDirectory}
               >
-                <Radar size={14} />
+                <Folder size={13} />
+                <span>Change Folder</span>
+              </button>
+              {directory ? (
+                <button
+                  type="button"
+                  className="library-btn-action"
+                  title="Open folder in File Explorer"
+                  onClick={() => void handleReveal(directory)}
+                >
+                  <FolderOpen size={13} />
+                  <span>Open</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`library-btn-action ${detectOpen ? 'active' : ''}`}
+                title="Detect models from LM Studio or Ollama"
+                onClick={() => void handleToggleDetect()}
+              >
+                <Radar size={13} />
+                <span>Detect External Folders</span>
+                {detectLocations.filter((l) => l.exists).length > 0 ? (
+                  <span className="library-badge-count">
+                    {detectLocations.filter((l) => l.exists).length}
+                  </span>
+                ) : null}
               </button>
             </div>
           </div>
+
+          {/* ── DETECTED LOCATIONS PANEL ── */}
           {detectOpen ? (
-            <div className="library-detect">
-              <div className="library-detect-header">
-                <span className="library-detect-title">Detected locations</span>
-                <button type="button" className="settings-action-btn" style={{ fontSize: 11 }} onClick={() => void refreshConnected()}>Refresh logs</button>
-              </div>
-              {detectLocations.filter((l) => !l.exists).length > 0 && !detectLoading && !detectError ? (
-                <div className="library-detect-empty" style={{ color: '#a3a3a3', fontSize: 11 }}>
-                  {detectLocations.filter((l) => !l.exists).length} location{detectLocations.filter((l) => !l.exists).length !== 1 ? 's' : ''} not found — hidden from list
-                </div>
-              ) : null}
-              {detectLoading ? (
-                <div className="library-detect-empty">Scanning drives…</div>
-              ) : detectError ? (
-                <div className="library-detect-empty" style={{ color: '#c0392b' }}>{detectError}<br/><span style={{ fontSize: 11, opacity: 0.7 }}>Logs shown below. Files: %APPDATA%/Sovara/logs/detection.log + runtime.log</span></div>
-              ) : detectLocations.filter((l) => l.exists).length === 0 ? (
-                <div className="library-detect-empty">No valid locations found.</div>
-              ) : (
-                detectLocations.filter((loc) => loc.exists).map((loc) => (
-                  <div key={loc.path} className="library-detect-row">
-                    <div className="library-detect-icon">
-                      {loc.kind === 'ollama' ? <Bot size={14} /> : <Cpu size={14} />}
-                    </div>
-                    <div className="library-detect-body">
-                      <div className="library-detect-name">
-                        {loc.name} <span className="library-detect-kind">{loc.kind}</span>
-                      </div>
-                      <div className="library-detect-path">{loc.path}</div>
-                    </div>
-                    <div className="library-detect-meta">
-                      <span className="library-detect-count">
-                        {loc.kind === 'ollama'
-                          ? `${loc.modelCount} model${loc.modelCount !== 1 ? 's' : ''} installed`
-                          : `${loc.modelCount} weight${loc.modelCount !== 1 ? 's' : ''} found`}
-                      </span>
-                    </div>
-                    <div className="settings-row-right">
-                      <button
-                        type="button"
-                        className="settings-action-btn"
-                        disabled={applyingPath !== null}
-                        title="Register models from this folder without changing Sovara's own directory"
-                        onClick={() => void handleApplyLocation(loc.path)}
-                      >
-                        {applyingPath === loc.path ? 'Registering…' : 'Use'}
-                      </button>
-                    </div>
+            <div className="library-detect-panel">
+              <div className="library-detect-panel-header">
+                <div>
+                  <div className="library-detect-panel-title">External Model Locations</div>
+                  <div className="library-detect-panel-sub">
+                    Auto-scanned folders from LM Studio and Ollama. Click Register to make them available without copying files.
                   </div>
-                ))
+                </div>
+                <button
+                  type="button"
+                  className="library-btn-action"
+                  style={{ fontSize: 11 }}
+                  onClick={() => void handleToggleDetect()}
+                >
+                  <RefreshCw size={11} className={detectLoading ? 'library-spin' : ''} />
+                  <span>Rescan Drives</span>
+                </button>
+              </div>
+
+              {detectLoading ? (
+                <div className="library-detect-loading">
+                  <RefreshCw size={16} className="library-spin" />
+                  <span>Scanning local drives for external model folders…</span>
+                </div>
+              ) : detectError ? (
+                <div className="library-detect-empty error">
+                  <AlertCircle size={15} />
+                  <span>{detectError}</span>
+                </div>
+              ) : detectLocations.filter((l) => l.exists).length === 0 ? (
+                <div className="library-detect-empty">
+                  No existing LM Studio or Ollama model directories found on your system.
+                </div>
+              ) : (
+                <div className="library-detect-list">
+                  {detectLocations
+                    .filter((loc) => loc.exists)
+                    .map((loc) => (
+                      <div key={loc.path} className="library-detect-item">
+                        <div className="library-detect-item-icon">
+                          {loc.kind === 'ollama' ? <Cpu size={16} /> : <HardDrive size={16} />}
+                        </div>
+                        <div className="library-detect-item-info">
+                          <div className="library-detect-item-title">
+                            <span>{loc.name}</span>
+                            <span className="library-chip library-chip-source">
+                              {loc.kind === 'ollama' ? 'Ollama' : 'LM Studio'}
+                            </span>
+                          </div>
+                          <div className="library-detect-item-path" title={loc.path}>
+                            {loc.path}
+                          </div>
+                        </div>
+                        <div className="library-detect-item-meta">
+                          <span className="library-stat-pill">
+                            {loc.kind === 'ollama'
+                              ? `${loc.modelCount} model${loc.modelCount !== 1 ? 's' : ''}`
+                              : `${loc.modelCount} GGUF file${loc.modelCount !== 1 ? 's' : ''}`}
+                          </span>
+                          <button
+                            type="button"
+                            className="library-btn-action primary"
+                            disabled={applyingPath !== null}
+                            onClick={() => void handleApplyLocation(loc.path)}
+                          >
+                            {applyingPath === loc.path ? 'Registering…' : 'Register Folder'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               )}
             </div>
           ) : null}
         </div>
+      </div>
 
-        {/* Logs — dummy Connected models removed per user request (models not actually loaded) */}
-        <div className="settings-card" style={{ marginTop: 12 }}>
-          <div className="library-detect-header" style={{ cursor: 'pointer' }} onClick={()=>setLogsOpen(o=>!o)}>
-            <span className="library-detect-title">Logs (orchestrated chat §11)</span>
-            <span className="muted small">{logsOpen ? 'hide' : 'show'} — detection.log · runtime.log</span>
-          </div>
-          {logsOpen ? (
-            <div style={{ maxHeight: 220, overflow: 'auto', background: '#0f1115', color: '#a3a3a3', fontFamily: 'monospace', fontSize: 11, padding: 8, borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-              <div style={{ color: '#e5e7eb', marginBottom: 4 }}>— detection.log (last 30) —</div>
-              {(logs.detection ?? []).slice(-30).join('\n') || '(empty)'}
-              <div style={{ color: '#e5e7eb', margin: '12px 0 4px' }}>— runtime.log (last 30) —</div>
-              {(logs.runtime ?? []).slice(-30).join('\n') || '(empty)'}
-            </div>
+      {/* ── TOOLBAR: SEARCH & SORT ── */}
+      <div className="library-toolbar-card">
+        <div className="library-search-box">
+          <Search size={15} className="library-search-icon" />
+          <input
+            type="text"
+            className="library-search-input"
+            placeholder="Search models by name, quantization, architecture, or location…"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+          />
+          {filterQuery ? (
+            <button
+              type="button"
+              className="library-search-clear"
+              title="Clear search"
+              onClick={() => setFilterQuery('')}
+            >
+              <X size={13} />
+            </button>
           ) : null}
         </div>
 
-        {/* Search + sort */}
-        <div className="library-toolbar">
-          <div className="library-search-wrap">
-            <Search size={14} className="library-search-icon" />
-            <input
-              type="text"
-              className="library-search"
-              placeholder="Filter models..."
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-            />
+        <div className="library-toolbar-controls">
+          <span className="library-filter-count">
+            Showing <strong>{filteredModels.length}</strong> of {models.length}
+          </span>
+          <div className="library-sort-wrap">
+            <select
+              className="library-select"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+            >
+              <option value="latest">Recently Added</option>
+              <option value="name">Name (A–Z)</option>
+              <option value="size-desc">Size (Largest first)</option>
+              <option value="size-asc">Size (Smallest first)</option>
+            </select>
           </div>
         </div>
+      </div>
 
-        {/* Count + sort */}
-        <div className="library-info-row">
-          <span className="library-count">
-            Showing {filteredModels.length} model{filteredModels.length !== 1 ? 's' : ''}
-          </span>
-          <select
-            className="settings-select library-sort-select"
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-          >
-            <option value="latest">Latest</option>
-            <option value="name">Name</option>
-            <option value="size">Size</option>
-          </select>
-        </div>
-
-        {/* Model list */}
+      {/* ── MODEL CARDS LIST ── */}
+      <div className="library-models-container">
         {loading ? (
-          <div className="settings-card">
-            <span className="muted">Loading models...</span>
+          <div className="library-empty-state">
+            <RefreshCw size={24} className="library-spin" color="#0284c7" />
+            <div className="library-empty-title">Scanning Model Library…</div>
+            <div className="library-empty-desc">Discovering local weights and storage folders.</div>
           </div>
         ) : filteredModels.length === 0 ? (
-          <div className="settings-card settings-card--empty">
-            <div className="settings-empty-state">
-              <div className="settings-empty-icon">📦</div>
-              <div className="settings-empty-text">
-                <div className="settings-empty-title">
-                  {models.length === 0 ? 'No models downloaded yet' : 'No models match your filter'}
-                </div>
-                <div className="settings-empty-desc">
-                  {models.length === 0
-                    ? 'Go to Explore to download your first model.'
-                    : 'Try a different search term.'}
-                </div>
-              </div>
+          <div className="library-empty-state">
+            <div className="library-empty-icon-wrap">
+              <HardDrive size={32} />
             </div>
+            <div className="library-empty-title">
+              {models.length === 0 ? 'No Models Found in Library' : 'No Matching Models'}
+            </div>
+            <div className="library-empty-desc">
+              {models.length === 0
+                ? 'Download GGUF models from the Explore tab or detect existing models from LM Studio and Ollama.'
+                : `No model matches "${filterQuery}". Try a different search term or clear the filter.`}
+            </div>
+            {filterQuery ? (
+              <button
+                type="button"
+                className="library-btn-action"
+                style={{ marginTop: 12 }}
+                onClick={() => setFilterQuery('')}
+              >
+                Clear Search Filter
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="library-btn-action primary"
+                style={{ marginTop: 12 }}
+                onClick={() => void handleToggleDetect()}
+              >
+                <Radar size={13} />
+                <span>Scan for Existing Models</span>
+              </button>
+            )}
           </div>
         ) : (
-          <div className="library-model-list">
-            {filteredModels.map((model) => (
-              <div key={model.path} className="library-model-row" style={{ flexDirection:'column', alignItems:'stretch', padding:12, gap:8, border:'1px solid var(--border)', borderRadius:10 }}>
-                <div style={{display:'flex', gap:10, alignItems:'center'}}>
-                  <LibraryModelIcon />
-                  <div className="library-model-body" style={{flex:1}}>
-                    <div className="library-model-name">{model.file}</div>
-                    <div className="library-model-meta">
-                      <span className="library-model-chip">{formatBytes(model.sizeBytes)}</span>
-                      <span className="library-model-chip">{model.name}</span>
-                      {model.installStatus ? <InstallStatusChip status={model.installStatus} /> : null}
+          <div className="library-grid">
+            {filteredModels.map((model) => {
+              const meta = parseModelMeta(model)
+              const isActive = isModelActive(model)
+              const isConfirmingDelete = confirmDeletePath === model.path
+              const isSelecting = selectingModelPath === model.path
+
+              return (
+                <div
+                  key={model.path}
+                  className={`library-model-card ${isActive ? 'is-active-model' : ''}`}
+                >
+                  <div className="library-card-header">
+                    <div className="library-card-icon-wrap">
+                      {isActive ? (
+                        <Sparkles size={18} className="library-model-card-icon active" />
+                      ) : (
+                        <Cpu size={18} className="library-model-card-icon" />
+                      )}
+                    </div>
+
+                    <div className="library-card-main-info">
+                      <div className="library-card-title-row">
+                        <span className="library-card-filename" title={model.file}>
+                          {model.file}
+                        </span>
+                        {isActive ? (
+                          <span className="library-chip library-chip-active">
+                            <Sparkles size={11} /> Active in Chat
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {/* BADGES ROW */}
+                      <div className="library-chips-row">
+                        <span className="library-chip library-chip-size">
+                          {formatBytes(model.sizeBytes)}
+                        </span>
+
+                        {meta.quantization ? (
+                          <span className="library-chip library-chip-quant">
+                            {meta.quantization}
+                          </span>
+                        ) : null}
+
+                        {meta.paramSize ? (
+                          <span className="library-chip library-chip-param">
+                            {meta.paramSize}
+                          </span>
+                        ) : null}
+
+                        <span
+                          className={`library-chip ${
+                            meta.sourceLabel === 'LM Studio'
+                              ? 'library-chip-lmstudio'
+                              : meta.sourceLabel === 'Ollama'
+                              ? 'library-chip-ollama'
+                              : 'library-chip-sovara'
+                          }`}
+                        >
+                          {meta.sourceLabel}
+                        </span>
+
+                        {meta.author ? (
+                          <span className="library-chip library-chip-author">
+                            by {meta.author}
+                          </span>
+                        ) : null}
+
+                        <span className="library-chip library-chip-installed">
+                          <Check size={10} /> Installed
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LOCATION & SOURCE ROW */}
+                  <div className="library-card-meta-bar">
+                    <div className="library-card-path-wrap">
+                      <Folder size={12} className="library-card-meta-icon" />
+                      <span className="library-card-path" title={model.path}>
+                        {model.path}
+                      </span>
+                      <button
+                        type="button"
+                        className="library-btn-icon"
+                        title={copiedPath === model.path ? 'Copied!' : 'Copy path'}
+                        onClick={() => handleCopyPath(model.path)}
+                      >
+                        {copiedPath === model.path ? (
+                          <Check size={11} color="#10b981" />
+                        ) : (
+                          <Copy size={11} />
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="library-card-meta-right">
+                      <span className="library-card-date">
+                        Modified{' '}
+                        {new Date(model.modifiedAt).toLocaleDateString(undefined, {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                        })}
+                      </span>
+
+                      {meta.hfSearchUrl ? (
+                        <button
+                          type="button"
+                          className="library-card-hf-btn"
+                          title={`Search ${meta.author || 'model'} on Hugging Face`}
+                          onClick={() => void openExternal(meta.hfSearchUrl!)}
+                        >
+                          <ExternalLink size={11} />
+                          <span>Hugging Face</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* ACTIONS BAR */}
+                  <div className="library-card-footer">
+                    <div className="library-card-footer-left">
+                      {isActive ? (
+                        <div className="library-active-indicator">
+                          <span className="library-active-pulse" />
+                          <span>Selected model for current session</span>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="library-card-footer-right">
+                      {isConfirmingDelete ? (
+                        <div className="library-confirm-delete-group">
+                          <span className="library-delete-warning">Permanently delete file?</span>
+                          <button
+                            type="button"
+                            className="library-btn-action library-btn-confirm-delete"
+                            onClick={() => void handleDelete(model.path)}
+                          >
+                            <Trash2 size={12} />
+                            <span>Confirm Delete</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="library-btn-action"
+                            onClick={() => setConfirmDeletePath(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="library-btn-action"
+                            title="Reveal model file in File Explorer"
+                            onClick={() => void handleReveal(model.path)}
+                          >
+                            <FolderOpen size={13} />
+                            <span>Reveal in Folder</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            className={`library-btn-action ${isActive ? 'active' : 'primary'}`}
+                            title={isActive ? 'Model is active in chat' : 'Set as active model for chat'}
+                            disabled={isActive || isSelecting}
+                            onClick={() => void handleSelectModel(model)}
+                          >
+                            {isActive ? (
+                              <>
+                                <Check size={13} />
+                                <span>Active in Chat</span>
+                              </>
+                            ) : (
+                              <>
+                                <MessageSquare size={13} />
+                                <span>{isSelecting ? 'Selecting…' : 'Use in Chat'}</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            className="library-btn-action danger"
+                            title="Delete model from disk"
+                            onClick={() => setConfirmDeletePath(model.path)}
+                          >
+                            <Trash2 size={13} />
+                            <span>Delete</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
-                <div className="library-model-sub" style={{fontSize:11, opacity:0.7}} title={model.path}>
-                  {(() => { const c = cardStyleFor(model); return (<>
-                    <div>Location: {model.path}</div>
-                    <div>{new Date(model.modifiedAt).toLocaleDateString()} · <a href={c.hf} target="_blank" rel="noreferrer" style={{color:'var(--accent)'}}><ExternalLink size={10} style={{display:'inline'}}/> {c.hf}</a> · <a href={c.cardUrl} style={{color:'var(--accent)'}}>/model/modelcards{c.hasJsonCard ? '' : ' (synthesized)'}</a></div>
-                  </>)})()}
-                </div>
-                <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
-                  <button type="button" className="settings-action-btn" title="Open model card & reveal in Explorer" onClick={() => void handleOpenCard(model)}><FileText size={12}/> Card</button>
-                  <button type="button" className="settings-action-btn" title="Reveal in file explorer" onClick={() => void handleReveal(model.path)}><FolderOpen size={12}/> Reveal</button>
-                  <button type="button" className="settings-action-btn" style={{color:'#c0392b'}} title="Delete model" onClick={() => void handleDelete(model.path)}><Trash2 size={12}/> Delete</button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
+      </div>
+
+      {/* ── COLLAPSIBLE LOGS & DIAGNOSTICS (AT BOTTOM) ── */}
+      <div className="library-diagnostics-section">
+        <button
+          type="button"
+          className="library-diagnostics-toggle"
+          onClick={() => {
+            const next = !logsOpen
+            setLogsOpen(next)
+            if (next) void refreshLogs()
+          }}
+        >
+          <div className="library-diagnostics-toggle-left">
+            <Terminal size={13} />
+            <span>Detection &amp; Runtime Logs</span>
+            <span className="library-diagnostics-count">
+              {((logs.detection?.length || 0) + (logs.runtime?.length || 0))} entries
+            </span>
+          </div>
+          <div className="library-diagnostics-toggle-right">
+            <span>{logsOpen ? 'Hide Logs' : 'View Logs'}</span>
+            {logsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </div>
+        </button>
+
+        {logsOpen ? (
+          <div className="library-diagnostics-viewer">
+            <div className="library-diagnostics-viewer-header">
+              <span className="library-diagnostics-viewer-title">System Diagnostics</span>
+              <button
+                type="button"
+                className="library-btn-action"
+                style={{ fontSize: 11 }}
+                onClick={() => void refreshLogs()}
+                disabled={logsLoading}
+              >
+                <RefreshCw size={11} className={logsLoading ? 'library-spin' : ''} />
+                <span>Refresh</span>
+              </button>
+            </div>
+            <div className="library-diagnostics-code-pane">
+              <div className="library-log-heading">— detection.log (last 30) —</div>
+              {(logs.detection ?? []).slice(-30).join('\n') || '(no detection logs recorded)'}
+              <div className="library-log-heading" style={{ marginTop: 14 }}>
+                — runtime.log (last 30) —
+              </div>
+              {(logs.runtime ?? []).slice(-30).join('\n') || '(no runtime logs recorded)'}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   )

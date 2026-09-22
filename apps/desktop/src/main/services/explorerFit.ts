@@ -31,19 +31,34 @@ const OS_RAM_RESERVE_GB = 2
 const GPU_RESERVE_GB = 0.5
 const VISION_PROJECTOR_GB = 0.9
 
-function paramsBillion(model: ExploreModel): number {
-  const m = model.parameters.match(/([\d.]+)\s*B/i)
-  return m ? Math.max(0.5, parseFloat(m[1])) : 7
+function paramsBillion(model: ExploreModel, fileGB?: number): number {
+  const m = model.parameters.match(/([\d.]+)\s*B\b/i)
+  if (m) {
+    const val = parseFloat(m[1])
+    // Clamping safeguard: if file size is known and small (<1GB), a 70B parameter label is impossible
+    if (fileGB && fileGB > 0 && fileGB < 1.0 && val > 3) {
+      return Math.max(0.05, fileGB / 0.6)
+    }
+    return Math.max(0.05, val)
+  }
+  const mM = model.parameters.match(/([\d.]+)\s*M\b/i)
+  if (mM) {
+    return Math.max(0.05, parseFloat(mM[1]) / 1000)
+  }
+  if (fileGB && fileGB > 0) {
+    return Math.max(0.05, Math.min(70, fileGB / 0.6))
+  }
+  return 7
 }
 
 function fileGBOf(file: ExploreModelFile, model: ExploreModel): number {
   const bytes = file.sizeBytes ?? file.sizeGB * 1024 ** 3
   let gb = bytes > 0 ? bytes / 1024 ** 3 : file.sizeGB
-  if (gb > 0.1) return gb
+  if (gb > 0.05) return gb
   if (model.repoSizeBytes && model.repoSizeBytes > 0) {
     const total = model.repoSizeBytes / 1024 ** 3
     const per = total / Math.max(1, Math.min(model.files.length || 1, 4))
-    if (per > 0.5) return per
+    if (per > 0.05) return per
     return total
   }
   const pb = paramsBillion(model)
@@ -61,9 +76,10 @@ export async function probeGgufNeedBytes(repoId: string, rfilename: string): Pro
   } catch { return null }
 }
 
-export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAULT_CTX, opts: ExplorerFitOptions = {}): number {
+export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAULT_CTX, opts: ExplorerFitOptions = {}, fileGB?: number): number {
   if (!contextLength || contextLength <= 0) return 0
-  const scale = Math.min(2.4, Math.max(0.6, paramsBillion(model) / 7))
+  const pb = paramsBillion(model, fileGB)
+  const scale = Math.min(2.4, Math.max(0.05, pb / 7))
   let per1k = 0.06 * scale
   if (!opts.flashAttention) per1k /= 0.75
   const kv = (contextLength / 1024) * per1k
@@ -74,7 +90,7 @@ export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAUL
 function needGBOf(file: ExploreModelFile, model: ExploreModel, ctx: number, opts: ExplorerFitOptions): { need: number; fileGB: number; kv: number } {
   const fileGB = fileGBOf(file, model)
   if (fileGB <= 0) return { need: 0, fileGB: 0, kv: 0 }
-  const kv = estimateExplorerKvGB(model, ctx, opts)
+  const kv = estimateExplorerKvGB(model, ctx, opts, fileGB)
   const graphGB = fileGB * 0.08 + 0.02
   const batchSurchargeGB = 0.06
   const mult = file.format === 'MLX' ? 1.02 : 1.00

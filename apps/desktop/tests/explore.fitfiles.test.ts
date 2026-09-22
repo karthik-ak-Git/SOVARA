@@ -144,6 +144,27 @@ describe('per-file fit gating (LM Studio badges)', () => {
     const r = estimateExplorerFit({ ...m.files[0] }, { ...m, parameters: '8B', capabilities: ['Text'] }, hw)
     expect(r.fit).toBe('fullGPUOffload')
   })
+
+  it('accurately fits 300MB models on CPU and GPU without false willNotFit', () => {
+    const m = model([file({ rfilename: 'SmolLM2-300M-Q4_K_M.gguf', sizeBytes: Math.round(0.3 * GB), runnable: true })])
+    const rGpu = estimateExplorerFit({ ...m.files[0] }, { ...m, parameters: '300M', capabilities: ['Text'] }, hw)
+    expect(rGpu.fit).toBe('fullGPUOffload')
+    expect(rGpu.passesGuardrails).toBe(true)
+
+    const cpuOnly: HardwareInfo = { totalRamMB: 8 * 1024, freeRamMB: 6 * 1024, gpuAvailable: false }
+    const rCpu = estimateExplorerFit({ ...m.files[0] }, { ...m, parameters: '300M', capabilities: ['Text'] }, cpuOnly)
+    expect(rCpu.fit).toBe('fitWithoutGPU')
+    expect(rCpu.passesGuardrails).toBe(true)
+  })
+
+  it('bounds KV cache when 300MB file has missing or oversized param tag', () => {
+    // 300MB file with erroneously high 70B parameter label or Unknown
+    const m = model([file({ rfilename: 'Tiny-Q4_K_M.gguf', sizeBytes: Math.round(0.3 * GB), runnable: true })])
+    const cpuOnly: HardwareInfo = { totalRamMB: 8 * 1024, freeRamMB: 6 * 1024, gpuAvailable: false }
+    const rClamped = estimateExplorerFit({ ...m.files[0] }, { ...m, parameters: '70B', capabilities: ['Text'] }, cpuOnly)
+    expect(rClamped.passesGuardrails).toBe(true)
+    expect(rClamped.needGB).toBeLessThan(1.5) // ~0.3-0.5 GB, not 40+ GB
+  })
 })
 
 describe('recommendation eligibility', () => {

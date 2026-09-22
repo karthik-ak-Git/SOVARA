@@ -242,6 +242,13 @@ export class ModelWorkbench {
     // Sovereign: when listing all, hide disabled external runtimes (LM Studio/Ollama are file-discovery only).
     // Their GGUFs are already surfaced via the local snapshot (see registerExternalModelDir), so showing them twice is duplicate.
     const entries = runtimeId ? allEntries : allEntries.filter((e) => e.enabled || e.id === 'local')
+    const localSnapCheck = this.config.getRuntime('local')
+    if (localSnapCheck && localSnapCheck.lastModels.length === 0) {
+      const fresh = this.loadLocalLibrarySnapshot()
+      if (fresh.length > 0) {
+        this.config.saveProbeSnapshot('local', fresh, null)
+      }
+    }
     if (!runtimeId && entries.length === 0) {
       // Fallback: if local was pruned, still show local if it has snapshot
       const localSnap = this.config.getRuntime('local')
@@ -390,8 +397,8 @@ export class ModelWorkbench {
   /** Ensure the library's local files appear as a runtime so Chat orchestration (ARCHITECTURE_PHASE1 §6) can select them without a probe. */
   private ensureLocalLibraryRuntime(): void {
     try {
-      const hasLocal = !!this.config.getRuntime('local')
-      if (!hasLocal) {
+      const snap = this.config.getRuntime('local')
+      if (!snap) {
         // Only create if there is at least one file in library
         const lib = this.loadLocalLibrarySnapshot()
         if (lib.length === 0) return
@@ -405,6 +412,15 @@ export class ModelWorkbench {
         }
         // Log: connected models discovered
         try { this.logLocalDiscovery(lib) } catch {}
+      } else if (snap.lastModels.length === 0) {
+        const lib = this.loadLocalLibrarySnapshot()
+        if (lib.length > 0) {
+          this.config.saveProbeSnapshot('local', lib, null)
+          if (!this.config.getActiveSelection()) {
+            this.config.setActiveSelection({ runtimeId: 'local', modelId: lib[0].modelId })
+          }
+          try { this.logLocalDiscovery(lib) } catch {}
+        }
       }
       // Sovereign invariant: stale external active (lmstudio/ollama) must be
       // cleared on startup if no local GGUF matches — otherwise Chat would
@@ -437,45 +453,71 @@ export class ModelWorkbench {
 
   private loadLocalLibrarySnapshot(): Array<{ modelId: string; displayName: string }> {
     try {
-      // Avoid importing modelDownloads (circular) — scan via RuntimeConfigStore registry + filesystem heuristic
-      const rows = this.config.listRegistryRows()
-      if (rows.length > 0) {
-        const fromRows = rows.filter(r => r.installStatus !== 'missing').map(r => ({ modelId: r.repository ? `${r.repository}/${r.rfilename}` : r.rfilename, displayName: r.displayName || r.rfilename }))
-        // Filter ghosts: keep only GGUFs that are still resolvable on disk
-        const filtered = fromRows.filter((m) => this.isModelLive(m.modelId))
-        if (filtered.length > 0) return filtered
-        if (fromRows.length > 0 && filtered.length === 0) {
-          // All registry rows are ghosts — fall through to filesystem scan so we
-          // still surface LM Studio / Sovara folder GGUFs instead of empty.
-        } else {
-          return fromRows
-        }
-      }
-      // Fallback: check AppBackend library dir + any registered external dirs
-      let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
-      if (!libDir) {
-        try { const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths'); const { join } = require('node:path') as typeof import('node:path'); libDir = join(getSovaraDataDir(undefined), 'models') } catch { return [] }
-      }
-      const external = (()=>{ try { return (this.config as unknown as { getExternalModelDirs?: ()=>string[] }).getExternalModelDirs?.() ?? [] } catch { return [] } })()
-      // Discovery only — we list GGUF paths the user already has in LM
-      // Studio / Ollama folders so the workbench can offer them. Every
-      // load still goes through Sovara's own llama.cpp sidecar; we never
-      // call LM Studio's or Ollama's HTTP server.
-      const dirs = [libDir, ...external]
-      const { readdirSync } = require('node:fs') as typeof import('node:fs')
-      const { join } = require('node:path') as typeof import('node:path')
-      const scan = (dir: string, acc: string[]): void => {
+      const outMap = new Map<string, { modelId: string; displayName: string }>()
+
+      // 1. If models port is available, use its scanned GGUF files
+      if (this.models) {
         try {
-          for (const e of readdirSync(dir, { withFileTypes: true })) {
-            const p = join(dir, e.name)
-            if (e.isDirectory()) scan(p, acc)
-            else if (e.name.toLowerCase().endsWith('.gguf')) acc.push(e.name)
+          const files = (this.models as unknown as { scanGgufFiles?: () => string[] })?.scanGgufFiles?.() ?? []
+          for (const file of files) {
+            const base = require('node:path').basename(file)
+            if (this.isMmprojId(base)) continue
+            const mid = base.replace(/\.gguf$/i, '')
+            outMap.set(mid.toLowerCase(), { modelId: mid, displayName: base })
           }
         } catch {}
       }
-      const ggufs: string[] = []
-      for (const d of dirs) scan(d, ggufs)
-      return ggufs.slice(0, 40).map(f => ({ modelId: f.replace(/\.gguf$/i,''), displayName: f }))
+
+      // 2. Scan via RuntimeConfigStore registry rows
+      try {
+        const rows = this.config.listRegistryRows()
+        for (const r of rows) {
+          if (r.installStatus === 'missing') continue
+          const file = r.rfilename || require('node:path').basename(r.localPath || '')
+          if (!file || this.isMmprojId(file)) continue
+          const mid = r.repository ? `${r.repository}/${r.rfilename}` : file.replace(/\.gguf$/i, '')
+          if (!outMap.has(mid.toLowerCase()) && this.isModelLive(mid)) {
+            outMap.set(mid.toLowerCase(), { modelId: mid, displayName: r.displayName || file })
+          }
+        }
+      } catch {}
+
+      // 3. Fallback / candidate dirs scan (AppData, .lmstudio, .node-llama-cpp, etc.)
+      let libDir = this.config.getAppSetting('model_library_dir') || this.config.getAppSetting('library_dir') || ''
+      if (!libDir) {
+        try {
+          const { getSovaraDataDir } = require('../storage/paths') as typeof import('../storage/paths')
+          const { join } = require('node:path') as typeof import('node:path')
+          libDir = join(getSovaraDataDir(this.baseDir), 'models')
+        } catch {}
+      }
+      const external = this.baseDir ? [] : (() => {
+        try { return (this.config as unknown as { getExternalModelDirs?: () => string[] }).getExternalModelDirs?.() ?? [] } catch { return [] }
+      })()
+      const dirs = [libDir, ...external].filter(Boolean)
+
+      const { readdirSync } = require('node:fs') as typeof import('node:fs')
+      const { join, basename } = require('node:path') as typeof import('node:path')
+      const scan = (dir: string): void => {
+        try {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, e.name)
+            if (e.isDirectory()) {
+              scan(p)
+            } else if (e.name.toLowerCase().endsWith('.gguf')) {
+              const b = basename(p)
+              if (this.isMmprojId(b)) continue
+              const mid = b.replace(/\.gguf$/i, '')
+              if (!outMap.has(mid.toLowerCase())) {
+                outMap.set(mid.toLowerCase(), { modelId: mid, displayName: b })
+              }
+            }
+          }
+        } catch {}
+      }
+      for (const d of dirs) scan(d)
+
+      return Array.from(outMap.values())
     } catch { return [] }
   }
 

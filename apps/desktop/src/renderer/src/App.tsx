@@ -8,6 +8,7 @@ import { useModelWorkbench } from './features/models/useModelWorkbench'
 import { ChatView } from './features/chat/ChatView'
 import type { FileAttachment } from './features/chat/Composer'
 import { CreateProjectModal } from './components/modals/CreateProjectModal'
+import { SettingsModal } from './components/modals/SettingsModal'
 import { ModelsPage } from './features/models/ModelsPage'
 import { ExplorePage } from './features/explore/ExplorePage'
 import { LibraryPage } from './features/library/LibraryPage'
@@ -51,6 +52,34 @@ export function App(): React.JSX.Element {
   const [execMode, setExecModeState] = useState<ExecMode>('ask')
   const [reasoningEnabled, setReasoningEnabled] = useState(true)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
+  const [settingsModalSection, setSettingsModalSection] = useState<string>('general')
+  const [settingsModalProjectId, setSettingsModalProjectId] = useState<string | null>(null)
+
+  const handleOpenSettings = useCallback((section = 'general', projectId: string | null = null) => {
+    setSettingsModalSection(section)
+    setSettingsModalProjectId(projectId)
+    setSettingsModalOpen(true)
+  }, [])
+
+  const handleNavigate = useCallback((id: NavId): void => {
+    if (id === 'settings') {
+      handleOpenSettings('general')
+    } else {
+      setActiveNav(id)
+    }
+  }, [handleOpenSettings])
+
+  useEffect(() => {
+    const onGlobalKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault()
+        setSettingsModalOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onGlobalKey)
+    return () => window.removeEventListener('keydown', onGlobalKey)
+  }, [])
   const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('sovara_pinned_chats') || '[]')
@@ -250,9 +279,8 @@ export function App(): React.JSX.Element {
   }, [])
 
   const handleOpenExplorer = useCallback((): void => {
-    // Keep chat visible — explorer is sidebar-only
-    console.log('[App] explorer inline suppressed')
-  }, [])
+    handleOpenSettings('explore')
+  }, [handleOpenSettings])
 
   const projectChats = (projectId: string): Array<{ id: string; title: string }> =>
     chat.projectSessions(projectId).map((s) => ({ id: s.id, title: s.title }))
@@ -355,7 +383,8 @@ export function App(): React.JSX.Element {
     <>
       <AppShell
         activeNav={activeNav}
-        onNavigate={setActiveNav}
+        onNavigate={handleNavigate}
+        onOpenSettings={handleOpenSettings}
         activeTab={activeTab}
         onTabSelect={handleTabSelect}
         onNewSession={handleNewSession}
@@ -378,7 +407,7 @@ export function App(): React.JSX.Element {
         onSelectChat={openChat}
         onCloseChat={closeTab}
         tabs={openChats}
-        hideSidebar={activeNav === 'settings'}
+        hideSidebar={false}
         activeModelName={activeModelDisplay}
         activeModelContext={workbench.active.available ? 'Ready' : 'Offline'}
         hardwareStatus={hardwareStatus}
@@ -462,7 +491,12 @@ export function App(): React.JSX.Element {
 
         {activeNav === 'models' ? <ModelsPage /> : null}
 
-        {activeNav === 'explore' ? <ExplorePage onBack={() => setActiveNav('chat')} /> : null}
+        {activeNav === 'explore' ? (
+          <ExplorePage
+            onBack={() => setActiveNav('chat')}
+            onOpenSettings={(sec) => handleOpenSettings(sec)}
+          />
+        ) : null}
 
         {activeNav === 'library' ? <LibraryPage onBack={() => setActiveNav('chat')} /> : null}
 
@@ -480,6 +514,20 @@ export function App(): React.JSX.Element {
           open={projectModalOpen}
           onClose={() => setProjectModalOpen(false)}
           onCreate={handleCreateProject}
+        />
+
+        <SettingsModal
+          open={settingsModalOpen}
+          onClose={() => setSettingsModalOpen(false)}
+          initialSection={settingsModalSection}
+          initialProjectId={settingsModalProjectId}
+          projects={projects}
+          activeProjectId={selectedProjectId}
+          onSelectProject={handleSelectProjectWrapped}
+          onSelectSession={openChat}
+          onRefreshProjects={refreshProjects}
+          execMode={execMode}
+          onExecModeChange={handleExecModeChange}
         />
       </AppShell>
     </>
