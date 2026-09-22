@@ -556,18 +556,6 @@ export function Composer({
             >
               {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
             </button>
-            <button
-              type="button"
-              className="sv-composer-icon-btn"
-              aria-label="Scroll down"
-              title="Scroll down"
-              onClick={() => {
-                const el = document.querySelector('.sv-chat-content')
-                if (el) el.scrollTop = el.scrollHeight
-              }}
-            >
-              <ArrowDown size={15} aria-hidden />
-            </button>
             {showStop ? (
               <button type="button" className="sv-send-btn" style={{ background: '#8A8279' }} onClick={() => onCancel?.()} aria-label="Stop generating" title="Stop generating (Esc)" data-testid="stop-button">
                 <Square size={14} aria-hidden />
