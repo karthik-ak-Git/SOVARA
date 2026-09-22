@@ -75,8 +75,11 @@ export function AuxiliaryPane({
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
   const [internalExpanded, setInternalExpanded] = useState(false)
+  const [subSidebarOpen, setSubSidebarOpen] = useState(true)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+  const terminalContainerRef = useRef<HTMLDivElement>(null)
+  const terminalInputRef = useRef<HTMLInputElement>(null)
 
   const isExpanded = controlledIsExpanded ?? internalExpanded
   const handleToggleExpand = (): void => {
@@ -255,6 +258,12 @@ export function AuxiliaryPane({
       }
     }
   }, [events, activeTerminalId])
+
+  useEffect(() => {
+    if (tab === 'terminal' && terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight
+    }
+  }, [tab, terminalInstances, activeTerminalId])
 
   const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
 
@@ -876,14 +885,30 @@ export function AuxiliaryPane({
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#64748b' }}>
                 <MoreHorizontal size={15} style={{ cursor: 'pointer' }} />
                 <Search size={15} style={{ cursor: 'pointer' }} />
-                <Layers size={15} style={{ cursor: 'pointer' }} />
+                <button
+                  type="button"
+                  aria-label="Toggle Sub-sidebar"
+                  title="Toggle Sub-sidebar"
+                  onClick={() => setSubSidebarOpen((v) => !v)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 2,
+                    cursor: 'pointer',
+                    color: subSidebarOpen ? '#0f172a' : '#94a3b8',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Layers size={15} />
+                </button>
               </div>
             </div>
 
             {/* Split Layout: Main Diff View (Left) + File Changes Sub-Sidebar (Right) */}
             <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
               {/* Main Diff Area */}
-              <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #e2e8f0', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ flex: 1, overflowY: 'auto', borderRight: subSidebarOpen ? '1px solid #e2e8f0' : 'none', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
                 {selectedReviewFile && selectedReviewFile.diffChunks ? (
                   <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12, lineHeight: 1.6 }}>
                     <div style={{ padding: '4px 12px', background: '#f1f5f9', color: '#64748b', fontSize: 11, borderBottom: '1px solid #e2e8f0' }}>
@@ -914,33 +939,35 @@ export function AuxiliaryPane({
               </div>
 
               {/* Right Sub-Sidebar: Staged Changes & Changes */}
-              <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto' }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Staged Changes</div>
-                  {stagedFiles.length > 0 ? (
-                    stagedFiles.map((f, i) => (
-                      <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
-                        {f.path.split(/[/\\]/).pop()}
-                      </div>
-                    ))
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
-                  )}
-                </div>
+              {subSidebarOpen ? (
+                <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Staged Changes</div>
+                    {stagedFiles.length > 0 ? (
+                      stagedFiles.map((f, i) => (
+                        <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
+                          {f.path.split(/[/\\]/).pop()}
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
+                    )}
+                  </div>
 
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Changes</div>
-                  {unstagedFiles.length > 0 ? (
-                    unstagedFiles.map((f, i) => (
-                      <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
-                        {f.path.split(/[/\\]/).pop()}
-                      </div>
-                    ))
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
-                  )}
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Changes</div>
+                    {unstagedFiles.length > 0 ? (
+                      unstagedFiles.map((f, i) => (
+                        <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
+                          {f.path.split(/[/\\]/).pop()}
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -975,15 +1002,35 @@ export function AuxiliaryPane({
                 >
                   <Plus size={15} />
                 </button>
-                <Layers size={15} style={{ cursor: 'pointer' }} />
+                <button
+                  type="button"
+                  aria-label="Toggle Sub-sidebar"
+                  title="Toggle Sub-sidebar"
+                  onClick={() => setSubSidebarOpen((v) => !v)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 2,
+                    cursor: 'pointer',
+                    color: subSidebarOpen ? '#0f172a' : '#94a3b8',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Layers size={15} />
+                </button>
               </div>
             </div>
 
             {/* Split Layout: Terminal Console Output (Left) + Conversations Sub-Sidebar (Right) */}
             <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
               {/* Left Main Terminal Console Output */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#ffffff', borderRight: '1px solid #e2e8f0' }}>
+              <div
+                style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#ffffff', borderRight: subSidebarOpen ? '1px solid #e2e8f0' : 'none' }}
+                onClick={() => terminalInputRef.current?.focus()}
+              >
                 <div
+                  ref={terminalContainerRef}
                   style={{
                     flex: 1,
                     padding: 12,
@@ -1006,7 +1053,7 @@ export function AuxiliaryPane({
                   )}
                 </div>
 
-                {/* Terminal Shell Input Prompt */}
+                {/* Terminal Shell Input Prompt - Direct Native Shell UX */}
                 <form
                   onSubmit={handleRunCommand}
                   style={{
@@ -1014,18 +1061,20 @@ export function AuxiliaryPane({
                     alignItems: 'center',
                     gap: 8,
                     padding: '8px 12px',
-                    background: '#f8fafc',
-                    borderTop: '1px solid #e2e8f0',
+                    background: '#ffffff',
+                    borderTop: '1px solid #f1f5f9',
                   }}
                 >
-                  <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'monospace', fontWeight: 600 }}>
+                  <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontWeight: 600, flexShrink: 0 }}>
                     PS D:\SOVARA&gt;
                   </span>
                   <input
+                    ref={terminalInputRef}
                     type="text"
                     value={commandInput}
                     onChange={(e) => setCommandInput(e.target.value)}
-                    placeholder="Type terminal command (e.g. pnpm build)..."
+                    placeholder="Type command and press Enter..."
+                    autoFocus
                     style={{
                       flex: 1,
                       background: 'transparent',
@@ -1034,83 +1083,70 @@ export function AuxiliaryPane({
                       color: '#0f172a',
                       fontSize: 12,
                       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                      padding: 0,
                     }}
                   />
-                  <button
-                    type="submit"
-                    style={{
-                      background: '#0284c7',
-                      border: 'none',
-                      borderRadius: 4,
-                      color: '#ffffff',
-                      padding: '4px 8px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <Send size={13} />
-                  </button>
                 </form>
               </div>
 
               {/* Right Sub-Sidebar: Active Terminal Sessions grouped under Conversations */}
-              <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b' }}>Conversations</div>
+              {subSidebarOpen ? (
+                <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b' }}>Conversations</div>
 
-                <div style={{ fontSize: 12, fontWeight: 500, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {sessionTitle}
-                </div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {sessionTitle}
+                  </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {terminalInstances.map((t) => {
-                    const isSel = t.id === activeTerminalId
-                    return (
-                      <div
-                        key={t.id}
-                        onClick={() => setActiveTerminalId(t.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '4px 6px',
-                          borderRadius: 6,
-                          background: isSel ? '#e2e8f0' : 'transparent',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
-                          <TerminalIcon size={14} style={{ color: '#64748b', flexShrink: 0 }} />
-                          <span style={{ fontSize: 12, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {t.name.split('.')[0]}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          aria-label={`Kill ${t.name}`}
-                          title="Kill Terminal Session"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleKillTerminal(t.id)
-                          }}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {terminalInstances.map((t) => {
+                      const isSel = t.id === activeTerminalId
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => setActiveTerminalId(t.id)}
                           style={{
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 2,
-                            cursor: 'pointer',
-                            color: '#94a3b8',
                             display: 'flex',
                             alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '4px 6px',
+                            borderRadius: 6,
+                            background: isSel ? '#e2e8f0' : 'transparent',
+                            cursor: 'pointer',
                           }}
                         >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    )
-                  })}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                            <TerminalIcon size={14} style={{ color: '#64748b', flexShrink: 0 }} />
+                            <span style={{ fontSize: 12, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {t.name.split('.')[0]}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Kill ${t.name}`}
+                            title="Kill Terminal Session"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleKillTerminal(t.id)
+                            }}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 2,
+                              cursor: 'pointer',
+                              color: '#94a3b8',
+                              display: 'flex',
+                              alignItems: 'center',
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
           </div>
         ) : null}
