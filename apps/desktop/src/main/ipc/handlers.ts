@@ -556,22 +556,35 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('tools:dispatch', async (_e, raw: unknown) => {
     const parsed = zToolDispatch.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid tools:dispatch payload: ${parsed.error.message}`)
-    const args = parsed.data.args as Record<string, unknown> & { _forceApprove?: boolean }
+    const args = parsed.data.args as Record<string, unknown> & { _forceApprove?: boolean; sessionId?: string }
     const mode = getBackend().getExecMode()
     const force = args._forceApprove === true
     const verdict = gateDispatch(mode, parsed.data.name)
     if (!verdict.allowed && !force) {
       return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message, toolName: parsed.data.name, toolArgs: parsed.data.args }
     }
-    const cleanArgs = { ...args }; delete (cleanArgs as Record<string,unknown>)._forceApprove
-    if (typeof cleanArgs['sessionId'] === 'string') {
-      try { (getBackend().ports.tools as unknown as { _setSession?: (id: string) => void })._setSession?.(cleanArgs['sessionId'] as string) } catch {}
+    const cleanArgs = { ...args }
+    delete (cleanArgs as Record<string, unknown>)._forceApprove
+
+    const sessId = typeof cleanArgs['sessionId'] === 'string' ? (cleanArgs['sessionId'] as string) : null
+    if (sessId) {
       delete cleanArgs['sessionId']
+      try {
+        await getBackend().ports.persistence.appendEvent(brand<'SessionId'>(sessId), 'tool/call' as never, { name: parsed.data.name, args: cleanArgs } as never)
+      } catch {}
     }
+
     const result = await getBackend().ports.tools.dispatch(
       parsed.data.name,
       cleanArgs
     )
+
+    if (sessId) {
+      try {
+        await getBackend().ports.persistence.appendEvent(brand<'SessionId'>(sessId), 'tool/result' as never, { name: parsed.data.name, content: result } as never)
+      } catch {}
+    }
+
     return { ok: true, autoApproved: (verdict.allowed ? verdict.autoApproved : false) || force, result }
   })
 
