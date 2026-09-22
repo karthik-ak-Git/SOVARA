@@ -85,6 +85,7 @@ export function AppShell({
   events = [],
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isAuxExpanded, setIsAuxExpanded] = useState(false)
   return (
     <div className="app">
       <TopBar
@@ -130,13 +131,27 @@ export function AppShell({
             onSelectChat={onSelectChat}
           />
         ) : null}
-        <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' } as React.CSSProperties}>
+        <main
+          className="main"
+          role="main"
+          aria-labelledby={`tab-${activeTab}`}
+          tabIndex={-1}
+          id="main-content"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: artifactsOpen && isAuxExpanded ? 'none' : 'flex',
+            flexDirection: 'column',
+          } as React.CSSProperties}
+        >
           {children}
         </main>
         {artifactsOpen ? (
           <AuxiliaryPane
             isOpen={artifactsOpen}
             onClose={() => onToggleArtifacts?.()}
+            isExpanded={isAuxExpanded}
+            onToggleExpand={() => setIsAuxExpanded((v) => !v)}
             artifactContent={artifactContent}
             artifactTitle={artifactTitle}
             events={events}

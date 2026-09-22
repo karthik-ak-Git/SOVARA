@@ -41,6 +41,8 @@ export interface ChangedFileItem {
 interface Props {
   isOpen: boolean
   onClose: () => void
+  isExpanded?: boolean
+  onToggleExpand?: () => void
   activeTab?: AuxiliaryTab
   onTabChange?: (tab: AuxiliaryTab) => void
   artifactContent?: string
@@ -57,6 +59,8 @@ interface Props {
 export function AuxiliaryPane({
   isOpen,
   onClose,
+  isExpanded: controlledIsExpanded,
+  onToggleExpand,
   activeTab: controlledTab,
   onTabChange,
   artifactContent = '',
@@ -70,9 +74,15 @@ export function AuxiliaryPane({
   sessionTitle = 'Current Conversation',
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
-  const [isExpanded, setIsExpanded] = useState(false)
+  const [internalExpanded, setInternalExpanded] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusMenuRef = useRef<HTMLDivElement>(null)
+
+  const isExpanded = controlledIsExpanded ?? internalExpanded
+  const handleToggleExpand = (): void => {
+    if (onToggleExpand) onToggleExpand()
+    else setInternalExpanded((v) => !v)
+  }
 
   const tab = controlledTab ?? internalTab
 
@@ -328,14 +338,15 @@ export function AuxiliaryPane({
       className="sv-aux-pane"
       aria-label="Auxiliary Workspace Pane"
       style={{
-        width: isExpanded ? '60%' : 460,
+        flex: isExpanded ? 1 : 'none',
+        width: isExpanded ? '100%' : 460,
         height: '100%',
         background: '#ffffff',
         borderLeft: '1px solid #e2e8f0',
         display: 'flex',
         flexDirection: 'column',
         zIndex: 50,
-        boxShadow: '-4px 0 20px rgba(0,0,0,0.05)',
+        boxShadow: isExpanded ? 'none' : '-4px 0 20px rgba(0,0,0,0.05)',
         userSelect: 'none',
       }}
     >
@@ -521,7 +532,7 @@ export function AuxiliaryPane({
             type="button"
             aria-label={isExpanded ? 'Minimize Pane' : 'Maximize Pane'}
             title={isExpanded ? 'Minimize Pane' : 'Maximize Pane'}
-            onClick={() => setIsExpanded((v) => !v)}
+            onClick={handleToggleExpand}
             style={{
               background: 'transparent',
               border: 'none',
