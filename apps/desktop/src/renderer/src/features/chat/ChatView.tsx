@@ -417,13 +417,27 @@ export function ChatView({
               <h1>{activeTitle}</h1>
             </div>
             {showExecution ? (
-              <div className="header-pipeline" aria-label="Task pipeline" role="status" aria-live="polite">
-                {STAGE_ORDER.map((s, i) => (
-                  <span key={s.key} className={`sovara-stage${i < activeStage ? ' is-done' : ''}${i === activeStage ? ' is-active' : ''}`}>
-                    <span className="sovara-stage-dot" aria-hidden />
-                    {s.label}
-                  </span>
-                ))}
+              <div className="header-pipeline-compact" aria-label="Task pipeline" role="status" aria-live="polite">
+                <div className="pipeline-live-icon-wrap">
+                  <Sparkles size={13} className="bot-live-sparkle" />
+                </div>
+                <div className="pipeline-text-col">
+                  <div className="pipeline-status-row">
+                    <span className="pipeline-action-label">{executionLabel ?? 'Processing task…'}</span>
+                    <span className="pipeline-step-badge">
+                      Step {Math.max(1, Math.min(activeStage + 1, 7))}/7
+                    </span>
+                  </div>
+                  <div className="pipeline-dots-row">
+                    {STAGE_ORDER.slice(0, 7).map((s, i) => (
+                      <span
+                        key={s.key}
+                        className={`pipeline-dot-node ${i < activeStage ? 'is-done' : ''} ${i === activeStage ? 'is-active' : ''}`}
+                        title={`${s.label}: ${i < activeStage ? 'Done' : i === activeStage ? 'In progress' : 'Upcoming'}`}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : null}
           </div>
@@ -464,7 +478,10 @@ export function ChatView({
 
           <MessageList
             events={events}
-            thinking={busy && streamingText === '' && streamingReasoning === '' && (exec.phase === 'streaming' || exec.phase === 'thinking' || exec.phase === 'planning' || exec.phase === 'loading')}
+            thinking={busy && streamingText === '' && streamingReasoning === '' && (exec.phase === 'streaming' || exec.phase === 'thinking' || exec.phase === 'planning' || exec.phase === 'loading' || exec.phase === 'reading' || exec.phase === 'prompting' || exec.phase === 'selecting')}
+            execPhase={exec.phase}
+            execLabel={executionLabel}
+            execDetail={exec.detail}
             streamingText={streamingText}
             streamingReasoning={streamingReasoning || (busy && (exec.phase === 'thinking' || exec.phase === 'planning') && exec.detail ? exec.detail : '')}
             streamingModelBadge={activeModel.displayName ?? undefined}
@@ -482,14 +499,39 @@ export function ChatView({
             ) : (
               <span role="status" aria-label="No local model selected">NO LOCAL MODEL</span>
             )}
-            {streaming ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Streaming…</span> : null}
-            {exec.phase === 'reading' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Reading file…</span> : null}
-            {exec.phase === 'prompting' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Prompting…</span> : null}
-            {exec.phase === 'selecting' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Routing model…</span> : null}
-            {exec.phase === 'loading' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Loading model…</span> : null}
-            {exec.phase === 'thinking' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Thinking…</span> : null}
-            {exec.phase === 'tool' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Executing tool: {exec.toolName ?? 'command'}…</span> : null}
-            {exec.phase === 'artifact' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Generating file…</span> : null}
+            {exec.phase === 'reading' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Reading attachments…
+              </span>
+            ) : exec.phase === 'prompting' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Assembling prompt…
+              </span>
+            ) : exec.phase === 'selecting' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Routing to model…
+              </span>
+            ) : exec.phase === 'loading' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Loading model weights…
+              </span>
+            ) : exec.phase === 'thinking' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Reasoning &amp; thinking…
+              </span>
+            ) : exec.phase === 'tool' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Executing tool: {exec.toolName ?? 'command'}…
+              </span>
+            ) : exec.phase === 'artifact' ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Generating file…
+              </span>
+            ) : streaming ? (
+              <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span className="status-live-dot" /> Streaming tokens…
+              </span>
+            ) : null}
           </div>
 
           <div className="sv-composer">

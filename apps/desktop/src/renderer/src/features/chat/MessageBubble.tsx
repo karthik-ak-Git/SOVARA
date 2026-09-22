@@ -30,6 +30,9 @@ interface MessageBubbleProps {
   onEditAndResend?: (newContent: string) => void
   canRegenerate?: boolean
   busy?: boolean
+  execPhase?: string
+  execLabel?: string | null
+  execDetail?: string | null
   onOpenArtifact?: (artifact: ArtifactInfo) => void
 }
 
@@ -259,6 +262,9 @@ export function MessageBubble({
   onEditAndResend,
   canRegenerate = false,
   busy = false,
+  execPhase,
+  execLabel,
+  execDetail,
   onOpenArtifact,
 }: MessageBubbleProps): ReactElement {
   const isUser = role === 'user'
@@ -275,8 +281,8 @@ export function MessageBubble({
   if (loading) {
     return (
       <div key={id} data-testid="assistant-typing" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is typing">
-        <div className="sv-message-avatar sv-message-avatar--assistant" aria-hidden>
-          <Sparkles size={16} />
+        <div className="sv-message-avatar sv-message-avatar--assistant is-live" aria-hidden>
+          <Sparkles size={16} className="bot-live-sparkle" />
         </div>
         <div className="sv-thinking-dots" aria-hidden>
           <span /> <span /> <span />
@@ -286,21 +292,78 @@ export function MessageBubble({
   }
 
   if (thinking) {
+    const phaseKey = execPhase ?? 'thinking'
+    const phaseLabel =
+      phaseKey === 'loading'
+        ? 'Loading'
+        : phaseKey === 'reading'
+        ? 'Reading'
+        : phaseKey === 'planning'
+        ? 'Planning'
+        : phaseKey === 'prompting'
+        ? 'Prompting'
+        : phaseKey === 'selecting'
+        ? 'Routing'
+        : phaseKey === 'tool'
+        ? 'Running Tool'
+        : phaseKey === 'artifact'
+        ? 'Writing File'
+        : 'Thinking'
+
+    const phaseProgress: Record<string, number> = {
+      reading: 16,
+      planning: 32,
+      prompting: 48,
+      selecting: 62,
+      loading: 78,
+      thinking: 88,
+      streaming: 96,
+      tool: 72,
+      artifact: 84,
+    }
+    const currentProgress = phaseProgress[phaseKey] ?? 50
+
+    const dynamicWhy =
+      execLabel ||
+      execDetail ||
+      (phaseKey === 'loading'
+        ? `Loading local model weights into memory (${modelBadge ?? 'GGUF weights'})…`
+        : phaseKey === 'reading'
+        ? 'Reading attachments and local workspace context…'
+        : phaseKey === 'planning'
+        ? 'Analyzing task intent and structuring response plan…'
+        : phaseKey === 'prompting'
+        ? 'Assembling prompt and system instructions…'
+        : phaseKey === 'selecting'
+        ? 'Routing to optimal local model for this task…'
+        : 'Analyzing your request — building context before generating…')
+
     return (
       <div key={id} data-testid="assistant-thinking" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is thinking" style={{ alignItems: 'flex-start' } as React.CSSProperties}>
         <div className="sovereign-ledger" role="status" aria-label="Sovara loading">
           <div className="ledger-head">
-            <span className="ledger-mark" aria-hidden><Sparkles size={14} /></span>
+            <span className="ledger-mark is-live" aria-hidden>
+              <Sparkles size={14} className="bot-live-sparkle" />
+            </span>
             <span className="ledger-name">Sovara</span>
-            <span className="ledger-phase thinking">Thinking</span>
-            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'local'} • Streaming…</span>
+            <span className={`ledger-phase ${phaseKey}`}>{phaseLabel}</span>
+            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'local'} • Active</span>
           </div>
-          <div className="ledger-track" aria-hidden><div className="ledger-fill" style={{ width: '48%' } as React.CSSProperties} /></div>
-          <div className="ledger-why">Analysing your request — why: building local context before generating • English only</div>
+          <div className="ledger-track" aria-hidden>
+            <div className="ledger-fill" style={{ width: `${currentProgress}%` } as React.CSSProperties} />
+          </div>
+          <div className="ledger-why" title={dynamicWhy}>{dynamicWhy}</div>
           <div className="ledger-foot">
-            <span>Thinking</span>
-            <span className="ledger-ticker" aria-hidden>[●●○]</span>
-            <span style={{ marginLeft: 'auto', font: '400 10px/1 DM Mono', color: '#8A8279' }}>● Ready</span>
+            <span style={{ fontWeight: 600, color: 'var(--stitch-ink, #1A1614)' }}>{phaseLabel}</span>
+            <div className="ledger-live-dots" aria-hidden>
+              <span className="ledger-dot" />
+              <span className="ledger-dot" />
+              <span className="ledger-dot" />
+            </div>
+            <span style={{ marginLeft: 'auto', font: '500 11px/1 DM Mono, monospace', color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
+              Local Processing
+            </span>
           </div>
         </div>
       </div>
@@ -407,8 +470,8 @@ export function MessageBubble({
       aria-label={streaming ? 'Assistant response in progress' : cancelled ? 'Cancelled generation' : 'Assistant response'}
       aria-live={streaming ? 'polite' : undefined}
     >
-      <div className="sv-message-avatar sv-message-avatar--assistant" aria-hidden>
-        <Sparkles size={16} />
+      <div className={`sv-message-avatar sv-message-avatar--assistant ${streaming ? 'is-live' : ''}`} aria-hidden>
+        <Sparkles size={16} className={streaming ? 'bot-live-sparkle' : ''} />
       </div>
       <div className="sv-message-bubble sv-message-assistant">
         <div className="sv-message-meta">

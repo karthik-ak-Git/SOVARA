@@ -14,6 +14,9 @@ interface MessageListProps {
   onRegenerate?: () => void
   onEditAndResend?: (content: string) => void
   busy?: boolean
+  execPhase?: string
+  execLabel?: string | null
+  execDetail?: string | null
   onOpenArtifact?: (artifact: ArtifactInfo) => void
 }
 
@@ -35,6 +38,9 @@ export function MessageList({
   onRegenerate,
   onEditAndResend,
   busy = false,
+  execPhase,
+  execLabel,
+  execDetail,
   onOpenArtifact,
 }: MessageListProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -110,7 +116,16 @@ export function MessageList({
           onOpenArtifact={onOpenArtifact}
         />
       ) : thinking ? (
-        <MessageBubble id="thinking" role="assistant" content="" thinking />
+        <MessageBubble
+          id="thinking"
+          role="assistant"
+          content=""
+          thinking
+          modelBadge={streamingModelBadge}
+          execPhase={execPhase}
+          execLabel={execLabel}
+          execDetail={execDetail}
+        />
       ) : null}
     </>
   )
