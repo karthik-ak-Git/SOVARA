@@ -326,6 +326,16 @@ export function AuxiliaryPane({
     e.preventDefault()
     if (!commandInput.trim()) return
     const cmd = commandInput.trim()
+
+    // Support native cls and clear commands
+    if (cmd.toLowerCase() === 'cls' || cmd.toLowerCase() === 'clear') {
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [] } : t))
+      )
+      setCommandInput('')
+      return
+    }
+
     setTerminalInstances((prev) =>
       prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`] } : t))
     )
@@ -345,7 +355,20 @@ export function AuxiliaryPane({
         try {
           const parsed = JSON.parse(raw)
           if (parsed && typeof parsed === 'object') {
-            text = parsed.stdout || parsed.stderr || parsed.message || parsed.error || raw
+            if (parsed.error && String(parsed.error).includes('timeout')) {
+              const out = (parsed.stdout || parsed.stderr || '').trim()
+              text = out
+                ? `${out.slice(0, 1000)}\n[Command timed out after 20s]`
+                : '[Command timed out (process requires interactive input or terminated)]'
+            } else {
+              const stdout = (parsed.stdout || '').trim()
+              const stderr = (parsed.stderr || '').trim()
+              if (stdout && stderr) {
+                text = `${stdout}\n${stderr}`
+              } else {
+                text = stdout || stderr || parsed.message || parsed.error || raw
+              }
+            }
           } else {
             text = raw
           }
