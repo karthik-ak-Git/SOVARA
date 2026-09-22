@@ -54,6 +54,7 @@ export function ProjectSelector({
         alignItems: 'center',
         gap: 6,
         marginBottom: 16,
+        position: 'relative',
       }}
     >
       <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
@@ -97,7 +98,7 @@ export function ProjectSelector({
           className="project-popover"
           role="listbox"
           aria-label="Projects"
-          style={{ width: 220, padding: '6px 0', background: '#ffffff', borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 4px 16px rgba(0,0,0,0.08)' }}
+          style={{ width: 220, padding: '4px 0' }}
         >
           {/* Projects List */}
           {defaultProjects.map((p) => {

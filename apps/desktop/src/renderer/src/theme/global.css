@@ -5385,6 +5385,25 @@ code { background: rgba(255,255,255,.06); border: 1px solid var(--border); paddi
 .model-popover-list::-webkit-scrollbar { width: 6px; }
 .model-popover-item-name { white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important; }
 .model-popover-item { min-width: 0; overflow: visible !important; }
+
+/* Project Selector Dropdown — Centered under landing pill */
+.project-selector-wrap { position: relative; }
+.project-selector-wrap .popover {
+  top: calc(100% + 6px) !important;
+  left: 50% !important;
+  right: auto !important;
+  transform: translateX(-50%) !important;
+  z-index: 200 !important;
+  padding: 4px !important;
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05) !important;
+  width: auto !important;
+}
+.project-popover-item:hover {
+  background: #f1f5f9 !important;
+}
 .sv-composer-input {
   width: 100%; background: transparent; border: none; resize: none;
   font: 400 15px/1.5 Inter, sans-serif; color: var(--stitch-ink, #1A1614);
