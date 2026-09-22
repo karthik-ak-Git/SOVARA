@@ -218,6 +218,7 @@ export function AuxiliaryPane({
     id: string
     name: string
     pid: string
+    shellType?: 'powershell' | 'cmd' | 'bash' | 'python' | 'node'
     logs: string[]
   }
 
@@ -369,6 +370,15 @@ export function AuxiliaryPane({
 
   const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
 
+  const promptPrefix = useMemo(() => {
+    const st = activeTerminal?.shellType || 'powershell'
+    if (st === 'cmd') return 'D:\\SOVARA>'
+    if (st === 'bash') return 'user@sovara:~/SOVARA$'
+    if (st === 'python') return '>>>'
+    if (st === 'node') return '>'
+    return 'PS D:\\SOVARA>'
+  }, [activeTerminal?.shellType])
+
   const handleRunCommand = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!commandInput.trim()) return
@@ -388,24 +398,14 @@ export function AuxiliaryPane({
       return
     }
 
-    // Auto-normalize inline Python commands (e.g. python print(...) -> python -c "print(...)")
-    let execCmd = cmd
-    if (/^python\s+print\(/.test(cmd)) {
-      const inner = cmd.replace(/^python\s+/, '')
-      execCmd = `python -c "${inner.replace(/"/g, '\\"')}"`
-    } else if (/^python\s+["'].*["']$/.test(cmd)) {
-      const inner = cmd.replace(/^python\s+/, '').slice(1, -1)
-      execCmd = `python -c "${inner.replace(/"/g, '\\"')}"`
-    }
-
     setTerminalInstances((prev) =>
-      prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`] } : t))
+      prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `${promptPrefix} ${cmd}`] } : t))
     )
     setCommandInput('')
 
     try {
       const res: any = await dispatchTool('run_command', {
-        CommandLine: execCmd,
+        CommandLine: cmd,
         Cwd: 'd:\\SOVARA',
         WaitMsBeforeAsync: 5000,
         _forceApprove: true,
@@ -1159,9 +1159,44 @@ export function AuxiliaryPane({
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>Terminals</span>
-                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', cursor: 'pointer' }}>
-                  Project v
-                </span>
+                <select
+                  aria-label="Select Terminal Shell"
+                  value={activeTerminal?.shellType || 'powershell'}
+                  onChange={(e) => {
+                    const val = e.target.value as any
+                    const names: Record<string, string> = {
+                      powershell: 'powershell.exe',
+                      cmd: 'cmd.exe',
+                      bash: 'bash.exe',
+                      python: 'python.exe',
+                      node: 'node.exe',
+                    }
+                    setTerminalInstances((prev) =>
+                      prev.map((t) =>
+                        t.id === activeTerminalId
+                          ? { ...t, shellType: val, name: names[val] || `${val}.exe` }
+                          : t
+                      )
+                    )
+                  }}
+                  style={{
+                    fontSize: 11,
+                    padding: '2px 8px',
+                    borderRadius: 6,
+                    background: '#f1f5f9',
+                    color: '#475569',
+                    border: '1px solid #e2e8f0',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    fontWeight: 500,
+                  }}
+                >
+                  <option value="powershell">PowerShell</option>
+                  <option value="cmd">Command Prompt (cmd)</option>
+                  <option value="bash">WSL / Bash</option>
+                  <option value="python">Python REPL</option>
+                  <option value="node">Node.js REPL</option>
+                </select>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#64748b' }}>
                 <button
@@ -1215,6 +1250,7 @@ export function AuxiliaryPane({
                     cursor: 'text',
                     wordBreak: 'break-all',
                     overflowWrap: 'anywhere',
+                    userSelect: 'text',
                   }}
                 >
                   {activeTerminal ? (
@@ -1222,10 +1258,11 @@ export function AuxiliaryPane({
                       <div
                         key={idx}
                         style={{
-                          color: logLine.startsWith('PS') ? '#0284c7' : '#334155',
+                          color: logLine.startsWith('PS') || logLine.startsWith('D:') || logLine.startsWith('user@') || logLine.startsWith('>') ? '#0284c7' : '#334155',
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-all',
                           overflowWrap: 'anywhere',
+                          userSelect: 'text',
                         }}
                       >
                         {logLine}
@@ -1245,7 +1282,7 @@ export function AuxiliaryPane({
                     }}
                   >
                     <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontWeight: 600, flexShrink: 0, marginRight: 6 }}>
-                      PS D:\SOVARA&gt;
+                      {promptPrefix}
                     </span>
                     <input
                       ref={terminalInputRef}
