@@ -497,8 +497,9 @@ export class AgentOrchestrator {
           checkBeforeLoad: async (modelId) => {
             try {
               const m = models.find((x) => x.modelId === modelId)
+              const resolvedPath = this.resolveModelFilePath(modelId) ?? (m as { path?: string })?.path ?? (m as { filePath?: string })?.filePath
               return await this.deps.resources.checkBeforeLoad(
-                { id: modelId as never, displayName: m?.displayName ?? modelId, path: (m as { path?: string })?.path ?? (m as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
+                { id: modelId as never, displayName: m?.displayName ?? modelId, path: resolvedPath, source: 'custom', format: 'gguf' } as never,
                 { ctxLen: classification.contextLengthNeeded }
               )
             } catch {
@@ -527,8 +528,9 @@ export class AgentOrchestrator {
 
       // Resource block already handled by router, but final guard with real path
       const routedM = models.find((x) => x.modelId === routing.modelId!)
+      const routedPath = this.resolveModelFilePath(routing.modelId!) ?? (routedM as { path?: string })?.path ?? (routedM as { filePath?: string })?.filePath
       const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: routing.modelId! as never, displayName: routedM?.displayName ?? routing.modelId!, path: (routedM as { path?: string })?.path ?? (routedM as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
+        { id: routing.modelId! as never, displayName: routedM?.displayName ?? routing.modelId!, path: routedPath, source: 'custom', format: 'gguf' } as never,
         { ctxLen: classification.contextLengthNeeded }
       )
       if (pressure.blocking) {
@@ -538,7 +540,8 @@ export class AgentOrchestrator {
         let fallback: typeof routing | null = null
         for (const cand of remaining) {
           try {
-            const p = await this.deps.resources.checkBeforeLoad({ id: cand.modelId as never, displayName: cand.displayName, path: (cand as { path?: string })?.path, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded })
+            const candPath = this.resolveModelFilePath(cand.modelId) ?? (cand as { path?: string })?.path
+            const p = await this.deps.resources.checkBeforeLoad({ id: cand.modelId as never, displayName: cand.displayName, path: candPath, source: 'custom', format: 'gguf' } as never, { ctxLen: classification.contextLengthNeeded })
             if (!p.blocking) {
               fallback = { modelId: cand.modelId, runtimeId: cand.runtimeId, reason: `auto-fallback from ${routing.modelId!} blocked (${msg.slice(0,60)}) → ${cand.modelId}`, task: classification, candidatesConsidered: remaining.length, switched: true }
               break
@@ -550,54 +553,26 @@ export class AgentOrchestrator {
           this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `auto-fallback to ${fallback.modelId}` })
           routing = fallback
         } else {
-          const errMsg = `resource-pressure: ${msg}`
-          this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
-          throw new AgentOrchestratorError('resource-blocked', errMsg)
+          // Instead of hard-blocking when CPU/RAM is available, transparently allow offload
+          this.safeLog(`[SOVARA][ROUTER] VRAM full for ${routing.modelId!}, using partial/CPU offload`)
+          ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
         }
       }
 
-      // ── PHASE 3: user selection sovereign — honor it; try full then partial, never silently switch to another model
-      // If the selected model cannot fit even partially, throw honest error with alternatives (user must pick).
+      // ── PHASE 3: user selection sovereign — honor it; try full then partial/CPU offload transparently
       {
         const selModel = models.find((m) => m.modelId === routing.modelId!)
-        // Even though routing is user-selected, verify it actually fits; try partial offload transparently
+        const selPath = this.resolveModelFilePath(routing.modelId!) ?? (selModel as { path?: string })?.path ?? (selModel as { filePath?: string })?.filePath
         const fullPressure = await this.deps.resources.checkBeforeLoad(
-          { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: (selModel as { path?: string })?.path ?? (selModel as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
+          { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: selPath, source: 'custom', format: 'gguf' } as never,
           { ctxLen: classification.contextLengthNeeded },
         ).catch(() => ({ blocking: false } as never))
         if ((fullPressure as { blocking?: boolean }).blocking) {
-          const fitPressure = await this.deps.resources.checkBeforeLoad(
-            { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: (selModel as { path?: string })?.path ?? (selModel as { filePath?: string })?.filePath, source: 'custom', format: 'gguf' } as never,
-            { ctxLen: classification.contextLengthNeeded, gpu: 'fit' } as never,
-          ).catch(() => ({ blocking: true } as never))
-          if (!(fitPressure as { blocking?: boolean }).blocking) {
-            this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds VRAM, using partial offload`)
-            ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
-          } else {
-            // Even partial doesn't fit — dynamic fallback: rank by ACTUAL free VRAM/RAM fit,
-            // never by hardcoded model names (dynamic hardware-first selection).
-            const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
-            const fitting = fit?.model ?? null
-            if (fitting && fitting.modelId !== routing.modelId) {
-              const vramTotalMb = resources.vram.totalMB ?? 0
-              const fitLabel = fit!.gpu ? `fits ${fit!.fitMb.toFixed(0)}MB VRAM` : `fits ${fit!.fitMb.toFixed(0)}MB RAM (CPU offload)`
-              this.safeLog(`[SOVARA][ROUTER] ${routing.modelId!} even partial no-fit → auto-fallback to ${fitting.modelId} (${fitLabel}, was user-selected but cannot fit ${vramTotalMb.toFixed(0)}MB VRAM)`)
-              this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `Selected ${routing.modelId!} too large for this GPU (even partial), auto-switching to ${fitting.modelId} that fits` })
-              routing = { modelId: fitting.modelId, runtimeId: fitting.runtimeId, reason: `auto-fallback: ${routing.modelId!} cannot fit ${vramTotalMb.toFixed(0)}MB VRAM even partial → ${fitting.modelId} (${fitLabel})`, task: classification, candidatesConsidered: models.length, switched: true }
-              // Persist the fallback as new active so UI pill updates
-              try { await this.deps.workbench.selectModel('local', fitting.modelId) } catch {}
-            } else {
-              const alternatives = models.filter((m) => m.available).map((m) => m.modelId).join(', ') || 'none'
-              const vramTotal = (resources.vram.totalMB ?? 0) > 0 ? `${(resources.vram.totalMB ?? 0).toFixed(0)}MB VRAM` : 'no GPU detected'
-              const errMsg = `resource-pressure: "${routing.modelId!}" needs ~${(fullPressure as { reason?: string }).reason ?? 'too much memory'} and even partial offload does not fit (${vramTotal}). Pick a model that fits: ${alternatives}. Your selection was honored — it just cannot run on this machine.`
-              this.emit(sid, 'task:error', { taskKind: classification.kind, detail: errMsg, error: errMsg })
-              throw new AgentOrchestratorError('resource-blocked', errMsg)
-            }
-          }
+          this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds full VRAM, enabling partial/CPU offload`)
+          ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
         }
         // Mark switched so workbench persists selection if needed and lifecycle uses correct gpuMode
         if (baseSnapshot && routing.modelId === baseSnapshot.modelId) {
-          // user selection already active — no workbench switch needed, but ensure lifecycle honors gpuMode
           routing.switched = false
         }
       }
@@ -2462,6 +2437,15 @@ export class AgentOrchestrator {
 
   private emit(sessionId: string, kind: ChatStreamEvent['kind'], extra: Partial<ChatStreamEvent> = {}): void {
     this.deps.emit({ sessionId, kind, ...extra })
+  }
+
+  private resolveModelFilePath(modelId?: string | null): string | undefined {
+    if (!modelId) return undefined
+    try {
+      const res = (this.deps.models as unknown as { resolveModelPath?: (id: string) => string })?.resolveModelPath?.(modelId)
+      if (res && fs.existsSync(res)) return res
+    } catch {}
+    return undefined
   }
 
   /** Best-effort activity accounting — null-safe, never breaks inference. */

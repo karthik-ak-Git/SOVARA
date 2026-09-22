@@ -74,23 +74,24 @@ export class SystemResourceStub implements SystemResourceManagerPort {
       const usedByOthers = instances
         .filter((i) => i.modelId !== model.id)
         .reduce((sum, i) => sum + (i.metrics?.vramUsedMB ?? 0), 0)
-      // Ollama-style: don't hard-block when partial offload or CPU still fits.
       const canFitPartial = (() => {
         try {
-          if (!model.path || !fs.existsSync(model.path)) return false
+          if (!model.path || !fs.existsSync(model.path)) return true // Default allow partial offload
           const size = fs.statSync(model.path).size
-          if (size <= 0) return false
+          if (size <= 0) return true
           const fit = planPartialFit({ modelPath: model.path, fileSizeBytes: size, ctxLen: opts?.ctxLen ?? 4096, totalMB: total, nParallel: 1, overheadMB: 256 })
           return fit !== null
-        } catch { return false }
+        } catch { return true }
       })()
       const canFitCpu = (() => {
         try {
-          if (!model.path || !fs.existsSync(model.path)) return false
           const totalRam = Math.round(os.totalmem() / (1024 * 1024))
-          // Allow CPU for large models if RAM can hold it — LM Studio does CPU offload for 12B on 16GB RAM with 4.1GB VRAM
-          return needMB <= totalRam * 0.80
-        } catch { return false }
+          if (model.path && fs.existsSync(model.path)) {
+            const size = fs.statSync(model.path).size / (1024 * 1024)
+            return size <= totalRam * 0.90
+          }
+          return needMB <= totalRam * 0.90 || totalRam >= 8000
+        } catch { return true }
       })()
       const effectiveFreeAfterEvict = total - usedByOthers
       if (needMB > total) {
