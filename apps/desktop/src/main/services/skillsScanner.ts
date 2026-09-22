@@ -239,7 +239,13 @@ export async function getAllDiscoveredSkills(
 
   // 3. Workspace-local skills
   if (workspaceRoot) {
-    const wsCandidates = ['.skills', 'skills', '.agents/skills', '.gemini/skills', '.opencode/skills']
+    // Standard candidates relative to workspace root
+    const wsCandidates = [
+      '.skills', 'skills',
+      '.agents/skills', '.gemini/skills', '.opencode/skills',
+      // Also scan monorepo desktop app skills folder
+      'apps/desktop/skills',
+    ]
     for (const rel of wsCandidates) {
       const p = join(workspaceRoot, rel)
       const skills = await listSkillsInDir(p)

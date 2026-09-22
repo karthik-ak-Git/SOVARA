@@ -416,30 +416,6 @@ export function ChatView({
               <div className="eyebrow">WORKSPACE / {eyebrowProject}</div>
               <h1>{activeTitle}</h1>
             </div>
-            {showExecution ? (
-              <div className="header-pipeline-compact" aria-label="Task pipeline" role="status" aria-live="polite">
-                <div className="pipeline-live-icon-wrap">
-                  <Sparkles size={13} className="bot-live-sparkle" />
-                </div>
-                <div className="pipeline-text-col">
-                  <div className="pipeline-status-row">
-                    <span className="pipeline-action-label">{executionLabel ?? 'Processing task…'}</span>
-                    <span className="pipeline-step-badge">
-                      Step {Math.max(1, Math.min(activeStage + 1, 7))}/7
-                    </span>
-                  </div>
-                  <div className="pipeline-dots-row">
-                    {STAGE_ORDER.slice(0, 7).map((s, i) => (
-                      <span
-                        key={s.key}
-                        className={`pipeline-dot-node ${i < activeStage ? 'is-done' : ''} ${i === activeStage ? 'is-active' : ''}`}
-                        title={`${s.label}: ${i < activeStage ? 'Done' : i === activeStage ? 'In progress' : 'Upcoming'}`}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : null}
           </div>
           <div style={{ padding: '8px 44px 0' }}>
             <SessionBadge label={`TODAY • ${projectName ? `Project ${projectName}` : 'Sovora Sovereign Workspace'}`} />

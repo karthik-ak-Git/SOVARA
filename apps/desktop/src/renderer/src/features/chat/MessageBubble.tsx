@@ -310,60 +310,54 @@ export function MessageBubble({
         ? 'Writing File'
         : 'Thinking'
 
-    const phaseProgress: Record<string, number> = {
-      reading: 16,
-      planning: 32,
-      prompting: 48,
-      selecting: 62,
-      loading: 78,
-      thinking: 88,
-      streaming: 96,
-      tool: 72,
-      artifact: 84,
-    }
-    const currentProgress = phaseProgress[phaseKey] ?? 50
 
-    const dynamicWhy =
-      execLabel ||
-      execDetail ||
-      (phaseKey === 'loading'
-        ? `Loading local model weights into memory (${modelBadge ?? 'GGUF weights'})…`
-        : phaseKey === 'reading'
-        ? 'Reading attachments and local workspace context…'
-        : phaseKey === 'planning'
-        ? 'Analyzing task intent and structuring response plan…'
-        : phaseKey === 'prompting'
-        ? 'Assembling prompt and system instructions…'
-        : phaseKey === 'selecting'
-        ? 'Routing to optimal local model for this task…'
-        : 'Analyzing your request — building context before generating…')
+    // Build activity steps based on current phase
+    const phaseSteps: Array<{ label: string; done: boolean; active: boolean }> = []
+
+    if (phaseKey === 'reading') {
+      phaseSteps.push({ label: execDetail ?? 'Reading workspace context…', done: false, active: true })
+    } else if (phaseKey === 'planning') {
+      phaseSteps.push({ label: 'Reading workspace context', done: true, active: false })
+      phaseSteps.push({ label: execDetail ?? 'Analyzing task intent…', done: false, active: true })
+    } else if (phaseKey === 'prompting') {
+      phaseSteps.push({ label: 'Reading workspace context', done: true, active: false })
+      phaseSteps.push({ label: 'Analyzing task intent', done: true, active: false })
+      phaseSteps.push({ label: 'Assembling prompt…', done: false, active: true })
+    } else if (phaseKey === 'selecting') {
+      phaseSteps.push({ label: 'Assembled prompt', done: true, active: false })
+      phaseSteps.push({ label: `Routing to best model${execDetail ? ` — ${execDetail}` : ''}…`, done: false, active: true })
+    } else if (phaseKey === 'loading') {
+      phaseSteps.push({ label: 'Routing complete', done: true, active: false })
+      phaseSteps.push({ label: execLabel ?? `Loading ${modelBadge ?? 'model weights'}…`, done: false, active: true })
+    } else if (phaseKey === 'thinking') {
+      phaseSteps.push({ label: `Loaded ${modelBadge ?? 'model'}`, done: true, active: false })
+      phaseSteps.push({ label: execDetail ?? 'Reasoning through the task…', done: false, active: true })
+    } else {
+      phaseSteps.push({ label: execLabel ?? 'Working…', done: false, active: true })
+    }
 
     return (
       <div key={id} data-testid="assistant-thinking" data-role="assistant" className="sv-message sv-message--assistant" aria-live="polite" aria-label="Assistant is thinking" style={{ alignItems: 'flex-start' } as React.CSSProperties}>
-        <div className="sovereign-ledger" role="status" aria-label="Sovara loading">
-          <div className="ledger-head">
-            <span className="ledger-mark is-live" aria-hidden>
-              <Sparkles size={14} className="bot-live-sparkle" />
-            </span>
-            <span className="ledger-name">Sovara</span>
-            <span className={`ledger-phase ${phaseKey}`}>{phaseLabel}</span>
-            <span className="ledger-meta">LOCAL MODEL — {modelBadge ?? 'local'} • Active</span>
+        <div className="sv-thinking-activity" role="status" aria-label="Sovara working">
+          <div className="sv-thinking-activity-header">
+            <Sparkles size={13} className="sv-thinking-sparkle" />
+            <span className="sv-thinking-activity-title">{phaseLabel}</span>
+            <span className="sv-thinking-activity-chevron">›</span>
           </div>
-          <div className="ledger-track" aria-hidden>
-            <div className="ledger-fill" style={{ width: `${currentProgress}%` } as React.CSSProperties} />
-          </div>
-          <div className="ledger-why" title={dynamicWhy}>{dynamicWhy}</div>
-          <div className="ledger-foot">
-            <span style={{ fontWeight: 600, color: 'var(--stitch-ink, #1A1614)' }}>{phaseLabel}</span>
-            <div className="ledger-live-dots" aria-hidden>
-              <span className="ledger-dot" />
-              <span className="ledger-dot" />
-              <span className="ledger-dot" />
-            </div>
-            <span style={{ marginLeft: 'auto', font: '500 11px/1 DM Mono, monospace', color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
-              Local Processing
-            </span>
+          <div className="sv-thinking-activity-steps">
+            {phaseSteps.map((step, idx) => (
+              <div key={idx} className={`sv-thinking-step ${step.done ? 'is-done' : ''} ${step.active ? 'is-active' : ''}`}>
+                {step.done ? (
+                  <span className="sv-thinking-step-verb">Completed</span>
+                ) : (
+                  <span className="sv-thinking-step-verb">Working</span>
+                )}
+                <span className="sv-thinking-step-label">{step.label}</span>
+                {step.active && (
+                  <span className="sv-thinking-step-dot" aria-hidden />
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </div>
