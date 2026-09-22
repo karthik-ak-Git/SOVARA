@@ -27,6 +27,41 @@ const REASONING_PATTERNS = [
 
 const ARTIFACT_BUILD_RE = /\b(ppt|pptx|presentation|pdf|docx|xlsx|slide|slides|report|dashboard|game|canvas|diagram)\b/i
 
+// Enhanced: skill detection per audit
+export function detectSkillNeeds(content: string, attachments?: Array<{ mimeType: string }>): string[] {
+  const needs = new Set<string>()
+  const patterns: Record<string, RegExp> = {
+    pptx: /\b(pptx|powerpoint|presentation|slide|deck)\b/gi,
+    docx: /\b(docx|word|document|approval.*note|memo|letter)\b/gi,
+    xlsx: /\b(xlsx|excel|spreadsheet|calculation|financial|budget)\b/gi,
+    pdf: /\b(pdf|convert.*pdf|export.*pdf)\b/gi,
+    ocr: /\b(scan|ocr|handwritten|extract.*text|read.*image)\b/gi,
+    diagram: /\b(mermaid|flowchart|diagram|architecture|uml)\b/gi,
+    code: /\b(function|class|algorithm|script|execute|run.*code)\b/gi,
+    rag: /\b(search|knowledge.*base|sop|manual|reference|document.*search)\b/gi,
+  }
+  for (const [skill, re] of Object.entries(patterns)) {
+    re.lastIndex = 0
+    if (re.test(content)) needs.add(skill)
+  }
+  if (attachments) {
+    const hasVision = attachments.some((a) => a.mimeType.startsWith('image/') || a.mimeType === 'application/pdf')
+    if (hasVision) { needs.add('vision'); needs.add('ocr') }
+  }
+  return Array.from(needs)
+}
+
+export function detectMultimodal(attachments: Array<{ mimeType: string; size?: number; name?: string }>): { needsVision: boolean; types: string[] } {
+  const types = new Set<string>()
+  let needsVision = false
+  for (const att of attachments) {
+    if (att.mimeType.startsWith('image/')) { types.add('image'); needsVision = true }
+    if (att.mimeType === 'application/pdf') { types.add('pdf'); needsVision = true }
+    if (att.mimeType.startsWith('application/vnd.openxmlformats-officedocument')) types.add('document')
+  }
+  return { needsVision, types: Array.from(types) }
+}
+
 function needsReasoning(text: string, explicit?: boolean): boolean {
   if (explicit) return true
   if (REASONING_PATTERNS.some((re) => re.test(text))) return true
@@ -40,7 +75,28 @@ function estimateContextNeeded(text: string, extraChars = 0): number {
   const historyTokens = extraChars > 500 ? Math.ceil(extraChars / 4) : 0
   const needed = contentTokens + historyTokens + 512
   const tiers = [512, 1024, 2048, 4096, 8192, 16384, 32768] as const
-  return tiers.find((t) => t >= Math.max(512, needed)) || 32768
+  let tier = tiers.find((t) => t >= Math.max(512, needed)) || 32768
+  // Artifact builds inject ~6k chars of skill context — ensure at least 8192 so 3307 token prompt doesn't exceed 2048
+  if (ARTIFACT_BUILD_RE.test(text) && tier < 8192) tier = 8192
+  return tier
+}
+
+export function classifyTaskEnhanced(
+  content: string,
+  attachments?: Array<{ mimeType: string; size: number; name: string }>,
+  hints?: { reasoning?: boolean; webSearch?: boolean; hasImage?: boolean; attachmentChars?: number }
+): TaskClassification & { skillsNeeded: string[]; needsMultimodal: boolean; requiresArtifact: boolean; artifactType?: TaskClassification['artifactType'] } {
+  const base = classifyTask(content, hints)
+  const skillsNeeded = detectSkillNeeds(content, attachments)
+  const { needsVision, types } = attachments ? detectMultimodal(attachments) : { needsVision: false, types: [] as string[] }
+  const requiresArtifact = skillsNeeded.some((s) => ['pptx','docx','xlsx','pdf','code','html'].includes(s))
+  let artifactType: TaskClassification['artifactType']
+  if (skillsNeeded.includes('pptx')) artifactType='pptx'
+  else if (skillsNeeded.includes('docx')) artifactType='docx'
+  else if (skillsNeeded.includes('xlsx')) artifactType='xlsx'
+  else if (skillsNeeded.includes('pdf')) artifactType='pdf'
+  else if (skillsNeeded.includes('code')) artifactType='code'
+  return { ...base, skillsNeeded, needsMultimodal: types.length>0, requiresArtifact, artifactType, requiresVision: base.requiresVision || needsVision }
 }
 
 export function classifyTask(

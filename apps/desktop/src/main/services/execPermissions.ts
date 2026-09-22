@@ -40,12 +40,52 @@ export function isSafeTool(toolName: string): boolean {
   return SAFE_PREFIXES.some((p) => n === p || n.startsWith(`${p}_`) || n.startsWith(`${p}-`) || n.startsWith(`${p}.`) || n.startsWith(p))
 }
 
+export type PermissionScope = 'once' | 'conversation' | 'project' | 'global'
+
+const allowedByScope = {
+  global: new Set<string>(),
+  project: new Map<string, Set<string>>(), // projectId -> set of keys
+  conversation: new Map<string, Set<string>>(), // sessionId -> set
+}
+
+function toolKey(toolName: string, args: Record<string, unknown> = {}): string {
+  const cmd = (args['command'] as string) || (args['CommandLine'] as string) || (args['cmd'] as string) || (args['path'] as string) || ''
+  return `${toolName}::${cmd.slice(0, 200)}`
+}
+
+export function rememberApproval(toolName: string, args: Record<string, unknown>, scope: PermissionScope, sessionId?: string, projectId?: string | null): void {
+  const key = toolKey(toolName, args)
+  if (scope === 'global') allowedByScope.global.add(key)
+  else if (scope === 'project' && projectId) {
+    const s = allowedByScope.project.get(projectId) ?? new Set<string>()
+    s.add(key)
+    allowedByScope.project.set(projectId, s)
+  } else if (scope === 'conversation' && sessionId) {
+    const s = allowedByScope.conversation.get(sessionId) ?? new Set<string>()
+    s.add(key)
+    allowedByScope.conversation.set(sessionId, s)
+  }
+  // 'once' needs no persistence — caller uses _forceApprove for single dispatch
+}
+
+export function isScopedAllowed(toolName: string, args: Record<string, unknown>, sessionId?: string, projectId?: string | null): boolean {
+  const key = toolKey(toolName, args)
+  if (allowedByScope.global.has(key)) return true
+  if (projectId && allowedByScope.project.get(projectId)?.has(key)) return true
+  if (sessionId && allowedByScope.conversation.get(sessionId)?.has(key)) return true
+  return false
+}
+
 export type GateVerdict =
   | { allowed: true; autoApproved: boolean }
   | { allowed: false; reason: 'disabled' | 'needs-approval'; message: string }
 
-export function gateDispatch(mode: ExecMode, toolName: string): GateVerdict {
+export function gateDispatch(mode: ExecMode, toolName: string, args?: Record<string, unknown>, sessionId?: string, projectId?: string | null): GateVerdict {
   const name = toolName || 'unknown-tool'
+  // Scoped allowlist overrides mode (conversation/project/global remember)
+  if (args && isScopedAllowed(toolName, args, sessionId, projectId)) {
+    return { allowed: true, autoApproved: true }
+  }
   switch (mode) {
     case 'off':
       return {

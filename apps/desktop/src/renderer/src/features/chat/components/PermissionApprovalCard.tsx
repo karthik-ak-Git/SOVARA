@@ -53,11 +53,12 @@ export function PermissionApprovalCard({
     { index: 5, label: 'No (tell the agent what to do instead)' },
   ]
 
-  const handleSubmit = (): void => {
-    if (selectedOption === 5) {
+  const handleSubmit = (overrideIdx?: number): void => {
+    const idx = overrideIdx ?? selectedOption
+    if (idx === 5) {
       onApprove(5, feedbackText)
     } else {
-      onApprove(selectedOption)
+      onApprove(idx)
     }
   }
 
@@ -119,23 +120,36 @@ export function PermissionApprovalCard({
         {commandStr}
       </div>
 
-      {/* 5 Selectable Options */}
-      <div className="flex flex-col gap-1 mb-3.5">
+      {/* 5 Selectable Options — click to select, double-click to submit */}
+      <div className="flex flex-col gap-1 mb-3.5" role="radiogroup" aria-label="Permission options">
         {options.map((opt) => {
           const isSelected = selectedOption === opt.index
           return (
             <div
               key={opt.index}
+              role="radio"
+              aria-checked={isSelected}
+              tabIndex={0}
               onClick={() => {
                 setSelectedOption(opt.index)
                 if (opt.index === 5) {
                   setTimeout(() => textareaRef.current?.focus(), 50)
                 }
               }}
-              className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors select-none ${
+              onDoubleClick={() => {
+                setSelectedOption(opt.index)
+                setTimeout(() => handleSubmit(opt.index), 30)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  handleSubmit(opt.index)
+                }
+              }}
+              className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors select-none border ${
                 isSelected
-                  ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium'
-                  : 'hover:bg-zinc-100/70 dark:hover:bg-zinc-800/40 text-zinc-700 dark:text-zinc-300'
+                  ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium border-zinc-300 dark:border-zinc-700 shadow-sm'
+                  : 'hover:bg-zinc-100/70 dark:hover:bg-zinc-800/40 text-zinc-700 dark:text-zinc-300 border-transparent hover:border-zinc-200 dark:hover:border-zinc-700'
               }`}
             >
               <div
@@ -147,7 +161,7 @@ export function PermissionApprovalCard({
               >
                 {opt.index}
               </div>
-              <div className="text-xs leading-relaxed pt-0.5">
+              <div className="text-xs leading-relaxed pt-0.5 flex-1">
                 {opt.label}
               </div>
             </div>
@@ -181,8 +195,8 @@ export function PermissionApprovalCard({
 
         <button
           type="button"
-          onClick={handleSubmit}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md border-none cursor-pointer bg-[#0078D4] hover:bg-[#006cc1] text-white shadow-sm transition-all"
+          onClick={() => handleSubmit()}
+          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md border-none cursor-pointer bg-[#0078D4] hover:bg-[#006cc1] text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
           Submit <CornerDownLeft size={13} />
         </button>

@@ -250,11 +250,22 @@ function remoteModelId(qualified: string): string {
 
 export class AgentOrchestrator {
   private readonly inFlight = new Map<string, AbortController>()
-  private readonly pendingApprovals = new Map<string, { resolve: (val: { approved: boolean, modifiedArgs?: any }) => void }>()
+  private readonly pendingApprovals = new Map<string, { resolve: (val: { approved: boolean, modifiedArgs?: any }) => void, toolName: string, toolArgs: Record<string, unknown>, sessionId: string, projectId: string | null }>()
 
   public resolveToolApproval(toolCallId: string, approved: boolean, modifiedArgs?: any) {
     const pending = this.pendingApprovals.get(toolCallId)
     if (pending) {
+      // Persist scoped allowlist so next identical command auto-runs
+      try {
+        const scope = (modifiedArgs as Record<string, unknown> | undefined)?.['_permissionScope'] as string | undefined
+        if (approved && scope && scope !== 'once') {
+          const { rememberApproval } = require('../services/execPermissions') as typeof import('../services/execPermissions')
+          const clean: Record<string, unknown> = { ...(modifiedArgs as Record<string, unknown> || pending.toolArgs) }
+          delete (clean as any)._forceApprove; delete (clean as any)._permissionScope; delete (clean as any).sessionId; delete (clean as any).__toolName
+          // Prefer clean (approved) args but keep original toolName
+          rememberApproval(pending.toolName, clean, scope as any, pending.sessionId, pending.projectId)
+        }
+      } catch {}
       pending.resolve({ approved, modifiedArgs })
       this.pendingApprovals.delete(toolCallId)
     }
@@ -534,8 +545,14 @@ export class AgentOrchestrator {
       }
 
       if (!routing.modelId! || !routing.runtimeId!) {
+        const isVisionNeeded = (routing.reason || '').includes('vision-model-required')
         const msg = `No compatible model available for task "${classification.kind}". ${routing.reason}`
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
+        // For vision tasks, emit a dedicated event so frontend can show "Load vision model" prompt window
+        if (isVisionNeeded) {
+          this.deps.emit({ sessionId: sid, kind: 'vision:model-required' as any, detail: msg, taskKind: classification.kind } as any)
+          throw new AgentOrchestratorError('no-model-available', msg)
+        }
         throw new AgentOrchestratorError('no-model-available', msg)
       }
 
@@ -924,12 +941,12 @@ export class AgentOrchestrator {
       // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
       // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
       // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
-      let nCtx = classification.contextLengthNeeded || 8192
-      // Try to read actual server ctx from resident instance
+      let nCtx = Math.max(8192, classification.contextLengthNeeded || 8192)
+      // Try to read actual server ctx from resident instance — but never downgrade below needed
       try {
         const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
         const hit = insts?.find((x) => String(x.modelId) === String(routing.modelId!) || String(x.id).includes(String(routing.modelId!).replace(/[^a-z0-9]/gi, '_')))
-        if (hit?.ctxLen && hit.ctxLen > 0) nCtx = hit.ctxLen
+        if (hit?.ctxLen && hit.ctxLen > 0) nCtx = Math.max(nCtx, hit.ctxLen)
       } catch {}
       const systemChars = systemBlocks.join('\n\n').length
       // Floor 8192 — sovereign prompt is 6460 tokens, so 4096 always overflows.
@@ -1274,8 +1291,8 @@ export class AgentOrchestrator {
                   reasoningBuffer = ''
                 }
                 inReasoning = false
-                // Rate-limit: only log every 800 chars to avoid spam
-                if (allReasoning.length % 800 < 100) console.log(`[SOVARA][THINKING] block closed (${allReasoning.length} chars)`)
+                // Rate-limit: only log every ~2k chars and not for tiny blocks <500
+                if (allReasoning.length > 500 && allReasoning.length % 2000 < 200) console.log(`[SOVARA][THINKING] block closed (${allReasoning.length} chars)`)
                 delta = parts.slice(1).join('')
                 if (!delta) continue
               }
@@ -1404,18 +1421,23 @@ export class AgentOrchestrator {
 
               let toolResult: string
               try {
+                // Resolve projectId for scoped checks (session -> project)
+                let projId: string | null = null
+                try {
+                  const hdr: any = await this.deps.persistence.get(sessionId as never).catch(() => null)
+                  projId = hdr?.projectId ?? null
+                } catch {}
                 const mode = this.deps.getExecMode?.() ?? 'review'
-                const gate = gateDispatch(mode, toolName)
+                const gate = gateDispatch(mode, toolName, toolArgs, sid, projId)
                 
                 if (!gate.allowed) {
                   if (gate.reason === 'disabled') {
                     toolResult = JSON.stringify({ error: `Tool execution disabled by permission policy (mode: off).` })
                   } else {
-                    // needs-approval
-                    // Pause and wait for user approval
+                    // needs-approval — include projectId for scoped remember
                     this.deps.emit({ sessionId: sid, kind: 'agent:needs-approval', toolCallId: tc.id, toolName, args: toolArgs } as never)
                     const approval = await new Promise<{ approved: boolean, modifiedArgs?: any }>((resolve) => {
-                      this.pendingApprovals.set(tc.id, { resolve })
+                      this.pendingApprovals.set(tc.id, { resolve, toolName, toolArgs: { ...toolArgs }, sessionId: sid, projectId: projId })
                     })
                     if (!approval.approved) {
                       toolResult = JSON.stringify({ error: 'User denied tool execution.' })

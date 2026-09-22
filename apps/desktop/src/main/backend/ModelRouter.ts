@@ -207,6 +207,26 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
   // We keep their files for Library listing, but we NEVER route a prompt to :1234 / :11434.
   const sovereign = models.filter((m) => m.runtimeId === 'local')
   const available = (sovereign.length > 0 ? sovereign : models).filter((m) => m.available)
+
+  // Smart route: if task needs vision but no sovereign vision model is available, surface a vision-model-required decision
+  // Frontend will catch this and prompt user to load a vision model (e.g., Unlimited-OCR, Qwen-VL, LLaVA).
+  if ((task as any).requiresVision || (task as any).needsVision) {
+    const hasVisionModel = available.some((m) => {
+      const { capabilities } = resolveCapabilities(m.modelId, m.capabilities, m.contextLength)
+      return capabilities.includes('vision')
+    })
+    if (!hasVisionModel && available.length > 0) {
+      // No vision-capable sovereign model present — return a blocked decision so orchestrator can emit vision:model-required
+      return {
+        modelId: null,
+        runtimeId: null,
+        reason: 'vision-model-required: task requires image understanding but no vision-capable local model is available — prompt user to load a vision model (e.g., baidu/Unlimited-OCR, Qwen2-VL, LLaVA) via Models → Vision',
+        task,
+        candidatesConsidered: available.length,
+        switched: false,
+      }
+    }
+  }
   if (available.length === 0) {
     return {
       modelId: null,

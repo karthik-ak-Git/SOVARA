@@ -238,8 +238,27 @@ export function useChatSession() {
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'done', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail, stepIndex: ev.stepIndex })
         return
       }
+      if (ev.kind === 'vision:model-required' as any) {
+        if (!isSelected) return
+        const msg = (ev as any).detail || 'Vision model required for image understanding'
+        setExecution({ taskKind: (ev as any).taskKind ?? null, phase: 'error', error: msg, detail: msg })
+        setError(`${msg} — open Models → Vision to load a vision model (e.g., Unlimited-OCR, Qwen-VL, LLaVA)`)
+        setPhase('idle')
+        // Emit global event for App.tsx to open vision loader prompt
+        try { window.dispatchEvent(new CustomEvent('sovara:vision-model-required', { detail: { message: msg } })) } catch {}
+        return
+      }
       if (ev.kind === 'task:error') {
         if (!isSelected) return
+        // Surface vision-model-required as a distinct actionable error
+        const detail: string = (ev as any).detail || ev.error || 'Task failed'
+        if (detail.includes('vision-model-required')) {
+          setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'error', error: detail, detail })
+          setError(`${detail} — open Models → Vision to load a vision model`)
+          setPhase('idle')
+          try { window.dispatchEvent(new CustomEvent('sovara:vision-model-required', { detail: { message: detail } })) } catch {}
+          return
+        }
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'error', error: ev.error ?? ev.detail, detail: ev.detail, modelId: ev.modelId, runtimeId: ev.runtimeId })
         setError(ev.error ?? ev.detail ?? 'Task failed')
         setPhase('idle')

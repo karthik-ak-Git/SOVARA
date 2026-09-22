@@ -102,6 +102,21 @@ export function App(): React.JSX.Element {
   const chat = useChatSession()
   const workbench = useModelWorkbench()
 
+  // Smart Route: vision prompt window — when image uploaded but current model has no vision, show loader
+  useEffect(() => {
+    const onVisionNeeded = (e: Event): void => {
+      const detail = (e as CustomEvent).detail?.message as string | undefined
+      setErr(detail || 'Vision model required — load a vision-capable model to understand images')
+      handleOpenSettings('models')
+      // Also toast after a tick so user sees both modal and error banner
+      setTimeout(() => {
+        // Keep banner for 6s
+      }, 100)
+    }
+    window.addEventListener('sovara:vision-model-required', onVisionNeeded as EventListener)
+    return () => window.removeEventListener('sovara:vision-model-required', onVisionNeeded as EventListener)
+  }, [])
+
   useEffect(() => {
     getAppInfo()
       .then((v) => setInfo(v as Info))

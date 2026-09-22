@@ -556,10 +556,29 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('tools:dispatch', async (_e, raw: unknown) => {
     const parsed = zToolDispatch.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid tools:dispatch payload: ${parsed.error.message}`)
-    const args = parsed.data.args as Record<string, unknown> & { _forceApprove?: boolean; sessionId?: string }
+    const args = parsed.data.args as Record<string, unknown> & { _forceApprove?: boolean; sessionId?: string; _permissionScope?: string }
     const mode = getBackend().getExecMode()
     const force = args._forceApprove === true
-    const verdict = gateDispatch(mode, parsed.data.name)
+    // Resolve session→project for scoped allowlist (same as orchestrator)
+    let projForGate: string | null = null
+    const sessForGate = typeof args['sessionId'] === 'string' ? (args['sessionId'] as string) : undefined
+    if (sessForGate) {
+      try {
+        const hdr: any = await getBackend().ports.persistence.get(brand<'SessionId'>(sessForGate) as never).catch(() => null)
+        projForGate = hdr?.projectId ?? null
+      } catch {}
+    }
+    // Persist scoped approval for _forceApprove with scope (e.g., "always allow in conversation")
+    try {
+      const scope = (args as any)._permissionScope as string | undefined
+      if (force && scope && scope !== 'once') {
+        const { rememberApproval } = await import('../services/execPermissions')
+        const clean: Record<string, unknown> = { ...(args as Record<string, unknown>) }
+        delete (clean as any)._forceApprove; delete (clean as any)._permissionScope; delete (clean as any).sessionId
+        rememberApproval(parsed.data.name, clean, scope as any, sessForGate, projForGate)
+      }
+    } catch {}
+    const verdict = gateDispatch(mode, parsed.data.name, args as Record<string, unknown>, sessForGate, projForGate)
     if (!verdict.allowed && !force) {
       return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message, toolName: parsed.data.name, toolArgs: parsed.data.args }
     }

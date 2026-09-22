@@ -27,6 +27,14 @@ export interface TaskClassification {
   requiresVision?: boolean
   /** Human-readable reason for debugging / audit. */
   reason: string
+  /** Enhanced: detected skill needs for this task (pptx/docx/xlsx/pdf/ocr/diagram/code/rag) */
+  skillsNeeded?: string[]
+  /** Enhanced: whether artifact file generation is required */
+  requiresArtifact?: boolean
+  /** Enhanced: artifact type inferred from skills */
+  artifactType?: 'pptx' | 'docx' | 'xlsx' | 'pdf' | 'code' | 'html'
+  /** Enhanced: multimodal detection */
+  needsMultimodal?: boolean
 }
 
 export interface TaskRequest {
