@@ -113,11 +113,11 @@ export function ModelSelector({
         anchorRef={triggerRef}
         label="Model selector"
       >
-        <div className="model-popover" role="listbox" aria-label="Available models" style={{ width: 260, padding: '8px 0' }}>
-          <div className="model-popover-head" style={{ padding: '0 12px 8px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span className="model-popover-title" style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>MODEL</span>
-            <div className="model-popover-search" style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f8fafc', padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-              <Search size={13} style={{ color: '#94a3b8' }} aria-hidden />
+        <div className="model-popover" role="listbox" aria-label="Available models" style={{ width: '100%', padding: '4px 0' }}>
+          <div className="model-popover-head" style={{ padding: '4px 8px 8px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span className="model-popover-title" style={{ fontSize: 11, fontWeight: 700, color: '#64748b', letterSpacing: '0.05em' }}>MODEL</span>
+            <div className="model-popover-search" style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f8fafc', padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+              <Search size={12} style={{ color: '#94a3b8' }} aria-hidden />
               <input
                 type="search"
                 className="input model-popover-filter"
@@ -128,12 +128,12 @@ export function ModelSelector({
                 ref={(el) => {
                   if (el) setTimeout(() => el.focus(), 0)
                 }}
-                style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12, width: 110 }}
+                style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 11, width: 110, color: '#0f172a' }}
               />
             </div>
           </div>
 
-          <ul className="model-popover-list" style={{ listStyle: 'none', margin: 0, padding: '4px 6px', maxHeight: 240, overflowY: 'auto' }}>
+          <ul className="model-popover-list" style={{ listStyle: 'none', margin: 0, padding: '4px', maxHeight: 220, overflowY: 'auto' }}>
             <li
               role="option"
               aria-selected={isAuto}
@@ -164,6 +164,7 @@ export function ModelSelector({
                 cursor: 'pointer',
                 background: isAuto ? '#f1f5f9' : 'transparent',
                 fontSize: 12,
+                marginBottom: 2,
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -203,8 +204,10 @@ export function ModelSelector({
                       padding: '7px 10px',
                       borderRadius: 6,
                       cursor: 'pointer',
-                      background: isActive ? '#e0f2fe' : 'transparent',
+                      background: isActive ? '#f0f9ff' : 'transparent',
+                      border: isActive ? '1px solid #bae6fd' : '1px solid transparent',
                       fontSize: 12,
+                      marginBottom: 2,
                     }}
                   >
                     <span style={{ fontWeight: isActive ? 600 : 400, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.displayName}>

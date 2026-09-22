@@ -35,11 +35,15 @@ export function ProjectSelector({
         { id: 'sovara-landingpage', name: 'sovara-landingpage' },
       ]
 
-  const activeName =
-    currentProjectName ??
-    (selectedProjectId
-      ? defaultProjects.find((p) => p.id === selectedProjectId)?.name ?? 'SOVARA'
-      : 'SOVARA')
+  const activeProject = selectedProjectId
+    ? defaultProjects.find((p) => p.id === selectedProjectId)
+    : null
+
+  const activeName = activeProject
+    ? activeProject.name
+    : selectedProjectId && selectedProjectId !== '__global__'
+    ? selectedProjectId
+    : currentProjectName || 'SOVARA Workspace'
 
   return (
     <div
@@ -97,7 +101,7 @@ export function ProjectSelector({
         >
           {/* Projects List */}
           {defaultProjects.map((p) => {
-            const isSel = activeName === p.name || selectedProjectId === p.id
+            const isSel = selectedProjectId === p.id || (selectedProjectId === null && activeName === p.name)
             return (
               <button
                 key={p.id}

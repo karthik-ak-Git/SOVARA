@@ -388,7 +388,7 @@ export function ChatView({
           <ProjectSelector
             projects={projects}
             selectedProjectId={selectedProjectId}
-            onSelectProject={(id) => { if (id && onSelectProject) onSelectProject(id) }}
+            onSelectProject={(id) => { if (onSelectProject) onSelectProject(id ?? '__global__') }}
             onNewProject={onNewProject}
             currentProjectName={projectName}
           />

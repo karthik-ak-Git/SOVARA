@@ -241,7 +241,11 @@ export function App(): React.JSX.Element {
     const activeSess = chat.sessions.find((s) => s.id === chat.selectedId)
     const pid = activeSess?.projectId ?? selectedProjectId
     if (!pid || pid === '__global__') return 'SOVARA Workspace'
-    return projects.find((p) => p.id === pid)?.name ?? 'SOVARA Workspace'
+    const found = projects.find((p) => p.id === pid)
+    if (found) return found.name
+    if (pid === 'sovara-main') return 'SOVARA'
+    if (pid === 'sovara-landingpage') return 'sovara-landingpage'
+    return pid
   }, [chat.selectedId, chat.sessions, selectedProjectId, projects])
 
   const activeModelDisplay = useMemo(() => {
