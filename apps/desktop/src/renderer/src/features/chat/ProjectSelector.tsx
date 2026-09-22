@@ -80,9 +80,9 @@ export function ProjectSelector({
           boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
         }}
       >
-        <Folder size={15} style={{ color: '#0f172a' }} aria-hidden />
+        <Folder size={16} style={{ color: '#0f172a' }} aria-hidden />
         <span>{activeName}</span>
-        <ChevronDown size={14} style={{ color: '#64748b' }} aria-hidden />
+        <ChevronDown size={15} style={{ color: '#64748b' }} aria-hidden />
       </button>
 
       <Popover
@@ -128,13 +128,13 @@ export function ProjectSelector({
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Folder size={15} style={{ color: '#334155' }} />
+                  <Folder size={16} style={{ color: '#334155' }} />
                   <span>{p.name}</span>
                 </div>
                 {isSel ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Settings size={13} style={{ color: '#64748b' }} />
-                    <Check size={14} style={{ color: '#0f172a' }} />
+                    <Settings size={14} style={{ color: '#64748b' }} />
+                    <Check size={15} style={{ color: '#0f172a' }} />
                   </div>
                 ) : null}
               </button>
@@ -166,7 +166,7 @@ export function ProjectSelector({
               color: '#334155',
             }}
           >
-            <FolderPlus size={15} style={{ color: '#64748b' }} />
+            <FolderPlus size={16} style={{ color: '#64748b' }} />
             <span>New Project</span>
           </button>
 
@@ -192,7 +192,7 @@ export function ProjectSelector({
               color: '#334155',
             }}
           >
-            <FolderGit2 size={15} style={{ color: '#64748b' }} />
+            <FolderGit2 size={16} style={{ color: '#64748b' }} />
             <span>Quick Start</span>
           </button>
 
@@ -223,7 +223,7 @@ export function ProjectSelector({
               triggerRef.current?.focus()
             }}
           >
-            <FolderMinus size={15} style={{ color: '#64748b' }} />
+            <FolderMinus size={16} style={{ color: '#64748b' }} />
             <span>No Project</span>
           </button>
         </div>

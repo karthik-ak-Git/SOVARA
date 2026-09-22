@@ -136,15 +136,17 @@ function ChatRow({
           style={{
             background: 'transparent',
             border: 'none',
-            padding: '3px 4px',
+            width: 24,
+            height: 24,
             cursor: 'pointer',
             color: isPinned ? '#0284c7' : '#94a3b8',
             borderRadius: 4,
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          <Pin size={13} aria-hidden />
+          <Pin size={15} aria-hidden />
         </button>
         <button
           type="button"
@@ -158,15 +160,17 @@ function ChatRow({
           style={{
             background: 'transparent',
             border: 'none',
-            padding: '3px 4px',
+            width: 24,
+            height: 24,
             cursor: 'pointer',
             color: '#94a3b8',
             borderRadius: 4,
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          <Archive size={13} aria-hidden />
+          <Archive size={15} aria-hidden />
         </button>
       </div>
     </div>
@@ -223,7 +227,7 @@ function ProjectItemRow({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-          <Folder size={15} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
+          <Folder size={16} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
           <span
             style={{
               fontWeight: 600,
@@ -264,8 +268,8 @@ function ProjectItemRow({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              width: 22,
-              height: 22,
+              width: 24,
+              height: 24,
               borderRadius: 6,
               border: 'none',
               background: menuOpen ? '#e2e8f0' : 'transparent',
@@ -273,7 +277,7 @@ function ProjectItemRow({
               cursor: 'pointer',
             }}
           >
-            <MoreVertical size={14} />
+            <MoreVertical size={16} />
           </button>
 
           <button
@@ -284,8 +288,8 @@ function ProjectItemRow({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              width: 22,
-              height: 22,
+              width: 24,
+              height: 24,
               borderRadius: 6,
               border: 'none',
               background: 'transparent',
@@ -293,7 +297,7 @@ function ProjectItemRow({
               cursor: 'pointer',
             }}
           >
-            <Plus size={14} />
+            <Plus size={16} />
           </button>
 
           <button
@@ -308,8 +312,8 @@ function ProjectItemRow({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              width: 22,
-              height: 22,
+              width: 24,
+              height: 24,
               borderRadius: 6,
               border: 'none',
               background: 'transparent',
@@ -318,9 +322,9 @@ function ProjectItemRow({
             }}
           >
             {isCollapsed ? (
-              <ChevronRight size={14} style={{ color: '#94a3b8' }} aria-hidden />
+              <ChevronRight size={16} style={{ color: '#94a3b8' }} aria-hidden />
             ) : (
-              <ChevronDown size={14} style={{ color: '#94a3b8' }} aria-hidden />
+              <ChevronDown size={16} style={{ color: '#94a3b8' }} aria-hidden />
             )}
           </button>
         </div>
@@ -638,7 +642,7 @@ export function Sidebar({
                 onClick={() => setSearchOpen((v) => !v)}
                 style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', color: '#64748b' }}
               >
-                <Search size={14} aria-hidden />
+                <Search size={16} aria-hidden />
               </button>
               <button
                 type="button"
@@ -647,7 +651,7 @@ export function Sidebar({
                 onClick={onNewProject}
                 style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', color: '#64748b' }}
               >
-                <Plus size={14} aria-hidden />
+                <Plus size={16} aria-hidden />
               </button>
             </div>
           </div>
