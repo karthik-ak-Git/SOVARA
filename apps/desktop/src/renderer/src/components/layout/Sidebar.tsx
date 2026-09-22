@@ -20,7 +20,9 @@ import {
   Zap,
   Pin,
   Archive,
+  Check,
 } from 'lucide-react'
+import { copyToClipboard } from '@/lib/client/api'
 
 export type NavId =
   | 'chat'
@@ -189,6 +191,7 @@ function ProjectItemRow({
   onOpenSettings?: () => void
 }): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -293,11 +296,33 @@ function ProjectItemRow({
             <Plus size={14} />
           </button>
 
-          {isCollapsed ? (
-            <ChevronRight size={14} style={{ color: '#94a3b8', marginLeft: 2 }} aria-hidden />
-          ) : (
-            <ChevronDown size={14} style={{ color: '#94a3b8', marginLeft: 2 }} aria-hidden />
-          )}
+          <button
+            type="button"
+            aria-label={isCollapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
+            title={isCollapsed ? 'Expand project' : 'Collapse project'}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleCollapse()
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              border: 'none',
+              background: 'transparent',
+              color: '#64748b',
+              cursor: 'pointer',
+            }}
+          >
+            {isCollapsed ? (
+              <ChevronRight size={14} style={{ color: '#94a3b8' }} aria-hidden />
+            ) : (
+              <ChevronDown size={14} style={{ color: '#94a3b8' }} aria-hidden />
+            )}
+          </button>
         </div>
       </div>
 
@@ -322,9 +347,29 @@ function ProjectItemRow({
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
-              setMenuOpen(false)
-              void navigator.clipboard.writeText(project.name)
+            onClick={async () => {
+              try {
+                await copyToClipboard(project.name)
+              } catch {
+                try {
+                  const ta = document.createElement('textarea')
+                  ta.value = project.name
+                  ta.style.position = 'fixed'
+                  ta.style.opacity = '0'
+                  document.body.appendChild(ta)
+                  ta.focus()
+                  ta.select()
+                  document.execCommand('copy')
+                  document.body.removeChild(ta)
+                } catch {
+                  /* ignore */
+                }
+              }
+              setCopied(true)
+              setTimeout(() => {
+                setCopied(false)
+                setMenuOpen(false)
+              }, 1000)
             }}
             style={{
               display: 'flex',
@@ -337,11 +382,11 @@ function ProjectItemRow({
               fontSize: 12,
               fontWeight: 500,
               cursor: 'pointer',
-              color: '#334155',
+              color: copied ? '#10b981' : '#334155',
             }}
           >
-            <Copy size={13} />
-            <span>Copy Project Name</span>
+            {copied ? <Check size={13} style={{ color: '#10b981' }} /> : <Copy size={13} />}
+            <span>{copied ? 'Copied!' : 'Copy Project Name'}</span>
           </button>
 
           <button
