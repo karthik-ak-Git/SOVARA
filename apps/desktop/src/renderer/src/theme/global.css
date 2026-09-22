@@ -1,25 +1,25 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap');
-:root, [data-theme="dark"] {
-  --bg: #090c15;
-  --bg-soft: #0e1320;
-  --bg-canvas: #0e1320;
-  --bg-elevated: #141b2d;
-  --panel: #141b2d;
-  --panel-2: #1a2238;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-soft: rgba(255, 255, 255, 0.05);
-  --border-glow: rgba(56, 189, 248, 0.35);
-  --text: #f8fafc;
-  --muted: #94a3b8;
-  --muted-2: #64748b;
-  --accent: #38bdf8;
-  --accent-2: #0ea5e9;
-  --accent-violet: #818cf8;
-  --terracotta: #38bdf8;
-  --terracotta-bg: rgba(56, 189, 248, 0.12);
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f8fafc;
+  --bg-canvas: #ffffff;
+  --bg-elevated: #ffffff;
+  --panel: #f1f5f9;
+  --panel-2: #e2e8f0;
+  --border: #e2e8f0;
+  --border-soft: #f1f5f9;
+  --border-glow: rgba(2, 132, 199, 0.25);
+  --text: #0f172a;
+  --muted: #64748b;
+  --muted-2: #94a3b8;
+  --accent: #0284c7;
+  --accent-2: #0066ff;
+  --accent-violet: #6366f1;
+  --terracotta: #0284c7;
+  --terracotta-bg: #e0f2fe;
   --success: #10b981;
   --warn: #f59e0b;
-  --danger: #f43f5e;
+  --danger: #ef4444;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
@@ -31,15 +31,15 @@
   --space-lg: 16px;
   --space-xl: 22px;
   --space-2xl: 32px;
-  --shadow-panel: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
-  --shadow-composer: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 0 16px -2px rgba(56, 189, 248, 0.12);
-  --focus-ring: 0 0 0 2px #090c15, 0 0 0 4px #38bdf8;
-  --stitch-terracotta: #38bdf8;
-  --stitch-terracotta-bg: rgba(56, 189, 248, 0.12);
-  --stitch-parchment: #0e1320;
-  --stitch-border: rgba(255, 255, 255, 0.08);
-  --stitch-muted: #94a3b8;
-  --stitch-ink: #f8fafc;
+  --shadow-panel: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-composer: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px #0284c7;
+  --stitch-terracotta: #0284c7;
+  --stitch-terracotta-bg: #e0f2fe;
+  --stitch-parchment: #f8fafc;
+  --stitch-border: #e2e8f0;
+  --stitch-muted: #64748b;
+  --stitch-ink: #0f172a;
 }
 
 * { box-sizing: border-box; }

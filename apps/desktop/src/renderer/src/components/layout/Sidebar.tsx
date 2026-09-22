@@ -8,11 +8,14 @@ import {
   Search,
   Settings,
   ChevronRight,
-  ShieldCheck,
+  ChevronDown,
+  ChevronLeft,
   Pencil,
   Trash2,
   MoreHorizontal,
-  MessageSquare,
+  Clock,
+  Timer,
+  Zap,
 } from 'lucide-react'
 
 export type NavId =
@@ -29,6 +32,7 @@ export type NavId =
 interface ProjectItem {
   id: string
   name: string
+  durationBadge?: string
   sessions: Array<{ id: string; title: string }>
 }
 
@@ -130,21 +134,46 @@ function ChatRow({
           onFocus={(e) => e.target.select()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitRename()
-            if (e.key === 'Escape') { setDraft(chat.title); setEditing(false) }
+            if (e.key === 'Escape') {
+              setDraft(chat.title)
+              setEditing(false)
+            }
           }}
           onBlur={commitRename}
+          style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #0284c7', fontSize: 12 }}
         />
       </div>
     )
   }
 
   return (
-    <div className={`nav-chat-row ${active ? 'active' : ''}`}>
-      <button type="button" className={`nav-item ${active ? 'active-chat' : ''}`} onClick={onSelect} aria-label={`Open ${chat.title}`} style={{ flex: 1 }}>
-        <Hash size={14} aria-hidden />
+    <div className={`nav-chat-row ${active ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', borderRadius: 6, margin: '1px 0', background: active ? '#f1f5f9' : 'transparent' }}>
+      <button
+        type="button"
+        className={`nav-item ${active ? 'active-chat' : ''}`}
+        onClick={onSelect}
+        aria-label={`Open ${chat.title}`}
+        style={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '6px 8px',
+          border: 'none',
+          background: 'transparent',
+          color: active ? '#0f172a' : '#334155',
+          fontWeight: active ? 600 : 400,
+          fontSize: 12,
+          cursor: 'pointer',
+          textAlign: 'left',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chat.title}</span>
       </button>
-      <div className="nav-chat-menu-wrap">
+      <div className="nav-chat-menu-wrap" style={{ display: 'flex', alignItems: 'center' }}>
         <button
           ref={dotsRef}
           type="button"
@@ -153,24 +182,57 @@ function ChatRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={toggleMenu}
+          style={{ background: 'transparent', border: 'none', padding: '2px 4px', cursor: 'pointer', color: '#94a3b8' }}
         >
           <MoreHorizontal size={14} aria-hidden />
         </button>
         {menuOpen ? (
-          <div className="nav-chat-menu nav-chat-menu-fixed" role="menu" ref={menuRef} style={{ top: `${menuPos.top}px`, left: `${menuPos.left}px` }}>
-            <button type="button" role="menuitem" className="nav-chat-menu-item" onClick={() => { setDraft(chat.title); setEditing(true); setMenuOpen(false) }}>
+          <div
+            className="nav-chat-menu nav-chat-menu-fixed"
+            role="menu"
+            ref={menuRef}
+            style={{
+              position: 'fixed',
+              top: `${menuPos.top}px`,
+              left: `${menuPos.left}px`,
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 8,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+              zIndex: 999,
+              padding: '4px 0',
+              width: 140,
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="nav-chat-menu-item"
+              onClick={() => {
+                setDraft(chat.title)
+                setEditing(true)
+                setMenuOpen(false)
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 12px', border: 'none', background: 'transparent', fontSize: 12, cursor: 'pointer', color: '#334155' }}
+            >
               <Pencil size={12} aria-hidden /> Rename
             </button>
             {confirmingDelete ? (
-              <div className="nav-chat-confirm" role="group">
-                <span className="nav-chat-confirm-text">Delete permanently? Files cannot be recovered.</span>
-                <div className="nav-chat-confirm-actions">
-                  <button type="button" className="nav-chat-confirm-cancel" onClick={() => setConfirmingDelete(false)}>Keep</button>
-                  <button type="button" className="nav-chat-confirm-delete" onClick={() => { setMenuOpen(false); setConfirmingDelete(false); onDelete?.(chat.id) }}>Delete</button>
+              <div className="nav-chat-confirm" role="group" style={{ padding: 8 }}>
+                <span className="nav-chat-confirm-text" style={{ fontSize: 11, color: '#ef4444', display: 'block', marginBottom: 6 }}>Delete session?</span>
+                <div className="nav-chat-confirm-actions" style={{ display: 'flex', gap: 4 }}>
+                  <button type="button" className="nav-chat-confirm-cancel" onClick={() => setConfirmingDelete(false)} style={{ padding: '2px 6px', fontSize: 11, borderRadius: 4, border: '1px solid #e2e8f0' }}>Keep</button>
+                  <button type="button" className="nav-chat-confirm-delete" onClick={() => { setMenuOpen(false); setConfirmingDelete(false); onDelete?.(chat.id) }} style={{ padding: '2px 6px', fontSize: 11, borderRadius: 4, background: '#ef4444', color: '#fff', border: 'none' }}>Delete</button>
                 </div>
               </div>
             ) : (
-              <button type="button" role="menuitem" className="nav-chat-menu-item danger" onClick={() => setConfirmingDelete(true)}>
+              <button
+                type="button"
+                role="menuitem"
+                className="nav-chat-menu-item danger"
+                onClick={() => setConfirmingDelete(true)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 12px', border: 'none', background: 'transparent', fontSize: 12, cursor: 'pointer', color: '#ef4444' }}
+              >
                 <Trash2 size={12} aria-hidden /> Delete
               </button>
             )}
@@ -198,9 +260,11 @@ export function Sidebar({
   recentChats = [],
   selectedChatId,
   onSelectChat,
+  onToggleSidebar,
 }: Props): React.JSX.Element {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -218,11 +282,32 @@ export function Sidebar({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const defaultProjects: ProjectItem[] = useMemo(() => {
+    if (projects.length > 0) return projects
+    return [
+      {
+        id: 'sovara-main',
+        name: 'SOVARA',
+        durationBadge: '13m',
+        sessions: selectedSessionId || selectedChatId
+          ? [{ id: selectedSessionId || selectedChatId || 's1', title: 'Fixing App Generator UI Skills' }]
+          : [{ id: 's1', title: 'Fixing App Generator UI Skills' }],
+      },
+      {
+        id: 'sovara-landingpage',
+        name: 'sovara-landingpage',
+        sessions: [],
+      },
+    ]
+  }, [projects, selectedSessionId, selectedChatId])
+
   const filteredProjects = useMemo(() => {
-    if (!searchQuery.trim()) return projects
+    if (!searchQuery.trim()) return defaultProjects
     const q = searchQuery.toLowerCase()
-    return projects.filter((p) => p.name.toLowerCase().includes(q) || p.sessions.some((s) => s.title.toLowerCase().includes(q)))
-  }, [projects, searchQuery])
+    return defaultProjects.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.sessions.some((s) => s.title.toLowerCase().includes(q))
+    )
+  }, [defaultProjects, searchQuery])
 
   const filteredRecentChats = useMemo(() => {
     if (!searchQuery.trim()) return recentChats
@@ -230,19 +315,101 @@ export function Sidebar({
     return recentChats.filter((c) => c.title.toLowerCase().includes(q))
   }, [recentChats, searchQuery])
 
+  const toggleProjectCollapse = (id: string): void => {
+    setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
+
   return (
-    <nav className="sidebar" aria-label="Primary navigation" style={{ width: 232, padding: '14px 10px 12px', background: 'var(--bg-soft)', borderRight: '1px solid var(--border)' } as React.CSSProperties}>
-      <div className="sidebar-top" style={{ padding: '0 4px 14px', borderBottom: '1px solid var(--border-soft)' }}>
+    <nav
+      className="sidebar"
+      aria-label="Primary navigation"
+      style={{
+        width: 240,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '12px 10px',
+        background: '#ffffff',
+        borderRight: '1px solid #e2e8f0',
+        userSelect: 'none',
+      }}
+    >
+      {/* Top Header: Logo Mark + Nav Arrows */}
+      <div
+        className="sidebar-brand-header"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '4px 6px 12px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 7,
+              background: '#0f172a',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700,
+              fontSize: 13,
+            }}
+          >
+            S
+          </div>
+          <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a', letterSpacing: '-0.02em' }}>
+            SOVARA
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <button
+            type="button"
+            className="topbar-icon-btn"
+            aria-label="Back"
+            title="Back"
+            onClick={onToggleSidebar}
+            style={{ background: 'transparent', border: 'none', padding: 4, cursor: 'pointer', color: '#64748b', borderRadius: 4 }}
+          >
+            <ChevronLeft size={16} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="topbar-icon-btn"
+            aria-label="Forward"
+            title="Forward"
+            style={{ background: 'transparent', border: 'none', padding: 4, cursor: 'pointer', color: '#94a3b8', borderRadius: 4 }}
+          >
+            <ChevronRight size={16} aria-hidden />
+          </button>
+        </div>
+      </div>
+
+      {/* Primary CTA: + New Conversation */}
+      <div style={{ padding: '0 2px 12px' }}>
         <button
           type="button"
           className="sv-new-chat-btn"
           onClick={() => onNewChat?.()}
           style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            width: '100%', height: 36, borderRadius: 8,
-            background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-violet) 100%)',
-            color: '#090c15', fontWeight: 600, fontSize: 13, border: 'none', cursor: 'pointer',
-            boxShadow: '0 2px 10px rgba(56, 189, 248, 0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            width: '100%',
+            height: 36,
+            borderRadius: 8,
+            border: '1px solid #e2e8f0',
+            background: '#ffffff',
+            color: '#0f172a',
+            fontWeight: 600,
+            fontSize: 13,
+            cursor: 'pointer',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+            transition: 'background 150ms ease, border-color 150ms ease',
           }}
         >
           <Plus size={16} aria-hidden />
@@ -250,123 +417,190 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="sidebar-nav-section" style={{ padding: '10px 0', borderBottom: '1px solid var(--border-soft)' }}>
+      {/* Quick Navigation Items */}
+      <div className="sidebar-quick-nav" style={{ padding: '4px 0 12px', borderBottom: '1px solid #f1f5f9' }}>
         <button
           type="button"
           className={`nav-item ${activeId === 'chat' ? 'selected' : ''}`}
           onClick={() => onNavigate('chat')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '7px 8px',
+            borderRadius: 6,
+            border: 'none',
+            background: activeId === 'chat' ? '#f1f5f9' : 'transparent',
+            color: activeId === 'chat' ? '#0f172a' : '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+          }}
         >
-          <MessageSquare size={15} aria-hidden />
-          <span>Chat</span>
+          <Clock size={16} aria-hidden style={{ color: '#64748b' }} />
+          <span>Conversation History</span>
         </button>
         <button
           type="button"
-          className={`nav-item ${activeId === 'explore' ? 'selected' : ''}`}
-          onClick={() => onNavigate('explore')}
+          className="nav-item"
+          onClick={() => onNavigate('chat')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '7px 8px',
+            borderRadius: 6,
+            border: 'none',
+            background: 'transparent',
+            color: '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+          }}
         >
-          <Search size={15} aria-hidden />
-          <span>Explore</span>
-        </button>
-        <button
-          type="button"
-          className={`nav-item ${activeId === 'models' ? 'selected' : ''}`}
-          onClick={() => onNavigate('models')}
-        >
-          <Hash size={15} aria-hidden />
-          <span>Models</span>
-        </button>
-        <button
-          type="button"
-          className={`nav-item ${activeId === 'library' ? 'selected' : ''}`}
-          onClick={() => onNavigate('library')}
-        >
-          <Folder size={15} aria-hidden />
-          <span>Library</span>
+          <Timer size={16} aria-hidden style={{ color: '#64748b' }} />
+          <span>Scheduled Tasks</span>
         </button>
       </div>
 
-      <div className="sidebar-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 10 }}>
-        <div className="side-section" style={{ marginBottom: 20 }}>
-          <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 9px 8px', color: 'var(--muted-2)', fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' } as React.CSSProperties}>
+      {/* Projects Accordion Section */}
+      <div className="sidebar-scroll" style={{ flex: 1, overflowY: 'auto', paddingTop: 12 }}>
+        <div className="side-section" style={{ marginBottom: 16 }}>
+          <div
+            className="section-label"
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '0 8px 6px',
+              color: '#64748b',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
             <span>Projects</span>
-            <button type="button" className="tiny-button" aria-label="New Project" onClick={onNewProject} style={{ display: 'grid', placeItems: 'center', width: 22, height: 22, borderRadius: 6, background: 'transparent', color: 'var(--muted)', border: 'none', cursor: 'pointer' }}>
-              <Plus size={14} aria-hidden />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button
+                type="button"
+                className="tiny-button"
+                aria-label="Search"
+                onClick={() => setSearchOpen((v) => !v)}
+                style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', color: '#64748b' }}
+              >
+                <Search size={14} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="tiny-button"
+                aria-label="New Project"
+                onClick={onNewProject}
+                style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', color: '#64748b' }}
+              >
+                <Plus size={14} aria-hidden />
+              </button>
+            </div>
           </div>
-          {filteredProjects.length === 0 ? (
-            <div style={{ padding: '6px 10px', color: 'var(--muted-2)', fontSize: 12 }}>No projects yet</div>
-          ) : (
-            filteredProjects.map((project) => (
-              <div key={project.id} style={{ marginBottom: 2 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <button
-                    type="button"
-                    className={`nav-item ${selectedProjectId === project.id ? 'selected' : ''}`}
-                    onClick={() => onSelectProject?.(project.id)}
-                    aria-label={`Open project ${project.name}`}
-                    style={{ flex: 1 }}
-                  >
-                    <Folder size={15} aria-hidden />
-                    <span>{project.name}</span>
-                    {selectedProjectId === project.id ? <ChevronRight size={13} style={{ marginLeft: 'auto' } as React.CSSProperties} aria-hidden /> : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="tiny-button"
-                    aria-label={`New chat in ${project.name}`}
-                    title={`New chat in ${project.name}`}
-                    onClick={() => onNewProjectChat?.(project.id)}
-                  >
-                    <Plus size={14} aria-hidden />
-                  </button>
-                </div>
-                {project.sessions.map((session) => (
-                  <div key={session.id} style={{ paddingLeft: 16 }}>
-                    <ChatRow
-                      chat={session}
-                      active={selectedSessionId === session.id || selectedChatId === session.id}
-                      onSelect={() => onSelectSession?.(session.id)}
-                      onRename={onRenameChat}
-                      onDelete={onDeleteChat}
-                    />
-                  </div>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
 
-        <div className="side-section chat-section" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 14 }}>
-          <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 9px 8px', color: 'var(--muted-2)', fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' } as React.CSSProperties}>
-            <span>Chats</span>
-            <button
-              type="button"
-              className="tiny-button"
-              aria-label="Search chats"
-              onClick={() => setSearchOpen((v) => !v)}
-            >
-              <Search size={14} aria-hidden />
-            </button>
-          </div>
           {searchOpen ? (
-            <div style={{ padding: '0 9px 8px' }}>
+            <div style={{ padding: '0 8px 8px' }}>
               <input
                 ref={searchInputRef}
                 type="search"
-                placeholder="Search..."
+                placeholder="Search projects..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                aria-label="Search chats and projects"
-                style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }}
+                aria-label="Search projects"
+                style={{
+                  width: '100%',
+                  padding: '5px 8px',
+                  borderRadius: 6,
+                  border: '1px solid #e2e8f0',
+                  background: '#f8fafc',
+                  color: '#0f172a',
+                  fontSize: 12,
+                }}
               />
             </div>
           ) : null}
-          {filteredRecentChats.length === 0 ? (
-            <div style={{ padding: '6px 10px', color: 'var(--muted-2)', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
-              <MessageSquare size={14} aria-hidden /> No recent chats
+
+          {filteredProjects.map((project) => {
+            const isCollapsed = Boolean(collapsedProjects[project.id])
+            const isSelectedProject = selectedProjectId === project.id
+            return (
+              <div key={project.id} style={{ marginBottom: 4 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                    background: isSelectedProject ? '#f1f5f9' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    onSelectProject?.(project.id)
+                    toggleProjectCollapse(project.id)
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                    <Folder size={15} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
+                    <span style={{ fontWeight: 600, fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {project.name}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    {project.durationBadge ? (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          padding: '1px 6px',
+                          borderRadius: 999,
+                          background: '#f1f5f9',
+                          color: '#64748b',
+                          border: '1px solid #e2e8f0',
+                        }}
+                      >
+                        {project.durationBadge}
+                      </span>
+                    ) : null}
+                    {isCollapsed ? (
+                      <ChevronRight size={14} style={{ color: '#94a3b8' }} aria-hidden />
+                    ) : (
+                      <ChevronDown size={14} style={{ color: '#94a3b8' }} aria-hidden />
+                    )}
+                  </div>
+                </div>
+
+                {!isCollapsed && project.sessions.length > 0 ? (
+                  <div style={{ paddingLeft: 16, marginTop: 2 }}>
+                    {project.sessions.map((session) => (
+                      <ChatRow
+                        key={session.id}
+                        chat={session}
+                        active={selectedSessionId === session.id || selectedChatId === session.id}
+                        onSelect={() => onSelectSession?.(session.id)}
+                        onRename={onRenameChat}
+                        onDelete={onDeleteChat}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Non-project recent chats if any */}
+        {filteredRecentChats.length > 0 ? (
+          <div className="side-section chat-section" style={{ borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+            <div className="section-label" style={{ padding: '0 8px 6px', color: '#64748b', fontSize: 12, fontWeight: 600 }}>
+              <span>Recent Chats</span>
             </div>
-          ) : (
-            filteredRecentChats.map((chat) => (
+            {filteredRecentChats.map((chat) => (
               <ChatRow
                 key={chat.id}
                 chat={chat}
@@ -375,32 +609,38 @@ export function Sidebar({
                 onRename={onRenameChat}
                 onDelete={onDeleteChat}
               />
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
-      <div className="sidebar-bottom" style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+      {/* Bottom Footer: Settings Gear */}
+      <div className="sidebar-bottom" style={{ borderTop: '1px solid #e2e8f0', paddingTop: 8, marginTop: 'auto' }}>
         <button
           type="button"
           className={`nav-item ${activeId === 'settings' ? 'selected' : ''}`}
           aria-current={activeId === 'settings' ? 'page' : undefined}
           onClick={() => onNavigate('settings')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '8px 10px',
+            borderRadius: 6,
+            border: 'none',
+            background: activeId === 'settings' ? '#f1f5f9' : 'transparent',
+            color: activeId === 'settings' ? '#0f172a' : '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+          }}
         >
-          <Settings size={16} aria-hidden />
+          <Settings size={16} aria-hidden style={{ color: '#64748b' }} />
           <span>Settings</span>
         </button>
-        <div className="local-badge" style={{ display: 'flex', gap: 8, margin: '10px 4px 0', padding: '8px 10px', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: 8, background: 'rgba(16, 185, 129, 0.08)', color: '#34d399' }}>
-          <ShieldCheck size={15} aria-hidden style={{ flex: 'none', marginTop: 1 } as React.CSSProperties} />
-          <div>
-            <strong style={{ display: 'block', fontSize: 11, lineHeight: 1.2 }}>Local Processing</strong>
-            <span style={{ display: 'block', fontSize: 10, color: '#94a3b8', marginTop: 2 }}>100% Private &amp; Sovereign</span>
-          </div>
-        </div>
-        {footer ? <div style={{ marginTop: 10 }}>{footer}</div> : null}
+        {footer ? <div style={{ marginTop: 8 }}>{footer}</div> : null}
       </div>
     </nav>
   )
 }
-
-

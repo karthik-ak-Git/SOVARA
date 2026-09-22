@@ -1,32 +1,31 @@
 /**
- * Centralized design tokens — dark obsidian glassmorphic design system.
- * Single source for colors, typography, spacing, radii, borders, shadows, sizing.
+ * Centralized design tokens — crisp light/neutral slate design system matching reference image.
  */
 
 export const colors = {
-  bg: '#090c15',
-  bgCanvas: '#0e1320',
-  bgSoft: '#12151e',
-  bgElevated: '#1a1d2a',
-  bgCard: 'rgba(22, 30, 50, 0.75)',
-  bgComposer: 'rgba(18, 25, 42, 0.85)',
-  bgPopover: '#1a2238',
-  panel: '#141b2d',
-  panel2: '#1a2238',
-  border: 'rgba(255, 255, 255, 0.08)',
-  borderSoft: 'rgba(255, 255, 255, 0.05)',
-  borderGlow: 'rgba(56, 189, 248, 0.35)',
-  text: '#f8fafc',
-  textSecondary: '#cbd5e1',
-  muted: '#94a3b8',
-  muted2: '#64748b',
-  accent: '#38bdf8',
-  accent2: '#0ea5e9',
-  accentViolet: '#818cf8',
+  bg: '#ffffff',
+  bgCanvas: '#ffffff',
+  bgSoft: '#f8fafc',
+  bgElevated: '#ffffff',
+  bgCard: '#ffffff',
+  bgComposer: '#ffffff',
+  bgPopover: '#ffffff',
+  panel: '#f1f5f9',
+  panel2: '#e2e8f0',
+  border: '#e2e8f0',
+  borderSoft: '#f1f5f9',
+  borderGlow: 'rgba(2, 132, 199, 0.25)',
+  text: '#0f172a',
+  textSecondary: '#334155',
+  muted: '#64748b',
+  muted2: '#94a3b8',
+  accent: '#0284c7',
+  accent2: '#0066ff',
+  accentViolet: '#6366f1',
   success: '#10b981',
   warn: '#f59e0b',
-  danger: '#f43f5e',
-  focus: '#38bdf8',
+  danger: '#ef4444',
+  focus: '#0284c7',
 } as const
 
 export const typography = {
@@ -81,14 +80,13 @@ export const borders = {
 } as const
 
 export const shadows = {
-  panel: '0 4px 20px -2px rgba(0, 0, 0, 0.5)',
-  focus: `0 0 0 2px rgba(56, 189, 248, 0.35)`,
-  glowCyan: '0 0 20px -4px rgba(56, 189, 248, 0.25)',
-  glowViolet: '0 0 20px -4px rgba(129, 140, 248, 0.20)',
+  panel: '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
+  focus: `0 0 0 2px rgba(2, 132, 199, 0.25)`,
+  composer: '0 2px 12px rgba(0, 0, 0, 0.08)',
 } as const
 
 export const sizing = {
-  topbarH: '50px',
+  topbarH: '48px',
   sidebarW: '240px',
   sidebarWCollapsed: '58px',
   auxiliaryW: '480px',
@@ -112,4 +110,5 @@ export const status = {
   warn: colors.warn,
   error: colors.danger,
 } as const
+
 

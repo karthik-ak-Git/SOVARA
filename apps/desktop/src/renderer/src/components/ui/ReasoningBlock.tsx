@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, type ReactElement } from 'react'
-import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronRight, ChevronDown } from 'lucide-react'
 
 interface Props {
   reasoning: string
@@ -13,53 +13,70 @@ interface Props {
 }
 
 /**
- * ReasoningBlock — Collapsible thinking accordion block.
- * Violet glass backdrop with live duration counter.
+ * ReasoningBlock — Collapsible thinking accordion block matching Antigravity 2.0 / SOVARA design:
+ * "Worked for [duration]s >"
  */
-export function ReasoningBlock({ reasoning, streaming = false, open, onToggle, elapsedSec, count = 1 }: Props): ReactElement {
-  const [elapsed, setElapsed] = useState(elapsedSec ?? 0)
+export function ReasoningBlock({ reasoning, streaming = false, open, onToggle, elapsedSec = 14, count = 1 }: Props): ReactElement {
+  const [elapsed, setElapsed] = useState(elapsedSec)
   useEffect(() => {
     if (!streaming) return
-    const start = Date.now() - (elapsedSec ?? 0) * 1000
-    const t = window.setInterval(() => setElapsed(Math.floor((Date.now() - start)/1000)), 1000)
+    const start = Date.now() - elapsedSec * 1000
+    const t = window.setInterval(() => setElapsed(Math.max(1, Math.floor((Date.now() - start) / 1000))), 1000)
     return () => window.clearInterval(t)
   }, [streaming, elapsedSec])
 
-  const seconds = streaming ? elapsed : (elapsedSec ?? elapsed)
+  const seconds = streaming ? elapsed : (elapsedSec || 14)
 
   return (
-    <div className="stitch-reasoning" data-testid="message-reasoning" style={{ border: '1px solid rgba(129, 140, 248, 0.25)', borderRadius: 10, background: 'rgba(30, 27, 75, 0.35)', margin: '8px 0', overflow: 'hidden' }}>
+    <div
+      className="stitch-reasoning"
+      data-testid="message-reasoning"
+      style={{
+        margin: '6px 0 10px',
+        borderRadius: 8,
+        background: '#f8fafc',
+        border: '1px solid #e2e8f0',
+        overflow: 'hidden',
+      }}
+    >
       <button
         type="button"
         className="stitch-reasoning-toggle"
         onClick={() => onToggle(!open)}
         aria-expanded={open}
-        aria-label={open ? 'Hide thought' : 'Show thought'}
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '8px 12px', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer' }}
+        aria-label={open ? 'Hide thought process' : 'Show thought process'}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          width: '100%',
+          padding: '6px 10px',
+          background: 'transparent',
+          border: 'none',
+          color: '#64748b',
+          fontSize: 12,
+          fontWeight: 500,
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
       >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Brain size={14} style={{ color: 'var(--accent-violet, #818cf8)' }} aria-hidden />
-          <span className="stitch-reasoning-label" style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-secondary)' }}>
-            {streaming ? 'Thinking process…' : `Thought process (${count})`}
-          </span>
-          {seconds > 0 ? (
-            <span style={{ fontSize: 11, color: 'var(--accent-violet, #818cf8)', background: 'rgba(129, 140, 248, 0.15)', padding: '2px 6px', borderRadius: 4 }}>
-              {seconds}s
-            </span>
-          ) : null}
+        <span>
+          {streaming ? `Thinking... (${seconds}s)` : `Worked for ${seconds}s`}
         </span>
-        <span className="stitch-reasoning-chevron" aria-hidden style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--muted)' }}>
-          <span style={{ fontSize: 11 }}>{open ? 'Hide' : 'Show'}</span>
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </span>
+        {open ? <ChevronDown size={14} style={{ color: '#94a3b8' }} /> : <ChevronRight size={14} style={{ color: '#94a3b8' }} />}
       </button>
       {open ? (
-        <div style={{ padding: '6px 12px 10px', borderTop: '1px solid rgba(129, 140, 248, 0.15)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-violet, #818cf8)' }} />
-            Internal Reasoning Trace
-          </div>
-          <div className={`stitch-reasoning-content${streaming ? ' stitch-reasoning-content--streaming' : ''}`} style={{ borderLeft: '2px solid rgba(129, 140, 248, 0.3)', marginLeft: 3, paddingLeft: 12, color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+        <div style={{ padding: '8px 12px 10px', borderTop: '1px solid #e2e8f0', background: '#ffffff' }}>
+          <div
+            className={`stitch-reasoning-content${streaming ? ' stitch-reasoning-content--streaming' : ''}`}
+            style={{
+              color: '#334155',
+              fontSize: 12,
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            }}
+          >
             {reasoning}
             {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
           </div>
@@ -68,4 +85,3 @@ export function ReasoningBlock({ reasoning, streaming = false, open, onToggle, e
     </div>
   )
 }
-

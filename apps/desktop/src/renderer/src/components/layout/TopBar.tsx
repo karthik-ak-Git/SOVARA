@@ -11,6 +11,13 @@ import {
   PanelRight,
   Minus,
   Square,
+  MoreVertical,
+  Pencil,
+  Pin,
+  Archive,
+  Columns,
+  Copy,
+  Terminal,
 } from 'lucide-react'
 import { minimizeWindow, maximizeWindow, closeWindow } from '@/lib/client/api'
 
@@ -32,6 +39,8 @@ interface Props {
   onSelectChat?: (id: string) => void
   onCloseChat?: (id: string) => void
   onNewChat?: () => void
+  onArchiveChat?: (id: string) => void
+  onRenameChat?: (id: string, title: string) => void
   activeModelName?: string
   activeModelContext?: string
   onToggleArtifacts?: () => void
@@ -40,6 +49,7 @@ interface Props {
   splitOpen?: boolean
   onShare?: () => void
   hardwareStatus?: string
+  activeProjectName?: string
 }
 
 export function TopBar({
@@ -52,6 +62,8 @@ export function TopBar({
   onSelectChat,
   onCloseChat,
   onNewChat,
+  onArchiveChat,
+  onRenameChat,
   activeModelName,
   activeModelContext,
   onToggleArtifacts,
@@ -60,122 +72,102 @@ export function TopBar({
   splitOpen = false,
   onShare,
   hardwareStatus,
+  activeProjectName = 'SOVARA',
 }: Props): React.JSX.Element {
   const [modelOpen, setModelOpen] = useState(false)
   const [gpuOpen, setGpuOpen] = useState(false)
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const modelRef = useRef<HTMLDivElement>(null)
   const gpuRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const activeChat = chats.find((c) => c.id === selectedChatId) ?? chats[0]
+  const sessionTitle = activeChat?.title ?? 'New Conversation'
 
   useEffect(() => {
-    if (!modelOpen && !gpuOpen) return
+    if (!modelOpen && !gpuOpen && !sessionMenuOpen) return
     const onDoc = (e: MouseEvent): void => {
       if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false)
       if (gpuRef.current && !gpuRef.current.contains(e.target as Node)) setGpuOpen(false)
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setSessionMenuOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
-  }, [modelOpen, gpuOpen])
+  }, [modelOpen, gpuOpen, sessionMenuOpen])
 
   return (
-    <header className="topbar" role="banner">
+    <header className="topbar" role="banner" style={{ background: '#ffffff', borderBottom: '1px solid #e2e8f0', height: 48, padding: '0 12px' }}>
       <div className="topbar-drag-region" />
-      <div className="brand-group">
+      
+      <div className="brand-group" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button
           type="button"
           className="topbar-icon-btn"
           aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
           onClick={onToggleSidebar}
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b' }}
         >
-          <Menu size={17} aria-hidden />
+          <Menu size={16} aria-hidden />
         </button>
-        <img src="/logo.png" alt="Sovara" width={24} height={24} style={{ width: 24, height: 24, borderRadius: 7, objectFit: 'cover', flex: 'none', border: '1px solid #e7e3dc' } as React.CSSProperties} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display='none'; const m=document.createElement('div'); m.className='brand-mark'; m.textContent='S'; (e.currentTarget as HTMLImageElement).parentNode?.insertBefore(m, e.currentTarget) }} />
-        <span className="brand-name">Sovara</span>
-      </div>
-
-      <div className="tabs" role="tablist" aria-label="Chats">
-        {chats.length === 0 ? (
-          <button
-            type="button"
-            className={`tab ${!selectedChatId ? 'active' : ''}`}
-            role="tab"
-            aria-selected={!selectedChatId}
-            onClick={() => onNewChat?.()}
-          >
-            <span>New chat</span>
-          </button>
-        ) : (
-          chats.map((chat) => (
-            <button
-              key={chat.id}
-              type="button"
-              role="tab"
-              id={`tab-${chat.id}`}
-              className={`tab ${selectedChatId === chat.id ? 'active' : ''}`}
-              aria-selected={selectedChatId === chat.id}
-              aria-controls="main-content"
-              onClick={() => {
-                onSelectChat?.(chat.id)
-                onTabSelect?.(chat.id)
-              }}
-              title={chat.title}
-            >
-              <span>{chat.title}</span>
-              <X
-                size={13}
-                aria-hidden
-                style={{ flex: 'none', opacity: 0.7 }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCloseChat?.(chat.id)
-                }}
-              />
-            </button>
-          ))
-        )}
-        <button
-          type="button"
-          className="topbar-icon-btn"
-          style={{ width: 34, flex: 'none', borderRadius: 6 } as React.CSSProperties}
-          onClick={onNewChat}
-          title="New Chat Tab"
-          aria-label="New Chat Tab"
-        >
-          <Plus size={16} aria-hidden />
-        </button>
-      </div>
-
-      <div className="header-status">
-        <div className="status-popover-wrap" ref={modelRef}>
-          <button type="button" className="status-chip" onClick={() => setModelOpen((v) => !v)} aria-expanded={modelOpen} aria-haspopup="dialog">
-            <span className="status-dot" aria-hidden />
-            {activeModelName ?? 'No Model'}
-            <span className="ready">{activeModelContext ?? (activeModelName ? 'Ready' : 'Offline')}</span>
-            <ChevronDown size={13} aria-hidden />
-          </button>
-          {modelOpen ? (
-            <div className="popover" role="dialog" aria-label="Local model">
-              <div className="popover-title">Local model</div>
-              <div className="info-row"><span>Model</span><strong>{activeModelName ?? 'No Model Selected'}</strong></div>
-              <div className="info-row"><span>Format</span><strong>GGUF · Q4_K_M</strong></div>
-              <div className="info-row"><span>Context</span><strong>32k tokens</strong></div>
-              <div className="popover-actions">
-                <button type="button" onClick={() => { setModelOpen(false); document.querySelector<HTMLElement>('[data-testid="model-pill"], .model-pill')?.focus(); (document.querySelector<HTMLElement>('.model-pill') as HTMLButtonElement | null)?.click() }}>Change Model</button>
-                <button type="button" onClick={() => setModelOpen(false)}>Close</button>
-              </div>
-            </div>
-          ) : null}
+        
+        <div className="sv-breadcrumb" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#334155', fontWeight: 500 }}>
+          <span style={{ color: '#64748b' }}>{activeProjectName}</span>
+          <span style={{ color: '#94a3b8' }}>/</span>
+          <strong style={{ fontWeight: 600, color: '#0f172a' }}>{sessionTitle}</strong>
         </div>
 
-        <div className="status-popover-wrap" ref={gpuRef}>
-          <button type="button" className="gpu-chip" onClick={() => setGpuOpen((v) => !v)} aria-expanded={gpuOpen} aria-haspopup="dialog">
-            <Cpu size={14} aria-hidden />
-            {hardwareStatus ?? 'Detecting...'}
+        {selectedChatId ? (
+          <div className="sv-session-menu-wrap" ref={menuRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className="topbar-icon-btn"
+              aria-label="Session actions"
+              onClick={() => setSessionMenuOpen((v) => !v)}
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4 }}
+            >
+              <MoreVertical size={16} />
+            </button>
+            {sessionMenuOpen ? (
+              <div className="sv-popover-menu" role="menu" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, width: 170, background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 100, padding: '4px 0' }}>
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); const t = prompt('Rename session:', sessionTitle); if (t && t.trim()) onRenameChat?.(selectedChatId, t.trim()) }}>
+                  <Pencil size={13} /> Rename
+                </button>
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => setSessionMenuOpen(false)}>
+                  <Pin size={13} /> Pin
+                </button>
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); onArchiveChat?.(selectedChatId) }}>
+                  <Archive size={13} /> Archive
+                </button>
+                <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); onToggleSplit?.() }}>
+                  <Columns size={13} /> Split
+                </button>
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => { setSessionMenuOpen(false); void navigator.clipboard.writeText(sessionTitle) }}>
+                  <Copy size={13} /> Copy
+                </button>
+                <button type="button" role="menuitem" className="sv-menu-item" onClick={() => setSessionMenuOpen(false)}>
+                  <Terminal size={13} /> Terminal
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ flex: 1 }} />
+
+      <div className="header-status" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="status-popover-wrap" ref={modelRef}>
+          <button type="button" className="status-chip" onClick={() => setModelOpen((v) => !v)} aria-expanded={modelOpen} aria-haspopup="dialog" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#334155' }}>
+            <span className="status-dot" aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+            {activeModelName ?? 'Qwen3 8B'}
+            <ChevronDown size={12} aria-hidden />
           </button>
-          {gpuOpen ? (
-            <div className="popover" role="dialog" aria-label="GPU runtime">
-              <div className="popover-title">GPU runtime</div>
-              <div className="info-row"><span>GPU</span><strong>{hardwareStatus ?? 'Detecting...'}</strong></div>
-              <div className="info-row"><span>Status</span><strong className="good">{activeModelContext ?? 'Idle'}</strong></div>
+          {modelOpen ? (
+            <div className="popover" role="dialog" aria-label="Local model" style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, color: '#0f172a' }}>
+              <div className="popover-title" style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Active Inference Model</div>
+              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Model</span><strong>{activeModelName ?? 'Qwen3 8B'}</strong></div>
+              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Status</span><strong style={{ color: '#10b981' }}>Ready</strong></div>
             </div>
           ) : null}
         </div>
@@ -187,31 +179,22 @@ export function TopBar({
             title="Artifacts"
             aria-pressed={artifactsOpen}
             onClick={onToggleArtifacts}
+            style={{ background: artifactsOpen ? '#e0f2fe' : '#f8fafc', border: '1px solid #e2e8f0', color: artifactsOpen ? '#0284c7' : '#334155', borderRadius: 6, padding: '4px 8px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
           >
-            <FileCode2 size={16} aria-hidden />
+            <FileCode2 size={14} aria-hidden />
             <span>Artifacts</span>
-          </button>
-        ) : null}
-        {onToggleSplit ? (
-          <button
-            type="button"
-            className="topbar-icon-btn"
-            onClick={onToggleSplit}
-            aria-label="Toggle session context"
-            aria-pressed={splitOpen}
-          >
-            <PanelRight size={16} aria-hidden />
           </button>
         ) : null}
       </div>
 
       {HAS_NATIVE_WINDOW ? (
-        <div className="topbar-window-controls">
-          <button type="button" className="topbar-win-btn" aria-label="Minimize" onClick={minimizeWindow}><Minus size={14} aria-hidden /></button>
-          <button type="button" className="topbar-win-btn" aria-label="Maximize" onClick={maximizeWindow}><Square size={12} aria-hidden /></button>
-          <button type="button" className="topbar-win-btn close" aria-label="Close" onClick={closeWindow}><X size={14} aria-hidden /></button>
+        <div className="topbar-window-controls" style={{ display: 'flex', alignItems: 'center', marginLeft: 12 }}>
+          <button type="button" className="topbar-win-btn" aria-label="Minimize" onClick={minimizeWindow}><Minus size={13} aria-hidden /></button>
+          <button type="button" className="topbar-win-btn" aria-label="Maximize" onClick={maximizeWindow}><Square size={11} aria-hidden /></button>
+          <button type="button" className="topbar-win-btn close" aria-label="Close" onClick={closeWindow}><X size={13} aria-hidden /></button>
         </div>
       ) : null}
     </header>
   )
 }
+
