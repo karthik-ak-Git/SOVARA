@@ -284,11 +284,58 @@ export function AuxiliaryPane({
     } catch {}
   }, [terminalInstances, storageKey])
 
+  const historyKey = useMemo(
+    () => `sovara_cmd_history_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    [sessionTitle]
+  )
+
+  const [cmdHistory, setCmdHistory] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(historyKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) return parsed
+      }
+    } catch {}
+    return []
+  })
+
+  const [historyIdx, setHistoryIdx] = useState<number>(-1)
+  const [draftInput, setDraftInput] = useState<string>('')
+
   useEffect(() => {
     try {
-      localStorage.setItem(activeKey, activeTerminalId)
+      localStorage.setItem(historyKey, JSON.stringify(cmdHistory))
     } catch {}
-  }, [activeTerminalId, activeKey])
+  }, [cmdHistory, historyKey])
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (cmdHistory.length === 0) return
+      if (historyIdx === -1) {
+        setDraftInput(commandInput)
+        const newIdx = cmdHistory.length - 1
+        setHistoryIdx(newIdx)
+        setCommandInput(cmdHistory[newIdx])
+      } else if (historyIdx > 0) {
+        const newIdx = historyIdx - 1
+        setHistoryIdx(newIdx)
+        setCommandInput(cmdHistory[newIdx])
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (historyIdx === -1) return
+      if (historyIdx < cmdHistory.length - 1) {
+        const newIdx = historyIdx + 1
+        setHistoryIdx(newIdx)
+        setCommandInput(cmdHistory[newIdx])
+      } else {
+        setHistoryIdx(-1)
+        setCommandInput(draftInput)
+      }
+    }
+  }
 
   const [commandInput, setCommandInput] = useState('')
 
@@ -327,6 +374,11 @@ export function AuxiliaryPane({
     if (!commandInput.trim()) return
     const cmd = commandInput.trim()
 
+    // Save to command history for Up/Down arrow navigation
+    setCmdHistory((prev) => (prev[prev.length - 1] === cmd ? prev : [...prev, cmd]))
+    setHistoryIdx(-1)
+    setDraftInput('')
+
     // Support native cls and clear commands
     if (cmd.toLowerCase() === 'cls' || cmd.toLowerCase() === 'clear') {
       setTerminalInstances((prev) =>
@@ -336,6 +388,16 @@ export function AuxiliaryPane({
       return
     }
 
+    // Auto-normalize inline Python commands (e.g. python print(...) -> python -c "print(...)")
+    let execCmd = cmd
+    if (/^python\s+print\(/.test(cmd)) {
+      const inner = cmd.replace(/^python\s+/, '')
+      execCmd = `python -c "${inner.replace(/"/g, '\\"')}"`
+    } else if (/^python\s+["'].*["']$/.test(cmd)) {
+      const inner = cmd.replace(/^python\s+/, '').slice(1, -1)
+      execCmd = `python -c "${inner.replace(/"/g, '\\"')}"`
+    }
+
     setTerminalInstances((prev) =>
       prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`] } : t))
     )
@@ -343,7 +405,7 @@ export function AuxiliaryPane({
 
     try {
       const res: any = await dispatchTool('run_command', {
-        CommandLine: cmd,
+        CommandLine: execCmd,
         Cwd: 'd:\\SOVARA',
         WaitMsBeforeAsync: 5000,
         _forceApprove: true,
@@ -1189,7 +1251,11 @@ export function AuxiliaryPane({
                       ref={terminalInputRef}
                       type="text"
                       value={commandInput}
-                      onChange={(e) => setCommandInput(e.target.value)}
+                      onChange={(e) => {
+                        setCommandInput(e.target.value)
+                        if (historyIdx !== -1) setHistoryIdx(-1)
+                      }}
+                      onKeyDown={handleKeyDown}
                       autoFocus
                       className="focus:outline-none focus:ring-0 focus:border-none focus:shadow-none shadow-none outline-none border-none"
                       style={{
