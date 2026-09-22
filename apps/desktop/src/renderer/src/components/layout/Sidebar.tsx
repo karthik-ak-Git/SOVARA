@@ -13,6 +13,8 @@ import {
   Pencil,
   Trash2,
   MoreHorizontal,
+  MoreVertical,
+  Copy,
   Clock,
   Timer,
   Zap,
@@ -240,6 +242,209 @@ function ChatRow({
           </div>
         ) : null}
       </div>
+    </div>
+  )
+}
+
+function ProjectItemRow({
+  project,
+  isSelected,
+  isCollapsed,
+  onSelect,
+  onToggleCollapse,
+  onNewChat,
+  onOpenSettings,
+}: {
+  project: ProjectItem
+  isSelected: boolean
+  isCollapsed: boolean
+  onSelect: () => void
+  onToggleCollapse: () => void
+  onNewChat?: (projectId: string) => void
+  onOpenSettings?: () => void
+}): React.JSX.Element {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDoc = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [menuOpen])
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '6px 8px',
+          borderRadius: 6,
+          background: isSelected ? '#f1f5f9' : 'transparent',
+          cursor: 'pointer',
+        }}
+        onClick={() => {
+          onSelect()
+          onToggleCollapse()
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+          <Folder size={15} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
+          <span
+            style={{
+              fontWeight: 600,
+              fontSize: 13,
+              color: '#0f172a',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {project.name}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+          {project.durationBadge ? (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                padding: '1px 6px',
+                borderRadius: 999,
+                background: '#f1f5f9',
+                color: '#64748b',
+                border: '1px solid #e2e8f0',
+                marginRight: 4,
+              }}
+            >
+              {project.durationBadge}
+            </span>
+          ) : null}
+
+          <button
+            type="button"
+            aria-label={`Project options for ${project.name}`}
+            onClick={() => setMenuOpen((v) => !v)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              border: 'none',
+              background: menuOpen ? '#e2e8f0' : 'transparent',
+              color: '#64748b',
+              cursor: 'pointer',
+            }}
+          >
+            <MoreVertical size={14} />
+          </button>
+
+          <button
+            type="button"
+            aria-label={`New chat in ${project.name}`}
+            onClick={() => onNewChat?.(project.id)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              border: 'none',
+              background: 'transparent',
+              color: '#64748b',
+              cursor: 'pointer',
+            }}
+          >
+            <Plus size={14} />
+          </button>
+
+          {isCollapsed ? (
+            <ChevronRight size={14} style={{ color: '#94a3b8', marginLeft: 2 }} aria-hidden />
+          ) : (
+            <ChevronDown size={14} style={{ color: '#94a3b8', marginLeft: 2 }} aria-hidden />
+          )}
+        </div>
+      </div>
+
+      {menuOpen ? (
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 24,
+            marginTop: 2,
+            width: 175,
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 8,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+            zIndex: 999,
+            padding: '4px 0',
+          }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false)
+              void navigator.clipboard.writeText(project.name)
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 12px',
+              border: 'none',
+              background: 'transparent',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer',
+              color: '#334155',
+            }}
+          >
+            <Copy size={13} />
+            <span>Copy Project Name</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false)
+              onOpenSettings?.()
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 12px',
+              border: 'none',
+              background: 'transparent',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer',
+              color: '#334155',
+            }}
+          >
+            <Settings size={13} />
+            <span>Project Settings</span>
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -509,50 +714,15 @@ export function Sidebar({
             const isSelectedProject = selectedProjectId === project.id
             return (
               <div key={project.id} style={{ marginBottom: 4 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    background: isSelectedProject ? '#f1f5f9' : 'transparent',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => {
-                    onSelectProject?.(project.id)
-                    toggleProjectCollapse(project.id)
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-                    <Folder size={15} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
-                    <span style={{ fontWeight: 600, fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {project.name}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                    {project.durationBadge ? (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 600,
-                          padding: '1px 6px',
-                          borderRadius: 999,
-                          background: '#f1f5f9',
-                          color: '#64748b',
-                          border: '1px solid #e2e8f0',
-                        }}
-                      >
-                        {project.durationBadge}
-                      </span>
-                    ) : null}
-                    {isCollapsed ? (
-                      <ChevronRight size={14} style={{ color: '#94a3b8' }} aria-hidden />
-                    ) : (
-                      <ChevronDown size={14} style={{ color: '#94a3b8' }} aria-hidden />
-                    )}
-                  </div>
-                </div>
+                <ProjectItemRow
+                  project={project}
+                  isSelected={isSelectedProject}
+                  isCollapsed={isCollapsed}
+                  onSelect={() => onSelectProject?.(project.id)}
+                  onToggleCollapse={() => toggleProjectCollapse(project.id)}
+                  onNewChat={onNewProjectChat}
+                  onOpenSettings={() => onNavigate('settings')}
+                />
 
                 {!isCollapsed && project.sessions.length > 0 ? (
                   <div style={{ paddingLeft: 16, marginTop: 2 }}>
