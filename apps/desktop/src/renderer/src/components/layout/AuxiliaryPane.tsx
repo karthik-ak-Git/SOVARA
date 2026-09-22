@@ -1144,17 +1144,28 @@ export function AuxiliaryPane({
                     flex: 1,
                     padding: 12,
                     overflowY: 'auto',
+                    overflowX: 'hidden',
                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
                     fontSize: 12,
                     lineHeight: 1.5,
                     color: '#0f172a',
                     background: '#ffffff',
                     cursor: 'text',
+                    wordBreak: 'break-all',
+                    overflowWrap: 'anywhere',
                   }}
                 >
                   {activeTerminal ? (
                     activeTerminal.logs.map((logLine, idx) => (
-                      <div key={idx} style={{ color: logLine.startsWith('PS') ? '#0284c7' : '#334155', whiteSpace: 'pre-wrap' }}>
+                      <div
+                        key={idx}
+                        style={{
+                          color: logLine.startsWith('PS') ? '#0284c7' : '#334155',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-all',
+                          overflowWrap: 'anywhere',
+                        }}
+                      >
                         {logLine}
                       </div>
                     ))
