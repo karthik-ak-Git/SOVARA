@@ -546,16 +546,6 @@ export function Composer({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
-            <ModelSelector
-              active={active}
-              models={models}
-              runtimes={runtimes}
-              onSelect={(rid, mid) => onSelectModel?.(rid, mid)}
-              reasoningEnabled={reasoningEnabled}
-              onReasoningToggle={onReasoningToggle}
-              onOpenSettings={onOpenSettings}
-            />
             <button
               type="button"
               className="sv-composer-icon-btn"
@@ -589,14 +579,6 @@ export function Composer({
             )}
           </div>
         </div>
-      </div>
-
-      <div className="composer-meta">
-        <button type="button" className="composer-meta-btn" onClick={() => onNewProject?.()} title="Create or switch project — global workspace is Sovara"><Folder size={13} aria-hidden />{projectName ?? 'SOVARA'}<ChevronDown size={12} aria-hidden /></button>
-        <button type="button" className="composer-meta-btn" onClick={() => { /* branch selector — main is global workspace branch */ }} title="Branch: main (global)"><span className="branch-icon">⑂</span> main</button>
-        <span className="meta-spacer" />
-        <PermissionControl mode={execMode} onChange={onExecModeChange} />
-        <span className="composer-meta-private"><ShieldCheck size={13} aria-hidden /> Local &amp; private</span>
       </div>
     </div>
   )

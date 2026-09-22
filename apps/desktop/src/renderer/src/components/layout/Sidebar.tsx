@@ -442,28 +442,6 @@ export function Sidebar({
           <Clock size={16} aria-hidden style={{ color: '#64748b' }} />
           <span>Conversation History</span>
         </button>
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => onNavigate('chat')}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            width: '100%',
-            padding: '7px 8px',
-            borderRadius: 6,
-            border: 'none',
-            background: 'transparent',
-            color: '#475569',
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: 'pointer',
-          }}
-        >
-          <Timer size={16} aria-hidden style={{ color: '#64748b' }} />
-          <span>Scheduled Tasks</span>
-        </button>
       </div>
 
       {/* Projects Accordion Section */}

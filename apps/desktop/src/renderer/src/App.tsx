@@ -267,7 +267,7 @@ export function App(): React.JSX.Element {
   }, [workbench.resources])
 
   const [artifactsOpen, setArtifactsOpen] = useState(false)
-  const [contextOpen, setContextOpen] = useState(true)
+  const [contextOpen, setContextOpen] = useState(false)
   // Unowned chats → global Sovara workspace (right-rail SOVARA project)
   const displayProjects = useMemo(() => {
     const base = projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))
