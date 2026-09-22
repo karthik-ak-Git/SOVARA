@@ -74,9 +74,10 @@ text: `Flexible workflow — vary by task:
 name: 'artifact:pipeline',
 order: SECTION_ORDERS.ARTIFACT_PIPELINE,
 text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc):
-- For PPTX/XLSX/DOCX/PDF: write a Python script (e.g. generate_pptx.py) using python-pptx/openpyxl/etc. with fs_write, then execute it via shell_exec {"command":"python generate_pptx.py"} in the workspace root so the binary is materialized. Never output raw markdown as "pptx" — always generate real binary.
-- For HTML/React artifacts: write single-file code in a fenced \`\`\`html or \`\`\`tsx block so Artifacts sidebar Preview renders (isVisualArtifact). Binary PPTX files show as download cards, not HTML preview.
-- Always emit full code in a named block for live viewer.`
+- First search_skills with query matching the file kind (e.g. "pptx presentation" or "xlsx excel"), then read_skill the top result. Follow that skill's template and workflow exactly — do not invent your own structure.
+- For PPTX/XLSX/DOCX/PDF the skill will instruct you to write a Python script (e.g. generate_pptx.py) with fs_write, then execute it via shell_exec {"command":"python generate_pptx.py"} in the workspace root so the binary is materialized. Never output raw markdown as binary.
+- For HTML/React artifacts the skill will instruct a single-file fenced \`\`\`html or \`\`\`tsx block so Artifacts Preview renders. Binary files show as download cards.
+- Always emit full code in a named block for live viewer when the skill requires it.`
 },
 {
 name: 'tool:read',
