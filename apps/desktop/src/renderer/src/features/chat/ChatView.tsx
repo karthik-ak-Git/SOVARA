@@ -78,39 +78,30 @@ interface ChatViewProps {
   onOpenArtifactFile?: (path: string) => void
 }
 
-function ApprovalCard({ execution, onApproveTool }: { execution: AgentExecutionState; onApproveTool?: (id: string, approved: boolean, args?: any) => void }) {
-  const [editedArgs, setEditedArgs] = useState(() => JSON.stringify(execution.args ?? {}, null, 2))
-  
-  if (!execution.toolCallId) return null
+import { PermissionApprovalCard } from './components/PermissionApprovalCard'
 
-  const handleApprove = () => {
-    try {
-      const parsed = JSON.parse(editedArgs)
-      onApproveTool?.(execution.toolCallId!, true, parsed)
-    } catch {
-      alert('Invalid JSON arguments')
-    }
-  }
+function PermissionApprovalWrapper({ execution, onApproveTool }: { execution: AgentExecutionState; onApproveTool?: (id: string, approved: boolean, args?: any) => void }) {
+  if (!execution.toolCallId || !onApproveTool) return null
 
   return (
-    <div style={{ marginTop: 12, marginBottom: 12, padding: 16, border: '1px solid var(--stitch-border, #E8E4DE)', borderRadius: 8, background: '#FDFBFA' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-        <Shield size={16} color="#D97757" />
-        <strong style={{ fontSize: 13, color: '#2B2624' }}>Permission Required</strong>
-      </div>
-      <div style={{ fontSize: 12, color: '#4A423A', marginBottom: 12 }}>
-        The agent wants to execute <code>{execution.toolName}</code>. Do you approve?
-      </div>
-      <textarea 
-        value={editedArgs} 
-        onChange={e => setEditedArgs(e.target.value)}
-        style={{ width: '100%', minHeight: 80, fontSize: 11, fontFamily: 'monospace', padding: 8, border: '1px solid #E8E4DE', borderRadius: 4, marginBottom: 12, resize: 'vertical' }} 
-      />
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={handleApprove} className="sv-btn sv-btn-primary" style={{ padding: '6px 12px', fontSize: 12 }}>Approve</button>
-        <button onClick={() => onApproveTool?.(execution.toolCallId!, false)} className="sv-btn sv-btn-ghost" style={{ padding: '6px 12px', fontSize: 12 }}>Deny</button>
-      </div>
-    </div>
+    <PermissionApprovalCard
+      toolCallId={execution.toolCallId}
+      toolName={execution.toolName ?? 'command'}
+      args={execution.args ?? {}}
+      onApprove={(optionIndex, feedback) => {
+        if (optionIndex === 5) {
+          onApproveTool(execution.toolCallId!, false, feedback ? { feedback } : undefined)
+        } else {
+          const modifiedArgs = {
+            ...(execution.args ?? {}),
+            _forceApprove: true,
+            _permissionScope: optionIndex === 2 ? 'conversation' : optionIndex === 3 ? 'project' : optionIndex === 4 ? 'global' : 'once',
+          }
+          onApproveTool(execution.toolCallId!, true, modifiedArgs)
+        }
+      }}
+      onSkip={() => onApproveTool(execution.toolCallId!, false)}
+    />
   )
 }
 
@@ -393,7 +384,7 @@ export function ChatView({
             currentProjectName={projectName}
           />
           <div className="sv-composer" style={{ width: '100%', maxWidth: 720 }}>
-            {execution?.toolCallId && onApproveTool ? <ApprovalCard execution={execution} onApproveTool={onApproveTool} /> : null}
+            {execution?.toolCallId && onApproveTool ? <PermissionApprovalWrapper execution={execution} onApproveTool={onApproveTool} /> : null}
             <Composer
               value={draft}
               onChange={setDraft}
@@ -485,24 +476,24 @@ export function ChatView({
             onOpenArtifact={handleOpenArtifactInPanel}
           />
 
-          <div className="sv-status-bar" style={{ display: 'flex', gap: 8, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
+          <div className="sv-status-bar" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
             {model.available && model.displayName ? (
               <span role="status" aria-label={`Local model ${model.displayName}`}>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
             ) : (
               <span role="status" aria-label="No local model selected">NO LOCAL MODEL</span>
             )}
-            {streaming ? <span style={{ color: '#D97757' }}>● Streaming…</span> : null}
-            {exec.phase === 'reading' ? <span style={{ color: '#D97757' }}>● Reading file…</span> : null}
-            {exec.phase === 'prompting' ? <span style={{ color: '#D97757' }}>● Prompting…</span> : null}
-            {exec.phase === 'selecting' ? <span style={{ color: '#D97757' }}>● Routing model…</span> : null}
-            {exec.phase === 'loading' ? <span style={{ color: '#D97757' }}>● Loading model…</span> : null}
-            {exec.phase === 'thinking' ? <span style={{ color: '#D97757' }}>● Thinking…</span> : null}
-            {exec.phase === 'tool' ? <span style={{ color: '#D97757' }}>● Tool running…</span> : null}
-            {exec.phase === 'artifact' ? <span style={{ color: '#D97757' }}>● Generating file…</span> : null}
+            {streaming ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Streaming…</span> : null}
+            {exec.phase === 'reading' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Reading file…</span> : null}
+            {exec.phase === 'prompting' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Prompting…</span> : null}
+            {exec.phase === 'selecting' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Routing model…</span> : null}
+            {exec.phase === 'loading' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Loading model…</span> : null}
+            {exec.phase === 'thinking' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Thinking…</span> : null}
+            {exec.phase === 'tool' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Executing tool: {exec.toolName ?? 'command'}…</span> : null}
+            {exec.phase === 'artifact' ? <span style={{ color: '#D97757', display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#D97757', display: 'inline-block' }} /> Generating file…</span> : null}
           </div>
 
           <div className="sv-composer">
-            {execution?.toolCallId && onApproveTool ? <ApprovalCard execution={execution} onApproveTool={onApproveTool} /> : null}
+            {execution?.toolCallId && onApproveTool ? <PermissionApprovalWrapper execution={execution} onApproveTool={onApproveTool} /> : null}
             <Composer value={draft} onChange={setDraft} onSend={onSend} onCancel={onCancel} disabled={busy && !execution?.toolCallId} busy={busy} phase={phase}
               active={activeModel} runtimes={runtimes} models={discoveredModels} projectCount={projectCount} onNewProject={onNewProject}
               execMode={execMode} onExecModeChange={onExecModeChange} execAvailable={execAvailable} reasoningEnabled={reasoningEnabled}
