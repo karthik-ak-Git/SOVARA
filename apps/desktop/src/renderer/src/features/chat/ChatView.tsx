@@ -73,6 +73,7 @@ interface ChatViewProps {
   artifactsPanelOpen?: boolean
   onToggleArtifacts?: (open: boolean) => void
   projects?: Array<{ id: string; name: string }>
+  selectedProjectId?: string | null
   onSelectProject?: (id: string) => void
   onOpenArtifactFile?: (path: string) => void
 }
@@ -156,6 +157,7 @@ export function ChatView({
   artifactsPanelOpen: propArtifactsPanelOpen,
   onToggleArtifacts: propOnToggleArtifacts,
   projects = [],
+  selectedProjectId,
   onSelectProject,
   onOpenArtifactFile = (): void => {},
 }: ChatViewProps): ReactElement {
@@ -385,7 +387,7 @@ export function ChatView({
         >
           <ProjectSelector
             projects={projects}
-            selectedProjectId={null}
+            selectedProjectId={selectedProjectId}
             onSelectProject={(id) => { if (id && onSelectProject) onSelectProject(id) }}
             onNewProject={onNewProject}
             currentProjectName={projectName}

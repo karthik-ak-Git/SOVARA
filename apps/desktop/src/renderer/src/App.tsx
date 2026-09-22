@@ -412,6 +412,7 @@ export function App(): React.JSX.Element {
             artifactsPanelOpen={artifactsOpen}
             onToggleArtifacts={setArtifactsOpen}
             projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            selectedProjectId={selectedProjectId}
             onSelectProject={setSelectedProjectId}
             onOpenArtifactFile={handleOpenArtifact}
           />
