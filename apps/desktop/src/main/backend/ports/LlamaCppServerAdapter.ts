@@ -333,7 +333,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    * model loads, readiness is verified, and the request routes to THAT
    * exact endpoint. Never routes merely because a model is marked ACTIVE.
    */
-  async ensureHealthy(modelId: ModelId, opts?: { ctxLen?: number; runtimeId?: string }): Promise<ModelInstance> {
+  async ensureHealthy(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance> {
     const key = String(instanceIdFor(String(modelId)))
     const cur = this.instances.get(key)
     if (cur) {
@@ -480,8 +480,11 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       ngl = 0
       appendLlamaLog(this.baseDir, 'load-cpu-mode', { modelId, detail: 'explicit CPU placement, VRAM gate skipped' })
     } else if (gpuMode === 'fit' || explicitNgl !== null) {
-      if (!gpu?.totalMB) throw new Error('resource-pressure: Fit mode needs a detectable GPU (nvidia-smi unreadable) -- cannot size a partial offload')
-      if (explicitNgl !== null) {
+      if (!gpu?.totalMB) {
+        ngl = 0
+        partialOffload = false
+        appendLlamaLog(this.baseDir, 'load-fit-cpu-fallback', { modelId, detail: 'GPU unreadable, fell back to CPU' })
+      } else if (explicitNgl !== null) {
         const info = readGgufModelInfo(modelPath)
         if (!info) throw new Error(`resource-pressure: explicit ${explicitNgl} GPU layers need a readable GGUF header to verify the fit ("${path.basename(modelPath)}" header unreadable)`)
         ngl = Math.min(explicitNgl, info.blockCount)
@@ -490,37 +493,65 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         estimatedVramMB = Math.round(ngl * (weightsMB / info.blockCount)) + kv + Math.round(weightsMB * 0.05) + 256
         partialOffload = ngl < info.blockCount
         if (estimatedVramMB > gpu.totalMB) {
-          throw new Error(`resource-pressure: "${path.basename(modelPath)}" with ${ngl}/${info.blockCount} GPU layers needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''}`)
+          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+          if (fit && fit.fitLayers > 0) {
+            ngl = fit.fitLayers
+            estimatedVramMB = fit.estimatedMB
+            partialOffload = true
+          } else {
+            ngl = 0
+            partialOffload = false
+          }
         }
       } else {
-        const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 })
-        if (!fit) {
-          throw new Error(`resource-pressure: "${path.basename(modelPath)}" cannot fit this GPU even with minimum partial offload (GPU ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''}) -- pick a smaller quant`)
+        let fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+        if (!fit && ctxLen > 4096) {
+          fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen: 4096, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
         }
+        if (!fit && ctxLen > 2048) {
+          fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen: 2048, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+        }
+        if (fit && fit.fitLayers > 0) {
+          ngl = fit.fitLayers
+          estimatedVramMB = fit.estimatedMB
+          partialOffload = true
+          appendLlamaLog(this.baseDir, 'load-fit-plan', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
+        } else {
+          ngl = 0
+          partialOffload = false
+          appendLlamaLog(this.baseDir, 'load-fit-cpu-fallback', { modelId, detail: 'GPU cannot fit partial layers, fell back to CPU' })
+        }
+      }
+    } else if (gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+      // Auto mode: full model exceeds GPU VRAM, automatically plan partial GPU offload
+      let fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+      if (!fit && ctxLen > 4096) {
+        fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen: 4096, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+      }
+      if (!fit && ctxLen > 2048) {
+        fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen: 2048, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 128 })
+      }
+      if (fit && fit.fitLayers > 0) {
         ngl = fit.fitLayers
         estimatedVramMB = fit.estimatedMB
         partialOffload = true
-        appendLlamaLog(this.baseDir, 'load-fit-plan', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
+        appendLlamaLog(this.baseDir, 'load-auto-fit', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
+        console.log(`[SOVARA][LLAMA] auto-fit partial offload for ${modelId}: ${fit.fitLayers}/${fit.totalLayers} layers (~${estimatedVramMB}MB / ${gpu.totalMB}MB)`)
+      } else {
+        ngl = 0
+        partialOffload = false
+        appendLlamaLog(this.baseDir, 'load-auto-cpu', { modelId, detail: 'VRAM exceeded, auto-fell back to CPU execution' })
+        console.log(`[SOVARA][LLAMA] auto-fallback to CPU execution for ${modelId}`)
       }
     }
 
-
     await this.withGlobalMutex(async () => {
-      // Honest capacity gate — skipped when we already auto-fell back to CPU,
-      // or when caller explicitly asked for cpu/fit/explicit-ngl. Only the
-      // non-auto path still hard-refuses full-offload.
-      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
-        const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
-        const altHint = alternatives.length > 0
-          ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
-          : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
-        let fitHint = ''
-        try {
-          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 64 })
-          if (fit) fitHint = ` Fit mode could offload ${fit.fitLayers}/${fit.totalLayers} layers (~${fit.estimatedMB}MB) -- retry with Fit mode for partial GPU offload.`
-        } catch { /* hint is best-effort only */ }
-        const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} -- pick a smaller quant.${altHint}${fitHint}`
-        appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB, vramTotalMB: gpu.totalMB }, 'error')
+      // System capacity gate: only refuse if model weights exceed total system RAM
+      const totalRamMB = Math.round(os.totalmem() / (1024 * 1024))
+      const modelWeightMB = Math.round(fileSize / (1024 * 1024))
+      if (modelWeightMB > totalRamMB * 0.95) {
+        const msg = `resource-pressure: "${path.basename(modelPath)}" weighs ~${modelWeightMB}MB which exceeds total system RAM (${totalRamMB}MB) -- pick a smaller quant.`
+        appendLlamaLog(this.baseDir, 'load-refused', { modelId, modelWeightMB, totalRamMB }, 'error')
         throw new Error(msg)
       }
       // Proactive cancellation: if the user requested a new model while another
@@ -549,7 +580,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     // Structured runtime selection (spec §5) — GGUF → llama.cpp only.
     // When auto-fallback chose CPU, force CPU path even though GPU exists.
-    const isAutoCpu = false
+    const isAutoCpu = ngl === 0
     // Auto-provision the llama.cpp runtime the first time we need it. The
     // user never has to click "Install local runtime" — the moment they
     // pick a model the missing binary gets pulled. Throws if installation
@@ -564,7 +595,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         throw new Error(`runtime-not-installed: ${msg}`)
       }
     }
-    const useCuda = !forceCpu && !isAutoCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0)
+    const useCuda = !forceCpu && !isAutoCpu && Boolean(gpu?.totalMB && gpu.totalMB > 0 && ngl > 0)
     const selection = selectRuntimeForModel({
       format: 'gguf',
       exePath: exe,

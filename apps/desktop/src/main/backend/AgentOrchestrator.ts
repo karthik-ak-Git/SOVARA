@@ -567,7 +567,7 @@ export class AgentOrchestrator {
           { id: routing.modelId! as never, displayName: selModel?.displayName ?? routing.modelId!, path: selPath, source: 'custom', format: 'gguf' } as never,
           { ctxLen: classification.contextLengthNeeded },
         ).catch(() => ({ blocking: false } as never))
-        if ((fullPressure as { blocking?: boolean }).blocking) {
+        if ((fullPressure as { blocking?: boolean }).blocking || (fullPressure as { level?: string }).level === 'warn') {
           this.safeLog(`[SOVARA][ROUTER] user-selected ${routing.modelId!} exceeds full VRAM, enabling partial/CPU offload`)
           ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
         }
@@ -906,12 +906,12 @@ export class AgentOrchestrator {
       // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
       // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
       // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
-      let nCtx = Math.max(16384, classification.contextLengthNeeded || 16384)
-      // Try to read actual server ctx from resident instance (if already loaded with different ctx)
+      let nCtx = classification.contextLengthNeeded || 8192
+      // Try to read actual server ctx from resident instance
       try {
         const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
         const hit = insts?.find((x) => String(x.modelId) === String(routing.modelId!) || String(x.id).includes(String(routing.modelId!).replace(/[^a-z0-9]/gi, '_')))
-        if (hit?.ctxLen && hit.ctxLen > nCtx) nCtx = hit.ctxLen
+        if (hit?.ctxLen && hit.ctxLen > 0) nCtx = hit.ctxLen
       } catch {}
       const systemChars = systemBlocks.join('\n\n').length
       // Floor 8192 — sovereign prompt is 6460 tokens, so 4096 always overflows.
@@ -1452,6 +1452,18 @@ export class AgentOrchestrator {
           this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: `stall-timeout ack after ${secs}s`, stepIndex: 0 })
           this.noteEndQuiet(ownedInstanceForMetrics)
           return { ok: true, userSeq, assistantSeq: seq, routing, classification }
+        }
+        const errMsg = e instanceof Error ? e.message : String(e)
+        if (!autoRetried && (/exceed.*context|context.*size/i.test(errMsg) || errMsg.includes('exceed_context_size_error'))) {
+          autoRetried = true
+          if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+          console.warn(`[SOVARA][ORCH] Context size exceeded, auto-compacting and retrying once...`)
+          const reducedCtx = Math.max(2048, Math.floor(nCtx / 2))
+          nCtx = reducedCtx
+          messages = compactForCtx(messages, reducedCtx)
+          this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `compacted context to ${reducedCtx} tokens, retrying...` })
+          shouldContinueLoop = true
+          continue
         }
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: 'cancelled' })

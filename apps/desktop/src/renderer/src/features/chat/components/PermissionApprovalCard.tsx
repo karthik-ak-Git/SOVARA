@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, type ReactElement } from 'react'
-import { Terminal, CornerDownLeft, Shield } from 'lucide-react'
+import { useState, useEffect, useRef, type ReactElement } from 'react'
+import { Terminal, CornerDownLeft } from 'lucide-react'
 
 export interface PermissionApprovalCardProps {
   toolCallId: string
@@ -20,6 +20,7 @@ export function PermissionApprovalCard({
 }: PermissionApprovalCardProps): ReactElement {
   const [selectedOption, setSelectedOption] = useState<number>(1)
   const [feedbackText, setFeedbackText] = useState<string>('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Derive exact command or formatted string from arguments
   const commandStr = (() => {
@@ -60,110 +61,93 @@ export function PermissionApprovalCard({
     }
   }
 
+  // Keyboard navigation: 1-5 to select option, Enter to submit, Escape to skip
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      // If user is actively typing in the feedback textarea, allow normal typing unless Ctrl+Enter
+      const isTextareaFocused = document.activeElement === textareaRef.current
+      if (isTextareaFocused) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault()
+          handleSubmit()
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          onSkip()
+        }
+        return
+      }
+
+      if (e.key >= '1' && e.key <= '5') {
+        e.preventDefault()
+        const idx = parseInt(e.key, 10)
+        setSelectedOption(idx)
+        if (idx === 5) {
+          setTimeout(() => textareaRef.current?.focus(), 50)
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        handleSubmit()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        onSkip()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedOption, feedbackText, onSkip])
+
   return (
     <div
-      className="sv-permission-card border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 rounded-xl p-4 shadow-sm my-3 font-sans transition-all"
-      style={{
-        width: '100%',
-        maxWidth: '680px',
-        margin: '12px 0',
-        borderRadius: '12px',
-        border: '1px solid var(--stitch-border, #E8E4DE)',
-        background: '#FFFFFF',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-      }}
+      className="sv-permission-card w-full max-w-2xl my-3 p-4 rounded-xl border font-sans shadow-sm transition-all border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
       role="region"
       aria-label="Permission request"
     >
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '24px',
-            height: '24px',
-            borderRadius: '6px',
-            border: '1px solid #D4D4D8',
-            background: '#F4F4F5',
-            color: '#27272A',
-          }}
-        >
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center justify-center w-6 h-6 rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200">
           <Terminal size={14} />
         </div>
-        <h3
-          style={{
-            fontSize: '15px',
-            fontWeight: 600,
-            color: '#18181B',
-            margin: 0,
-            lineHeight: 1.3,
-          }}
-        >
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 m-0 leading-snug">
           {actionTitle}
         </h3>
       </div>
 
       {/* Monospace Code snippet box */}
-      <div
-        style={{
-          background: '#F4F4F5',
-          border: '1px solid #E4E4E7',
-          borderRadius: '8px',
-          padding: '10px 12px',
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          fontSize: '13px',
-          lineHeight: '1.45',
-          color: '#18181B',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          overflowX: 'hidden',
-          marginBottom: '14px',
-        }}
-      >
+      <div className="p-2.5 mb-3 rounded-lg border font-mono text-xs leading-relaxed overflow-x-hidden break-all whitespace-pre-wrap border-zinc-200 dark:border-zinc-800 bg-zinc-100/90 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
         {commandStr}
       </div>
 
       {/* 5 Selectable Options */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+      <div className="flex flex-col gap-1 mb-3.5">
         {options.map((opt) => {
           const isSelected = selectedOption === opt.index
           return (
             <div
               key={opt.index}
-              onClick={() => setSelectedOption(opt.index)}
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '10px',
-                padding: '8px 10px',
-                borderRadius: '8px',
-                background: isSelected ? '#E4E4E7' : 'transparent',
-                cursor: 'pointer',
-                transition: 'background-color 0.15s ease',
-                userSelect: 'none',
+              onClick={() => {
+                setSelectedOption(opt.index)
+                if (opt.index === 5) {
+                  setTimeout(() => textareaRef.current?.focus(), 50)
+                }
               }}
+              className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors select-none ${
+                isSelected
+                  ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium'
+                  : 'hover:bg-zinc-100/70 dark:hover:bg-zinc-800/40 text-zinc-700 dark:text-zinc-300'
+              }`}
             >
               <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: '20px',
-                  height: '20px',
-                  minWidth: '20px',
-                  borderRadius: '4px',
-                  background: isSelected ? '#D4D4D8' : '#E4E4E7',
-                  color: isSelected ? '#18181B' : '#71717A',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  marginTop: '1px',
-                }}
+                className={`flex items-center justify-center w-5 h-5 min-w-[20px] rounded text-xs font-semibold font-mono mt-0.5 ${
+                  isSelected
+                    ? 'bg-zinc-300 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100'
+                    : 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                }`}
               >
                 {opt.index}
               </div>
-              <div style={{ fontSize: '13px', color: isSelected ? '#18181B' : '#52525B', lineHeight: '1.4' }}>
+              <div className="text-xs leading-relaxed pt-0.5">
                 {opt.label}
               </div>
             </div>
@@ -173,39 +157,24 @@ export function PermissionApprovalCard({
 
       {/* Input area if option 5 (No) selected */}
       {selectedOption === 5 ? (
-        <div style={{ marginBottom: '14px' }}>
+        <div className="mb-3">
           <textarea
+            ref={textareaRef}
             value={feedbackText}
             onChange={(e) => setFeedbackText(e.target.value)}
             placeholder="Tell the agent what to do instead..."
             rows={2}
-            style={{
-              width: '100%',
-              padding: '8px 10px',
-              fontSize: '13px',
-              borderRadius: '6px',
-              border: '1px solid #D4D4D8',
-              outline: 'none',
-              resize: 'vertical',
-            }}
+            className="w-full p-2 text-xs rounded-md border outline-none resize-y border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 focus:ring-1 focus:ring-blue-500"
           />
         </div>
       ) : null}
 
       {/* Action Footer */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
+      <div className="flex items-center justify-end gap-3 pt-1">
         <button
           type="button"
           onClick={onSkip}
-          style={{
-            background: 'none',
-            border: 'none',
-            fontSize: '13px',
-            color: '#71717A',
-            cursor: 'pointer',
-            padding: '6px 8px',
-            fontWeight: 500,
-          }}
+          className="text-xs font-medium px-2 py-1.5 cursor-pointer bg-transparent border-none text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors"
         >
           Skip
         </button>
@@ -213,23 +182,9 @@ export function PermissionApprovalCard({
         <button
           type="button"
           onClick={handleSubmit}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            background: '#0078D4',
-            color: '#FFFFFF',
-            border: 'none',
-            borderRadius: '6px',
-            padding: '7px 16px',
-            fontSize: '13px',
-            fontWeight: 600,
-            cursor: 'pointer',
-            boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
-            transition: 'background-color 0.15s ease',
-          }}
+          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md border-none cursor-pointer bg-[#0078D4] hover:bg-[#006cc1] text-white shadow-sm transition-all"
         >
-          Submit <CornerDownLeft size={14} />
+          Submit <CornerDownLeft size={13} />
         </button>
       </div>
     </div>
