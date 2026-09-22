@@ -54,6 +54,7 @@ interface Props {
   changedFiles?: ChangedFileItem[]
   events?: SessionEventView[]
   sessionTitle?: string
+  sessionId?: string
 }
 
 export function AuxiliaryPane({
@@ -72,6 +73,7 @@ export function AuxiliaryPane({
   changedFiles = [],
   events = [],
   sessionTitle = 'Current Conversation',
+  sessionId,
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
   const [internalExpanded, setInternalExpanded] = useState(false)
@@ -409,6 +411,7 @@ export function AuxiliaryPane({
         Cwd: 'd:\\SOVARA',
         WaitMsBeforeAsync: 5000,
         _forceApprove: true,
+        ...(sessionId ? { sessionId } : {}),
       })
 
       let text = ''

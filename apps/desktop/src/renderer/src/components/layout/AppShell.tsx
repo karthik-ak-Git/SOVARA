@@ -155,6 +155,7 @@ export function AppShell({
             artifactContent={artifactContent}
             artifactTitle={artifactTitle}
             events={events}
+            sessionId={selectedSessionId || selectedChatId || undefined}
           />
         ) : (
           contextPanel ?? null
