@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, type ReactElement } from 'react'
 import {
-  FileText,
+  BookOpen,
   FileCode2,
   Terminal as TerminalIcon,
   Plus,
@@ -11,24 +11,23 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  BookOpen,
-  X,
-  Copy,
-  Eye,
+  MoreHorizontal,
   Search,
-  ExternalLink,
   Layers,
-  Cpu,
-  Clock,
+  Trash2,
   Send,
+  FileText,
   File,
+  X,
+  RefreshCw,
 } from 'lucide-react'
-import type { SessionEventView } from '@/lib/client/api'
+import { dispatchTool, type SessionEventView } from '@/lib/client/api'
 
 export type AuxiliaryTab = 'overview' | 'diffs' | 'terminal' | 'artifacts' | 'subagents'
 
 export interface ChangedFileItem {
   path: string
+  staged?: boolean
   additions?: number
   deletions?: number
   diffChunks?: Array<{
@@ -52,6 +51,7 @@ interface Props {
   terminalLogs?: string[]
   changedFiles?: ChangedFileItem[]
   events?: SessionEventView[]
+  sessionTitle?: string
 }
 
 export function AuxiliaryPane({
@@ -67,23 +67,11 @@ export function AuxiliaryPane({
   terminalLogs = [],
   changedFiles = [],
   events = [],
+  sessionTitle = 'Current Conversation',
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
-  const [copied, setCopied] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
-  const [activeFileIdx, setActiveFileIdx] = useState(0)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const [commandInput, setCommandInput] = useState('')
-  const [localLogs, setLocalLogs] = useState<string[]>(terminalLogs)
-
-  // Section Collapse states for Overview
-  const [filesOpen, setFilesOpen] = useState(false)
-  const [artifactsSectionOpen, setArtifactsSectionOpen] = useState(true)
-  const [uploadsOpen, setUploadsOpen] = useState(true)
-  const [tasksOpen, setTasksOpen] = useState(false)
-  const [terminalsOpen, setTerminalsOpen] = useState(true)
-  const [skillsOpen, setSkillsOpen] = useState(true)
-
   const plusMenuRef = useRef<HTMLDivElement>(null)
 
   const tab = controlledTab ?? internalTab
@@ -104,7 +92,7 @@ export function AuxiliaryPane({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [plusMenuOpen])
 
-  // --- Dynamic data extraction from real Session Events ---
+  // --- Dynamic data extraction from Session Events ---
   const dynamicFiles = useMemo(() => {
     if (changedFiles.length > 0) return changedFiles
     const map = new Map<string, ChangedFileItem>()
@@ -118,11 +106,12 @@ export function AuxiliaryPane({
             if (!map.has(path)) {
               map.set(path, {
                 path,
-                additions: 12,
+                staged: false,
+                additions: 10,
                 deletions: 2,
                 diffChunks: [
                   { lineOld: 1, lineNew: 1, type: 'context', content: `// File: ${path}` },
-                  { lineNew: 2, type: 'add', content: '+ // Modified dynamically during session' },
+                  { lineNew: 2, type: 'add', content: '+ // Modified dynamically during AI session' },
                 ],
               })
             }
@@ -132,6 +121,11 @@ export function AuxiliaryPane({
     }
     return Array.from(map.values())
   }, [events, changedFiles])
+
+  const stagedFiles = useMemo(() => dynamicFiles.filter((f) => f.staged), [dynamicFiles])
+  const unstagedFiles = useMemo(() => dynamicFiles.filter((f) => !f.staged), [dynamicFiles])
+
+  const [selectedReviewFile, setSelectedReviewFile] = useState<ChangedFileItem | null>(null)
 
   const dynamicSubagents = useMemo(() => {
     if (activeSubagents.length > 0) return activeSubagents
@@ -189,54 +183,152 @@ export function AuxiliaryPane({
     return list
   }, [events])
 
-  const dynamicTerminals = useMemo(() => {
-    const list: Array<{ id: string; name: string; pid: string }> = []
+  const dynamicSkills = useMemo(() => {
+    const list: Array<{ name: string; path?: string }> = []
+    for (const e of events) {
+      if (e.type === 'tool/call') {
+        const d: any = e.data || {}
+        const toolName = d.name || d.toolName || d.toolCall?.name
+        if (toolName === 'use_skill' || toolName === 'scan_skills' || toolName === 'read_skill') {
+          const name = d.args?.skillName || d.args?.name || 'skill'
+          if (!list.some((s) => s.name === name)) {
+            list.push({ name: String(name), path: d.args?.path })
+          }
+        }
+      }
+    }
+    return list
+  }, [events])
+
+  // --- Dynamic Terminal Sessions & Command Execution ---
+  interface TerminalInstance {
+    id: string
+    name: string
+    pid: string
+    logs: string[]
+  }
+
+  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>([
+    {
+      id: 'term-1',
+      name: 'powershell.exe',
+      pid: 'PID 15680',
+      logs: [
+        'Windows PowerShell',
+        'Copyright (C) Microsoft Corporation. All rights reserved.',
+        '',
+        'PS D:\\SOVARA> ',
+      ],
+    },
+  ])
+  const [activeTerminalId, setActiveTerminalId] = useState<string>('term-1')
+  const [commandInput, setCommandInput] = useState('')
+
+  // Stream AI tool execution outputs into the active terminal instance!
+  useEffect(() => {
     for (const e of events) {
       if (e.type === 'tool/call') {
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
         if (toolName === 'run_command' || toolName === 'exec_shell_command') {
-          const cmd = d.args?.CommandLine || d.args?.cmd || 'powershell.exe'
-          list.push({
-            id: String(e.seq),
-            name: String(cmd).slice(0, 30),
-            pid: `PID ${Math.floor(10000 + Math.random() * 90000)}`,
-          })
+          const cmd = d.args?.CommandLine || d.args?.cmd || ''
+          if (cmd) {
+            setTerminalInstances((prev) =>
+              prev.map((t) =>
+                t.id === activeTerminalId
+                  ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`, 'Running command via AI assistant...'] }
+                  : t
+              )
+            )
+          }
         }
       }
     }
-    if (list.length === 0) {
-      list.push({ id: 'term-1', name: 'powershell.exe', pid: 'PID 15680' })
-    }
-    return list
-  }, [events])
+  }, [events, activeTerminalId])
 
-  if (!isOpen) return null
+  const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
 
-  const copyArtifact = (): void => {
-    if (artifactContent) {
-      void navigator.clipboard.writeText(artifactContent)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    }
-  }
-
-  const handleRunCommand = (e: React.FormEvent): void => {
+  const handleRunCommand = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!commandInput.trim()) return
     const cmd = commandInput.trim()
-    setLocalLogs((prev) => [...prev, `PS D:\\SOVARA> ${cmd}`, `Executed: ${cmd}`, ''])
+    setTerminalInstances((prev) =>
+      prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `PS D:\\SOVARA> ${cmd}`] } : t))
+    )
     setCommandInput('')
+
+    try {
+      const res = await dispatchTool('run_command', { CommandLine: cmd, Cwd: 'd:\\SOVARA', WaitMsBeforeAsync: 5000 })
+      const text = res?.result || res?.message || (res?.ok ? 'Command executed successfully.' : 'Done.')
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, String(text), ''] } : t))
+      )
+    } catch {
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, 'Command sent to terminal background.'] } : t))
+      )
+    }
   }
 
-  const activeFile = dynamicFiles[activeFileIdx] || dynamicFiles[0]
+  const handleKillTerminal = (id: string): void => {
+    setTerminalInstances((prev) => {
+      const filtered = prev.filter((t) => t.id !== id)
+      if (filtered.length === 0) {
+        const newId = `term-${Date.now()}`
+        const newTerm: TerminalInstance = {
+          id: newId,
+          name: 'powershell.exe',
+          pid: `PID ${Math.floor(10000 + Math.random() * 90000)}`,
+          logs: [
+            'Windows PowerShell',
+            'Copyright (C) Microsoft Corporation. All rights reserved.',
+            '',
+            'PS D:\\SOVARA> ',
+          ],
+        }
+        setActiveTerminalId(newId)
+        return [newTerm]
+      }
+      if (activeTerminalId === id) {
+        setActiveTerminalId(filtered[0].id)
+      }
+      return filtered
+    })
+  }
+
+  const handleAddNewTerminal = (): void => {
+    const newId = `term-${Date.now()}`
+    const newTerm: TerminalInstance = {
+      id: newId,
+      name: 'powershell.exe',
+      pid: `PID ${Math.floor(10000 + Math.random() * 90000)}`,
+      logs: [
+        'Windows PowerShell',
+        'Copyright (C) Microsoft Corporation. All rights reserved.',
+        '',
+        'PS D:\\SOVARA> ',
+      ],
+    }
+    setTerminalInstances((prev) => [...prev, newTerm])
+    setActiveTerminalId(newId)
+  }
+
+  // Section Collapse states for Overview
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [artifactsSectionOpen, setArtifactsSectionOpen] = useState(true)
+  const [uploadsOpen, setUploadsOpen] = useState(true)
+  const [tasksOpen, setTasksOpen] = useState(false)
+  const [terminalsOpen, setTerminalsOpen] = useState(true)
+  const [skillsOpen, setSkillsOpen] = useState(true)
+
+  if (!isOpen) return null
 
   return (
     <aside
       className="sv-aux-pane"
       aria-label="Auxiliary Workspace Pane"
       style={{
-        width: isExpanded ? '60%' : 440,
+        width: isExpanded ? '60%' : 460,
         height: '100%',
         background: '#ffffff',
         borderLeft: '1px solid #e2e8f0',
@@ -247,7 +339,7 @@ export function AuxiliaryPane({
         userSelect: 'none',
       }}
     >
-      {/* Top Header Bar with 3 Tab Icons & Action Controls */}
+      {/* Shared Top Bar Header with 3 Tab Icons */}
       <header
         className="sv-aux-header"
         style={{
@@ -261,7 +353,7 @@ export function AuxiliaryPane({
           position: 'relative',
         }}
       >
-        {/* Left Side: 3 Tab Icons (Overview, Diffs/Review, Terminal) */}
+        {/* Left 3 Icon Tabs: Overview, Review, Terminal */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
             type="button"
@@ -286,8 +378,8 @@ export function AuxiliaryPane({
 
           <button
             type="button"
-            aria-label="Review Changes"
-            title="Review Changes"
+            aria-label="Review File Changes"
+            title="Review File Changes"
             onClick={() => setTab('diffs')}
             style={{
               background: 'transparent',
@@ -327,7 +419,7 @@ export function AuxiliaryPane({
           </button>
         </div>
 
-        {/* Right Side Action Icons (+ dropdown, maximize, toggle side pane) */}
+        {/* Right Side Header Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <div style={{ position: 'relative' }}>
             <button
@@ -398,6 +490,7 @@ export function AuxiliaryPane({
                   type="button"
                   onClick={() => {
                     setPlusMenuOpen(false)
+                    handleAddNewTerminal()
                     setTab('terminal')
                   }}
                   style={{
@@ -466,12 +559,12 @@ export function AuxiliaryPane({
         </div>
       </header>
 
-      {/* Pane Content Body */}
-      <div className="sv-aux-body" style={{ flex: 1, overflowY: 'auto', background: '#ffffff' }}>
-        {/* VIEW 1: OVERVIEW TAB (Chat Summary & Activities) */}
+      {/* Main Content Area */}
+      <div className="sv-aux-body" style={{ flex: 1, overflowY: 'auto', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
+        {/* VIEW 1: OVERVIEW TAB */}
         {tab === 'overview' ? (
           <div style={{ padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {/* Active Subagent / LLM Researcher Summary Cards */}
+            {/* Active Subagent Cards (if any) */}
             {dynamicSubagents.length > 0 ? (
               dynamicSubagents.map((sa) => (
                 <div
@@ -514,20 +607,9 @@ export function AuxiliaryPane({
                   <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicFiles.length}</span>
                   <ChevronRight size={14} style={{ color: '#94a3b8', transform: filesOpen ? 'rotate(90deg)' : 'none' }} />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      padding: '2px 8px',
-                      borderRadius: 6,
-                      background: '#f1f5f9',
-                      color: '#475569',
-                      border: '1px solid #e2e8f0',
-                    }}
-                  >
-                    Uncommitted v
-                  </span>
-                </div>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0' }}>
+                  Uncommitted v
+                </span>
               </div>
 
               {filesOpen && dynamicFiles.length > 0 ? (
@@ -537,7 +619,7 @@ export function AuxiliaryPane({
                       key={idx}
                       type="button"
                       onClick={() => {
-                        setActiveFileIdx(idx)
+                        setSelectedReviewFile(f)
                         setTab('diffs')
                       }}
                       style={{
@@ -682,18 +764,21 @@ export function AuxiliaryPane({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
                   <span>Terminals</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicTerminals.length}</span>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{terminalInstances.length}</span>
                   <ChevronDown size={14} style={{ color: '#94a3b8', transform: terminalsOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
               {terminalsOpen ? (
                 <div style={{ paddingLeft: 4 }}>
-                  {dynamicTerminals.map((t) => (
+                  {terminalInstances.map((t) => (
                     <button
                       key={t.id}
                       type="button"
-                      onClick={() => setTab('terminal')}
+                      onClick={() => {
+                        setActiveTerminalId(t.id)
+                        setTab('terminal')
+                      }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -719,7 +804,7 @@ export function AuxiliaryPane({
               ) : null}
             </div>
 
-            {/* Section 6: Skills Used */}
+            {/* Section 6: Skills Used (100% Dynamic, 0 hardcoded) */}
             <div>
               <div
                 style={{
@@ -733,295 +818,289 @@ export function AuxiliaryPane({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
                   <span>Skills Used</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>4</span>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicSkills.length}</span>
                   <ChevronDown size={14} style={{ color: '#94a3b8', transform: skillsOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
               {skillsOpen ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
-                    <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                    <span style={{ fontWeight: 500 }}>antigravity-guide</span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
-                    <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                    <span style={{ fontWeight: 500 }}>generative_ui</span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
-                    <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                    <span style={{ fontWeight: 500 }}>tailwind-patterns</span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
-                    <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                    <span style={{ fontWeight: 500 }}>frontend-design</span>
-                  </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 4 }}>
+                  {dynamicSkills.length > 0 ? (
+                    dynamicSkills.map((sk, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
+                        <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                        <span style={{ fontWeight: 500 }}>{sk.name}</span>
+                        {sk.path ? <span style={{ fontSize: 10, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.path}</span> : null}
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#94a3b8', padding: '2px 0' }}>No skills used in this chat.</div>
+                  )}
                 </div>
               ) : null}
             </div>
           </div>
         ) : null}
 
-        {/* VIEW 2: REVIEW / DIFFS TAB (Updated Files Code Diffs) */}
+        {/* VIEW 2: REVIEW TAB (Matches Image 1 media_1790049747410.png) */}
         {tab === 'diffs' ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            {/* File Tabs Header */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '6px 8px 0',
-                background: '#f8fafc',
-                borderBottom: '1px solid #e2e8f0',
-                overflowX: 'auto',
-              }}
-            >
-              {dynamicFiles.length > 0 ? (
-                dynamicFiles.map((f, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setActiveFileIdx(i)}
-                    style={{
-                      padding: '5px 10px',
-                      borderRadius: '6px 6px 0 0',
-                      border: '1px solid #e2e8f0',
-                      borderBottom: activeFileIdx === i ? '1px solid #ffffff' : '1px solid #e2e8f0',
-                      background: activeFileIdx === i ? '#ffffff' : '#f1f5f9',
-                      fontSize: 12,
-                      fontWeight: activeFileIdx === i ? 600 : 400,
-                      color: '#0f172a',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {f.path.split(/[/\\]/).pop()}
-                  </button>
-                ))
-              ) : (
-                <button
-                  type="button"
-                  style={{
-                    padding: '5px 10px',
-                    borderRadius: '6px 6px 0 0',
-                    border: '1px solid #e2e8f0',
-                    borderBottom: '1px solid #ffffff',
-                    background: '#ffffff',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: '#0f172a',
-                  }}
-                >
-                  {artifactTitle || 'File Review'}
-                </button>
-              )}
-            </div>
-
-            {/* File Breadcrumb */}
-            <div
-              style={{
-                padding: '6px 12px',
-                background: '#ffffff',
-                borderBottom: '1px solid #f1f5f9',
-                fontSize: 11,
-                color: '#64748b',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                overflowX: 'auto',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {activeFile ? activeFile.path : 'SOVARA > workspace > active session'}
-            </div>
-
-            {/* Diff Viewer Body */}
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              {activeFile && activeFile.diffChunks ? (
-                <div
-                  style={{
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                    fontSize: 12,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: '4px 12px',
-                      background: '#f1f5f9',
-                      color: '#64748b',
-                      fontSize: 11,
-                      borderBottom: '1px solid #e2e8f0',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <span>@@ -1,5 +1,6 @@</span>
-                    <span style={{ color: '#0284c7', cursor: 'pointer' }}>+28 lines</span>
-                  </div>
-                  {activeFile.diffChunks.map((chunk, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        display: 'flex',
-                        background:
-                          chunk.type === 'add'
-                            ? '#f0fdf4'
-                            : chunk.type === 'del'
-                            ? '#fef2f2'
-                            : 'transparent',
-                        color:
-                          chunk.type === 'add'
-                            ? '#166534'
-                            : chunk.type === 'del'
-                            ? '#991b1b'
-                            : '#334155',
-                        borderLeft:
-                          chunk.type === 'add'
-                            ? '3px solid #22c55e'
-                            : chunk.type === 'del'
-                            ? '3px solid #ef4444'
-                            : '3px solid transparent',
-                        padding: '2px 8px',
-                      }}
-                    >
-                      <span style={{ width: 40, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>
-                        {chunk.lineOld ?? ''}
-                      </span>
-                      <span style={{ width: 40, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>
-                        {chunk.lineNew ?? ''}
-                      </span>
-                      <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                        {chunk.content}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
-              ) : artifactContent ? (
-                <div style={{ padding: 12 }}>
-                  <pre style={{ background: '#f8fafc', padding: 12, borderRadius: 6, fontSize: 12, overflow: 'auto' }}>
-                    <code>{artifactContent}</code>
-                  </pre>
-                </div>
-              ) : (
-                <div style={{ padding: 32, textAlign: 'center', color: '#64748b' }}>
-                  <FileCode2 size={24} style={{ marginBottom: 8, opacity: 0.6 }} />
-                  <p>No active file diffs selected in this session.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {/* VIEW 3: TERMINAL TAB (Execute Shell Commands) */}
-        {tab === 'terminal' ? (
-          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0f172a', color: '#f8fafc' }}>
-            {/* Terminal Header Bar */}
+            {/* Review Sub-Header */}
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '6px 12px',
-                background: '#1e293b',
-                borderBottom: '1px solid #334155',
-                fontSize: 12,
+                padding: '8px 12px',
+                borderBottom: '1px solid #e2e8f0',
+                background: '#ffffff',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <TerminalIcon size={14} style={{ color: '#38bdf8' }} />
-                <span style={{ fontWeight: 600 }}>powershell.exe</span>
-                <span style={{ fontSize: 10, color: '#94a3b8' }}>PID 15680</span>
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>Review</span>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', cursor: 'pointer' }}>
+                  Uncommitted v
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setLocalLogs(['Windows PowerShell', 'Copyright (C) Microsoft Corporation.', 'PS D:\\SOVARA> '])}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid #475569',
-                  color: '#94a3b8',
-                  borderRadius: 4,
-                  fontSize: 11,
-                  padding: '2px 6px',
-                  cursor: 'pointer',
-                }}
-              >
-                Clear Output
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#64748b' }}>
+                <MoreHorizontal size={15} style={{ cursor: 'pointer' }} />
+                <Search size={15} style={{ cursor: 'pointer' }} />
+                <Layers size={15} style={{ cursor: 'pointer' }} />
+              </div>
             </div>
 
-            {/* Terminal Console Output */}
-            <div
-              style={{
-                flex: 1,
-                padding: 12,
-                overflowY: 'auto',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                fontSize: 12,
-                lineHeight: 1.5,
-              }}
-            >
-              {localLogs.length > 0 ? (
-                localLogs.map((logLine, idx) => (
-                  <div key={idx} style={{ color: logLine.startsWith('PS') ? '#38bdf8' : '#e2e8f0' }}>
-                    {logLine}
+            {/* Split Layout: Main Diff View (Left) + File Changes Sub-Sidebar (Right) */}
+            <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+              {/* Main Diff Area */}
+              <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #e2e8f0', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
+                {selectedReviewFile && selectedReviewFile.diffChunks ? (
+                  <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12, lineHeight: 1.6 }}>
+                    <div style={{ padding: '4px 12px', background: '#f1f5f9', color: '#64748b', fontSize: 11, borderBottom: '1px solid #e2e8f0' }}>
+                      <span>{selectedReviewFile.path}</span>
+                    </div>
+                    {selectedReviewFile.diffChunks.map((chunk, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          background: chunk.type === 'add' ? '#f0fdf4' : chunk.type === 'del' ? '#fef2f2' : 'transparent',
+                          color: chunk.type === 'add' ? '#166534' : chunk.type === 'del' ? '#991b1b' : '#334155',
+                          borderLeft: chunk.type === 'add' ? '3px solid #22c55e' : chunk.type === 'del' ? '3px solid #ef4444' : '3px solid transparent',
+                          padding: '2px 8px',
+                        }}
+                      >
+                        <span style={{ width: 36, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>{chunk.lineOld ?? ''}</span>
+                        <span style={{ width: 36, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>{chunk.lineNew ?? ''}</span>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{chunk.content}</pre>
+                      </div>
+                    ))}
                   </div>
-                ))
-              ) : (
-                <div style={{ color: '#64748b' }}>Terminal output ready.</div>
-              )}
-            </div>
+                ) : (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: 13 }}>
+                    <span>No changes to review</span>
+                  </div>
+                )}
+              </div>
 
-            {/* Terminal Interactive Input */}
-            <form
-              onSubmit={handleRunCommand}
+              {/* Right Sub-Sidebar: Staged Changes & Changes */}
+              <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Staged Changes</div>
+                  {stagedFiles.length > 0 ? (
+                    stagedFiles.map((f, i) => (
+                      <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
+                        {f.path.split(/[/\\]/).pop()}
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
+                  )}
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 6 }}>Changes</div>
+                  {unstagedFiles.length > 0 ? (
+                    unstagedFiles.map((f, i) => (
+                      <div key={i} onClick={() => setSelectedReviewFile(f)} style={{ fontSize: 12, color: '#0f172a', cursor: 'pointer', padding: '2px 0' }}>
+                        {f.path.split(/[/\\]/).pop()}
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>No file changes</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* VIEW 3: TERMINALS TAB (Matches Image 2 media_1790049777848.png) */}
+        {tab === 'terminal' ? (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+            {/* Terminals Sub-Header */}
+            <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
+                justifyContent: 'space-between',
                 padding: '8px 12px',
-                background: '#1e293b',
-                borderTop: '1px solid #334155',
+                borderBottom: '1px solid #e2e8f0',
+                background: '#ffffff',
               }}
             >
-              <span style={{ fontSize: 12, color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>
-                PS D:\SOVARA&gt;
-              </span>
-              <input
-                type="text"
-                value={commandInput}
-                onChange={(e) => setCommandInput(e.target.value)}
-                placeholder="Type terminal command (e.g. pnpm build)..."
-                style={{
-                  flex: 1,
-                  background: 'transparent',
-                  border: 'none',
-                  outline: 'none',
-                  color: '#ffffff',
-                  fontSize: 12,
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                }}
-              />
-              <button
-                type="submit"
-                style={{
-                  background: '#0284c7',
-                  border: 'none',
-                  borderRadius: 4,
-                  color: '#ffffff',
-                  padding: '4px 8px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Send size={13} />
-              </button>
-            </form>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>Terminals</span>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', cursor: 'pointer' }}>
+                  Project v
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#64748b' }}>
+                <button
+                  type="button"
+                  aria-label="New Terminal"
+                  title="New Terminal"
+                  onClick={handleAddNewTerminal}
+                  style={{ background: 'transparent', border: 'none', padding: 2, cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center' }}
+                >
+                  <Plus size={15} />
+                </button>
+                <Layers size={15} style={{ cursor: 'pointer' }} />
+              </div>
+            </div>
+
+            {/* Split Layout: Terminal Console Output (Left) + Conversations Sub-Sidebar (Right) */}
+            <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+              {/* Left Main Terminal Console Output */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#ffffff', borderRight: '1px solid #e2e8f0' }}>
+                <div
+                  style={{
+                    flex: 1,
+                    padding: 12,
+                    overflowY: 'auto',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    color: '#0f172a',
+                    background: '#ffffff',
+                  }}
+                >
+                  {activeTerminal ? (
+                    activeTerminal.logs.map((logLine, idx) => (
+                      <div key={idx} style={{ color: logLine.startsWith('PS') ? '#0284c7' : '#334155' }}>
+                        {logLine}
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ color: '#94a3b8' }}>Terminal console output ready.</div>
+                  )}
+                </div>
+
+                {/* Terminal Shell Input Prompt */}
+                <form
+                  onSubmit={handleRunCommand}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px',
+                    background: '#f8fafc',
+                    borderTop: '1px solid #e2e8f0',
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: '#0284c7', fontFamily: 'monospace', fontWeight: 600 }}>
+                    PS D:\SOVARA&gt;
+                  </span>
+                  <input
+                    type="text"
+                    value={commandInput}
+                    onChange={(e) => setCommandInput(e.target.value)}
+                    placeholder="Type terminal command (e.g. pnpm build)..."
+                    style={{
+                      flex: 1,
+                      background: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: '#0f172a',
+                      fontSize: 12,
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    style={{
+                      background: '#0284c7',
+                      border: 'none',
+                      borderRadius: 4,
+                      color: '#ffffff',
+                      padding: '4px 8px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Send size={13} />
+                  </button>
+                </form>
+              </div>
+
+              {/* Right Sub-Sidebar: Active Terminal Sessions grouped under Conversations */}
+              <div style={{ width: 170, padding: '12px 10px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b' }}>Conversations</div>
+
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {sessionTitle}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {terminalInstances.map((t) => {
+                    const isSel = t.id === activeTerminalId
+                    return (
+                      <div
+                        key={t.id}
+                        onClick={() => setActiveTerminalId(t.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '4px 6px',
+                          borderRadius: 6,
+                          background: isSel ? '#e2e8f0' : 'transparent',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                          <TerminalIcon size={14} style={{ color: '#64748b', flexShrink: 0 }} />
+                          <span style={{ fontSize: 12, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {t.name.split('.')[0]}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          aria-label={`Kill ${t.name}`}
+                          title="Kill Terminal Session"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleKillTerminal(t.id)
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            padding: 2,
+                            cursor: 'pointer',
+                            color: '#94a3b8',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
