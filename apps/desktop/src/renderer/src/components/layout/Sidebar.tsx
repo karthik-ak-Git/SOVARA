@@ -18,6 +18,8 @@ import {
   Clock,
   Timer,
   Zap,
+  Pin,
+  Archive,
 } from 'lucide-react'
 
 export type NavId =
@@ -59,6 +61,9 @@ interface Props {
   onNewProjectChat?: (projectId: string) => void
   onRenameChat?: (id: string, title: string) => void
   onDeleteChat?: (id: string) => void
+  onArchiveChat?: (id: string) => void
+  onPinChat?: (id: string) => void
+  pinnedChatIds?: string[]
   recentChats?: ChatItem[]
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
@@ -68,89 +73,29 @@ interface Props {
 function ChatRow({
   chat,
   active,
+  isPinned = false,
   onSelect,
-  onRename,
-  onDelete,
+  onPin,
+  onArchive,
 }: {
   chat: ChatItem
   active: boolean
+  isPinned?: boolean
   onSelect: () => void
-  onRename?: (id: string, title: string) => void
-  onDelete?: (id: string) => void
+  onPin?: () => void
+  onArchive?: () => void
 }): React.JSX.Element {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(chat.title)
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
-  const dotsRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const onDoc = (e: MouseEvent): void => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node) &&
-        dotsRef.current &&
-        !dotsRef.current.contains(e.target as Node)
-      ) {
-        setMenuOpen(false)
-      }
-    }
-    const onScroll = (): void => setMenuOpen(false)
-    document.addEventListener('mousedown', onDoc)
-    window.addEventListener('scroll', onScroll, true)
-    return () => {
-      document.removeEventListener('mousedown', onDoc)
-      window.removeEventListener('scroll', onScroll, true)
-    }
-  }, [menuOpen])
-
-  const toggleMenu = (): void => {
-    if (!menuOpen && dotsRef.current) {
-      const r = dotsRef.current.getBoundingClientRect()
-      setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - 160) })
-    }
-    setConfirmingDelete(false)
-    setMenuOpen((v) => !v)
-  }
-
-  const commitRename = (): void => {
-    const clean = draft.trim()
-    setEditing(false)
-    setMenuOpen(false)
-    if (clean && clean !== chat.title) onRename?.(chat.id, clean)
-    else setDraft(chat.title)
-  }
-
-  if (editing) {
-    return (
-      <div className={`nav-chat-row ${active ? 'active' : ''}`} style={{ padding: '2px 0' }}>
-        <input
-          className="nav-chat-rename"
-          value={draft}
-          autoFocus
-          maxLength={120}
-          aria-label="Rename chat"
-          onChange={(e) => setDraft(e.target.value)}
-          onFocus={(e) => e.target.select()}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitRename()
-            if (e.key === 'Escape') {
-              setDraft(chat.title)
-              setEditing(false)
-            }
-          }}
-          onBlur={commitRename}
-          style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #0284c7', fontSize: 12 }}
-        />
-      </div>
-    )
-  }
-
   return (
-    <div className={`nav-chat-row ${active ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', borderRadius: 6, margin: '1px 0', background: active ? '#f1f5f9' : 'transparent' }}>
+    <div
+      className={`nav-chat-row ${active ? 'active' : ''}`}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        borderRadius: 6,
+        margin: '1px 0',
+        background: active ? '#f1f5f9' : 'transparent',
+      }}
+    >
       <button
         type="button"
         className={`nav-item ${active ? 'active-chat' : ''}`}
@@ -176,71 +121,51 @@ function ChatRow({
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chat.title}</span>
       </button>
-      <div className="nav-chat-menu-wrap" style={{ display: 'flex', alignItems: 'center' }}>
+      <div className="nav-chat-menu-wrap" style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 4 }}>
         <button
-          ref={dotsRef}
           type="button"
-          className="nav-chat-dots"
-          aria-label={`Chat options for ${chat.title}`}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={toggleMenu}
-          style={{ background: 'transparent', border: 'none', padding: '2px 4px', cursor: 'pointer', color: '#94a3b8' }}
+          className="nav-chat-action-btn"
+          aria-label={isPinned ? `Unpin ${chat.title}` : `Pin ${chat.title}`}
+          title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
+          onClick={(e) => {
+            e.stopPropagation()
+            onPin?.()
+          }}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: '3px 4px',
+            cursor: 'pointer',
+            color: isPinned ? '#0284c7' : '#94a3b8',
+            borderRadius: 4,
+            display: 'flex',
+            alignItems: 'center',
+          }}
         >
-          <MoreHorizontal size={14} aria-hidden />
+          <Pin size={13} aria-hidden />
         </button>
-        {menuOpen ? (
-          <div
-            className="nav-chat-menu nav-chat-menu-fixed"
-            role="menu"
-            ref={menuRef}
-            style={{
-              position: 'fixed',
-              top: `${menuPos.top}px`,
-              left: `${menuPos.left}px`,
-              background: '#ffffff',
-              border: '1px solid #e2e8f0',
-              borderRadius: 8,
-              boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-              zIndex: 999,
-              padding: '4px 0',
-              width: 140,
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              className="nav-chat-menu-item"
-              onClick={() => {
-                setDraft(chat.title)
-                setEditing(true)
-                setMenuOpen(false)
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 12px', border: 'none', background: 'transparent', fontSize: 12, cursor: 'pointer', color: '#334155' }}
-            >
-              <Pencil size={12} aria-hidden /> Rename
-            </button>
-            {confirmingDelete ? (
-              <div className="nav-chat-confirm" role="group" style={{ padding: 8 }}>
-                <span className="nav-chat-confirm-text" style={{ fontSize: 11, color: '#ef4444', display: 'block', marginBottom: 6 }}>Delete session?</span>
-                <div className="nav-chat-confirm-actions" style={{ display: 'flex', gap: 4 }}>
-                  <button type="button" className="nav-chat-confirm-cancel" onClick={() => setConfirmingDelete(false)} style={{ padding: '2px 6px', fontSize: 11, borderRadius: 4, border: '1px solid #e2e8f0' }}>Keep</button>
-                  <button type="button" className="nav-chat-confirm-delete" onClick={() => { setMenuOpen(false); setConfirmingDelete(false); onDelete?.(chat.id) }} style={{ padding: '2px 6px', fontSize: 11, borderRadius: 4, background: '#ef4444', color: '#fff', border: 'none' }}>Delete</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                role="menuitem"
-                className="nav-chat-menu-item danger"
-                onClick={() => setConfirmingDelete(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 12px', border: 'none', background: 'transparent', fontSize: 12, cursor: 'pointer', color: '#ef4444' }}
-              >
-                <Trash2 size={12} aria-hidden /> Delete
-              </button>
-            )}
-          </div>
-        ) : null}
+        <button
+          type="button"
+          className="nav-chat-action-btn"
+          aria-label={`Archive ${chat.title}`}
+          title="Archive Conversation"
+          onClick={(e) => {
+            e.stopPropagation()
+            onArchive?.()
+          }}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: '3px 4px',
+            cursor: 'pointer',
+            color: '#94a3b8',
+            borderRadius: 4,
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <Archive size={13} aria-hidden />
+        </button>
       </div>
     </div>
   )
@@ -463,6 +388,9 @@ export function Sidebar({
   onNewProjectChat,
   onRenameChat,
   onDeleteChat,
+  onArchiveChat,
+  onPinChat,
+  pinnedChatIds = [],
   recentChats = [],
   selectedChatId,
   onSelectChat,
@@ -731,9 +659,10 @@ export function Sidebar({
                         key={session.id}
                         chat={session}
                         active={selectedSessionId === session.id || selectedChatId === session.id}
+                        isPinned={pinnedChatIds?.includes(session.id)}
                         onSelect={() => onSelectSession?.(session.id)}
-                        onRename={onRenameChat}
-                        onDelete={onDeleteChat}
+                        onPin={() => onPinChat?.(session.id)}
+                        onArchive={() => onArchiveChat?.(session.id)}
                       />
                     ))}
                   </div>
@@ -754,9 +683,10 @@ export function Sidebar({
                 key={chat.id}
                 chat={chat}
                 active={selectedChatId === chat.id}
+                isPinned={pinnedChatIds?.includes(chat.id)}
                 onSelect={() => onSelectChat?.(chat.id)}
-                onRename={onRenameChat}
-                onDelete={onDeleteChat}
+                onPin={() => onPinChat?.(chat.id)}
+                onArchive={() => onArchiveChat?.(chat.id)}
               />
             ))}
           </div>

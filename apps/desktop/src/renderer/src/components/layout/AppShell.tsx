@@ -21,6 +21,9 @@ interface Props {
   onNewProjectChat?: (projectId: string) => void
   onRenameChat?: (id: string, title: string) => void
   onDeleteChat?: (id: string) => void
+  onArchiveChat?: (id: string) => void
+  onPinChat?: (id: string) => void
+  pinnedChatIds?: string[]
   recentChats?: Array<{ id: string; title: string }>
   selectedChatId?: string | null
   onSelectChat?: (id: string) => void
@@ -58,6 +61,9 @@ export function AppShell({
   onNewProjectChat = () => {},
   onRenameChat = () => {},
   onDeleteChat = () => {},
+  onArchiveChat,
+  onPinChat,
+  pinnedChatIds = [],
   recentChats = [],
   selectedChatId = null,
   onSelectChat = () => {},
@@ -114,6 +120,9 @@ export function AppShell({
             onNewProjectChat={onNewProjectChat}
             onRenameChat={onRenameChat}
             onDeleteChat={onDeleteChat}
+            onArchiveChat={onArchiveChat}
+            onPinChat={onPinChat}
+            pinnedChatIds={pinnedChatIds}
             recentChats={recentChats}
             selectedChatId={selectedChatId}
             onSelectChat={onSelectChat}

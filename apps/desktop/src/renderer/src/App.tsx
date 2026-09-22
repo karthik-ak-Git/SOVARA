@@ -51,6 +51,23 @@ export function App(): React.JSX.Element {
   const [execMode, setExecModeState] = useState<ExecMode>('ask')
   const [reasoningEnabled, setReasoningEnabled] = useState(true)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
+  const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('sovara_pinned_chats') || '[]')
+    } catch {
+      return []
+    }
+  })
+
+  const handlePinChat = useCallback((id: string) => {
+    setPinnedChatIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+      try {
+        localStorage.setItem('sovara_pinned_chats', JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }, [])
 
   const chat = useChatSession()
   const workbench = useModelWorkbench()
@@ -194,12 +211,15 @@ export function App(): React.JSX.Element {
         size: a.size,
         data: a.data,
       }))
-      const sendOpts: { webSearch?: boolean; reasoning?: boolean; attachments?: typeof forward } = { ...opts }
+      const sendOpts: { webSearch?: boolean; reasoning?: boolean; attachments?: typeof forward; projectId?: string | null } = {
+        ...opts,
+        projectId: selectedProjectId,
+      }
       if (reasoningEnabled) sendOpts.reasoning = true
       if (forward.length > 0) sendOpts.attachments = forward
       void chat.handleSend(content, sendOpts)
     },
-    [chat, reasoningEnabled]
+    [chat, reasoningEnabled, selectedProjectId]
   )
 
   const handleRegenerate = useCallback((): void => {
@@ -288,9 +308,12 @@ export function App(): React.JSX.Element {
     return base
   }, [projects, chat.globalSessions, projectChats])
   const handleSelectProjectWrapped = useCallback((id: string) => {
-    if (id === '__global__') setSelectedProjectId(null)
-    else setSelectedProjectId(id)
-  }, [])
+    const pid = id === '__global__' ? null : id
+    setSelectedProjectId(pid)
+    if (chat.selectedId && chat.events.length === 0) {
+      void chat.handleCreate(pid)
+    }
+  }, [chat])
   const handleNewProjectChatWrapped = useCallback((projectId: string) => {
     if (projectId === '__global__') {
       setSelectedProjectId(null)
@@ -343,6 +366,9 @@ export function App(): React.JSX.Element {
         onNewProjectChat={handleNewProjectChatWrapped}
         onRenameChat={(id, title) => void chat.handleRename(id, title)}
         onDeleteChat={(id) => void chat.handleDelete(id)}
+        onArchiveChat={(id) => void chat.handleArchive(id)}
+        onPinChat={handlePinChat}
+        pinnedChatIds={pinnedChatIds}
         recentChats={displayProjects.some((p) => p.id === '__global__') ? [] : chat.globalSessions.map((s) => ({ id: s.id, title: s.title }))}
         selectedChatId={chat.selectedId}
         onSelectChat={openChat}

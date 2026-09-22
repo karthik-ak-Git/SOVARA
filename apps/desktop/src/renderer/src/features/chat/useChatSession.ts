@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  archiveSession,
   cancelChatMessage,
   createSession,
   deleteSession,
@@ -379,6 +380,25 @@ export function useChatSession() {
     }
   }, [refreshSessions, sessions, switchSession])
 
+  const handleArchive = useCallback(async (id: string): Promise<void> => {
+    try {
+      await archiveSession(id)
+      const remaining = await refreshSessions()
+      if (selectedRef.current === id) {
+        const archived = sessions.find((s) => s.id === id)
+        const scope = remaining.filter((s) => (s.projectId ?? null) === (archived?.projectId ?? null))
+        if (scope[0]) {
+          await switchSession(scope[0].id)
+        } else {
+          setSelectedId(null)
+          setEvents([])
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [refreshSessions, sessions, switchSession])
+
   // --- Compressor: English-only, token-aware /compact ---
   const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
   const getTotalChars = (): number => events.reduce((n, e) => {
@@ -402,7 +422,7 @@ export function useChatSession() {
   }, [selectedId, events, estimateTokens, getTotalChars])
 
   const handleSend = useCallback(
-    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[] }): Promise<void> => {
+    async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[]; projectId?: string | null }): Promise<void> => {
       const text = content.trim()
       if (text.length === 0 || busy) return
       
@@ -465,7 +485,7 @@ export function useChatSession() {
         const optimisticSeq = Date.now()
         setEvents([{ seq: optimisticSeq, time: Date.now(), type: 'user/message', data: { content: finalSendText } } as unknown as SessionEventView])
         try {
-          const h = await createSession(`Session ${sessions.length + 1}`, null)
+          const h = await createSession(`Session ${sessions.length + 1}`, opts?.projectId ?? null)
           await refreshSessions()
           targetId = h.id
           const seq = ++loadSeq.current
@@ -638,6 +658,7 @@ export function useChatSession() {
     handleCreate,
     handleRename,
     handleDelete,
+    handleArchive,
     handleSend,
     handleCompact,
     handleCancel,
