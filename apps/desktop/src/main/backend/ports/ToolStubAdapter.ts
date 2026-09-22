@@ -552,7 +552,16 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'ocr') out = await this.dispatchOcr(args)
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
       else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
-      else if (name === 'shell_exec' || name === 'bash' || name === 'cmd' || name === 'powershell' || name === 'terminal_exec') out = await this.dispatchShell(args)
+      else if (
+        name === 'shell_exec' ||
+        name === 'bash' ||
+        name === 'cmd' ||
+        name === 'powershell' ||
+        name === 'terminal_exec' ||
+        name === 'run_command' ||
+        name === 'exec_shell_command'
+      )
+        out = await this.dispatchShell(args)
       else if (name === 'list_dev_servers' || name === 'stop_dev_server') out = await this.dispatchDevServers(name, args)
       else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
@@ -756,6 +765,7 @@ export class ToolStubAdapter implements ToolPort {
     const ws = this.getWorkspace()
     const clean = { ...args }
     if (!clean['command'] && clean['cmd']) clean['command'] = clean['cmd']
+    if (!clean['command'] && clean['CommandLine']) clean['command'] = clean['CommandLine']
     return dispatchShell(clean, ws)
   }
 
