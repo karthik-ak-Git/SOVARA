@@ -453,14 +453,36 @@ export class ToolStubAdapter implements ToolPort {
       {
         name: 'shell_exec',
         toolset: 'shell' as const,
-        description: 'Run a shell command in the workspace (Windows PowerShell 5.1, prefix with "wsl " for linux). Input: { command: string, workdir?: string }. Use for dir/ls/git/npm/docker. Gated by Permissions.',
+        description: 'Run a shell command in the workspace (Windows PowerShell 5.1/wsl). Automatically monitors output for dev server ports and URLs (e.g. http://localhost:5173). Long-running dev servers remain active in the background. Input: { command: string, workdir?: string, background?: boolean }.',
         parameters: {
           type: 'object' as const,
           properties: {
-            command: { type: 'string' as const, description: 'Shell command' },
+            command: { type: 'string' as const, description: 'Shell command, e.g. "npm run dev", "npm install", "dir"' },
             workdir: { type: 'string' as const, description: 'Relative workdir, default "."' },
+            background: { type: 'boolean' as const, description: 'Set true to run in background' },
           },
           required: ['command'] as const,
+        },
+      },
+      {
+        name: 'list_dev_servers',
+        toolset: 'shell' as const,
+        description: 'List actively running background dev servers, their ports, URLs, and commands.',
+        parameters: {
+          type: 'object' as const,
+          properties: {},
+        },
+      },
+      {
+        name: 'stop_dev_server',
+        toolset: 'shell' as const,
+        description: 'Stop a running background dev server by its port number.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            port: { type: 'number' as const, description: 'Port number to stop' },
+          },
+          required: ['port'] as const,
         },
       },
       // PTC tool: run_code for programmatic tool invocation
@@ -521,6 +543,7 @@ export class ToolStubAdapter implements ToolPort {
     const blocked = this.checkCircuit(name)
     if(blocked) return blocked
     const t0=Date.now()
+    console.log(`[SOVARA][TOOL] CALL name="${name}" args=${JSON.stringify(args)}`)
     try {
       let out:string
       if (name === 'search_skills' || name === 'read_skill') out = await this.dispatchSkills(name, args)
@@ -529,15 +552,19 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'ocr') out = await this.dispatchOcr(args)
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
       else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
-      else if (name === 'shell_exec') out = await this.dispatchShell(args)
+      else if (name === 'shell_exec' || name === 'bash' || name === 'cmd' || name === 'powershell' || name === 'terminal_exec') out = await this.dispatchShell(args)
+      else if (name === 'list_dev_servers' || name === 'stop_dev_server') out = await this.dispatchDevServers(name, args)
       else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
       else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
-      this.noteResult(name, !out.includes('"error"'))
-      try{ const { appendRuntimeLog } = await import('../../logging/runtimeLog'); appendRuntimeLog('',{ time:Date.now(), runtimeId:'tools', method:'tools/call', target:name, latencyMs:Date.now()-t0, outcome: out.includes('"error"')?'error':'ok', modelId:name, streamed:false } as never)}catch{}
+      const hasError = out.includes('"error"')
+      this.noteResult(name, !hasError)
+      console.log(`[SOVARA][TOOL] RESULT name="${name}" outcome=${hasError ? 'ERROR' : 'OK'} latency=${Date.now()-t0}ms preview=${out.slice(0, 300)}`)
+      try{ const { appendRuntimeLog } = await import('../../logging/runtimeLog'); appendRuntimeLog('',{ time:Date.now(), runtimeId:'tools', method:'tools/call', target:name, latencyMs:Date.now()-t0, outcome: hasError ? 'error':'ok', modelId:name, streamed:false } as never)}catch{}
       return out
     } catch (e) {
       this.noteResult(name,false)
+      console.error(`[SOVARA][TOOL] EXCEPTION name="${name}" error=`, e)
       const code = (e as { code?: string }).code ?? (e instanceof CrawlUnavailableError ? 'WEB_SIDECAR_DOWN' : undefined)
       return JSON.stringify({
         error: e instanceof Error ? e.message : String(e),
@@ -550,33 +577,36 @@ export class ToolStubAdapter implements ToolPort {
     const code = typeof args['code'] === 'string' ? args['code'] : ''
     if (!code) return JSON.stringify({ error: 'run_code requires { code: string }' })
 
-    // Check if tool infrastructure is available for PTC
+    // 1. Primary execution path via ToolInfrastructure (PTC Handler)
     if (this.toolInfrastructure) {
       try {
         const result = await this.toolInfrastructure.runWithTools(code)
         return JSON.stringify({
-          output: result.result,
+          output: result.result !== undefined ? result.result : 'code executed cleanly',
           toolCalls: result.toolCalls,
           executionTime: result.executionTime,
           summary: `Executed ${result.toolCalls.length} tool call(s) in ${result.executionTime}ms`,
         })
       } catch (error) {
-        return JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-        })
+        console.warn('[SOVARA][TOOL] run_code PTC execution failed, attempting fallback:', error)
       }
     }
 
-    // Fallback: basic code execution without tool access
+    // 2. Direct JavaScript execution sandbox fallback
     try {
-      // Create a function with access to tool dispatch
       const dispatch = this.dispatch.bind(this)
       const fn = new Function('dispatch', `return (async () => { ${code} })()`)
-      const result = await fn(dispatch)
-      return JSON.stringify({ output: result, executionTime: Date.now() })
-    } catch (error) {
+      const res = await fn(dispatch)
       return JSON.stringify({
-        error: error instanceof Error ? error.message : String(error),
+        output: res !== undefined ? res : 'code executed cleanly',
+        status: 'ok',
+        executionTime: Date.now()
+      })
+    } catch (error) {
+      console.error('[SOVARA][TOOL] run_code execution error:', error)
+      return JSON.stringify({
+        error: `run_code error: ${error instanceof Error ? error.message : String(error)}`,
+        hint: 'Verify JavaScript syntax or use shell_exec for running python/bash commands.'
       })
     }
   }
@@ -607,36 +637,19 @@ export class ToolStubAdapter implements ToolPort {
   }
 
   private async dispatchSkills(toolName: string, args: Record<string, unknown>): Promise<string> {
-    const { scanSkillsSources, listBionicSkills } = await import('../../services/skillsScanner')
-    const { readFile, readdir } = await import('fs/promises')
+    const { getAllDiscoveredSkills } = await import('../../services/skillsScanner')
+    const { readFile } = await import('fs/promises')
     const { join } = await import('path')
 
     try {
-      const sources = await scanSkillsSources()
-      const bionic = await listBionicSkills()
-      const allSkills: Array<{ name: string, srcName: string, path: string }> = []
-      
-      for (const skill of bionic) {
-        allSkills.push({ name: skill.name, srcName: 'Bionic', path: skill.path })
-      }
-      for (const src of sources) {
-        if (!src.enabled) continue
-        try {
-          const entries = await readdir(src.path, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isDirectory()) {
-              allSkills.push({ name: entry.name, srcName: src.name, path: join(src.path, entry.name) })
-            }
-          }
-        } catch {}
-      }
+      const allSkills = await getAllDiscoveredSkills(undefined, this.getWorkspace())
 
       if (toolName === 'search_skills') {
         const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
-        const matches = allSkills.filter(s => s.name.toLowerCase().includes(query))
+        const matches = allSkills.filter(s => s.name.toLowerCase().includes(query) || (s.description && s.description.toLowerCase().includes(query)))
         if (matches.length === 0) return JSON.stringify({ error: `No skills found matching "${query}". Try a different keyword.` })
         return JSON.stringify({ 
-          matches: matches.slice(0, 50).map(s => ({ name: s.name, source: s.srcName })),
+          matches: matches.slice(0, 50).map(s => ({ name: s.name, source: s.source, description: s.description })),
           totalCount: matches.length,
           hint: 'Use read_skill with the exact name to see full instructions.'
         })
@@ -644,11 +657,11 @@ export class ToolStubAdapter implements ToolPort {
 
       if (toolName === 'read_skill') {
         const skillName = typeof args.skill_name === 'string' ? args.skill_name : ''
-        const match = allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase())
+        const match = allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase() || s.id.toLowerCase() === skillName.toLowerCase())
         if (!match) return JSON.stringify({ error: `Skill "${skillName}" not found. Try using search_skills.` })
         try {
           const content = await readFile(join(match.path, 'SKILL.md'), 'utf8')
-          return JSON.stringify({ name: match.name, source: match.srcName, content: content.slice(0, 10000) })
+          return JSON.stringify({ name: match.name, source: match.source, content: content.slice(0, 10000) })
         } catch {
           return JSON.stringify({ error: `Failed to read SKILL.md for ${skillName}` })
         }
@@ -741,7 +754,24 @@ export class ToolStubAdapter implements ToolPort {
   private async dispatchShell(args: Record<string, unknown>): Promise<string> {
     const { dispatchShell } = await import('../../capabilities/shell/index')
     const ws = this.getWorkspace()
-    return dispatchShell(args, ws)
+    const clean = { ...args }
+    if (!clean['command'] && clean['cmd']) clean['command'] = clean['cmd']
+    return dispatchShell(clean, ws)
+  }
+
+  private async dispatchDevServers(name: string, args: Record<string, unknown>): Promise<string> {
+    const { getActiveDevServers, stopDevServer } = await import('../../capabilities/shell/index')
+    if (name === 'list_dev_servers') {
+      const servers = getActiveDevServers()
+      return JSON.stringify({ activeServers: servers, count: servers.length })
+    }
+    if (name === 'stop_dev_server') {
+      const port = Number(args['port'])
+      if (!port) return JSON.stringify({ error: 'stop_dev_server requires { port: number }' })
+      const stopped = stopDevServer(port)
+      return JSON.stringify({ stopped, port })
+    }
+    return JSON.stringify({ error: 'unknown tool' })
   }
 }
 

@@ -533,8 +533,8 @@ export function planPartialFit(args: {
     const weightsMB = Math.max(64, Math.round(args.fileSizeBytes / (1024 * 1024)))
     const workspaceMB = Math.round(weightsMB * 0.05)
     const overheadMB = args.overheadMB ?? 256
-    // Arch-aware when header readable; generic 32-layer fallback when not (vision GGUFs etc.) — enforces rule: some layers on GPU, remainder on CPU
-    if (!info || info.blockCount < 1) {
+    if (!info) return null
+    if (info.blockCount < 1) {
       const fallbackBlocks = 32
       const kvCacheMB = planMemory(args.fileSizeBytes, resolvedCtx, args.modelPath, { nParallel }).kvCacheMB
       const perLayerMB = weightsMB / fallbackBlocks
@@ -583,9 +583,9 @@ export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'run
   const lower = msg.toLowerCase()
   if (/cancelled/.test(lower)) return { kind: 'cancelled', recoverable: false, message: msg }
   if (/model-not-found|invalid model|no gguf|empty model id|not in the sovara library/i.test(msg)) return { kind: 'invalid-model', recoverable: false, message: msg }
-  if (/not installed|local runtime not installed|runner.*missing|llama-server.*not found/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
+  if (/runtime-not-installed|not installed|local runtime not installed|runner.*missing|llama-server.*not found/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
   if (/could not start.*spawn UNKNOWN|spawn UNKNOWN|windows blocked|w dac|controlled folder|allow-list/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
-  if (/did not become ready|readiness|timed out waiting/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
+  if (/did not become ready|readiness|time\s*out|timeout/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
   if (/cuda.*out of memory|out of memory|oom|insufficient.*vram|memory.*exhausted|alloc.*fail/i.test(msg)) return { kind: 'oom', recoverable: false, message: msg }
   if (/eaddrinuse|address already in use|port.*in use|no free port/i.test(msg)) return { kind: 'startup-failure', recoverable: true, message: msg }
   if (/cuda.*error|nvrtc|cublas|backend.*fail|failed to initialize|no compatible gpu|driver/i.test(msg)) return { kind: 'backend-failure', recoverable: false, message: msg }

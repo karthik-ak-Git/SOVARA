@@ -120,15 +120,28 @@ export function TopBar({
               title={chat.title}
             >
               <span>{chat.title}</span>
-              <X
-                size={13}
-                aria-hidden
-                style={{ flex: 'none', opacity: 0.7 }}
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={`Close ${chat.title}`}
+                style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}
                 onClick={(e) => {
                   e.stopPropagation()
                   onCloseChat?.(chat.id)
                 }}
-              />
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation()
+                    onCloseChat?.(chat.id)
+                  }
+                }}
+              >
+                <X
+                  size={13}
+                  aria-hidden
+                  style={{ flex: 'none', opacity: 0.7 }}
+                />
+              </span>
             </button>
           ))
         )}

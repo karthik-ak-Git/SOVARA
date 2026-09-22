@@ -21,6 +21,14 @@ const SKILL_SOURCES: Array<{ name: string; relPath: string }> = [
   { name: 'Claude Code', relPath: '.claude/skills' },
   { name: 'Other Agents', relPath: '.agents/skills' },
   { name: 'OpenCode', relPath: '.opencode/skills' },
+  { name: 'Agency Agents', relPath: '.agency-agents/skills' },
+  { name: 'Superpowers', relPath: '.superpowers/skills' },
+  { name: 'Hyperframes', relPath: '.hyperframes/skills' },
+  { name: 'Antigravity Built-in', relPath: '.gemini/antigravity/builtin/skills' },
+  { name: 'Antigravity Config', relPath: '.gemini/config/skills' },
+  { name: 'Gemini Skills', relPath: '.gemini/skills' },
+  { name: 'Cursor Skills', relPath: '.cursor/skills' },
+  { name: 'Windsurf Skills', relPath: '.windsurf/skills' },
 ]
 
 function getEnabledMapRaw(store?: { getAppSetting: (k: string) => string | null }): Record<string, boolean> {
@@ -197,45 +205,141 @@ export async function deleteBionicSkill(id: string): Promise<boolean> {
   }
 }
 
-// Load enabled SKILL.md contents for AI injection — budget 6000 chars, max 8 skills
-export async function loadEnabledSkillsContent(store?: { getAppSetting: (k: string) => string | null }): Promise<string | null> {
-  const sources = await scanSkillsSources(store)
-  const enabledNames = new Set(sources.filter((s) => s.enabled).map((s) => s.name))
-  const parts: string[] = []
-  let budget = 6000
+// Helper to gather all available skills across Bionic, sources, and workspace
+export async function getAllDiscoveredSkills(
+  store?: { getAppSetting: (k: string) => string | null },
+  workspaceRoot?: string
+): Promise<Array<BionicSkill & { source: string }>> {
+  const all: Array<BionicSkill & { source: string }> = []
+  const seenPaths = new Set<string>()
 
-  // Bionic first (always considered enabled unless explicitly disabled via map)
+  // 1. Bionic skills
   if (isSourceEnabled('Bionic', store) !== false) {
     const bionic = await listBionicSkills()
-    for (const skill of bionic.slice(0, 4)) {
-      if (budget <= 0) break
-      try {
-        const text = await readFile(join(skill.path, 'SKILL.md'), 'utf8')
-        const block = `## Skill: ${skill.name}\n${text.slice(0, 3500)}`
-        parts.push(block.slice(0, budget))
-        budget -= block.length
-      } catch {}
+    for (const b of bionic) {
+      if (!seenPaths.has(b.path)) {
+        seenPaths.add(b.path)
+        all.push({ ...b, source: 'Bionic' })
+      }
     }
   }
 
-  // Other app skills — sample 2 per source to avoid blowing context
-  for (const src of sources) {
-    if (!enabledNames.has(src.name)) continue
+  // 2. Global configured sources
+  const sources = await scanSkillsSources(store)
+  const enabledSources = sources.filter((s) => s.enabled)
+  for (const src of enabledSources) {
+    const skills = await listSkillsInDir(src.path)
+    for (const s of skills) {
+      if (!seenPaths.has(s.path)) {
+        seenPaths.add(s.path)
+        all.push({ ...s, source: src.name })
+      }
+    }
+  }
+
+  // 3. Workspace-local skills
+  if (workspaceRoot) {
+    const wsCandidates = ['.skills', 'skills', '.agents/skills', '.gemini/skills', '.opencode/skills']
+    for (const rel of wsCandidates) {
+      const p = join(workspaceRoot, rel)
+      const skills = await listSkillsInDir(p)
+      for (const s of skills) {
+        if (!seenPaths.has(s.path)) {
+          seenPaths.add(s.path)
+          all.push({ ...s, source: `Workspace (${rel})` })
+        }
+      }
+    }
+  }
+
+  return all
+}
+
+// Load enabled SKILL.md contents for AI injection with keyword relevance matching
+export async function loadEnabledSkillsContent(
+  store?: { getAppSetting: (k: string) => string | null },
+  userPrompt?: string,
+  workspaceRoot?: string
+): Promise<string | null> {
+  const allSkills = await getAllDiscoveredSkills(store, workspaceRoot)
+  if (allSkills.length === 0) return null
+
+  const parts: string[] = []
+  let budget = 10000
+
+  // Scoring function for relevance
+  const promptLower = (userPrompt ?? '').toLowerCase()
+  const promptWords = promptLower
+    .split(/[^a-z0-9_-]+/)
+    .filter((w) => w.length >= 3)
+
+  const isUiRequest = /\b(react|tailwind|css|frontend|ui|ux|dashboard|timer|game|cyber|dark-mode|component|landing|web|widget|artifact|button|chart|visual)\b/i.test(promptLower)
+  const isDiagramRequest = /\b(mermaid|flowchart|sequence|diagram|architecture|login|oauth|process|flow)\b/i.test(promptLower)
+
+  const scoredSkills = allSkills.map((skill) => {
+    let score = 0
+    const nameLower = skill.name.toLowerCase()
+    const descLower = (skill.description || '').toLowerCase()
+
+    if (userPrompt && userPrompt.trim()) {
+      // Direct prompt token matches
+      for (const word of promptWords) {
+        if (nameLower.includes(word)) score += 15
+        if (descLower.includes(word)) score += 5
+      }
+
+      // Domain thematic boosts
+      if (isUiRequest) {
+        if (nameLower === 'frontend-design' || nameLower.includes('frontend-design')) score += 60
+        if (nameLower === 'tailwind-patterns' || nameLower.includes('tailwind')) score += 55
+        if (nameLower === 'generative_ui' || nameLower.includes('generative_ui')) score += 50
+        if (nameLower === 'react-patterns' || nameLower.includes('react')) score += 45
+        if (nameLower.includes('ui-ux') || nameLower.includes('ui-design') || nameLower.includes('minimalist-ui')) score += 40
+        if (nameLower.includes('dashboard') && promptLower.includes('dashboard')) score += 40
+      }
+
+      if (isDiagramRequest) {
+        if (nameLower.includes('mermaid') || nameLower.includes('diagram')) score += 60
+        if (nameLower === 'generative_ui' || nameLower.includes('generative_ui')) score += 40
+        if (nameLower.includes('architecture') || nameLower.includes('flowchart')) score += 35
+      }
+    }
+
+    return { skill, score }
+  })
+
+  // Sort descending by score
+  scoredSkills.sort((a, b) => b.score - a.score)
+
+  // If we have relevant matches (score > 0), select top matching skills
+  const topMatches = scoredSkills.filter((s) => s.score > 0)
+  const selected: Array<BionicSkill & { source: string }> = []
+
+  if (topMatches.length > 0) {
+    for (const match of topMatches.slice(0, 5)) {
+      selected.push(match.skill)
+    }
+  } else {
+    // Fallback: take Bionic skills and a few general skills
+    for (const s of allSkills.filter((x) => x.source === 'Bionic').slice(0, 3)) {
+      selected.push(s)
+    }
+    for (const s of allSkills.filter((x) => x.source !== 'Bionic').slice(0, 3)) {
+      if (!selected.some((sel) => sel.path === s.path)) {
+        selected.push(s)
+      }
+    }
+  }
+
+  // Load content of selected skills within budget
+  for (const skill of selected) {
     if (budget <= 0) break
     try {
-      const entries = await readdir(src.path, { withFileTypes: true })
-      let sampled = 0
-      for (const entry of entries) {
-        if (sampled >= 2 || budget <= 0) break
-        if (!entry.isDirectory()) continue
-        try {
-          const text = await readFile(join(src.path, entry.name, 'SKILL.md'), 'utf8')
-          const block = `## Skill: ${entry.name} (${src.name})\n${text.slice(0, 1200)}`
-          parts.push(block.slice(0, budget))
-          budget -= block.length
-          sampled++
-        } catch {}
-      }
+      const text = await readFile(join(skill.path, 'SKILL.md'), 'utf8')
+      const sliceSize = Math.min(3000, budget)
+      const block = `## Skill: ${skill.name} (${skill.source})\n${text.slice(0, sliceSize)}`
+      parts.push(block)
+      budget -= block.length
     } catch {}
   }
 

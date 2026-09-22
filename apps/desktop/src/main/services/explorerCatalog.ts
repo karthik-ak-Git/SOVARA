@@ -199,7 +199,7 @@ export function matchesParamsFilter(parameters: string, filter: ExplorerParamsFi
   if (!range) return true
   const pb = parseParamsB(parameters)
   if (!(pb > 0)) return false
-  return pb >= range.min && (range.max === Number.POSITIVE_INFINITY ? true : pb < range.max || (filter === 'gt70' && pb >= range.min))
+  return pb >= range.min && (range.max === Number.POSITIVE_INFINITY ? true : pb < range.max)
 }
 
 /**
@@ -424,7 +424,20 @@ export function parseQuantization(basename: string): string | undefined {
 /** Filenames that are helpers, not runnable weights (projectors, drafts, shards, LoRA adapters). */
 function isAuxWeightFile(rfilename: string): boolean {
   const b = rfilename.split('/').pop()?.toLowerCase() ?? ''
-  return b.includes('mmproj') || b.includes('mtp') || b.includes('imatrix') || b.includes('draft') || b.includes('shiakai') || b.includes('lora') || b.startsWith('adapter')
+  return (
+    b.includes('mmproj') ||
+    b.includes('mtp') ||
+    b.includes('imatrix') ||
+    b.includes('draft') ||
+    b.includes('shiakai') ||
+    b.includes('lora') ||
+    b.startsWith('adapter') ||
+    b.includes('vocab') ||
+    b.includes('tokenizer') ||
+    b.includes('config') ||
+    b.includes('params') ||
+    b.includes('embedding')
+  )
 }
 
 /**
@@ -1064,6 +1077,7 @@ async function headBytes(url: string): Promise<number> {
  */
 async function fetchQuantRepos(baseId: string): Promise<Array<{ repoId: string; siblings: Array<{ rfilename: string }>; downloads: number }>> {
   const baseShort = (baseId.split('/').pop() ?? baseId).toLowerCase()
+  const baseIdLower = baseId.toLowerCase()
   const params = new URLSearchParams()
   params.set('sort', 'downloads')
   params.set('direction', '-1')
@@ -1075,17 +1089,23 @@ async function fetchQuantRepos(baseId: string): Promise<Array<{ repoId: string; 
   const rows = (await res.json()) as HfRow[]
   const out: Array<{ repoId: string; siblings: Array<{ rfilename: string }>; downloads: number }> = []
   for (const r of rows) {
-    if (r.id.toLowerCase() === baseId.toLowerCase()) continue
+    if (r.id.toLowerCase() === baseIdLower) continue
     const ggufs = (r.siblings ?? []).filter((s) => s.rfilename.toLowerCase().endsWith('.gguf'))
     if (ggufs.length === 0) continue
+
+    const repoName = (r.id.split('/').pop() ?? r.id).toLowerCase().replace(/[-_]?(gguf|ggml)$/i, '')
+    const tags = (r.tags ?? []).map((t) => t.toLowerCase())
     const bm = r.cardData?.base_model
     const bases = Array.isArray(bm) ? bm : bm ? [bm] : []
-    const tags = (r.tags ?? []).map((t) => t.toLowerCase())
-    const linked =
-      bases.some((b) => b.toLowerCase().includes(baseShort) || baseId.toLowerCase().includes(b.toLowerCase())) ||
-      tags.includes(`base_model:${baseId.toLowerCase()}`) ||
-      r.id.toLowerCase().includes(baseShort)
-    if (!linked) continue
+    const exactBaseMatch = bases.some((b) => {
+      const bl = b.toLowerCase().trim()
+      return bl === baseIdLower || (bl.split('/').pop() ?? '').replace(/\/$/, '') === baseShort
+    })
+    const exactTagMatch = tags.includes(`base_model:${baseIdLower}`)
+    const exactRepoNameMatch = repoName === baseShort
+
+    if (!exactBaseMatch && !exactTagMatch && !exactRepoNameMatch) continue
+
     out.push({ repoId: r.id, siblings: ggufs, downloads: typeof r.downloads === 'number' ? r.downloads : 0 })
     if (out.length >= 4) break
   }

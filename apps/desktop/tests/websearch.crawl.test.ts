@@ -77,7 +77,7 @@ describe('formatSearchOutcome', () => {
 
 describe('ToolStubAdapter web tools', () => {
   it('lists web_search and web_fetch', () => {
-    expect(new ToolStubAdapter(stubRuntime()).list().map((d) => d.name)).toEqual(['web_search', 'web_fetch'])
+    expect(new ToolStubAdapter(stubRuntime()).list().map((d) => d.name)).toEqual(expect.arrayContaining(['web_search', 'web_fetch']))
   })
 
   it('refuses everything while disabled', async () => {

@@ -40,6 +40,9 @@ import type {
   ToolExecutionResult,
 } from './tools/types'
 
+/** 64 MB buffer headroom for local agent code generation & reasoning traces. */
+const AGENT_MAX_RESPONSE_BYTES = 64_000_000
+
 function isArtifactTruncated(text: string, detected: { kind: string; fileName: string }): boolean {
   const t = text.trim()
   if (!detected) return false
@@ -196,7 +199,7 @@ export interface AgentOrchestratorDeps {
   getGlobalWorkspace?: () => string
   getProjectWorkspace?: (projectId: string | null) => string | null
   getMcpContext?: () => string | null
-  getSkillsContext?: () => Promise<string | null>
+  getSkillsContext?: (userPrompt?: string, wsRoot?: string) => Promise<string | null>
   getTodoContext?: () => string | null
   getExecMode?: () => 'off' | 'ask' | 'review' | 'allow'
   // ── Tool Infrastructure (DeepSeek Harness-style) ──
@@ -798,16 +801,17 @@ export class AgentOrchestrator {
       const prior = await this.deps.persistence.getEvents(sessionId).catch(() => [])
       // Workspace / MCP / Skills injection (advisory, missing never blocks)
       let workspaceContext: string | null = null
+      let wsRoot: string | null = null
       try {
         const header = await this.deps.persistence.get(sessionId)
         const pid = header?.projectId ?? null
         const projectRoot = this.deps.getProjectWorkspace?.(pid) ?? null
         const globalRoot = this.deps.getGlobalWorkspace?.() ?? null
-        const root = projectRoot ?? globalRoot
-        if (root) {
+        wsRoot = projectRoot ?? globalRoot
+        if (wsRoot) {
           workspaceContext = pid && projectRoot
             ? `Project workspace: ${projectRoot} (project ${pid}) — global fallback: ${globalRoot ?? 'none'}`
-            : `Global workspace: ${root}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
+            : `Global workspace: ${wsRoot}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
         }
       } catch { /* advisory */ }
       let mcpContext: string | null = null
@@ -817,7 +821,7 @@ export class AgentOrchestrator {
       } catch { /* ignore */ }
       let skillsContext: string | null = null
       try { 
-        skillsContext = (await this.deps.getSkillsContext?.()) ?? null
+        skillsContext = (await this.deps.getSkillsContext?.(content, wsRoot ?? undefined)) ?? null
         if (skillsContext) this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: 'Enterprise Skills', detail: 'Reading configured skills...' })
       } catch { /* ignore */ }
       let todoContext: string | null = null
@@ -900,16 +904,17 @@ export class AgentOrchestrator {
           toolCatalog =
             `TOOLS — call with a fenced block, NOT XML. Format exactly:\n\`\`\`tool:fs_list\n{"path": "."}\n\`\`\`\n` +
             `Available tools:\n${lines}\n` +
-            `Rules: 1) For "read the codebase / list files" ALWAYS do todo_write first, then fs_list {"path":"."}, then fs_read/shell_exec. ` +
+            `Rules: 1) For exploration or inspections, you may call fs_list or fs_read directly. ` +
             `2) Emit ONE fenced tool block per step, then wait for its [Tool result] before the next. ` +
-            `3) Never emit <fs_list>, <shell_exec>, <atem:invoke> as text — those leak and stall.`
+            `3) Use shell_exec for running python, bash, powershell, or npm scripts. Use run_code ONLY for JavaScript snippets executing programmatic tool calls (PTC). ` +
+            `4) When asked to build, write, or generate code/apps/files, generate the complete functioning implementation immediately.`
         }
       } catch { /* advisory */ }
       // No hard-coded bypasses — all workspace FS goes through the global ToolInfrastructure.
       // getProjectWorkspace / getGlobalWorkspace (AppBackend.ts:128,171) resolves the
       // visually-selected project (Session's projectId) for every tool dispatch.
       // DeepSeek harness parity: ToolRegistry + ExecutionScheduler (isConcurrencySafe) + BlockAssembler
-      const shouldStructured = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent'
+      const shouldStructured = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review|canvas|game|timer|mermaid|diagram|app|react|html)\b/i.test(content)
       const systemBlocks = [
         CHAT_SYSTEM_PROMPT,
         ...(shouldStructured ? [STRUCTURED_OUTPUT_INSTRUCTION] : []),
@@ -926,7 +931,7 @@ export class AgentOrchestrator {
       // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
       // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
       // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
-      let nCtx = Math.max(8192, classification.contextLengthNeeded || 8192)
+      let nCtx = Math.max(16384, classification.contextLengthNeeded || 16384)
       // Try to read actual server ctx from resident instance (if already loaded with different ctx)
       try {
         const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
@@ -1041,7 +1046,7 @@ export class AgentOrchestrator {
             ]
             let tText = ''
             try {
-              for await (const chunk of this.deps.llm.streamChat({ endpoint: tmEndpoint!, model: remoteModelId(tm.modelId), messages: toolPrompt, timeoutMs: Math.max(tmEntry.timeoutMs, 60_000), stream: true, signal: controller.signal })) {
+              for await (const chunk of this.deps.llm.streamChat({ endpoint: tmEndpoint!, model: remoteModelId(tm.modelId), messages: toolPrompt, timeoutMs: Math.max(tmEntry.timeoutMs, 60_000), stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
                 if (controller.signal.aborted) break
                 if (chunk.type === 'text-delta' && chunk.text) { tText += chunk.text; this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: chunk.text.slice(0, 400), toolName: tm.modelId }) }
                 if (chunk.type === 'done') break
@@ -1171,6 +1176,7 @@ export class AgentOrchestrator {
       // Deduplicated fence set: fences collected during streaming are executed
       // exactly once after the stream ends, then cleared per loop iteration.
       const streamFenceSet = new Set<string>()
+      const pendingStreamCalls: Array<{ toolName: string; args: Record<string, unknown> }> = []
       firstTokenRef.value = null
       chunkMode = false
       // Real streaming (owned sidecar or remote runtime — same protocol)
@@ -1192,7 +1198,7 @@ export class AgentOrchestrator {
               { role: 'user' as const, content: ch.text }
             ]
             let part=''
-            for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: chunkMessages, timeoutMs, stream:true, signal: controller.signal })){
+            for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: chunkMessages, timeoutMs, stream:true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })){
               if (ck.type==='text-delta' && ck.text) part+=ck.text
               if (ck.type==='done') break
             }
@@ -1203,7 +1209,7 @@ export class AgentOrchestrator {
             { role: 'system' as const, content: systemBlocks.join('\n\n') + '\n\nSynthesize the chunk answers below into one exact final answer for the original request. Do not omit any chunk.' },
             { role: 'user' as const, content: `Original request: ${content.slice(0,400)}\n\nChunk answers:\n${partials.map((p,i)=>`[Chunk ${i+1}]\n${p}`).join('\n---\n').slice(0,12000)}` }
           ]
-          for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: synthMessages, timeoutMs, stream:true, signal: controller.signal })){
+          for await (const ck of this.deps.llm.streamChat({ endpoint, model, messages: synthMessages, timeoutMs, stream:true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })){
             if (ck.type==='text-delta' && ck.text) { text+=ck.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ck.text }) }
             if (ck.type==='done' && ck.usage) usage=ck.usage
             if (ck.type==='done') break
@@ -1235,6 +1241,7 @@ export class AgentOrchestrator {
           }
         }
 
+        const streamStartTime = Date.now()
         for await (const chunk of this.deps.llm.streamChat({
           endpoint,
           model,
@@ -1244,6 +1251,7 @@ export class AgentOrchestrator {
           signal: controller.signal,
           // Pass the computed ceiling so the adapter doesn't hardcode 2048.
           maxCompletionTokens,
+          maxResponseBytes: AGENT_MAX_RESPONSE_BYTES,
           // Send tool definitions when relevant — the model emits tool_calls
           // in the SSE stream, which we capture below on the 'done' chunk.
           ...(toolsForRequest.length > 0 ? { tools: toolsForRequest } : {}),
@@ -1254,6 +1262,7 @@ export class AgentOrchestrator {
               orchFirstTokenAt = Date.now()
               firstTokenRef.value = orchFirstTokenAt
               if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+              console.log(`[SOVARA][STREAM] First token received (TTFT: ${orchFirstTokenAt - streamStartTime}ms)`)
             }
             let delta = chunk.text
             if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
@@ -1266,15 +1275,13 @@ export class AgentOrchestrator {
                 const tail = parts[0] ?? ''
                 reasoningBuffer += tail
                 allReasoning += tail
-                // Exactly-once streaming: earlier chunks were already
-                // emitted incrementally — emit only the not-yet-streamed
-                // tail. The full buffer is persisted once below.
                 if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
                 if (reasoningBuffer) {
                   try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
                   reasoningBuffer = ''
                 }
                 inReasoning = false
+                console.log(`[SOVARA][THINKING] Completed thinking block (${allReasoning.length} chars)`)
                 delta = parts.slice(1).join('')
                 if (!delta) continue
               }
@@ -1286,16 +1293,17 @@ export class AgentOrchestrator {
               }
             }
 
-            // Collect all tool fences encountered during streaming for post-stream execution.
-            // This avoids interleaving tool execution inside the delta loop, which caused
-            // the model to stall or exit prematurely. All tool calls are executed once
-            // after the stream ends, then appended as a model message so synthesis can happen
-            // in the next LLM turn.
+            // Collect all tool fences encountered during streaming so they can participate
+            // in the actual toolLoop on completion. We strip them from the displayed delta
+            // to keep user chat output clean, and queue them for execution.
             if (looksLikeToolFence(delta)) {
               const fences = extractToolFences(delta)
               for (const f of fences) {
                 const sig = `${f.toolName}:${JSON.stringify(f.args)}`
-                streamFenceSet.add(sig)
+                if (!streamFenceSet.has(sig)) {
+                  streamFenceSet.add(sig)
+                  pendingStreamCalls.push(f)
+                }
               }
               delta = stripToolFences(delta)
               if (!delta) continue
@@ -1310,12 +1318,26 @@ export class AgentOrchestrator {
           // ── Native tool_calls handling ──────────────────────────────────────
           // When llama-server returns finish_reason:'tool_calls', the adapter
           // delivers the accumulated call list on the 'done' chunk.
-          // We execute each call, append results as role:'tool' messages, then
-          // continue toolLoop so the model sees the results and writes its reply.
-          
+          // We also inject any tool calls discovered in fences or bare calls during streaming
+          // so they participate in the actual toolLoop.
           if (chunk.type === 'done' && !controller.signal.aborted) {
-            // Convert bare tool calls and missed fences into native chunk.toolCalls
-            // so they participate in the actual toolLoop instead of the post-stream single pass.
+            // 1. Inject any tool fences collected during streaming
+            if (pendingStreamCalls.length > 0) {
+              chunk.toolCalls = chunk.toolCalls || []
+              for (const f of pendingStreamCalls) {
+                if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
+                  const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
+                  if (/^[a-z]:\//i.test(p) || require('path').isAbsolute(p)) f.args['path'] = '.'
+                }
+                chunk.toolCalls.push({
+                  id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
+                  type: 'function',
+                  function: { name: f.toolName, arguments: JSON.stringify(f.args) }
+                })
+              }
+            }
+
+            // 2. Convert any bare tool calls or missed fences from final text and reasoning
             let injectedCalls = false
             const checkAndInject = (sourceText: string) => {
               if (!sourceText) return
@@ -1324,7 +1346,6 @@ export class AgentOrchestrator {
               if (looksLikeBareToolCall(sourceText)) fences.push(...extractBareToolCalls(sourceText))
               
               for (const f of fences) {
-                // Same normalization as post-stream
                 if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
                   const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
                   if (/^[a-z]:\//i.test(p) || require('path').isAbsolute(p)) f.args['path'] = '.'
@@ -1344,7 +1365,7 @@ export class AgentOrchestrator {
             }
             checkAndInject(text)
             checkAndInject(allReasoning)
-            if (injectedCalls) {
+            if (injectedCalls || pendingStreamCalls.length > 0) {
               if (looksLikeToolFence(text)) text = stripToolFences(text)
               if (looksLikeBareToolCall(text)) text = stripBareToolCalls(text)
             }
@@ -1375,8 +1396,17 @@ export class AgentOrchestrator {
               let toolArgs: Record<string, unknown> = {}
               try { toolArgs = JSON.parse(tc.function.arguments || '{}') } catch { /* bad JSON from model — use empty args */ }
 
+              // Normalize paths emitted by local models (e.g. Windows absolute paths or escaped backslashes)
+              if (typeof toolArgs['path'] === 'string') {
+                toolArgs['path'] = (toolArgs['path'] as string).replace(/\\/g, '/').trim()
+                if (toolName === 'fs_list' && (/^[a-z]:\//i.test(toolArgs['path'] as string) || path.isAbsolute(toolArgs['path'] as string))) {
+                  toolArgs['path'] = '.'
+                }
+              }
+
               this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `executing ${toolName}` })
               this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: `[${toolName}] ...`, toolName } as never)
+              console.log(`[SOVARA][TOOL_DISPATCH] Starting tool="${toolName}" step=${loopSteps} args=${JSON.stringify(toolArgs)}`)
 
               let toolResult: string
               try {
@@ -1409,6 +1439,8 @@ export class AgentOrchestrator {
               } catch (toolErr) {
                 toolResult = JSON.stringify({ error: String(toolErr) })
               }
+
+              console.log(`[SOVARA][TOOL_DISPATCH] Completed tool="${toolName}" resultLen=${toolResult.length} preview="${toolResult.slice(0, 150).replace(/\s+/g, ' ')}"`)
 
               try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, content: toolResult }) } catch {}
               this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `${toolName} → ${toolResult.slice(0, 120)}` })
@@ -1486,7 +1518,7 @@ export class AgentOrchestrator {
         let merged = ''
         for (let ci = 0; ci < chunks.length; ci++) {
           const chunkMsgs = [{ role: 'system', content: chunks[ci][0]?.role === 'system' ? chunks[ci][0].content : systemBlocks.join('\n\n') }, ...chunks[ci].filter(m => m.role !== 'system')] as typeof messages
-          for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: chunkMsgs, timeoutMs, stream: true, signal: controller.signal })) {
+          for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: chunkMsgs, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
             if (ch.type === 'text-delta' && ch.text) { merged += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
             if (ch.type === 'done') break
           }
@@ -1552,6 +1584,7 @@ export class AgentOrchestrator {
                   timeoutMs,
                   stream: true,
                   signal: controller.signal,
+                  maxResponseBytes: AGENT_MAX_RESPONSE_BYTES,
                 })) {
                   if (controller.signal.aborted) break
                   if (chunk.type === 'text-delta' && chunk.text) {
@@ -1591,15 +1624,16 @@ export class AgentOrchestrator {
       // DO NOT STOP to ask the user to type "continue". Drive the next step automatically!
       const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review)\b/i.test(content)
       const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"'))) || /todo_write|list_files|fs_list|explore/i.test(text)
-      const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|css|svg|python|py)\b[\s\S]{150,}```/i.test(text)
-      const hasWrittenCode = messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"'))) || hasRealCodeFence
+      const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|tsx|jsx|react|mermaid|css|svg|python|py|json|sh|bash|powershell)\b[\s\S]{80,}```/i.test(text)
+      const hasWrittenCode = messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
       const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
 
       // Continue autonomously if:
       // 1. Model emitted a fake JSON claim instead of writing code, OR
-      // 2. Model did exploration (fs_list) but hasn't written code yet, OR
-      // 3. User requested a build/fix task and no code has been written to disk/fence yet.
-      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || (didExploration && !hasWrittenCode) || !hasWrittenCode) && loopSteps < MAX_LOOP && !controller.signal.aborted
+      // 2. Model did exploration (fs_list) but hasn't written code yet
+      // Loop guard: limit consecutive continuation re-entries to avoid infinite loops when model output contains no tools or code
+      const continuationCount = messages.filter((m) => m.role === 'user' && m.content.includes('[Autonomous Agent Directive]')).length
+      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || (didExploration && !hasWrittenCode)) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
           const nextDirective = isFakeFileClaim
@@ -1638,7 +1672,7 @@ export class AgentOrchestrator {
           ...messages,
           {
             role: 'user',
-            content: 'Synthesize the tool results above and provide your complete, detailed response addressing the original request with all requested code and files.',
+            content: 'Synthesize the tool results above and provide your complete, detailed response addressing the original request with all requested code and files. At the end, provide a summary of created/modified files with their paths. If a dev server or application was run or configured to run on a local port, explicitly report the port and live URL (e.g. http://localhost:5173). Include full code in fenced markdown blocks (e.g. ```tsx or ```html) so the user can inspect the code and preview the application in the artifact viewer.',
           },
         ]
         try {
@@ -1650,6 +1684,7 @@ export class AgentOrchestrator {
             stream: true,
             signal: controller.signal,
             maxCompletionTokens,
+            maxResponseBytes: AGENT_MAX_RESPONSE_BYTES,
           })) {
             if (controller.signal.aborted) break
             if (ch.type === 'text-delta' && ch.text) {
@@ -1765,11 +1800,11 @@ export class AgentOrchestrator {
         const followMessages: import('@shared/types/ports').LlmChatMessage[] = [
           ...messages,
           { role: 'assistant', content: text },
-          { role: 'user', content: `Tool results (fs_list/fs_read/shell_exec you requested):\n${toolCtx}\n\nNow provide the final answer about the files and folders, concisely, listing the actual files from the tool result above. Do not repeat the <fs_list> tag.` },
+          { role: 'user', content: `Tool results (fs_list/fs_read/shell_exec you requested):\n${toolCtx}\n\nNow provide the final complete answer. List all files and folders created or modified with their paths. If a local or dev server was launched or detected, explicitly state the port and running URL (e.g. http://localhost:5173). Include full code artifacts with proper language tags (e.g. \`\`\`tsx) so the user can inspect the code and preview the application. Do not repeat the <fs_list> tag.` },
         ]
         let secondText = ''
         try {
-          for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages: followMessages, timeoutMs, stream: true, signal: controller.signal })) {
+          for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages: followMessages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
             if (controller.signal.aborted) break
             if (chunk.type === 'text-delta' && chunk.text) { secondText += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
             if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
@@ -1796,11 +1831,11 @@ export class AgentOrchestrator {
           const toolCtxForSynth = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
           const synthMsgs2: import('@shared/types/ports').LlmChatMessage[] = [
             ...messages,
-            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List the actual files/folders found. Do not emit tool calls.` },
+            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List all created or modified files with their paths. If a dev server was started or running on a port, report the final URL and port (e.g. http://localhost:5173). Include full code inside fenced code blocks so it can be previewed. Do not emit raw tool call tags.` },
           ]
           try {
             let synthText = ''
-            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal, maxCompletionTokens })) {
+            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal, maxCompletionTokens, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
               if (controller.signal.aborted) break
               if (ch.type === 'text-delta' && ch.text) { synthText += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
               if (ch.type === 'done' && ch.usage) usage = ch.usage
@@ -1865,7 +1900,7 @@ export class AgentOrchestrator {
       armStallGuard(contRef)
       this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'continuing truncated artifact' })
       try {
-        for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+        for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
           if (controller.signal.aborted) break
           if (chunk.type === 'text-delta' && chunk.text) {
             let delta = chunk.text
@@ -2130,18 +2165,19 @@ export class AgentOrchestrator {
 
       const prior = await this.deps.persistence.getEvents(sessionId)
       let workspaceContext: string | null = null
+      let wsRoot: string | null = null
       try {
         const header = await this.deps.persistence.get(sessionId)
         const pid = header?.projectId ?? null
         const projectRoot = this.deps.getProjectWorkspace?.(pid) ?? null
         const globalRoot = this.deps.getGlobalWorkspace?.() ?? null
-        const root = projectRoot ?? globalRoot
-        if (root) workspaceContext = pid && projectRoot ? `Project workspace: ${projectRoot} (project ${pid}) — global fallback: ${globalRoot ?? 'none'}` : `Global workspace: ${root}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
+        wsRoot = projectRoot ?? globalRoot
+        if (wsRoot) workspaceContext = pid && projectRoot ? `Project workspace: ${projectRoot} (project ${pid}) — global fallback: ${globalRoot ?? 'none'}` : `Global workspace: ${wsRoot}${projectRoot ? ` (project ${pid} at ${projectRoot})` : ''}`
       } catch { /* ignore */ }
       let mcpContext: string | null = null
       try { mcpContext = this.deps.getMcpContext?.() ?? null } catch {}
       let skillsContext: string | null = null
-      try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch {}
+      try { skillsContext = (await this.deps.getSkillsContext?.(content, wsRoot ?? undefined)) ?? null } catch {}
       let todoContextReg: string | null = null
       try { todoContextReg = this.deps.getTodoContext?.() ?? null } catch {}
 
@@ -2196,7 +2232,7 @@ export class AgentOrchestrator {
       let streamed = true
       const inlineToolOutputs: string[] = []
       try {
-        for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+        for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
           if (chunk.type === 'text-delta' && chunk.text) {
             let delta = chunk.text
             if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
@@ -2235,7 +2271,7 @@ export class AgentOrchestrator {
           try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: `Auto-compacted for context overflow (${raw.slice(0,120)})` }) } catch {}
           messages = compactForRetry(messages); text = ''; reasoningBuffer = ''; inReasoning = false
           try {
-            for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal })) {
+            for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
               if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
               if (chunk.type === 'done') break
             }
@@ -2324,7 +2360,7 @@ export class AgentOrchestrator {
           ]
           try {
             let synthText = ''
-            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal })) {
+            for await (const ch of this.deps.llm.streamChat({ endpoint, model, messages: synthMsgs2, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
               if (controller.signal.aborted) break
               if (ch.type === 'text-delta' && ch.text) { synthText += ch.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ch.text }) }
             }

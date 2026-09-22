@@ -2,7 +2,7 @@
 
 import { useState, useEffect, type ReactElement } from 'react'
 import { Code2, Copy, Check, ExternalLink } from 'lucide-react'
-import { preparePreviewHtml } from '../../utils/previewBundler'
+import { preparePreviewHtml, isVisualArtifact } from '../../utils/previewBundler'
 
 interface Props {
   title: string
@@ -12,24 +12,22 @@ interface Props {
 }
 
 /**
- * ArtifactCard — Stitch inline rich artifact card (generic only).
- * Header: icon + title + lang badge | Code/Preview tabs (HTML/SVG only) + Copy + Split View.
- * Preview for HTML/SVG uses sandboxed iframe; other languages show code only.
- * No visualizer demo, no new execution wiring.
+ * ArtifactCard — Rich artifact card for desktop chat.
+ * Header: icon + title + lang badge | Code/Preview tabs (HTML/SVG/React/Mermaid) + Copy + Split View.
+ * Preview uses sandboxed iframe supporting live React apps and Mermaid diagrams.
  */
 export function ArtifactCard({ title, language, code, onOpenSplit }: Props): ReactElement {
   const [copied, setCopied] = useState(false)
   const [bundledHtml, setBundledHtml] = useState<string>('')
   const lang = language.toLowerCase()
-  const isDiagram = code.includes('<svg') && code.includes('</svg>')
-  const isHtml = lang === 'html' || lang === 'svg' || isDiagram
-  const defaultTab: 'code' | 'preview' = isDiagram || lang === 'html' || lang === 'svg' ? 'preview' : 'code'
+  const canPreview = isVisualArtifact(code, lang)
+  const defaultTab: 'code' | 'preview' = canPreview ? 'preview' : 'code'
   const [tab, setTab] = useState<'code' | 'preview'>(defaultTab)
 
   useEffect(() => {
-    if (isHtml) {
+    if (canPreview) {
       let isCancelled = false
-      preparePreviewHtml(code).then((res) => {
+      preparePreviewHtml(code, undefined, undefined, lang).then((res) => {
         if (!isCancelled) setBundledHtml(res)
       })
       return () => {
@@ -38,7 +36,7 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
     } else {
       setBundledHtml('')
     }
-  }, [code, isHtml])
+  }, [code, canPreview, lang])
 
   const handleCopy = (): void => {
     if (navigator.clipboard?.writeText) {
@@ -49,6 +47,8 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
     }
   }
 
+  const isTall = lang === 'mermaid' || code.includes('<svg') || lang === 'tsx' || lang === 'jsx' || lang === 'react'
+
   return (
     <div className="stitch-artifact-card" role="region" aria-label={`Artifact ${title}`}>
       <div className="stitch-artifact-header">
@@ -58,7 +58,7 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
           <span className="stitch-artifact-badge">{language}</span>
         </div>
         <div className="stitch-artifact-actions">
-          {isHtml ? (
+          {canPreview ? (
             <div className="stitch-artifact-tabs" role="tablist" aria-label="Artifact view">
               <button
                 type="button"
@@ -104,20 +104,28 @@ export function ArtifactCard({ title, language, code, onOpenSplit }: Props): Rea
           ) : null}
         </div>
       </div>
-      {tab === 'preview' && isHtml && !onOpenSplit ? (
-        <div className="stitch-artifact-preview" style={{ background: '#fffefa', borderRadius: '8px', overflow: 'hidden', border: '1px solid #E8E4DE' }}>
-          <iframe
-            srcDoc={bundledHtml || code}
-            title={title}
-            sandbox="allow-scripts allow-same-origin allow-modals"
-            loading="lazy"
-            style={{ width: '100%', height: isDiagram ? '520px' : '420px', border: 'none', display: 'block', background: '#fffefa' }}
-          />
+      {tab === 'preview' && canPreview && !onOpenSplit ? (
+        <div className="stitch-artifact-preview" style={{ background: '#090d16', borderRadius: '8px', overflow: 'hidden', border: '1px solid #1e293b' }}>
+          {bundledHtml ? (
+            <iframe
+              srcDoc={bundledHtml}
+              title={title}
+              sandbox="allow-scripts allow-modals"
+              loading="lazy"
+              style={{ width: '100%', height: isTall ? '500px' : '420px', border: 'none', display: 'block', background: '#090d16' }}
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: isTall ? '500px' : '420px', gap: 12, color: '#475569', fontSize: 13 }}>
+              <div style={{ width: 28, height: 28, border: '2px solid #334155', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+              <span>Preparing preview…</span>
+              <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+            </div>
+          )}
         </div>
-      ) : tab === 'preview' && isHtml && onOpenSplit ? (
-        <div style={{ padding: '14px 16px', background: '#fffefa', borderTop: '1px solid #E8E4DE', font: '400 12px/1.5 Manrope', color: '#8A8279', display: 'flex', alignItems: 'center', gap: 8 }}>
+      ) : tab === 'preview' && canPreview && onOpenSplit ? (
+        <div style={{ padding: '14px 16px', background: '#090d16', borderTop: '1px solid #1e293b', font: '400 12px/1.5 Manrope', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 8 }}>
           <span>Preview opened in right artifact viewer →</span>
-          <button type="button" onClick={onOpenSplit} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E8E4DE', background: '#fff', color: '#C65D3B', font: '600 11px/1 Manrope', cursor: 'pointer' }}>Open</button>
+          <button type="button" onClick={onOpenSplit} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#38bdf8', font: '600 11px/1 Manrope', cursor: 'pointer' }}>Open</button>
         </div>
       ) : (
         <pre className="stitch-artifact-code">

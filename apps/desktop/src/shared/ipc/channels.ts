@@ -76,6 +76,8 @@ export const IPC_CHANNELS = {
   'explore:getCompatibility': { type: 'invoke' as const },
   'explore:getRecommendations': { type: 'invoke' as const },
   'explore:getHardwareProfile': { type: 'invoke' as const },
+  'explore:compareModels': { type: 'invoke' as const },
+  'runtime:detectExternal': { type: 'invoke' as const },
   'validation:getFullProfile': { type: 'invoke' as const },
   'validation:start': { type: 'invoke' as const },
   'validation:get': { type: 'invoke' as const },
@@ -100,6 +102,7 @@ export const IPC_CHANNELS = {
   'library:openFolder': { type: 'invoke' as const },
   'library:delete': { type: 'invoke' as const },
   'shell:openExternal': { type: 'invoke' as const },
+  'shell:showItemInFolder': { type: 'invoke' as const },
   // First-run setup (Python env for sidecars)
   'setup:getPythonStatus': { type: 'invoke' as const },
   'setup:ensurePython': { type: 'invoke' as const },

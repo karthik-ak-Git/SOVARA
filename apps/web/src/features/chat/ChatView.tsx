@@ -434,9 +434,9 @@ export function ChatView({
 
           <div className="sv-status-bar" style={{ display: 'flex', gap: 8, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
             {model.available && model.displayName ? (
-              <span>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
+              <span role="status" aria-label={`Local model ${model.displayName}`}>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
             ) : (
-              <span>NO LOCAL MODEL</span>
+              <span role="status" aria-label="No local model selected">NO LOCAL MODEL</span>
             )}
             {streaming ? <span style={{ color: '#D97757' }}>● Streaming…</span> : null}
             {exec.phase === 'reading' ? <span style={{ color: '#D97757' }}>● Reading file…</span> : null}

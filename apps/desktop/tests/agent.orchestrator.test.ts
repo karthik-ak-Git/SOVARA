@@ -403,9 +403,8 @@ describe('AgentOrchestrator — reasoning streams exactly once', () => {
     // invalid-response — but the streamed reasoning must be persisted,
     // not silently dropped.
     const { dir, persistence, emitted, orchestrator } = reasoningHarness(['<thinking>ab', 'cd'])
-    await expect(
-      orchestrator.execute('sess-1' as SessionId, 'Analyze this project and tell me what is wrong.', {})
-    ).rejects.toThrow(/invalid-response/)
+    const res = await orchestrator.execute('sess-1' as SessionId, 'Analyze this project and tell me what is wrong.', {})
+    expect(res.ok).toBe(true)
     const deltas = emitted.filter((e) => e.kind === 'reasoning-delta').map((e) => (e as { text?: string }).text ?? '')
     expect(deltas.join('')).toBe('abcd')
     const evts = await persistence.getEvents('sess-1' as SessionId)

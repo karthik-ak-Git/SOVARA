@@ -80,7 +80,7 @@ iwr -useb https://raw.githubusercontent.com/karthik-ak-Git/SOVARA/main/install.p
 **Method C: Node.js / NPM Install**
 If you have Node.js installed, simply run:
 ```bash
-npx sovara
+npx --yes sovara@latest
 ```
 
 *(Both methods will automatically fetch the latest optimized `.exe` from GitHub and launch the installer).*

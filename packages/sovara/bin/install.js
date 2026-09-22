@@ -47,8 +47,30 @@ function downloadFile(url, dest) {
           fs.unlink(dest, () => reject(new Error(`Download failed with status ${res.statusCode}`)));
           return;
         }
+
+        const totalBytes = parseInt(res.headers['content-length'], 10);
+        let downloadedBytes = 0;
+
+        res.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          const downloadedMB = (downloadedBytes / (1024 * 1024)).toFixed(2);
+          
+          if (totalBytes) {
+            const totalMB = (totalBytes / (1024 * 1024)).toFixed(2);
+            const percent = ((downloadedBytes / totalBytes) * 100).toFixed(1);
+            const progressBarLength = 30;
+            const filledLength = Math.round((progressBarLength * downloadedBytes) / totalBytes);
+            const bar = '█'.repeat(filledLength) + '-'.repeat(progressBarLength - filledLength);
+            
+            process.stdout.write(`\r\x1b[33mProgress: [${bar}] ${percent}% | ${downloadedMB} MB / ${totalMB} MB\x1b[0m`);
+          } else {
+            process.stdout.write(`\r\x1b[33mDownloaded: ${downloadedMB} MB\x1b[0m`);
+          }
+        });
+
         res.pipe(file);
         file.on('finish', () => {
+          process.stdout.write('\n');
           file.close(resolve);
         });
       }).on('error', (err) => {
@@ -81,8 +103,15 @@ async function main() {
     // Detach and run the installer
     const child = spawn(outFile, [], {
       detached: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
+      shell: true
     });
+    
+    child.on('error', (err) => {
+      console.error('\x1b[31mFailed to start installer:\x1b[0m', err.message);
+      console.log(`\x1b[33mYou can run it manually from: ${outFile}\x1b[0m`);
+    });
+
     child.unref();
 
     console.log('\n\x1b[36mSetup is now running. You can close this window.\x1b[0m');

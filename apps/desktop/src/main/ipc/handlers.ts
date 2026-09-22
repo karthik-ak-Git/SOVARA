@@ -15,10 +15,11 @@ import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSki
 import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zExploreCompareModels, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zShellShowItemInFolder, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
 import { listExplorerModelsPage, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import type { HardwareInfo } from '@shared/types/explore'
+import { detectLocalRuntimes } from '../services/localRuntimeDetector'
 
 /** Push channel for transient chat stream events (deltas are never persisted). */
 function broadcastChat(event: ChatStreamEvent): void {
@@ -574,6 +575,20 @@ export function registerIpcHandlers(): void {
     return { ok: true, autoApproved: (verdict.allowed ? verdict.autoApproved : false) || force, result }
   })
 
+  // ── Dev server management ──
+  ipcMain.handle('devserver:list', async () => {
+    const { getActiveDevServers } = await import('../capabilities/shell/index')
+    return { activeServers: getActiveDevServers() }
+  })
+
+  ipcMain.handle('devserver:stop', async (_e, raw: unknown) => {
+    const { stopDevServer } = await import('../capabilities/shell/index')
+    const port = typeof raw === 'object' && raw && 'port' in raw ? Number((raw as { port: unknown }).port) : Number(raw)
+    if (!port) return { ok: false, error: 'invalid port' }
+    const stopped = stopDevServer(port)
+    return { ok: true, stopped, port }
+  })
+
   // ── Usage stats ──
   ipcMain.handle('usage:getTotal', async () => {
     const res = getBackend().ports.persistence.getTotalUsage()
@@ -733,6 +748,29 @@ export function registerIpcHandlers(): void {
     // Shared 30s cache: the renderer's mount-time read warms the same
     // profile every listing/detail IPC reuses (one probe burst, not N).
     return getCachedHardwareProfile()
+  })
+
+  ipcMain.handle('explore:compareModels', async (_e, raw: unknown) => {
+    const parsed = zExploreCompareModels.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid explore:compareModels payload: ${parsed.error.message}`)
+    const hw: HardwareInfo = getCachedHardwareProfile()
+    const results = await Promise.all(
+      parsed.data.modelIds.map(async (id) => {
+        try {
+          const m = await getExplorerModel(id)
+          const fits = fitExplorerFiles(m, hw)
+          const top = fits.find((f) => f.isRecommended) ?? fits[0]
+          return { model: m, bestFit: top, compatibility: top ? toCompatibility(top) : null }
+        } catch {
+          return null
+        }
+      })
+    )
+    return results.filter(Boolean)
+  })
+
+  ipcMain.handle('runtime:detectExternal', async () => {
+    return detectLocalRuntimes()
   })
 
   ipcMain.handle('validation:getFullProfile', async () => {
@@ -896,11 +934,10 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('shell:showItemInFolder', async (_e, raw: unknown) => {
+    const parsed = zShellShowItemInFolder.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid shell:showItemInFolder payload: ${parsed.error.message}`)
     try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (parsed?.path) {
-        shell.showItemInFolder(parsed.path)
-      }
+      shell.showItemInFolder(parsed.data.path)
       return { ok: true }
     } catch (e) {
       throw new Error(e instanceof Error ? e.message : 'could not show file')

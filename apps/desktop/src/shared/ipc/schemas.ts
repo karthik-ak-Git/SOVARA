@@ -206,6 +206,10 @@ export const zExploreGetRecommendations = z
   .object({ modelId: z.string().min(1).max(128) })
   .strict()
 
+export const zExploreCompareModels = z
+  .object({ modelIds: z.array(z.string().min(1).max(128)).min(1).max(4) })
+  .strict()
+
 export const zLibrarySetDirectory = z
   .object({ path: z.string().max(512).default('') })
   .strict()
@@ -257,6 +261,10 @@ export const zLibraryFileRef = z
 
 export const zShellOpenExternal = z
   .object({ url: z.string().min(1).max(2048) })
+  .strict()
+
+export const zShellShowItemInFolder = z
+  .object({ path: z.string().min(1).max(2048) })
   .strict()
 
 export const zSettingsSet = z

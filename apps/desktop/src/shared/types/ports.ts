@@ -226,6 +226,12 @@ export interface LlmChatRequest {
    * the estimated prompt size. Never hardcoded in the adapter.
    */
   maxCompletionTokens?: number
+  /**
+   * Maximum stream response size in bytes before throwing response-too-large.
+   * Defaults to HttpClient's 1 MB cap if omitted. AgentOrchestrator and
+   * ChatService provide 64 MB for long code generation and reasoning traces.
+   */
+  maxResponseBytes?: number
 }
 export interface LlmPort {
   /** Legacy stub facet (Commit 5 mock). Real path is streamChat. */

@@ -49,6 +49,8 @@ interface StructuredResponseItem {
   type: 'structured'
   summary?: string
   files?: Array<{ path: string; action?: string; description?: string }>
+  port?: number
+  url?: string
   details?: string
   rawJson: string
 }
@@ -67,7 +69,16 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     // 3) Remove full <atem:invoke>...</atem:invoke> blocks and bare <atem:...> fragments that leaked
     out = out.replace(/<atem:invoke[^>]*>[\s\S]*?<\/atem:invoke>/gi, ' ')
     out = out.replace(/<\/?atem:[^>]*>/gi, '')
-    // 4) Collapse "— used tool —" chip duplication and the repeated "I'll read..." / "Let me explore..." that Qwen 7/32 repeats
+    // 4) Remove <tool_call>...</tool_call>, <function>...</function>, <invoke>...</invoke>,
+    //    <parameter>...</parameter> tags that Nemotron and similar models emit as raw tool syntax.
+    //    These should have been caught by fenceTools in the backend but can leak in partial streams.
+    out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    out = out.replace(/<invoke[^>]*>[\s\S]*?<\/invoke>/gi, '')
+    out = out.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '')
+    // Stray closing tags from split/partial blocks
+    out = out.replace(/<\/parameter>/gi, '').replace(/<\/function>/gi, '').replace(/<\/tool_call>/gi, '').replace(/<\/invoke>/gi, '')
+    out = out.replace(/<parameter\s[^>]*>/gi, '').replace(/<function\s[^>]*>/gi, '').replace(/<tool_call>/gi, '')
+    // 5) Collapse "— used tool —" chip duplication and the repeated "I'll read..." / "Let me explore..." that Qwen 7/32 repeats
     out = out.replace(/—\s*used tool\s*—/gi, ' ')
     out = out.replace(/(I'll read the workspace root to list all files and folders in the codebase\.)\s*\1/gi, '$1')
     out = out.replace(/(Let me explore the workspace to understand the codebase structure and list all the files\.)\s*\1/gi, '$1')
@@ -121,11 +132,15 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
                   description: typeof f['description'] === 'string' ? f['description'] : undefined,
                 }))
             : undefined
-          if (summary || files || details) {
+          const port = typeof parsed.port === 'number' ? parsed.port : undefined
+          const url = typeof parsed.url === 'string' ? parsed.url : undefined
+          if (summary || files || details || port || url) {
             parts.push({
               type: 'structured',
               summary,
               files,
+              port,
+              url,
               details,
               rawJson: code,
             })
@@ -144,6 +159,8 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     }
     const title = code.includes('diagram-design') || code.includes('<svg')
       ? 'diagram.html'
+      : lang.toLowerCase() === 'url' || lang.toLowerCase() === 'server' || /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(code.trim())
+      ? `Live Server (${code.trim().match(/:\d+/)?.[0]?.slice(1) || 'App'})`
       : lang.toLowerCase().includes('tsx')
       ? 'Component.tsx'
       : lang.toLowerCase().includes('ts')
@@ -502,6 +519,51 @@ export function MessageBubble({
                   <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: part.files?.length || part.details ? '8px' : 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Sparkles size={14} style={{ color: '#E06C47' }} />
                     <span>{part.summary}</span>
+                  </div>
+                ) : null}
+                {(part.url || part.port) ? (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    margin: '8px 0',
+                    background: 'rgba(56, 189, 248, 0.1)',
+                    border: '1px solid rgba(56, 189, 248, 0.25)',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', boxShadow: '0 0 8px #38bdf8', display: 'inline-block' }} />
+                      <span style={{ fontWeight: 600, color: '#38bdf8' }}>App running on:</span>
+                      <code style={{ color: '#fff', fontWeight: 600 }}>{part.url || `http://localhost:${part.port}`}</code>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        className="sv-btn"
+                        style={{ padding: '3px 8px', fontSize: '11px', background: '#0284c7', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                        onClick={() => {
+                          const u = part.url || `http://localhost:${part.port}`
+                          if (onOpenArtifact) {
+                            onOpenArtifact({ title: `Live Server (${part.port || u})`, language: 'url', code: u })
+                          }
+                        }}
+                      >
+                        Preview in Artifact
+                      </button>
+                      <button
+                        type="button"
+                        className="sv-btn"
+                        style={{ padding: '3px 8px', fontSize: '11px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '4px', cursor: 'pointer' }}
+                        onClick={() => {
+                          const u = part.url || `http://localhost:${part.port}`
+                          window.open(u, '_blank')
+                        }}
+                      >
+                        Open Browser ↗
+                      </button>
+                    </div>
                   </div>
                 ) : null}
                 {part.files && part.files.length > 0 ? (

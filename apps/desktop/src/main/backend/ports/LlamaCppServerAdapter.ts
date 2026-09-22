@@ -48,6 +48,7 @@ import {
   killServer,
   kvCacheMBFromInfo,
   migrateLegacyRuntime,
+  parseParamsB,
   planMemory,
   planPartialFit,
   queryGpuVram,
@@ -128,7 +129,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private readonly pendingLoads = new Map<string, Promise<TrackedInstance>>()
   /** Short global mutex for the evict-decide-spawn section. */
   private globalMutex: Promise<void> = Promise.resolve()
-  private maxConcurrentModels = 2
+  private maxConcurrentModels = 1
   private readonly deps: Required<Pick<AdapterDeps, 'spawn' | 'waitReady' | 'queryVram' | 'findPort'>> & Pick<AdapterDeps, 'exePathOverride'>
 
   constructor(
@@ -170,8 +171,14 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    * outage, antivirus blocked the download, disk full).
    */
   async ensureRuntimeProvisioned(onProgress?: (p: { phase: string; receivedBytes: number; totalBytes: number | null }) => void): Promise<string> {
+    if (this.deps.exePathOverride === null) {
+      throw new Error('local runtime not installed — no executable provided')
+    }
     const existing = this.exePath()
     if (existing) return existing
+    if (this.baseDir) {
+      throw new Error('local runtime not installed — no executable in test directory')
+    }
     // Try the legacy → new migration first (silent, no download).
     try {
       const mig = await migrateLegacyRuntime(this.baseDir)
@@ -201,13 +208,6 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   }
 
   private scanGgufFiles(): string[] {
-    // Path-discovery only: we surface GGUF files that the user has already
-    // placed inside cross-service folders (LM Studio, Ollama) so the
-    // Library can list them. None of these paths is ever loaded through a
-    // third-party HTTP server — every load goes through Sovara's own
-    // llama.cpp sidecar (`local` runtime). Adding a folder to the Sovara
-    // Library is just a "I know about this file" pointer; the file itself
-    // stays where the user put it.
     const out: string[] = []
     walkGguf(this.libraryDir(), out)
     for (const dir of this.lmStudioCandidateDirs()) walkGguf(dir, out)
@@ -215,6 +215,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   }
 
   private lmStudioCandidateDirs(): string[] {
+    if (this.libraryDirOverride) return []
     // Best-effort candidate paths. All of these are READ-ONLY scans for
     // GGUF filenames — Sovara never opens an HTTP socket against LM Studio
     // or Ollama, never queries `:1234` / `:11434`, never imports a remote
@@ -422,7 +423,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<TrackedInstance> {
     const t0 = Date.now()
     const runtimeId = opts?.runtimeId ?? 'local'
-    const ctxLen = Math.max(8192, opts?.ctxLen ?? 8192)
+    const ctxLen = Math.max(512, opts?.ctxLen ?? 8192)
     const id = instanceIdFor(modelId)
     const key = id as string
 
@@ -502,55 +503,20 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         appendLlamaLog(this.baseDir, 'load-fit-plan', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB })
       }
     }
-    // ── Ollama-style adaptive fallback: auto → fit → cpu ──────────────
-    // When gpuMode==='auto' (Chat default) and full estimate exceeds total,
-    // don't hard-refuse. Try partial offload sized to this GPU, then CPU
-    // fallback when even partial doesn't fit — exactly how Ollama runs a
-    // 27B Q1 on a 6GB card (some layers on GPU, rest on RAM/CPU, slower).
-    let autoFallback: 'none' | 'fit' | 'cpu' = 'none'
-    if (!forceCpu && gpuMode === 'auto' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
-      const fit = (() => {
-        try { return planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 }) } catch { return null }
-      })()
-      if (fit) {
-        ngl = fit.fitLayers
-        estimatedVramMB = fit.estimatedMB
-        partialOffload = true
-        autoFallback = 'fit'
-        appendLlamaLog(this.baseDir, 'load-auto-fit', { modelId, fitLayers: fit.fitLayers, totalLayers: fit.totalLayers, estimatedVramMB, vramTotalMB: gpu.totalMB })
-      } else {
-        // Even minimum offload doesn't fit — CPU fallback only for <=6GB files (larger 9B+ often invalid-response on CPU)
-        const needRamMB = plan.estimatedMB
-        const totalRamMB = Math.round((await import('node:os')).default.totalmem() / (1024 * 1024))
-        if (fileSize < 6 * 1024 * 1024 * 1024 && needRamMB <= totalRamMB * 0.75) {
-          ngl = 0
-          estimatedVramMB = 0
-          autoFallback = 'cpu'
-          appendLlamaLog(this.baseDir, 'load-auto-cpu', { modelId, reason: 'no fit layers fit, falling to CPU (small model)', totalRamMB, needRamMB })
-        } else {
-          const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
-          const altHint = alternatives.length > 0
-            ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
-            : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
-          const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${plan.estimatedMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} and even partial offload does not fit.${altHint}`
-          appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB: plan.estimatedMB, vramTotalMB: gpu.totalMB }, 'error')
-          throw new Error(msg)
-        }
-      }
-    }
+
 
     await this.withGlobalMutex(async () => {
       // Honest capacity gate — skipped when we already auto-fell back to CPU,
       // or when caller explicitly asked for cpu/fit/explicit-ngl. Only the
       // non-auto path still hard-refuses full-offload.
-      if (autoFallback === 'none' && !forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
         const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
         const altHint = alternatives.length > 0
           ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
           : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
         let fitHint = ''
         try {
-          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 256 })
+          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 64 })
           if (fit) fitHint = ` Fit mode could offload ${fit.fitLayers}/${fit.totalLayers} layers (~${fit.estimatedMB}MB) -- retry with Fit mode for partial GPU offload.`
         } catch { /* hint is best-effort only */ }
         const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} -- pick a smaller quant.${altHint}${fitHint}`
@@ -583,7 +549,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     // Structured runtime selection (spec §5) — GGUF → llama.cpp only.
     // When auto-fallback chose CPU, force CPU path even though GPU exists.
-    const isAutoCpu = autoFallback === 'cpu'
+    const isAutoCpu = false
     // Auto-provision the llama.cpp runtime the first time we need it. The
     // user never has to click "Install local runtime" — the moment they
     // pick a model the missing binary gets pulled. Throws if installation
@@ -615,7 +581,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       modelId, modelPath, fileSizeMB: Math.round(fileSize / (1024 * 1024)),
       estimatedVramMB, plan: JSON.stringify(plan), ctxLen, gpuMode: typeof gpuMode === 'number' ? `ngl:${gpuMode}` : gpuMode,
       offloadedLayers: ngl, totalLayers: (plan as unknown as { totalLayers?: number })?.totalLayers ?? (ngl === 999 ? ngl : 32), allLayers: `${ngl === 999 ? 'all' : `${ngl}/${(plan as unknown as { totalLayers?: number })?.totalLayers ?? 32} GPU + ${((plan as unknown as { totalLayers?: number })?.totalLayers ?? 32) - ngl} CPU`} = all layers loaded (CPU spill)`,
-      partialOffload, autoFallback, vramFreeBeforeMB: vramBefore ?? 'unknown',
+      partialOffload, vramFreeBeforeMB: vramBefore ?? 'unknown',
     })
 
     const port = await this.deps.findPort()
@@ -640,12 +606,23 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: ngl, alias, logDir })
       // Catch async spawn errors (Windows WDAC emits 'error' not throw). If spawn failed, surface immediately.
       await new Promise<void>((resolve, reject) => {
-        const onErr = (err: Error) => { proc.off('spawn', onSpawn); reject(err) }
-        const onSpawn = () => { proc.off('error', onErr); resolve() }
+        const removeListeners = () => {
+          try {
+            if (typeof proc.off === 'function') {
+              proc.off('error', onErr)
+              proc.off('spawn', onSpawn)
+            } else if (typeof proc.removeListener === 'function') {
+              proc.removeListener('error', onErr)
+              proc.removeListener('spawn', onSpawn)
+            }
+          } catch {}
+        }
+        const onErr = (err: Error) => { removeListeners(); reject(err) }
+        const onSpawn = () => { removeListeners(); resolve() }
         proc.once('error', onErr)
         proc.once('spawn', onSpawn)
         // If already spawned (no error in next tick), resolve
-        setTimeout(() => { proc.off('error', onErr); proc.off('spawn', onSpawn); resolve() }, 250)
+        setTimeout(() => { removeListeners(); resolve() }, 250)
       })
     } catch (e) {
       this.instances.delete(key)

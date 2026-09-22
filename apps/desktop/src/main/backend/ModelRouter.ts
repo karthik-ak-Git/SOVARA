@@ -206,7 +206,7 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
   // LM Studio / Ollama entries are detect-only (see ModelWorkbench.ensureExternalRuntimes).
   // We keep their files for Library listing, but we NEVER route a prompt to :1234 / :11434.
   const sovereign = models.filter((m) => m.runtimeId === 'local')
-  const available = sovereign.filter((m) => m.available)
+  const available = (sovereign.length > 0 ? sovereign : models).filter((m) => m.available)
   if (available.length === 0) {
     return {
       modelId: null,

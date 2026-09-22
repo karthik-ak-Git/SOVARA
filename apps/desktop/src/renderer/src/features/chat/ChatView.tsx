@@ -31,7 +31,7 @@ import {
 } from 'lucide-react'
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
-import { preparePreviewHtml } from '../../utils/previewBundler'
+import { preparePreviewHtml, isVisualArtifact } from '../../utils/previewBundler'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -199,9 +199,9 @@ export function ChatView({
       return
     }
     const lang = activeArtifact.language.toLowerCase()
-    if (lang === 'html' || lang === 'svg') {
+    if (isVisualArtifact(activeArtifact.code, lang)) {
       let isCancelled = false
-      preparePreviewHtml(activeArtifact.code, events as never, selectedId ?? undefined).then((res) => {
+      preparePreviewHtml(activeArtifact.code, events as never, selectedId ?? undefined, lang).then((res) => {
         if (!isCancelled) setBundledHtml(res)
       })
       return () => {
@@ -229,7 +229,10 @@ export function ChatView({
           if (match) {
             const lang = match[1]?.trim() || 'code'
             const code = match[2]?.trimEnd() ?? ''
-            const title = lang.toLowerCase().includes('tsx') ? 'Component.tsx'
+            const portMatch = code.match(/:\d+/)
+            const title = lang.toLowerCase() === 'url' || lang.toLowerCase() === 'server' || /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(code.trim())
+              ? `Live Server (${portMatch ? portMatch[0].slice(1) : 'App'})`
+              : lang.toLowerCase().includes('tsx') ? 'Component.tsx'
               : lang.toLowerCase().includes('ts') ? 'script.ts'
               : lang.toLowerCase().includes('py') ? 'script.py'
               : lang.toLowerCase().includes('html') ? 'index.html'
@@ -242,7 +245,13 @@ export function ChatView({
     }
   }, [events])
 
-  const handleOpenArtifactInPanel = useCallback((art: ArtifactInfo) => { setActiveArtifact(art); setArtifactsPanelOpen(true) }, [])
+  const handleOpenArtifactInPanel = useCallback((art: ArtifactInfo) => {
+    setActiveArtifact(art)
+    if (isVisualArtifact(art.code, art.language)) {
+      setArtifactTab('preview')
+    }
+    setArtifactsPanelOpen(true)
+  }, [])
 
   const handleOpenArtifactFileWithPanel = useCallback(async (filePath: string) => {
     onOpenArtifactFile(filePath)
@@ -494,9 +503,9 @@ export function ChatView({
 
           <div className="sv-status-bar" style={{ display: 'flex', gap: 8, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
             {model.available && model.displayName ? (
-              <span>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
+              <span role="status" aria-label={`Local model ${model.displayName}`}>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
             ) : (
-              <span>NO LOCAL MODEL</span>
+              <span role="status" aria-label="No local model selected">NO LOCAL MODEL</span>
             )}
             {streaming ? <span style={{ color: '#D97757' }}>● Streaming…</span> : null}
             {exec.phase === 'reading' ? <span style={{ color: '#D97757' }}>● Reading file…</span> : null}
@@ -554,13 +563,21 @@ export function ChatView({
             {activeArtifact ? (
               artifactTab === 'preview' ? (
                 <div style={{ flex: 1, overflow: 'auto' }}>
-                  {activeArtifact.language.toLowerCase() === 'html' || activeArtifact.language.toLowerCase() === 'svg' ? (
-                    <iframe
-                      srcDoc={bundledHtml || (activeArtifact.language.toLowerCase() === 'svg' ? `<!doctype html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff;padding:16px;}svg{max-width:100%;max-height:100%;width:100%;height:auto;}</style></head><body>${activeArtifact.code}</body></html>` : activeArtifact.code)}
-                      title={activeArtifact.title}
-                      sandbox="allow-scripts allow-same-origin allow-modals"
-                      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
-                    />
+                  {isVisualArtifact(activeArtifact.code, activeArtifact.language) ? (
+                    bundledHtml ? (
+                      <iframe
+                        srcDoc={bundledHtml}
+                        title={activeArtifact.title}
+                        sandbox="allow-scripts allow-modals"
+                        style={{ width: '100%', height: '100%', border: 'none', background: '#090d16' }}
+                      />
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: '#475569', fontSize: 13 }}>
+                        <div style={{ width: 28, height: 28, border: '2px solid #334155', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                        <span>Preparing preview…</span>
+                        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+                      </div>
+                    )
                   ) : (
                     <div style={{ padding: 16, fontSize: 13, color: 'var(--stitch-muted, #8A8279)' }}>
                       <div>Interactive render of <strong>{activeArtifact.title}</strong></div>

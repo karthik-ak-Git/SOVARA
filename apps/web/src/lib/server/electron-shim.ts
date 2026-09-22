@@ -21,6 +21,7 @@ if (typeof window !== 'undefined') {
 function resolveUserData(): string {
   const env = process.env['SOVARA_DATA_DIR']
   if (env) return path.resolve(env)
+  if (process.env.VERCEL) return path.join('/tmp', 'Sovara')
   const platform = process.platform
   if (platform === 'win32') {
     const base = process.env['APPDATA'] ?? path.join(os.homedir(), 'AppData', 'Roaming')

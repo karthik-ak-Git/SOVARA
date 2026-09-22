@@ -335,7 +335,7 @@ export function MessageBubble({
           return part.text.trim() ? (
             <p key={`${id}-text-${index}`}>
               {part.text}
-              {streaming && index === parsedParts.length - 1 ? <span className="sv-stream-caret" aria-hidden="true" /> : null}
+              {streaming && index === parsedParts.length - 1 ? <span className="sv-stream-caret stream-caret" aria-hidden="true" /> : null}
             </p>
           ) : null
         })}

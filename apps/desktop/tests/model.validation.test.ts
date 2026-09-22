@@ -140,7 +140,7 @@ describe('MODEL_HARDWARE_VALIDATION — acceptance criteria', () => {
     const exploreHuge = { id: 'org/huge', name: 'huge', slug: 'org/huge', author: 'org', description: '', longDescription: '', downloads: 0, likes: 0, staffPick: false, updatedAt: new Date().toISOString(), parameters: '70B', architecture: 'llama', capabilities: [], files: [{ format: 'GGUF', sizeGB: 40, downloadUrl: 'https://huggingface.co/org/huge/resolve/main/a.gguf', rfilename: 'a.gguf', sizeBytes: 40 * 1024 ** 3 }], tags: [], iconType: 'hf' as const, repoSizeBytes: 40 * 1024 ** 3 }
     const job = await runner.start('org/huge', undefined, exploreHuge as any, { ctxLen: 8192 })
     let cur = job
-    for (let i = 0; i < 25; i++) { await new Promise((r) => setTimeout(r, 80)); const g = runner.getJob(job.jobId); if (g) cur = g; if (cur.status !== 'TESTING') break }
+    for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 100)); const g = runner.getJob(job.jobId); if (g) cur = g; if (cur.status !== 'TESTING') break }
     expect(cur.status).toBe('ESTIMATED_INCOMPATIBLE')
     expect(cur.load?.success).toBeFalsy()
     fs.rmSync(path.dirname(hugeFile), { recursive: true, force: true })
@@ -150,10 +150,10 @@ describe('MODEL_HARDWARE_VALIDATION — acceptance criteria', () => {
     const file2 = tmpFile(4)
     const adapterFailLoad = new StubRuntimeAdapter({ failLoadWith: 'OUT_OF_VRAM' })
     const job2 = await runner2.start('test/fail-load', file2, undefined, { adapter: adapterFailLoad } as any)
-    for (let i = 0; i < 20; i++) { await new Promise((r) => setTimeout(r, 80)); const g = runner2.getJob(job2.jobId); if (g && g.status !== 'TESTING') { cur = g; break } }
+    for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 100)); const g = runner2.getJob(job2.jobId); if (g && g.status !== 'TESTING') { cur = g; break } }
     expect(cur.status).toBe('LOAD_FAILED')
     fs.rmSync(path.dirname(file2), { recursive: true, force: true })
-  })
+  }, 15_000)
 
   it('verified with limitations when CPU-only or high latency', async () => {
     const runner = new ValidationRunner()

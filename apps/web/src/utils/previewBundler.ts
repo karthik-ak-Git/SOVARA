@@ -1,19 +1,16 @@
 /**
- * previewBundler.ts — Resolves, transforms, and inlines assets
- * into self-contained HTML for reliable artifact preview in sandboxed iframes.
+ * previewBundler.ts — Resolves and transforms assets for web artifact preview in sandboxed iframes.
  *
  * Supports:
  *  - Single-file React (JSX/TSX) apps with Tailwind CSS, Lucide icons, and Babel in-browser compiling
  *  - Mermaid architecture and sequence diagrams
  *  - Standalone HTML with automatic Tailwind CSS CDN injection
- *  - Resolving local workspace assets (CSS, JS)
  */
 
 export function isReactArtifact(code: string, lang?: string): boolean {
   if (!code || typeof code !== 'string') return false
   const l = (lang || '').toLowerCase()
   if (l === 'tsx' || l === 'jsx' || l === 'react') return true
-  // Check for React component patterns
   if (
     (/import\s+.*?from\s+['"]react['"]/i.test(code) ||
       /from\s+['"]lucide-react['"]/i.test(code) ||
@@ -145,28 +142,20 @@ export function isVisualArtifact(code: string, lang?: string): boolean {
 }
 
 export function bundleReactPreview(code: string): string {
-  // Strip import statements
   let clean = code.replace(/import\s+[\s\S]*?from\s+['"][^'"]+['"];?/g, '')
   clean = clean.replace(/import\s+['"][^'"]+['"];?/g, '')
 
-  // Identify root component name
   let componentName = 'App'
   const defaultFuncMatch = clean.match(/export\s+default\s+function\s+([A-Za-z0-9_]+)/)
   const defaultVarMatch = clean.match(/export\s+default\s+([A-Za-z0-9_]+)/)
   const anyFuncMatch = clean.match(/function\s+([A-Z][A-Za-z0-9_]*)/)
   const anyConstMatch = clean.match(/(?:const|let|var)\s+([A-Z][A-Za-z0-9_]*)\s*=/)
 
-  if (defaultFuncMatch) {
-    componentName = defaultFuncMatch[1]
-  } else if (defaultVarMatch) {
-    componentName = defaultVarMatch[1]
-  } else if (anyFuncMatch) {
-    componentName = anyFuncMatch[1]
-  } else if (anyConstMatch) {
-    componentName = anyConstMatch[1]
-  }
+  if (defaultFuncMatch) componentName = defaultFuncMatch[1]
+  else if (defaultVarMatch) componentName = defaultVarMatch[1]
+  else if (anyFuncMatch) componentName = anyFuncMatch[1]
+  else if (anyConstMatch) componentName = anyConstMatch[1]
 
-  // Remove exports so variables are in local scope
   clean = clean.replace(/export\s+default\s+function\s+/g, 'function ')
   clean = clean.replace(/export\s+default\s+[A-Za-z0-9_]+;?/g, '')
   clean = clean.replace(/export\s+(?:function|const|let|var|class)\s+/g, (m) => m.replace('export ', ''))
@@ -198,25 +187,14 @@ export function bundleReactPreview(code: string): string {
   <style>
     * { box-sizing: border-box; }
     body {
-      margin: 0;
-      padding: 0;
-      min-height: 100vh;
+      margin: 0; padding: 0; min-height: 100vh;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: #090d16;
-      color: #f8fafc;
-      overflow-x: hidden;
+      background: #090d16; color: #f8fafc; overflow-x: hidden;
     }
     #error-container {
-      display: none;
-      margin: 20px;
-      padding: 16px;
-      background: #450a0a;
-      border: 1px solid #dc2626;
-      border-radius: 8px;
-      color: #fecaca;
-      font-family: monospace;
-      font-size: 13px;
-      white-space: pre-wrap;
+      display: none; margin: 20px; padding: 16px;
+      background: #450a0a; border: 1px solid #dc2626; border-radius: 8px;
+      color: #fecaca; font-family: monospace; font-size: 13px; white-space: pre-wrap;
     }
   </style>
 </head>
@@ -235,7 +213,6 @@ export function bundleReactPreview(code: string): string {
 
     const { useState, useEffect, useRef, useMemo, useCallback, useReducer, useContext, createContext } = React;
 
-    // Mock/Proxy for Lucide Icons
     const LucideFallback = new Proxy({}, {
       get: (target, prop) => {
         if (typeof prop === 'string' && prop !== 'then' && prop !== '$$typeof') {
@@ -258,18 +235,12 @@ export function bundleReactPreview(code: string): string {
       }
     });
 
-    // Provide all common icons from Proxy
     const {
       DollarSign, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft, ArrowRight, ArrowLeft,
       Wallet, CreditCard, Shield, User, Lock, Key, Check, X, RefreshCw, Trophy, Zap,
       AlertCircle, Play, Pause, RotateCcw, Clock, Calendar, CheckCircle2, ChevronRight,
       ChevronLeft, MoreVertical, Plus, Minus, Search, Settings, HelpCircle, Eye, EyeOff
     } = LucideFallback;
-
-    // Safe fallbacks for common creative canvas/styling undeclared globals
-    if (typeof window.color === 'undefined') window.color = '#38bdf8';
-    if (typeof window.colors === 'undefined') window.colors = ['#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#34d399', '#fbbf24'];
-    if (typeof window.theme === 'undefined') window.theme = 'dark';
 
     try {
       ${clean}
@@ -321,39 +292,20 @@ export function bundleMermaidPreview(code: string): string {
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     body {
-      margin: 0;
-      padding: 32px 24px;
-      background: #090d16;
-      color: #f8fafc;
+      margin: 0; padding: 32px 24px;
+      background: #090d16; color: #f8fafc;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      overflow: auto;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100vh; overflow: auto;
     }
     .mermaid-container {
-      background: #0f172a;
-      border: 1px solid #1e293b;
-      border-radius: 16px;
-      padding: 36px;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
-      max-width: 95%;
-      display: flex;
-      justify-content: center;
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 16px; padding: 36px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); max-width: 95%; display: flex; justify-content: center;
     }
     #error-box {
-      display: none;
-      margin-bottom: 20px;
-      padding: 16px;
-      background: #450a0a;
-      border: 1px solid #dc2626;
-      border-radius: 8px;
-      color: #fecaca;
-      font-family: monospace;
-      font-size: 13px;
-      max-width: 90%;
+      display: none; margin-bottom: 20px; padding: 16px;
+      background: #450a0a; border: 1px solid #dc2626; border-radius: 8px;
+      color: #fecaca; font-family: monospace; font-size: 13px; max-width: 90%;
     }
   </style>
 </head>
@@ -408,36 +360,30 @@ ${cleanCode}
 
 export async function preparePreviewHtml(
   html: string,
-  sessionEvents?: Array<{ type: string; data: unknown }>,
-  sessionId?: string,
+  _sessionEvents?: unknown,
+  _sessionId?: string,
   language?: string
 ): Promise<string> {
   if (!html || typeof html !== 'string') return ''
 
-  // 0. Live Local Dev Server URL / Port preview
   if (isLocalhostArtifact(html, language) || (extractLocalhostUrl(html) && !html.includes('<html') && !isReactArtifact(html, language))) {
     const url = extractLocalhostUrl(html) || html.trim()
     return bundleLocalhostPreview(url)
   }
 
-  // 1. Mermaid preview
   if (isMermaidArtifact(html, language)) {
     return bundleMermaidPreview(html)
   }
 
-  // 2. React / JSX / TSX preview
   if (isReactArtifact(html, language)) {
     return bundleReactPreview(html)
   }
 
-  // 3. SVG preview
   if ((language === 'svg' || html.trim().startsWith('<svg')) && html.includes('</svg>')) {
     return `<!DOCTYPE html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#090d16;padding:24px;}svg{max-width:100%;max-height:100%;width:auto;height:auto;filter:drop-shadow(0 10px 15px rgba(0,0,0,0.4));}</style></head><body>${html}</body></html>`
   }
 
   let bundled = html
-
-  // Auto-inject Tailwind CSS CDN if HTML contains Tailwind classes but lacks Tailwind script
   const hasTailwindClasses = /\b(bg-|text-|p-|m-|flex|grid|rounded|shadow|border-)\b/.test(bundled)
   const hasTailwindScript = /tailwindcss|tailwind\.css/i.test(bundled)
   if (hasTailwindClasses && !hasTailwindScript) {
@@ -448,106 +394,6 @@ export async function preparePreviewHtml(
       bundled = bundled.replace('<html>', `<html><head>${tailwindCdn}</head>`)
     } else {
       bundled = `<!DOCTYPE html><html class="dark"><head>${tailwindCdn}</head><body class="bg-slate-950 text-slate-100 dark p-4">${bundled}</body></html>`
-    }
-  }
-
-  // Helper to read file content from workspace via IPC, or fallback to session events
-  const readFile = async (relPath: string): Promise<string | null> => {
-    const clean = relPath.replace(/^\.\//, '').trim()
-
-    // 1. Try reading directly from workspace via tools:dispatch fs_read
-    try {
-      if (window.sovara?.invoke) {
-        const resp = (await window.sovara.invoke('tools:dispatch', {
-          name: 'fs_read',
-          args: { path: clean, _forceApprove: true, ...(sessionId ? { sessionId } : {}) },
-        })) as { ok?: boolean; result?: string | Record<string, unknown> }
-
-        if (resp?.result) {
-          const parsed = typeof resp.result === 'string' ? JSON.parse(resp.result) : resp.result
-          if (parsed && typeof parsed.content === 'string' && parsed.content.trim()) {
-            return parsed.content
-          }
-        }
-      }
-    } catch {
-      // Fall through to session event search
-    }
-
-    // 2. Fallback: Search recent session events for code fences matching the file extension or name
-    if (sessionEvents && Array.isArray(sessionEvents)) {
-      for (let i = sessionEvents.length - 1; i >= 0; i--) {
-        const ev = sessionEvents[i]
-        if (ev && ev.type === 'assistant/message' && ev.data) {
-          const content = typeof ev.data === 'string' ? ev.data : (ev.data as { content?: string }).content
-          if (typeof content === 'string') {
-            const isCss = clean.endsWith('.css')
-            const isJs = clean.endsWith('.js')
-            const langToken = isCss ? 'css' : isJs ? '(?:js|javascript)' : ''
-            if (langToken) {
-              const fenceRe = new RegExp('```' + langToken + '\\b([\\s\\S]*?)```', 'gi')
-              let fm: RegExpExecArray | null
-              while ((fm = fenceRe.exec(content)) !== null) {
-                const code = fm[1].trim()
-                if (code.length > 5) return code
-              }
-            }
-          }
-        }
-      }
-    }
-
-    return null
-  }
-
-  // Inlining <link rel="stylesheet" href="...">
-  const cssLinkRe = /<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*\/?>|<link\s+[^>]*href=["']([^"']+)["'][^>]*rel=["']stylesheet["'][^>]*\/?>/gi
-  const cssMatches: Array<{ tag: string; href: string }> = []
-  let m: RegExpExecArray | null
-  while ((m = cssLinkRe.exec(bundled)) !== null) {
-    const href = m[1] || m[2]
-    if (href && !/^https?:\/\/|^\/\//i.test(href)) {
-      cssMatches.push({ tag: m[0], href })
-    }
-  }
-
-  for (const match of cssMatches) {
-    const cssContent = await readFile(match.href)
-    if (cssContent) {
-      bundled = bundled.replace(match.tag, `<style>/* inlined ${match.href} */\n${cssContent}\n</style>`)
-    }
-  }
-
-  // Inlining <script src="..."></script>
-  const jsScriptRe = /<script\s+[^>]*src=["']([^"']+)["'][^>]*>\s*<\/script>/gi
-  const jsMatches: Array<{ tag: string; src: string }> = []
-  while ((m = jsScriptRe.exec(bundled)) !== null) {
-    const src = m[1]
-    if (src && !/^https?:\/\/|^\/\//i.test(src)) {
-      jsMatches.push({ tag: m[0], src })
-    }
-  }
-
-  for (const match of jsMatches) {
-    const jsContent = await readFile(match.src)
-    if (jsContent) {
-      const innerScriptRe = /<script\s+src=["'](https?:\/\/[^"']+)["'][^>]*>\s*<\/script>/gi
-      let sMatch: RegExpExecArray | null
-      const cdnUrls: string[] = []
-      while ((sMatch = innerScriptRe.exec(jsContent)) !== null) {
-        cdnUrls.push(sMatch[1])
-      }
-      if (cdnUrls.length > 0) {
-        const uniqueCdns = Array.from(new Set(cdnUrls))
-        const cdnTags = uniqueCdns.map((u) => `<script src="${u}"></script>`).join('\n')
-        if (bundled.includes('</head>')) {
-          bundled = bundled.replace('</head>', `${cdnTags}\n</head>`)
-        } else {
-          bundled = `${cdnTags}\n${bundled}`
-        }
-      }
-
-      bundled = bundled.replace(match.tag, `<script>/* inlined ${match.src} */\n${jsContent}\n</script>`)
     }
   }
 

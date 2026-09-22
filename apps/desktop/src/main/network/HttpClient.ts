@@ -341,17 +341,28 @@ export function extractDeltaFull(json: unknown): DeltaResult {
   const finishReason = typeof first['finish_reason'] === 'string' ? first['finish_reason'] : null
 
   // Content — try delta first (streaming), then message (non-streaming)
+  // DeepSeek Harness alignment: capture both content and reasoning_content
   let content: string | null = null
   const delta = first['delta']
   if (delta !== null && typeof delta === 'object') {
     const c = (delta as Record<string, unknown>)['content']
-    if (typeof c === 'string') content = c
+    const r = (delta as Record<string, unknown>)['reasoning_content']
+    if (typeof c === 'string') {
+      content = c
+    } else if (typeof r === 'string') {
+      content = `<think>${r}</think>`
+    }
   }
   if (content === null) {
     const message = first['message']
     if (message !== null && typeof message === 'object') {
       const c = (message as Record<string, unknown>)['content']
-      if (typeof c === 'string') content = c
+      const r = (message as Record<string, unknown>)['reasoning_content']
+      if (typeof c === 'string') {
+        content = c
+      } else if (typeof r === 'string') {
+        content = `<think>${r}</think>`
+      }
     }
   }
 

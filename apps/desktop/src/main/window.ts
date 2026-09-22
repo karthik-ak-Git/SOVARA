@@ -44,12 +44,23 @@ export async function createMainWindow(): Promise<BrowserWindow> {
   const HF_CONNECT = "https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co https://huggingface.s3.amazonaws.com https://cdn.simpleicons.org"
   const HF_IMG = "https://huggingface.co https://*.huggingface.co https://cdn-avatars.huggingface.co https://*.hf.co https://cdn.simpleicons.org data: https:"
   const activeCsp =
-    `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' ${HF_IMG}; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}`
+    `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' ${HF_IMG}; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* ${HF_CONNECT}; frame-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net blob: data:;`
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    const isLoopback = details.url.startsWith('http://localhost:') || details.url.startsWith('http://127.0.0.1:') || details.url.startsWith('ws://localhost:') || details.url.startsWith('ws://127.0.0.1:')
+    const isSubFrame = details.resourceType === 'subFrame'
+    const headers = { ...details.responseHeaders }
+
+    if (isLoopback || isSubFrame) {
+      delete headers['X-Frame-Options']
+      delete headers['x-frame-options']
+      callback({ responseHeaders: headers })
+      return
+    }
+
     callback({
       responseHeaders: {
-        ...details.responseHeaders,
+        ...headers,
         'Content-Security-Policy': [activeCsp],
         'X-Content-Type-Options': ['nosniff'],
         'X-Frame-Options': ['DENY']
@@ -94,13 +105,14 @@ export async function createMainWindow(): Promise<BrowserWindow> {
 
   // ── New window block ──
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // Allowlist: Hugging Face + GitHub only — everything else denied
+    // Allowlist: Hugging Face + GitHub + Local dev servers — everything else denied
       try {
         if (url.startsWith('blob:')) {
           return { action: 'allow' }
         }
         
         const u = new URL(url)
+        const isLoopback = (u.protocol === 'http:' || u.protocol === 'https:') && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
         const allowedHosts = new Set<string>([
           'huggingface.co',
           'www.huggingface.co',
@@ -114,7 +126,7 @@ export async function createMainWindow(): Promise<BrowserWindow> {
           allowedHosts.has(u.hostname) ||
           u.hostname.endsWith('.huggingface.co') ||
           u.hostname.endsWith('.hf.co')
-        if (u.protocol === 'https:' && isAllowedHost) {
+        if ((u.protocol === 'https:' && isAllowedHost) || isLoopback) {
           void shell.openExternal(u.toString())
         } else if (url !== 'about:blank') {
           console.warn(`[security] blocked window.open to ${url}`)

@@ -1,8 +1,7 @@
-'use client'
-
 import { useState, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { Sidebar, type NavId } from './Sidebar'
+import { AuxiliaryPane } from './AuxiliaryPane'
 
 interface Props {
   activeNav: NavId
@@ -37,6 +36,8 @@ interface Props {
   onShare?: () => void
   hardwareStatus?: string
   contextPanel?: ReactNode
+  artifactContent?: string
+  artifactTitle?: string
 }
 
 export function AppShell({
@@ -72,6 +73,8 @@ export function AppShell({
   onShare,
   hardwareStatus,
   contextPanel,
+  artifactContent,
+  artifactTitle,
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   return (
@@ -119,8 +122,18 @@ export function AppShell({
         <main className="main" role="main" aria-labelledby={`tab-${activeTab}`} tabIndex={-1} id="main-content" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' } as React.CSSProperties}>
           {children}
         </main>
-        {contextPanel ?? null}
+        {artifactsOpen ? (
+          <AuxiliaryPane
+            isOpen={artifactsOpen}
+            onClose={() => onToggleArtifacts?.()}
+            artifactContent={artifactContent}
+            artifactTitle={artifactTitle}
+          />
+        ) : (
+          contextPanel ?? null
+        )}
       </div>
     </div>
   )
 }
+

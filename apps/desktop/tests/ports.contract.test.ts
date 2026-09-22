@@ -48,10 +48,13 @@ describe('Commit 1 — stub ports satisfy contracts', () => {
     expect(chunks[0].type).toBe('text-delta')
   })
 
-  it('ToolStub lists web_search + web_fetch (live web tools), nothing else', () => {
+  it('ToolStub lists web_search + web_fetch (live web tools), plus local tools', () => {
     const defs = new ToolStubAdapter().list()
-    expect(defs.map((d) => d.name)).toEqual(['web_search', 'web_fetch'])
-    expect(defs[0].toolset).toBe('web')
+    const names = defs.map((d) => d.name)
+    expect(names).toContain('web_search')
+    expect(names).toContain('web_fetch')
+    const webTools = defs.filter((d) => d.toolset === 'web')
+    expect(webTools.map((d) => d.name)).toEqual(['web_search', 'web_fetch'])
   })
 
   it('ToolStub refuses web tools while disabled and validates queries', async () => {

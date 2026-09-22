@@ -1,31 +1,37 @@
 /**
- * Centralized design tokens — single source for colors, typography, spacing, radii, borders, shadows, sizing, focus, disabled, status.
- * No magic values scattered in components. CSS variables in styles.css mirror these values.
- * Light-first, clean, Bionic-style.
+ * Centralized design tokens — dark obsidian glassmorphic design system.
+ * Single source for colors, typography, spacing, radii, borders, shadows, sizing.
  */
 
 export const colors = {
-  bg: '#ffffff',
-  bgSoft: '#f7f7f8',
-  bgElevated: '#ffffff',
-  panel: '#ffffff',
-  panel2: '#f3f4f6',
-  border: '#e5e7eb',
-  borderSoft: '#f0f0f2',
-  text: '#1a1a2e',
-  muted: '#6b7280',
-  muted2: '#9ca3af',
-  accent: '#4a90d9',
-  accent2: '#3b82f6',
-  success: '#22c55e',
+  bg: '#090c15',
+  bgCanvas: '#0e1320',
+  bgSoft: '#12151e',
+  bgElevated: '#1a1d2a',
+  bgCard: 'rgba(22, 30, 50, 0.75)',
+  bgComposer: 'rgba(18, 25, 42, 0.85)',
+  bgPopover: '#1a2238',
+  panel: '#141b2d',
+  panel2: '#1a2238',
+  border: 'rgba(255, 255, 255, 0.08)',
+  borderSoft: 'rgba(255, 255, 255, 0.05)',
+  borderGlow: 'rgba(56, 189, 248, 0.35)',
+  text: '#f8fafc',
+  textSecondary: '#cbd5e1',
+  muted: '#94a3b8',
+  muted2: '#64748b',
+  accent: '#38bdf8',
+  accent2: '#0ea5e9',
+  accentViolet: '#818cf8',
+  success: '#10b981',
   warn: '#f59e0b',
-  danger: '#ef4444',
-  focus: '#4a90d9',
+  danger: '#f43f5e',
+  focus: '#38bdf8',
 } as const
 
 export const typography = {
-  fontSans: 'ui-sans-system, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-  fontMono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontSans: 'ui-sans-system, -apple-system, Inter, Segoe UI, Roboto, sans-serif',
+  fontMono: 'ui-monospace, SFMono-Regular, "JetBrains Mono", "Fira Code", Consolas, monospace',
   size: {
     xs: '11px',
     sm: '12px',
@@ -64,8 +70,8 @@ export const radii = {
   sm: '6px',
   md: '8px',
   lg: '10px',
-  xl: '12px',
-  pill: '999px',
+  xl: '14px',
+  pill: '9999px',
 } as const
 
 export const borders = {
@@ -75,15 +81,18 @@ export const borders = {
 } as const
 
 export const shadows = {
-  panel: '0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06)',
-  focus: `0 0 0 2px rgba(74,144,217,.15)`,
+  panel: '0 4px 20px -2px rgba(0, 0, 0, 0.5)',
+  focus: `0 0 0 2px rgba(56, 189, 248, 0.35)`,
+  glowCyan: '0 0 20px -4px rgba(56, 189, 248, 0.25)',
+  glowViolet: '0 0 20px -4px rgba(129, 140, 248, 0.20)',
 } as const
 
 export const sizing = {
-  topbarH: '44px',
-  sidebarW: '220px',
-  sidebarWCollapsed: '56px',
-  mainMaxW: '860px',
+  topbarH: '50px',
+  sidebarW: '240px',
+  sidebarWCollapsed: '58px',
+  auxiliaryW: '480px',
+  mainMaxW: '1040px',
   touchMin: '32px',
 } as const
 
@@ -103,3 +112,4 @@ export const status = {
   warn: colors.warn,
   error: colors.danger,
 } as const
+

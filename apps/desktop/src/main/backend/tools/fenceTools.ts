@@ -30,7 +30,10 @@ export interface ToolFence {
 
 const TOOL_NAMES = [
   'fs_list', 'fs_read', 'fs_write', 'fs_patch',
-  'shell_exec', 'todo_write',
+  'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec',
+  'list_dev_servers', 'stop_dev_server',
+  'todo_write',
+  'search_skills', 'read_skill',
   'web_search', 'web_fetch',
   'run_code', 'ocr',
 ] as const
@@ -77,9 +80,29 @@ export function parseLenientJson(raw: string, toolName?: string): Record<string,
     }
   }
 
+  // Helper to normalize argument names across model variances
+  const norm = (res: Record<string, unknown>): Record<string, unknown> => {
+    if (!res || typeof res !== 'object') return defaultArgsFor(toolName)
+    const out = { ...res }
+    if (toolName === 'read_skill') {
+      if (!out['skill_name'] && (out['skill'] || out['name'])) {
+        out['skill_name'] = out['skill'] || out['name']
+      }
+    } else if (toolName === 'search_skills') {
+      if (!out['query'] && (out['q'] || out['keyword'] || out['term'])) {
+        out['query'] = out['q'] || out['keyword'] || out['term']
+      }
+    } else if (toolName === 'shell_exec' || toolName === 'bash' || toolName === 'cmd' || toolName === 'powershell' || toolName === 'terminal_exec') {
+      if (!out['command'] && out['cmd']) {
+        out['command'] = out['cmd']
+      }
+    }
+    return out
+  }
+
   // Strict parse (after shape repair).
   const strict = tryParse(s)
-  if (strict !== null) return strict
+  if (strict !== null) return norm(strict)
 
   // 2) quoted-string list form: { "todos": ["a", "b"] } — strict path covers it,
   //    this catches unquoted keys like { todos: ["a","b"], }
@@ -101,7 +124,7 @@ export function parseLenientJson(raw: string, toolName?: string): Record<string,
       .replace(/'/g, '"')
       .replace(/,(\s*[}\]])/g, '$1')
     const v = tryParse(repaired)
-    if (v !== null) return v
+    if (v !== null) return norm(v)
   } catch { /* fall through */ }
 
   // 4) fs path from prose: { path: . } / path=. / path: '.'
@@ -176,6 +199,9 @@ export type { ToolName }
 function defaultArgsFor(toolName?: string): Record<string, unknown> {
   if (toolName === 'fs_list') return { path: '.' }
   if (toolName === 'todo_write') return { todos: [] }
+  if (toolName === 'search_skills') return { query: '' }
+  if (toolName === 'read_skill') return { skill_name: '' }
+  if (toolName === 'shell_exec' || toolName === 'bash' || toolName === 'cmd' || toolName === 'powershell' || toolName === 'terminal_exec') return { command: 'dir' }
   return {}
 }
 

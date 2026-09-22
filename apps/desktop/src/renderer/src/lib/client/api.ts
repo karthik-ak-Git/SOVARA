@@ -598,6 +598,14 @@ export async function getHardwareProfile(): Promise<import('@shared/types/explor
   return ipcInvoke('explore:getHardwareProfile')
 }
 
+export async function compareModels(modelIds: string[]): Promise<any[]> {
+  return ipcInvoke('explore:compareModels', { modelIds })
+}
+
+export async function detectExternalRuntimes(): Promise<any> {
+  return ipcInvoke('runtime:detectExternal')
+}
+
 export interface LibraryModel {
   name: string
   file: string

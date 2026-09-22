@@ -231,9 +231,62 @@ export function Sidebar({
   }, [recentChats, searchQuery])
 
   return (
-    <nav className="sidebar" aria-label="Primary navigation" style={{ width: 232, padding: '18px 10px 12px', background: 'var(--bg-soft, #fbfaf7)', borderRight: '1px solid var(--border)' } as React.CSSProperties}>
-      <div className="sidebar-scroll" style={{ flex: 1, overflow: 'auto' }}>
-        <div className="side-section" style={{ marginBottom: 25 }}>
+    <nav className="sidebar" aria-label="Primary navigation" style={{ width: 232, padding: '14px 10px 12px', background: 'var(--bg-soft)', borderRight: '1px solid var(--border)' } as React.CSSProperties}>
+      <div className="sidebar-top" style={{ padding: '0 4px 14px', borderBottom: '1px solid var(--border-soft)' }}>
+        <button
+          type="button"
+          className="sv-new-chat-btn"
+          onClick={() => onNewChat?.()}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            width: '100%', height: 36, borderRadius: 8,
+            background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-violet) 100%)',
+            color: '#090c15', fontWeight: 600, fontSize: 13, border: 'none', cursor: 'pointer',
+            boxShadow: '0 2px 10px rgba(56, 189, 248, 0.25)',
+          }}
+        >
+          <Plus size={16} aria-hidden />
+          <span>New Conversation</span>
+        </button>
+      </div>
+
+      <div className="sidebar-nav-section" style={{ padding: '10px 0', borderBottom: '1px solid var(--border-soft)' }}>
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'chat' ? 'selected' : ''}`}
+          onClick={() => onNavigate('chat')}
+        >
+          <MessageSquare size={15} aria-hidden />
+          <span>Chat</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'explore' ? 'selected' : ''}`}
+          onClick={() => onNavigate('explore')}
+        >
+          <Search size={15} aria-hidden />
+          <span>Explore</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'models' ? 'selected' : ''}`}
+          onClick={() => onNavigate('models')}
+        >
+          <Hash size={15} aria-hidden />
+          <span>Models</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'library' ? 'selected' : ''}`}
+          onClick={() => onNavigate('library')}
+        >
+          <Folder size={15} aria-hidden />
+          <span>Library</span>
+        </button>
+      </div>
+
+      <div className="sidebar-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 10 }}>
+        <div className="side-section" style={{ marginBottom: 20 }}>
           <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 9px 8px', color: 'var(--muted-2)', fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' } as React.CSSProperties}>
             <span>Projects</span>
             <button type="button" className="tiny-button" aria-label="New Project" onClick={onNewProject} style={{ display: 'grid', placeItems: 'center', width: 22, height: 22, borderRadius: 6, background: 'transparent', color: 'var(--muted)', border: 'none', cursor: 'pointer' }}>
@@ -283,7 +336,7 @@ export function Sidebar({
           )}
         </div>
 
-        <div className="side-section chat-section" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 18 }}>
+        <div className="side-section chat-section" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 14 }}>
           <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 9px 8px', color: 'var(--muted-2)', fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' } as React.CSSProperties}>
             <span>Chats</span>
             <button
@@ -337,11 +390,11 @@ export function Sidebar({
           <Settings size={16} aria-hidden />
           <span>Settings</span>
         </button>
-        <div className="local-badge" style={{ display: 'flex', gap: 8, margin: '12px 8px 0', padding: 10, border: '1px solid #e0e9df', borderRadius: 6, background: '#f5faf4', color: '#5d8d68' }}>
+        <div className="local-badge" style={{ display: 'flex', gap: 8, margin: '10px 4px 0', padding: '8px 10px', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: 8, background: 'rgba(16, 185, 129, 0.08)', color: '#34d399' }}>
           <ShieldCheck size={15} aria-hidden style={{ flex: 'none', marginTop: 1 } as React.CSSProperties} />
           <div>
-            <strong style={{ display: 'block', fontSize: 10, lineHeight: 1.2 }}>Local processing</strong>
-            <span style={{ display: 'block', fontSize: 10, color: '#8b9f8b', marginTop: 2 }}>Private by default</span>
+            <strong style={{ display: 'block', fontSize: 11, lineHeight: 1.2 }}>Local Processing</strong>
+            <span style={{ display: 'block', fontSize: 10, color: '#94a3b8', marginTop: 2 }}>100% Private &amp; Sovereign</span>
           </div>
         </div>
         {footer ? <div style={{ marginTop: 10 }}>{footer}</div> : null}
@@ -349,3 +402,5 @@ export function Sidebar({
     </nav>
   )
 }
+
+

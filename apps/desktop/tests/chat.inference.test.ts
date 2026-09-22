@@ -109,13 +109,15 @@ describe('Commit 7 — adapter SSE', () => {
       })
     )
     expect(seen.bodies).toHaveLength(1)
-    expect(seen.bodies[0]).toEqual({
+    expect(seen.bodies[0]).toMatchObject({
       model: 'phi-4',
       messages: [
         { role: 'system', content: 's' },
         { role: 'user', content: 'q' },
       ],
       stream: true,
+      // Perf fields added by the adapter (cache_prompt, max_tokens, temperature)
+      cache_prompt: true,
     })
     await close()
   })
@@ -585,9 +587,9 @@ describe('Commit 7 — sovereignty proofs', () => {
     for (const f of scan('src')) {
       const txt = fs.readFileSync(f, 'utf8')
       if (/\bfetch\s*\(/.test(txt)) {
-        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning), nextServer (loopback health-check of the internal Next.js server)
+        // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning), nextServer (loopback health-check of the internal Next.js server), explorerFit (GGUF Range-header probe), hiddenModels (needle probe)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts)$/)
+        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts|main\/services\/explorerFit\.ts|main\/services\/hiddenModels\.ts|main\/services\/localRuntimeDetector\.ts)$/)
       }
     }
   })

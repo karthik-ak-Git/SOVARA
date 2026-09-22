@@ -1,15 +1,5 @@
 /**
  * Explorer fit engine — fresh LM Studio-parity estimation.
- *
- * LM Studio sources (no git history):
- * - `lms load --estimate-only <id> --context-length 4096 --gpu max`
- *   → Estimated GPU Memory / Estimated Total Memory / confidence / passesGuardrails
- * - Download UI badges: Full GPU offload possible (green) / Partial GPU offload
- *   possible (yellow) / Likely fit CPU (green) / Likely too large (red)
- * - Rule of thumb: file size ≈ VRAM needed + 1–2 GB context overhead;
- *   target 1.2–1.4× on-disk size in available VRAM; Q4 ≈ 0.5 GB per B params
- *   + 20–30% KV cache. Context length, flash attention, KV offload and the
- *   vision projector (~0.9 GB) move the estimate.
  */
 import type { CompatibilityResult, ExploreModel, ExploreModelFile, HardwareInfo } from '@shared/types/explore'
 
@@ -60,7 +50,6 @@ function fileGBOf(file: ExploreModelFile, model: ExploreModel): number {
   return pb * (file.format === 'GGUF' ? 0.62 : 2.2)
 }
 
-/** HF GGUF header probe — fetch Range 0-8192 to get real tensor quantized byte total (huggingface.js packages/gguf) + model-explorer graph shape. */
 export async function probeGgufNeedBytes(repoId: string, rfilename: string): Promise<number | null> {
   try {
     const url = `https://huggingface.co/${repoId}/resolve/main/${rfilename}`
@@ -68,19 +57,15 @@ export async function probeGgufNeedBytes(repoId: string, rfilename: string): Pro
     if (!res.ok && res.status !== 206) return null
     const buf = new Uint8Array(await res.arrayBuffer())
     if (buf.length < 4 || buf[0] !== 0x47 || buf[1] !== 0x47) return null // GGUF magic
-    // Minimal: sum of tensor infos not parsed fully here — return header-probe hit so caller can trust fileBytes
-    return buf.length > 0 ? 0 : null // signal probe succeeded; real need uses fileBytes + kv + graph
+    return buf.length > 0 ? 0 : null
   } catch { return null }
 }
 
-/** KV cache: calibrated to live llama.cpp q4_0+flash (log: 4B@8192 = ~0.38 GB overhead total, not 3.4 GB). */
 export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAULT_CTX, opts: ExplorerFitOptions = {}): number {
   if (!contextLength || contextLength <= 0) return 0
   const scale = Math.min(2.4, Math.max(0.6, paramsBillion(model) / 7))
-  // empirical: 7B q4_0+flash ≈0.06 GB/1k, 4B ≈0.034 GB/1k. Pre-fix 0.42 was 7x high → every 4B flagged "too large".
   let per1k = 0.06 * scale
-  if (!opts.flashAttention) per1k /= 0.75 // without flash ~33% larger
-  // q8/f16 KV (no --cache-type-k q4_0) is ~2x
+  if (!opts.flashAttention) per1k /= 0.75
   const kv = (contextLength / 1024) * per1k
   const vision = model.capabilities.some((c) => c.toLowerCase().includes('vision')) ? VISION_PROJECTOR_GB : 0
   return kv + vision
@@ -89,24 +74,22 @@ export function estimateExplorerKvGB(model: ExploreModel, contextLength = DEFAUL
 function needGBOf(file: ExploreModelFile, model: ExploreModel, ctx: number, opts: ExplorerFitOptions): { need: number; fileGB: number; kv: number } {
   const fileGB = fileGBOf(file, model)
   if (fileGB <= 0) return { need: 0, fileGB: 0, kv: 0 }
-  // Ollama memory.go graph.full + KV pool + batch — graph scales ~8% of file (120B needs 12.5GB graph per #7883)
   const kv = estimateExplorerKvGB(model, ctx, opts)
-  const graphGB = fileGB * 0.08 + 0.02 // model-explorer graph nodes per layer, matches llama.cpp graph_reserve
+  const graphGB = fileGB * 0.08 + 0.02
   const batchSurchargeGB = 0.06
   const mult = file.format === 'MLX' ? 1.02 : 1.00
   return { need: fileGB * mult + kv + graphGB + batchSurchargeGB, fileGB, kv: kv + graphGB + batchSurchargeGB }
 }
 
-/** LM Studio guardrail threshold: usable = total − OS/GPU reserve. */
 function usableCapacity(hw: HardwareInfo): { ramGB: number; vramGB?: number; freeVramGB?: number; freeRamGB: number } {
   const totalRamGB = hw.totalRamMB / 1024
   const freeRamGB = hw.freeRamMB / 1024
   const totalVramGB = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
-  const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
+  const freeVramGB = hw.freeVramMB !== undefined ? hw.freeVramMB / 1024 : undefined
   return {
     ramGB: Math.max(1, totalRamGB - OS_RAM_RESERVE_GB),
     vramGB: totalVramGB !== undefined ? Math.max(1, totalVramGB - GPU_RESERVE_GB) : undefined,
-    freeVramGB,
+    freeVramGB: freeVramGB !== undefined ? Math.max(0, freeVramGB - 0.2) : undefined,
     freeRamGB,
   }
 }
@@ -117,52 +100,46 @@ export function estimateExplorerFit(
   hw: HardwareInfo,
   opts: ExplorerFitOptions = {},
 ): ExplorerFitResult {
-  // LM Studio badges informational repo files (.gitattributes, README.md, …)
-  // red: they are listed but can never load on a GPU, whatever their size.
   if (file.runnable === false) {
     const bytes = file.sizeBytes ?? 0
     const gb = bytes > 0 ? bytes / 1024 ** 3 : file.sizeGB
     return { fit: 'willNotFit', needGB: 0, fileGB: gb, kvGB: 0, confidence: 'high', passesGuardrails: false, message: 'Not a runnable model weight — informational file only.' }
   }
-  // Non-GGUF runnable weights (safetensors-only repos, LoRA adapters already
-  // classified aux) cannot be estimated as GPU-loadable — show neutral, not red.
-  if (file.format !== 'GGUF' && file.format !== 'MLX') {
-    const gb = (file.sizeBytes ?? 0) > 0 ? file.sizeBytes! / 1024 ** 3 : file.sizeGB
-    return { fit: 'willNotFit', needGB: 0, fileGB: gb, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Not a GGUF weight — use a GGUF quant for local GPU inference.' }
+
+  const hasKnownSize = (file.sizeBytes ?? 0) > 0 || (file.sizeGB ?? 0) > 0 || (model.repoSizeBytes ?? 0) > 0
+  if (!hasKnownSize) {
+    return {
+      fit: 'willNotFit', needGB: 0, fileGB: 0, kvGB: 0, confidence: 'low', passesGuardrails: false,
+      message: 'Size unknown — fetch file size to verify fit.',
+    }
   }
-  // A weight with genuinely unknown size cannot be verified (LM Studio shows
-  // "size unknown" + neutral) — never synthesize a params-based size for it.
-  if (!((file.sizeBytes ?? 0) > 0) && !(file.sizeGB > 0)) {
-    return { fit: 'willNotFit', needGB: 0, fileGB: 0, kvGB: 0, confidence: 'low', passesGuardrails: false, message: 'Size unknown — fetch file size to verify fit.' }
-  }
+
   const ctx = opts.contextLength ?? DEFAULT_CTX
   const { need, fileGB, kv } = needGBOf(file, model, ctx, opts)
   if (need <= 0) {
     return { fit: 'willNotFit', needGB: 0, fileGB, kvGB: kv, confidence: 'low', passesGuardrails: false, message: 'No downloadable file size — cannot estimate.' }
   }
+
   const cap = usableCapacity(hw)
   const need1 = need.toFixed(1)
+  const confidenceLevel = (file.sizeBytes ?? 0) > 0 ? ('high' as const) : ('low' as const)
 
   if (hw.gpuAvailable && cap.vramGB !== undefined) {
     const vram = cap.vramGB
     const freeV = cap.freeVramGB
-    // Full offload: fits VRAM with headroom (1.2× rule → need ≤ 88% of usable when free unknown)
     const fitsTotal = need <= vram
-    const fitsFree = freeV === undefined ? need <= vram * 0.80 : need <= freeV * 0.80 // Ollama sched.go:555 80% headroom, not 88/95
+    const fitsFree = freeV === undefined ? true : need <= freeV
     if (fitsTotal && fitsFree) {
       return {
-        fit: 'fullGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: freeV === undefined ? 'low' : 'high',
+        fit: 'fullGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: freeV === undefined ? 'low' : confidenceLevel,
         passesGuardrails: true,
         message: `Full GPU offload possible — ~${need1} GB fits your ${vram.toFixed(1)} GB GPU.`,
       }
     }
-    // Partial: exceeds VRAM but fits RAM → layers split GPU/CPU (slower).
-    // Free-RAM aware: still runnable when only total fits, but flag it so the
-    // badge state is honest about needing headroom (LM Studio guardrail behavior).
     if (need <= cap.ramGB) {
       const tightRam = need > cap.freeRamGB * 0.92
       return {
-        fit: 'partialGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : 'high',
+        fit: 'partialGPUOffload', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : confidenceLevel,
         passesGuardrails: true,
         message: tightRam
           ? `Partial GPU offload possible — ~${need1} GB exceeds ${vram.toFixed(1)} GB VRAM and RAM is tight (${cap.freeRamGB.toFixed(1)} GB free). Close apps first.`
@@ -176,11 +153,10 @@ export function estimateExplorerFit(
     }
   }
 
-  // CPU-only / unified-memory path (free-RAM aware like the GPU path)
   if (need <= cap.ramGB) {
     const tightRam = need > cap.freeRamGB * 0.92
     return {
-      fit: 'fitWithoutGPU', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : 'high',
+      fit: 'fitWithoutGPU', needGB: need, fileGB, kvGB: kv, confidence: tightRam ? 'low' : confidenceLevel,
       passesGuardrails: true,
       message: tightRam
         ? `Likely fits on CPU — ~${need1} GB fits but RAM is tight (${cap.freeRamGB.toFixed(1)} GB free). Close apps first.`
@@ -196,13 +172,19 @@ export function estimateExplorerFit(
 
 function quantScore(q?: string, format?: string): number {
   if (!q) {
-    // Native MXFP4 / QAT quants (screenshot) rank near Q4_K_M
     if (format && /mxfp4|qat/i.test(format)) return 92
     return 10
   }
   const t: Record<string, number> = {
-    Q4_K_M: 100, Q4_K_S: 95, Q5_K_M: 90, Q5_K_S: 88, Q6_K: 85, Q8_0: 80,
-    Q5_0: 78, Q4_0: 75, Q3_K_M: 60, Q3_K_S: 58, Q2_K: 40,
+    Q4_K_M: 100, Q4_K_S: 95, Q4_K: 95,
+    Q5_K_M: 90, Q5_K_S: 88, Q5_K: 88,
+    Q6_K: 85, Q8_0: 80, Q8_1: 80, Q8_K: 80,
+    Q5_0: 78, Q5_1: 78, Q4_0: 75, Q4_1: 75,
+    IQ4_NL: 74, IQ4_XS: 72, F16: 70, BF16: 70,
+    Q3_K_L: 65, Q3_K_M: 60, Q3_K_S: 58,
+    IQ3_M: 55, IQ3_S: 52, IQ3_XS: 50, IQ3_XXS: 48, F32: 50,
+    Q2_K: 40, IQ2_M: 38, IQ2_S: 35, IQ2_XS: 32, IQ2_XXS: 30,
+    IQ1_M: 25, IQ1_S: 22,
   }
   const up = q.toUpperCase()
   if (t[up] !== undefined) return t[up]
@@ -210,54 +192,48 @@ function quantScore(q?: string, format?: string): number {
   return 20
 }
 
-/**
- * Per-file fits + LM Studio recommended pick:
- * 👍 Safe & Balanced = best quant that fully fits; 🚀 max-perf = largest full fit.
- * When nothing fully fits, the best quant is still flagged recommended (screenshot:
- * Q4_K_M Recommended even with a red badge) so the user sees the ideal choice.
- */
 export function fitExplorerFiles(model: ExploreModel, hw: HardwareInfo, opts: ExplorerFitOptions = {}): ExplorerFileFit[] {
-  if (!model.files.length) return []
-  const rows = model.files.map((file, index) => {
-    const r = estimateExplorerFit(file, model, hw, opts)
-    // Informational files never compete for Recommended (LM Studio).
-    const score = file.runnable === false ? -1 : quantScore(file.quantization, file.quantization ?? file.format)
-    return { ...r, index, isRecommended: false as boolean, score }
+  const files = model.files
+  if (!files || files.length === 0) return []
+  const evaluated = files.map((file, index) => ({
+    ...estimateExplorerFit(file, model, hw, opts),
+    index,
+    isRecommended: false,
+  }))
+
+  const candidates = evaluated.filter((f) => files[f.index].runnable !== false && f.passesGuardrails)
+  candidates.sort((a, b) => {
+    const pA = a.fit === 'fullGPUOffload' ? 2 : a.fit === 'partialGPUOffload' || a.fit === 'fitWithoutGPU' ? 1 : 0
+    const pB = b.fit === 'fullGPUOffload' ? 2 : b.fit === 'partialGPUOffload' || b.fit === 'fitWithoutGPU' ? 1 : 0
+    if (pA !== pB) return pB - pA
+    const qA = quantScore(files[a.index].quantization, files[a.index].format)
+    const qB = quantScore(files[b.index].quantization, files[b.index].format)
+    return qB - qA
   })
-  // Recommended = highest quant score among full fits; else highest quant
-  // among RUNNABLE weights. Meta rows (.gitattributes, README.md) are never
-  // eligible — a file list of only meta rows yields no recommendation.
-  const eligible = rows.filter((r) => model.files[r.index]?.runnable !== false)
-  const fullFits = eligible.filter((r) => r.fit === 'fullGPUOffload' || r.fit === 'fitWithoutGPU')
-  const pool = fullFits.length > 0 ? fullFits : eligible
-  let best = pool[0]
-  for (const r of pool) {
-    if (r.score > (best?.score ?? -1)) best = r
-    else if (r.score === best?.score && r.needGB > (best?.needGB ?? 0) && fullFits.length > 0) best = r
+  if (candidates.length > 0) {
+    candidates[0].isRecommended = true
   }
-  if (best) best.isRecommended = true
-  // Display order: recommended first, then full → partial/cpu → too-large;
-  // inside a bucket runnable weights come before informational files
-  // (.gitattributes, README.md sink to the bottom), then smaller need.
-  const order: Record<ExplorerFit, number> = { fullGPUOffload: 0, fitWithoutGPU: 0, partialGPUOffload: 1, willNotFit: 2 }
-  const runnableOf = (r: (typeof rows)[number]): number => (model.files[r.index]?.runnable === false ? 1 : 0)
-  return [...rows]
-    .sort((a, b) => {
-      if ((b.isRecommended ? 1 : 0) !== (a.isRecommended ? 1 : 0)) return (b.isRecommended ? 1 : 0) - (a.isRecommended ? 1 : 0)
-      if (order[a.fit] !== order[b.fit]) return order[a.fit] - order[b.fit]
-      if (runnableOf(a) !== runnableOf(b)) return runnableOf(a) - runnableOf(b)
-      return a.needGB - b.needGB
-    })
-    .map(({ score: _s, ...rest }) => rest)
+
+  const candidateIndices = new Set(candidates.map((c) => c.index))
+  const nonCandidates = evaluated.filter((f) => !candidateIndices.has(f.index))
+  nonCandidates.sort((a, b) => {
+    const runA = files[a.index].runnable !== false ? 0 : 1
+    const runB = files[b.index].runnable !== false ? 0 : 1
+    if (runA !== runB) return runA - runB
+    return a.index - b.index
+  })
+
+  return [...candidates, ...nonCandidates]
 }
 
-/** Back-compat bridge for existing explore:getCompatibility IPC (good/tight/too-large). */
 export function toCompatibility(fit: ExplorerFitResult): CompatibilityResult {
-  if (fit.fit === 'fullGPUOffload' || fit.fit === 'fitWithoutGPU') {
-    return { fitsInMemory: true, estimatedRamUsageGB: fit.needGB, estimatedVramUsageGB: fit.needGB, message: fit.message, severity: 'good' }
+  const severity: CompatibilityResult['severity'] =
+    fit.fit === 'fullGPUOffload' ? 'good' : fit.fit === 'partialGPUOffload' || fit.fit === 'fitWithoutGPU' ? 'tight' : 'too-large'
+  return {
+    fitsInMemory: fit.passesGuardrails,
+    estimatedRamUsageGB: Math.round(fit.needGB * 10) / 10,
+    message: fit.message,
+    severity,
   }
-  if (fit.fit === 'partialGPUOffload') {
-    return { fitsInMemory: true, estimatedRamUsageGB: fit.needGB, estimatedVramUsageGB: fit.needGB, message: fit.message, severity: 'tight' }
-  }
-  return { fitsInMemory: false, estimatedRamUsageGB: fit.needGB, estimatedVramUsageGB: fit.needGB, message: fit.message, severity: 'too-large' }
 }
+

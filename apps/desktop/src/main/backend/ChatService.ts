@@ -36,6 +36,8 @@ const MAX_HISTORY_CHARS = 24_000
 const CHAT_TIMEOUT_FLOOR_MS = 120_000
 /** Rough token estimation: ~4 chars per token for English text. */
 const CHARS_PER_TOKEN = 4
+/** 64 MB buffer headroom for local chat code generation & reasoning traces. */
+const CHAT_MAX_RESPONSE_BYTES = 64_000_000
 
 export class ChatServiceError extends Error {
   constructor(
@@ -406,8 +408,13 @@ export class ChatService {
           if (ms.length > 0) {
             const first = ms[0]
             active = { selection: { runtimeId: first.runtimeId, modelId: first.modelId }, available: true, displayName: first.displayName, runtimeDisplayName: `Auto → ${first.displayName}` }
+          } else {
+            // No local models available for auto routing
+            active = { selection: null as unknown as any, available: false, displayName: '', runtimeDisplayName: '' }
           }
-        } catch {}
+        } catch {
+          active = { selection: null as unknown as any, available: false, displayName: '', runtimeDisplayName: '' }
+        }
       }
     }
     if (!active.selection || !active.available) {
@@ -444,6 +451,13 @@ export class ChatService {
       ownedInstanceId = ready.instanceId
      } else {
        await this.ensureModelLoaded(active.selection.modelId, entry.id)
+       const pressure = await this.deps.resources.checkBeforeLoad(
+         { id: active.selection.modelId as never, displayName: active.selection.modelId, source: 'custom', format: 'unknown' },
+         {}
+       )
+       if (pressure.blocking) {
+         throw new ChatServiceError('resource-pressure', `resource-pressure: ${pressure.reason ?? 'inference refused'}`)
+       }
        endpoint = entry.endpoint
        model = remoteModelId(active.selection.modelId)
      }
@@ -524,6 +538,7 @@ export class ChatService {
         timeoutMs,
         stream: true,
         signal: controller.signal,
+        maxResponseBytes: CHAT_MAX_RESPONSE_BYTES,
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
           let delta = chunk.text
@@ -803,6 +818,7 @@ export class ChatService {
         timeoutMs,
         stream: true,
         signal: controller.signal,
+        maxResponseBytes: CHAT_MAX_RESPONSE_BYTES,
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
            text += chunk.text

@@ -90,7 +90,7 @@ describe('modelDownloads filesystem helpers', () => {
       fs.writeFileSync(path.join(repo, 'notes.txt'), 'nope')
       const found = scanLibrary(dir)
       expect(found).toHaveLength(1)
-      expect(found[0]).toMatchObject({ name: 'Qwen__Qwen3', file: 'a.gguf', sizeBytes: 10 })
+      expect(found[0]).toMatchObject({ name: 'Qwen/Qwen3', file: 'a.gguf', sizeBytes: 10 })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

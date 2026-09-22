@@ -57,13 +57,13 @@ export const DEFAULT_TUNING: TuningConfig = {
   chunkSizeChars: 6000,
   historyMaxChars: 24_000,
   historyMaxMessages: 50,
-  maxToolLoopSteps: 5,
+  maxToolLoopSteps: 8,
   contextTiers: [...CONTEXT_TIERS],
   memorySafetyMargin: 0.85,
   kvMbPer1kTokens: 8,
   reservedCompletionTokens: 1200,
   slidingWindowTurns: 3,
-  maxCompletionTokensCap: 8192,
+  maxCompletionTokensCap: 16384,
 }
 
 const STORE_KEY = 'tuning'

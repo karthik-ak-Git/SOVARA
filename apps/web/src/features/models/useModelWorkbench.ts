@@ -41,14 +41,19 @@ export function useModelWorkbench() {
     const [rt, md, ac, libRaw] = await Promise.all([listRuntimes(), listDiscoveredModels(), getActiveModel(), listLibraryModels().catch(() => [])])
     const lib = Array.isArray(libRaw) ? libRaw : []
     // Merge library files as local-discovered models so chat selector is library-driven (dynamic, not hardcoded)
-    const libModels: DiscoveredModel[] = lib.map((m) => ({
-      modelId: m.name.replace(/\.gguf$/i, '').replace(/__/g, '/') || m.file.replace(/\.gguf$/i, ''),
-      displayName: m.file,
-      runtimeId: rt[0]?.id ?? 'local',
-      source: 'custom' as const,
-      capabilities: [],
-      available: true,
-    }))
+    const libModels: DiscoveredModel[] = lib.map((m) => {
+      let repo = m.name
+      if (m.name.includes(' — ')) repo = m.name.split(' — ')[0]
+      const modelId = repo && repo !== m.file ? `${repo}/${m.file}` : m.file
+      return {
+        modelId,
+        displayName: m.file,
+        runtimeId: rt[0]?.id ?? 'local',
+        source: 'custom' as const,
+        capabilities: [],
+        available: true,
+      }
+    })
     const merged = [...md]
     for (const lm of libModels) if (!merged.some((x) => x.modelId === lm.modelId)) merged.push(lm)
     // ensure at least one local runtime entry for the pill label

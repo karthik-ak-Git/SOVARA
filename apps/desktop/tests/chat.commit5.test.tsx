@@ -153,13 +153,13 @@ describe('Commit 5 — ChatView states', () => {
       />
     )
     expect(screen.getByRole('alert')).toHaveTextContent('persistence failed')
-    await user.click(screen.getByRole('button', { name: 'Dismiss error' }))
+    await user.click(screen.getByRole('button', { name: /Dismiss/ }))
     expect(dismiss).toHaveBeenCalledOnce()
   })
 
   it('guides when no conversation is selected', () => {
     render(<ChatView {...base} selectedId={null} sessions={[]} />)
-    expect(screen.getByText(/What can I help with/)).toBeInTheDocument()
+    expect(screen.getByText(/What can I help with|What will you work on/)).toBeInTheDocument()
   })
 
   it('send button has an accessible name and composer is labelled', () => {

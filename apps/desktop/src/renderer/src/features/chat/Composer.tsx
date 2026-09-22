@@ -141,9 +141,9 @@ export function Composer({
         try {
           const out = (typeof raw === 'string' ? raw : (raw.stdout || '')).trim()
           if (out && !out.includes('not a git repository')) {
-            const files = out.split('\n').map(l => l.trim()).filter(Boolean)
-            const matched = files.filter(f => f.toLowerCase().includes(query)).slice(0, 15)
-            setMentionItems(matched.map(f => ({ id: '@' + f, label: f, desc: 'Workspace file' })))
+            const files = out.split('\n').map((l: string) => l.trim()).filter(Boolean)
+            const matched = files.filter((f: string) => f.toLowerCase().includes(query)).slice(0, 15)
+            setMentionItems(matched.map((f: string) => ({ id: '@' + f, label: f, desc: 'Workspace file' })))
             setMentionIndex(0)
             return
           }

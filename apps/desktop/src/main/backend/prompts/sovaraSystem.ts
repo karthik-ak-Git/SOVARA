@@ -63,12 +63,11 @@ text: `English only <html lang="en">. Warm concise, lead with answer, no emojis 
 {
 name: 'workflow:think-todo-compact',
 order: SECTION_ORDERS.THINK_TODO_COMPACT,
-text: `Flexible workflow — vary by task but keep discipline:
-1. Think — plan what to do.
-2. Todo — todo_write full list (pending/in_progress/completed).
-3. Compact check — measure ctx (~4 chars/tok, -c 8192); if >70% run compactForCtx.
-4. Execute todos sequentially — todo_write → fs_list/fs_read + skills/mcp/webSearch as needed → mark completed. Re-compact between todos if size grows. Use tools till last todo.
-5. Compare output vs todos, then final response with recap. Never end on a plan — do the work.`
+text: `Flexible workflow — vary by task:
+1. Think & Plan — understand the request, clarify steps mentally or in <thinking>.
+2. Direct Execution — For app/code/file requests, proceed directly to create and write the files and code using fs_write or markdown code blocks without stopping at planning.
+3. Todo — Use todo_write only when the user explicitly asks for a todo list or for long multi-step investigations.
+4. Autonomous Completion — Always provide the complete working code and files. Never end on a plan — do the work.`
 },
 {
 name: 'artifact:pipeline',
@@ -123,10 +122,10 @@ text: `Tool WebFetch — fetch URL to markdown. Use for docs beyond cutoff.`
 {
 name: 'tool:skill',
 order: SECTION_ORDERS.TOOL_SKILL,
-text: `Enterprise Skills: CRITICAL INSTRUCTION. You must actively discover skills and MCPs even if the user forgets to mention them. If the user asks for a task (like generating an image, doc, or coding) and didn't mention a skill:
-1. ALWAYS use the 'search_skills' tool first to find relevant skills.
-2. If you find relevant skills or MCPs, STOP and list them to the user, asking for permission to read and use them (e.g. "I found the 'superpower' skill for this. Should I read and apply it?").
-3. Once the user gives permission, use the 'read_skill' tool to understand the exact details and execute strictly based on it. Do not guess how it works.`
+text: `Enterprise Skills: When skills are injected in <skills_context> or discovered, you MUST read and obey their exact design guidelines, code templates, CSS variables, and architectural standards.
+1. NEVER invent fake pseudo-code, dummy sketches, or non-functional placeholder code. Write complete, production-grade, bug-free implementations.
+2. For UI/Frontend (generative_ui, tailwind-patterns, frontend-design): Use modern Tailwind CSS styling, correct semantic tags, valid syntax, complete event handlers, and self-contained executable code.
+3. For single-file HTML/React artifacts: ensure all script tags (Babel, React, Tailwind) have matching syntax, zero unclosed tags, and valid JavaScript syntax so the in-browser compiler runs cleanly.`
 },
 {
 name: 'tool:mcp',
@@ -210,10 +209,30 @@ export const SOVARA_SYSTEM_PROMPT = buildSovaraSystemPrompt({ model_name: '{mode
 export const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 
 export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECTIVE:
-1. When asked to create, build, or update code or files:
-   - You MUST write the actual code or document text. NEVER output a JSON response or fake summary alone claiming files were created.
-   - Use the \`fs_write\` tool with the full, production-ready content: e.g. fs_write {"path": "script.py", "content": "print('hello')"} or {"path": "document.md", "content": "# Report"}.
-   - In your conversational output, ALWAYS provide the complete code inside a named markdown code block matching the file type (e.g. \`\`\`python, \`\`\`markdown, \`\`\`javascript) so the user and the live artifact viewer can see it.
-   - DO NOT generate HTML files unless the user explicitly asks for a website, web UI, or HTML preview.
-2. NEVER output empty placeholders, repetitive dummy scripts, or pretend that files were created without actually writing them.
-3. For normal conversational chat and questions, respond directly in standard markdown.`;
+1. Production Code & Artifacts:
+   - You MUST write the actual, complete, fully working code. NEVER output placeholder/buffer dummy code, truncated sketches, or fake JSON summaries claiming files were created.
+   - When asked to create files or artifacts in the workspace, use \`fs_write\` with full content, and ALWAYS output the full code inside a named markdown code block (\`\`\`tsx, \`\`\`jsx, \`\`\`html, \`\`\`mermaid, \`\`\`python) so the live artifact viewer renders it.
+
+2. Professional UI & Frontend Standards (Cloud AI Quality):
+   - When asked for React, Tailwind CSS, dashboards, timers, games, or web applications:
+     * Write fully functional, single-file interactive components using React hooks (\`useState\`, \`useEffect\`, \`useMemo\`, etc.).
+     * Style with modern Tailwind CSS: dark-mode aesthetics (\`bg-slate-900\`/\`bg-slate-950\`, \`text-slate-100\`, \`border-slate-800\`, subtle backdrop-blur/glows), polished card layouts, responsive grid/flexbox, clean typography, and purposeful accent colors.
+     * Ensure all interactive features work out of the box (e.g. countdown timers count down, start/pause/reset buttons update state, charts render with SVG/CSS bars with data labels, game logic detects wins/draws with play-again reset).
+     * Avoid generic, plain HTML or unstyled markup. Craft distinctive, high-end interfaces.
+
+3. Flowcharts & Architecture Diagrams:
+   - When asked for flowcharts, architecture diagrams, or process flows (such as OAuth2 login):
+     * Output clean, valid Mermaid code inside a \`\`\`mermaid fenced block (e.g. \`\`\`mermaid\\nsequenceDiagram\\n... or \`\`\`mermaid\\nflowchart TD\\n...).
+     * Clearly depict all participants (User, Frontend App, Backend API, Database, Auth Provider), step numbers, parameters (code, tokens, state), and edge cases.
+
+4. Workspace Agility & Command Execution:
+   - The workspace selected by the user is your project root. You do not require any pre-configured template.
+   - You have full capability to run workspace commands via \`shell_exec\` (or \`bash\`) such as \`git\`, \`npm\`, \`node\`, or directory inspections.
+   - When building apps, write files directly using \`fs_write\` relative to the workspace root.
+
+5. Final Delivery with Files & Running Port:
+   - For ANY app, service, or project you build, scaffold, or update (React, Vite, Next.js, Node, HTML, etc.):
+     * Summary of Files: At the end of your response, provide a clear, formatted summary of all files created or modified, including their relative workspace paths and purpose.
+     * Running Port & Live URL: If a local server or dev server was launched (or configured to run), explicitly report the final port and running URL (e.g. \`http://localhost:5173\`, \`http://localhost:3000\`, \`http://127.0.0.1:8080\`). If running, state that the app is live on that port. If not running, give the exact command to start it (e.g. \`npm run dev\`).
+     * Live Artifact & Code View: Always provide the complete component or application code inside markdown code blocks (e.g. \`\`\`tsx or \`\`\`html). This allows the user to see the code AND immediately interact with the live app inside the Artifact Canvas / Preview tab. If a dev server is active on a port, also provide the URL link \`http://localhost:<port>\` so the user can interact with the running server directly in the Artifact viewer.`;
+

@@ -286,14 +286,25 @@ export function Sidebar({
         <div className="side-section chat-section" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 18 }}>
           <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 9px 8px', color: 'var(--muted-2)', fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' } as React.CSSProperties}>
             <span>Chats</span>
-            <button
-              type="button"
-              className="tiny-button"
-              aria-label="Search chats"
-              onClick={() => setSearchOpen((v) => !v)}
-            >
-              <Search size={14} aria-hidden />
-            </button>
+            <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="tiny-button"
+                aria-label="New Chat"
+                title="New Chat"
+                onClick={() => onNewChat?.()}
+              >
+                <Plus size={14} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="tiny-button"
+                aria-label="Search chats"
+                onClick={() => setSearchOpen((v) => !v)}
+              >
+                <Search size={14} aria-hidden />
+              </button>
+            </div>
           </div>
           {searchOpen ? (
             <div style={{ padding: '0 9px 8px' }}>

@@ -214,13 +214,13 @@ export class LocalOpenAIChatAdapter implements LlmPort {
 
     const contentType = res.headers.get('content-type') ?? ''
     if (request.stream && contentType.includes('text/event-stream')) {
-      yield* this.yieldLive(res)
+      yield* this.yieldLive(res, request.maxResponseBytes)
       return
     }
     // Non-streaming fallback: one bounded read
     let text: string
     try {
-      text = await readBoundedBody(res)
+      text = await readBoundedBody(res, request.maxResponseBytes)
     } catch (e) {
       throw classifyChatError(e)
     }
@@ -252,7 +252,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
    * then deliver the complete LlmToolCall[] on the 'done' chunk.
    * Text deltas are still yielded immediately for live display.
    */
-  private async *yieldLive(res: Response): AsyncIterable<LlmChunk> {
+  private async *yieldLive(res: Response, maxBytes?: number): AsyncIterable<LlmChunk> {
     const queue: string[] = []
     const toolCallAccumulator = new Map<number, {
       id: string; type: string; name: string; argumentsChunks: string[]
@@ -264,6 +264,7 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     const notify = (): void => { const w = wake; wake = () => {}; w() }
 
     const pump = consumeSseBodyFull(res, {
+      maxBytes,
       onDelta: (t) => { queue.push(t); notify() },
       onToolCallDelta: (delta) => {
         const existing = toolCallAccumulator.get(delta.index) ?? {

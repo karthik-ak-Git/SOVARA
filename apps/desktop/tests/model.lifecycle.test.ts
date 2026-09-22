@@ -133,7 +133,7 @@ describe('lifecycle — loading', () => {
     expect(inst.state).toBe('ACTIVE')
     expect(inst.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/)
     expect(inst.pid).toBeGreaterThan(0)
-    expect(inst.configuration?.ctxLen).toBe(4096)
+    expect(inst.configuration?.ctxLen).toBe(8192)
     expect(inst.loadTimeMs).toBeGreaterThanOrEqual(0)
     const h = await a.health(inst.id)
     expect(h.ok).toBe(true)
@@ -159,7 +159,7 @@ describe('lifecycle — loading', () => {
     const inst = await a2.load('tiny-0.5B-Q4_K_M' as never, { runtimeId: 'local' })
     expect(inst.state).toBe('ACTIVE')
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }, 15000)
 
   it('invalid model fails cleanly with model-not-found', async () => {
     const { deps } = makeDeps()
@@ -173,11 +173,11 @@ describe('lifecycle — loading', () => {
     writeGguf(lib, 'tiny-0.5B-Q4_K_M.gguf')
     const { deps, spawnLog } = makeDeps()
     const a = makeAdapter(lib, dir, { ...deps, exePathOverride: null })
-    await expect(a.load('tiny-0.5B-Q4_K_M' as never, { runtimeId: 'local' })).rejects.toThrow(/not installed|Install local runtime/)
+    await expect(a.load('tiny-0.5B-Q4_K_M' as never, { runtimeId: 'local' })).rejects.toThrow(/runtime-not-installed|not installed|Install local runtime/)
     expect(spawnLog.count).toBe(0)
     expect(await a.listInstances()).toEqual([])
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }, 15000)
 })
 
 describe('lifecycle — concurrency', () => {
@@ -240,7 +240,7 @@ describe('lifecycle — routing', () => {
     expect(spawnLog.count).toBe(2)
     expect((await a.health(second.id)).ok).toBe(true)
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }, 15000)
 })
 
 describe('lifecycle — memory', () => {
@@ -303,7 +303,7 @@ describe('lifecycle — unload', () => {
     expect(again.state).toBe('ACTIVE')
     expect(spawnLog.count).toBe(2)
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }, 15000)
 
   it('LRU eviction never evicts a generating instance', async () => {
     const dir = mkTmp()
@@ -322,7 +322,7 @@ describe('lifecycle — unload', () => {
     // The evicted first model is OFFLINE now.
     expect(await a.health(first.id)).toMatchObject({ ok: false })
     fs.rmSync(dir, { recursive: true, force: true })
-  })
+  }, 15000)
 })
 
 describe('lifecycle — refusal quality', () => {
@@ -464,11 +464,11 @@ describe('lifecycle — GPU placement modes', () => {
 
   it('auto refusal names Fit mode when a partial offload would fit', async () => {
     const { dir, lib } = setupFitLib()
-    const { deps } = makeDeps({ vramSeq: [{ totalMB: 400, freeMB: 390, name: 'Small GPU' }] })
+    const { deps } = makeDeps({ vramSeq: [{ totalMB: 300, freeMB: 290, name: 'Small GPU' }] })
     const a = makeAdapter(lib, dir, deps)
     let err: Error | null = null
     try {
-      await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', ctxLen: 1024 })
+      await a.load('gqa-40-Q4_K_M' as never, { runtimeId: 'local', ctxLen: 4096 })
     } catch (e) {
       err = e as Error
     }

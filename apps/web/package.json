@@ -1,6 +1,6 @@
 {
   "name": "@sovara/web",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Sovara — Sovereign AI Workbench on Next.js (App Router + internal API layer)",
   "type": "module",

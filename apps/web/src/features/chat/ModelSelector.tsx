@@ -91,6 +91,7 @@ export function ModelSelector({ active, models, runtimes, onSelect, reasoningEna
         ref={triggerRef}
         type="button"
         className="model-pill"
+        data-testid="model-pill"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Model: ${modelLabel}, ${statusLabel}. Click to change model.`}

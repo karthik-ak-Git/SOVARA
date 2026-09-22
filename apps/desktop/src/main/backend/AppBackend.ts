@@ -147,9 +147,9 @@ export class AppBackend {
           return null
         }
       },
-      getSkillsContext: async () => {
+      getSkillsContext: async (userPrompt?: string, wsRoot?: string) => {
         try {
-          return await loadEnabledSkillsContent(this.runtimeConfig)
+          return await loadEnabledSkillsContent(this.runtimeConfig, userPrompt, wsRoot)
         } catch {
           return null
         }
@@ -191,9 +191,9 @@ export class AppBackend {
           return null
         }
       },
-      getSkillsContext: async () => {
+      getSkillsContext: async (userPrompt?: string, wsRoot?: string) => {
         try {
-          return await loadEnabledSkillsContent(this.runtimeConfig)
+          return await loadEnabledSkillsContent(this.runtimeConfig, userPrompt, wsRoot)
         } catch {
           return null
         }
@@ -216,7 +216,7 @@ export class AppBackend {
       // Auto-name session on first prompt
       let isFirst = false
       try {
-        const evs = await this.persistenceAdapter.getEvents(String(sid))
+        const evs = await this.persistenceAdapter.getEvents(sid as never)
         isFirst = evs.length === 0
       } catch {}
       
@@ -225,7 +225,7 @@ export class AppBackend {
           const lines = prompt.trim().split('\n')
           let title = lines[0]?.trim() || 'New Chat'
           if (title.length > 35) title = title.slice(0, 35) + '...'
-          await this.persistenceAdapter.renameSession(String(sid), title)
+          await this.persistenceAdapter.rename(sid as never, title)
         } catch {}
       }
       
@@ -310,11 +310,9 @@ export class AppBackend {
   scanLibrary(): LibraryEntry[] {
     // Sovara is sovereign — only the local library dir is the runtime's
     // home. Cross-service folders (LM Studio, Ollama) are NOT scanned here
-    // because they aren't our library. The detection flow (Library → Detect
-    // LM Studio / Ollama folders) lets users explicitly opt-in to IMPORT
-    // GGUF paths from those folders into Sovara's own registry; once
-    // imported, they live under our `local` runtime (llama.cpp sidecar).
-    return scanLibrary(this.getLibraryDir(), this.runtimeConfig.listRegistryRows(), [])
+    // automatically. However, models imported via registerExternalModelDir
+    // are included so they appear in the library management UI.
+    return scanLibrary(this.getLibraryDir(), this.runtimeConfig.listRegistryRows(), this.getExternalModelDirs())
   }
   registerExternalModelDir(dir: string): string[] {
     // IMPORT only — discover GGUF paths under cross-service folders (LM

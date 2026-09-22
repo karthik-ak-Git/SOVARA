@@ -281,6 +281,7 @@ export class ModelWorkbench {
       // Primary dedup by normalized file path (registry localPath) — same file on disk = same model
       const byPath = new Map<string, DiscoveredModel>()
       const pathFor = (m: DiscoveredModel): string | null => {
+        if (m.runtimeId !== 'local') return `${m.runtimeId}:${m.modelId}`
         try {
           const row = this.config.listRegistryRows().find((r) => r.displayName === m.displayName || r.rfilename === m.displayName || m.modelId.toLowerCase().includes(r.rfilename.toLowerCase().replace(/\.gguf$/i,'')))
           if (row?.localPath) return row.localPath.toLowerCase()
@@ -308,7 +309,7 @@ export class ModelWorkbench {
       // Also dedup by displayName alone for cases where modelId differs slightly (e.g., path prefix)
       const byDisplay = new Map<string, DiscoveredModel>()
       for (const m of byKey.values()) {
-        const dKey = m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').trim()
+        const dKey = `${m.runtimeId}:${m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').trim()}`
         const ex = byDisplay.get(dKey)
         if (!ex) byDisplay.set(dKey, m)
         else if (prio(m.runtimeId) > prio(ex.runtimeId)) byDisplay.set(dKey, m)
@@ -546,7 +547,7 @@ export class ModelWorkbench {
           }
         } catch {}
         // Last resort: if file exists on disk, accept selection regardless of snapshot (snapshot was stale/empty)
-        if (!known && this.isModelLive(modelId)) {
+        if (!known && runtimeId === 'local' && this.isModelLive(modelId)) {
           console.warn(`[workbench] accepting live file not in snapshot: ${modelId}`)
           known = true
         }
@@ -623,8 +624,8 @@ export class ModelWorkbench {
     // Sovereign: external selections (lmstudio/ollama) are NEVER runnable — they are
     // detect-only. Try to migrate to a local GGUF with the same basename; if no
     // local file exists, mark unavailable so the UI shows "Open Models" instead
-    // of trying http://127.0.0.1:1234 and hitting connection-refused.
-    if (sel && sel.runtimeId !== 'local') {
+    const selSnap = sel ? this.config.getRuntime(sel.runtimeId) : null
+    if (sel && selSnap && (selSnap.entry.type === 'lmstudio' || selSnap.entry.type === 'ollama')) {
       let migrated = false
       try {
         const localSnap = this.config.getRuntime('local')

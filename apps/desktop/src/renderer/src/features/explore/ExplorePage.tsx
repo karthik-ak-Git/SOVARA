@@ -8,11 +8,12 @@ import {
   listExploreModelsPage, getExploreModel, getModelCompatibility, getFileRecommendations,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, getModelFileStatus, reconcileLibrary, openModelFolder,
-  getActiveDownloads, getHardwareProfile, openExternal,
+  getActiveDownloads, getHardwareProfile, openExternal, compareModels,
   type ExploreListOpts, type ExploreModel, type CompatibilityResult, type DownloadEventView,
   type FileRecommendationView, type ModelFileStatus, type ExploreFormatFilter,
   type HardwareInfo,
 } from '@/lib/client/api'
+import { SmartNotificationDrawer } from '@/components/ui/SmartNotificationDrawer'
 import type { ExplorerFitTier } from '@shared/types/explore'
 
 // ── Format-aware repo view (files are the source of truth) ──────────
@@ -1047,7 +1048,8 @@ export function ExplorePage({ onBack }: Props): ReactElement {
           <button type="button" className="explorer-navarrow explorer-navarrow--dim" aria-label="Forward" disabled><ArrowLeft size={15} style={{ transform: 'rotate(180deg)' }} /></button>
           <h1 className="explorer-title">Explore</h1>
         </div>
-        <div className="explorer-topbar-right">
+        <div className="explorer-topbar-right" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <SmartNotificationDrawer />
           <button
             type="button" className="explorer-downloads-btn"
             aria-expanded={downloadsOpen} onClick={() => setDownloadsOpen((v) => !v)}

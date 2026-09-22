@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { ModelsPage } from '../../web/src/features/models/ModelsPage'
+import { ModelsPage } from '../src/renderer/src/features/models/ModelsPage'
 import { mockApi, expectFetch } from './helpers/http'
 
 // Internal-API equivalents of the former IPC channels (see apps/web README).

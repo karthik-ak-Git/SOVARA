@@ -24,7 +24,7 @@ type FetchFn = (url: string, init?: { signal?: AbortSignal; headers?: Record<str
 }>
 
 /** GitHub's API rejects requests without a User-Agent (HTTP 403). */
-const FEED_USER_AGENT = 'sovara-desktop/0.1.0'
+const FEED_USER_AGENT = 'sovara-desktop/1.1.0'
 
 function normalizeVersion(v: unknown): string | null {
   if (typeof v !== 'string') return null

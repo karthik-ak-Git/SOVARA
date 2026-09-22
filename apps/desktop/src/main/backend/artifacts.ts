@@ -49,27 +49,29 @@ function slugify(text: string): string {
  */
 export function detectOutputFormat(content: string): DetectedOutput | null {
   const text = content ?? ''
-  // 1. Explicit filename with a known extension wins.
-  const fileRe = /([A-Za-z0-9 _\-][A-Za-z0-9 _\-.]{0,90}\.(pdf|xlsx?|docx?|csv|py|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|cpp|h|hpp|cs|rb|php|swift|html|css|json|ya?ml|xml|md|txt|sh|ps1|sql|r|lua|toml|vue|svelte))\b/i
-  const fileM = fileRe.exec(text)
+  // Ignore compiler/browser error messages and stack traces (e.g. "react-dom.development.js:29905 ...")
+  // so they are treated as debugging input rather than requests to create a file with that name.
+  const isStackTraceOrLog = /^[A-Za-z0-9_.-]+\.[a-z]{2,4}:\d+/m.test(text.trim()) ||
+    /\b(?:Uncaught|TypeError|SyntaxError|ReferenceError|at\s+\S+|line\s+\d+|:\d+:\d+)\b/i.test(text)
+
+  // 1. Explicit filename with a known extension wins (only if not a stack trace/log paste).
+  const fileRe = /([A-Za-z0-9 _\-][A-Za-z0-9 _\-.]{0,90}\.(pdf|xlsx?|docx?|pptx?|csv|py|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|cpp|h|hpp|cs|rb|php|swift|html|css|json|ya?ml|xml|md|txt|sh|ps1|sql|r|lua|toml|vue|svelte))\b/i
+  const fileM = !isStackTraceOrLog ? fileRe.exec(text) : null
   if (fileM) {
     const raw = fileM[1]!.trim()
     const ext = (fileM[2] ?? '').toLowerCase()
     if (ext === 'pdf') return { kind: 'pdf', fileName: sanitizeFileName(raw, 'sovara-output.pdf'), explicitName: true }
     if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') return { kind: 'xlsx', fileName: sanitizeFileName(raw.replace(/\.(xls|csv)$/i, '.xlsx'), 'sovara-output.xlsx'), explicitName: true }
-    if (ext === 'doc' || ext === 'docx') return { kind: 'docx', fileName: sanitizeFileName(raw.replace(/\.doc$/i, '.docx'), 'sovara-output.docx'), explicitName: true }
+    if (ext === 'doc' || ext === 'docx' || ext === 'ppt' || ext === 'pptx') return { kind: 'docx', fileName: sanitizeFileName(raw.replace(/\.(doc|ppt|pptx)$/i, '.docx'), 'sovara-output.docx'), explicitName: true }
     if (CODE_EXTS.includes(ext)) return { kind: 'code', fileName: sanitizeFileName(raw, `sovara-output.${ext}`), explicitName: true }
   }
   // 2. Generate/export/save verb aimed at a document kind — scan FULL prompt, not just 400ch head.
-  // Broadened so "write a pdf report", "create excel sheet", "build a word doc", "draw a diagram"
-  // Broadened so "write a pdf report", "create excel sheet", "build a word doc"
-  // anywhere in the prompt reliably triggers artifact generation.
   const scan = text.toLowerCase()
   const wantsPdf = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(pdf|a pdf|as pdf|into pdf)\b/i.test(text) || /\bpdf (file|document|report|export|download)\b/i.test(text) || (/\b(pdf)\b/i.test(scan) && /\b(report|invoice|resume|document|file)\b/i.test(scan))
   if (wantsPdf) return { kind: 'pdf', fileName: `${slugify(text.slice(0,120))}.pdf`, explicitName: false }
   const wantsXlsx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(excel|spreadsheet|xlsx?|workbook|sheet)\b/i.test(text) || /\b(excel|spreadsheet) (file|sheet|export|download|report|table)\b/i.test(text) || /\b(table|data).*\b(excel|xlsx|spreadsheet)\b/i.test(text)
   if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(text.slice(0,120))}.xlsx`, explicitName: false }
-  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file)\b/i.test(text) || /\bword (file|document|export|download)\b/i.test(text)
+  const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file|ppt|pptx|presentation|slide deck|slides)\b/i.test(text) || /\b(word|ppt|pptx|presentation) (file|document|export|download|deck)\b/i.test(text)
   if (wantsDocx) return { kind: 'docx', fileName: `${slugify(text.slice(0,120))}.docx`, explicitName: false }
   // 3. Code file — only trigger if the user explicitly asked to save to a specific filename
   const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(text)

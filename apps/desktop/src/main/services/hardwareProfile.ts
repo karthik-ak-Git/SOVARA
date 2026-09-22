@@ -123,7 +123,7 @@ import type { HardwareProfileFull } from '@shared/types/validation'
 function detectPhysicalCores(): number | null {
   try {
     if (process.platform === 'win32') {
-      const out = execSync('(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum', { timeout: 3000, encoding: 'utf8', windowsHide: true } as any)
+      const out = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum"', { timeout: 3000, encoding: 'utf8', windowsHide: true } as any)
       const n = parseInt(String(out).match(/\d+/)?.[0] ?? '', 10)
       if (Number.isFinite(n) && n > 0) return n
     } else {

@@ -25,9 +25,12 @@ const REASONING_PATTERNS = [
   /\b(think|reason|step by step|chain of thought|solve|puzzle|math|prove|derive)\b/i,
 ]
 
+const ARTIFACT_BUILD_RE = /\b(ppt|pptx|presentation|pdf|docx|xlsx|slide|slides|report|dashboard|game|canvas|diagram)\b/i
+
 function needsReasoning(text: string, explicit?: boolean): boolean {
   if (explicit) return true
   if (REASONING_PATTERNS.some((re) => re.test(text))) return true
+  if (ARTIFACT_BUILD_RE.test(text)) return true // document/artifact generation requires deep thinking
   if (text.length > 800) return true // long prompts benefit from reasoning
   return false
 }

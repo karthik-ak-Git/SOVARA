@@ -613,7 +613,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
   // Apply appearance to document — single source is appSettings, native CSS does the rest.
   useEffect(() => {
     if (!appSettings) return
-    const theme = appSettings.theme as string
+    const theme = (appSettings.theme || 'light') as string
     const resolved = theme === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
       : theme
@@ -1252,7 +1252,7 @@ export function SettingsPage({ onBack }: { onBack?: () => void }): ReactElement 
                   </div>
                   <select
                     className="settings-select"
-                    value={appSettings?.theme ?? 'dark'}
+                    value={appSettings?.theme ?? 'light'}
                     onChange={(e) => void applyPatch({ theme: e.target.value })}
                     aria-label="UI color theme"
                   >

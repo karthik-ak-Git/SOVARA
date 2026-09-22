@@ -205,7 +205,7 @@ export function buildAttachmentContext(files: ProcessedAttachment[], visionCapab
       if (visionCapable && f.imageBase64) {
         out.push(`Attached image "${f.name}" (${f.mime}${dims}) is provided as vision input with the user message. Describe or analyze what you actually see in it.`)
       } else {
-        out.push(`Attached image "${f.name}" (${f.mime}${dims}). OCR pending — if text is needed, the OCR service will extract it. Do not claim you cannot see; use the OCR block when present.`)
+        out.push(`Attached image "${f.name}" (${f.mime}${dims}, no vision support). OCR pending — if text is needed, the OCR service will extract it. Do not claim you cannot see; use the OCR block when present.`)
       }
       continue
     }
