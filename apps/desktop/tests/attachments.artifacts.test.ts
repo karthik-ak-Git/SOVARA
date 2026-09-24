@@ -283,7 +283,12 @@ describe('processAttachments', () => {
       [{ name: 'a.png', mime: 'image/png', size: 10, kind: 'image', storedPath: null, text: '', truncated: false, note: null, imageBase64: 'xx', imageWidth: 10, imageHeight: 10 }],
       false
     )
-    expect(ctx[0]).toContain('no vision support')
+    expect(ctx[0]).toContain('NO vision input')
+    // Must steer the model to the ocr tool — never to fs_read on image bytes,
+    // which is how the model ended up "reading image.png" instead of seeing it.
+    expect(ctx[0]).toContain('"ocr" tool')
+    expect(ctx[0]).toContain('Do NOT try fs_read')
+    expect(ctx[0]).toContain('Never pretend')
   })
 })
 

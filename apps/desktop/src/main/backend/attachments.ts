@@ -205,7 +205,7 @@ export function buildAttachmentContext(files: ProcessedAttachment[], visionCapab
       if (visionCapable && f.imageBase64) {
         out.push(`Attached image "${f.name}" (${f.mime}${dims}) is provided as vision input with the user message. Describe or analyze what you actually see in it.`)
       } else {
-        out.push(`Attached image "${f.name}" (${f.mime}${dims}, no vision support). OCR pending — if text is needed, the OCR service will extract it. Do not claim you cannot see; use the OCR block when present.`)
+        out.push(`Attached image "${f.name}" (${f.mime}${dims}) — this model has NO vision input and no OCR text was extracted from it. Do NOT try fs_read or any file tool on it: image bytes are not text and reading them tells you nothing about the picture. Either call the "ocr" tool to extract its text, or tell the user plainly that this model cannot see images and suggest a vision model (e.g. GLM-4.6V). Never pretend you saw the image.`)
       }
       continue
     }

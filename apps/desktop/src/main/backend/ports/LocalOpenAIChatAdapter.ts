@@ -96,6 +96,13 @@ async function checkStatusWithBody(res: Response): Promise<void> {
   if (/exceed.*context|context.*size/i.test(bodySnippet)) {
     throw new ChatInferenceError('invalid-response', `exceed_context_size_error: ${bodySnippet}`)
   }
+  // Vision without a projector: llama-server refuses image parts when it was
+  // not spawned with --mmproj. Surface an actionable message instead of the
+  // raw 500 (the sidecar now auto-resolves the companion — this fires when
+  // the projector was never downloaded).
+  if (/image input is not supported|mmproj/i.test(bodySnippet)) {
+    throw new ChatInferenceError('invalid-response', `vision-unavailable: the runtime rejected the image because its vision projector (mmproj) is missing — download the model's mmproj GGUF next to the model file (Explore → model → Vision) or switch to a vision model, then retry. (${bodySnippet})`)
+  }
   const suffix = bodySnippet ? ` — ${bodySnippet}` : ''
   throw new ChatInferenceError('invalid-response', `invalid-response: runtime answered ${res.status}${suffix}`)
 }

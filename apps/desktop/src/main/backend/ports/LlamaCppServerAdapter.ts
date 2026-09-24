@@ -57,6 +57,7 @@ import {
   preflightGgufArchitecture,
   queryGpuVram,
   readGgufModelInfo,
+  resolveMmprojPath,
   selectRuntimeForModel,
   spawnLlamaServer,
   waitForServerReady,
@@ -464,6 +465,14 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     if (isMmprojFile(path.basename(modelPath))) {
       throw new Error(`invalid-model: "${path.basename(modelPath)}" is a vision projector shard (--mmproj), not a runnable language model -- load its companion LLM GGUF instead`)
     }
+    // Vision projector: llama-server serves image parts ONLY when spawned with
+    // --mmproj — otherwise every vision request dies with 500 "image input is
+    // not supported … provide the mmproj". Resolve the companion that lives
+    // beside the weights; null for text-only models (or companion not downloaded).
+    const mmprojPath = resolveMmprojPath(modelPath)
+    if (mmprojPath) {
+      appendLlamaLog(this.baseDir, 'mmproj-found', { modelId, mmprojPath: path.basename(mmprojPath) })
+    }
     // Preflight GGUF arch before any spawn/VRAM work — fail fast with a
     // precise message when the header declares an architecture stock
     // llama.cpp cannot load (custom/experimental, missing transformer shape).
@@ -605,6 +614,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       ctxLen,
       alias: path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64),
       gpuAvailable: useCuda,
+      ...(mmprojPath ? { mmprojPath } : {}),
     })
     if (!useCuda) ngl = 0
 
@@ -618,7 +628,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     const port = await this.deps.findPort()
     const alias = path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64)
-    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias, reasoningEffort: 'medium', enableTools: true, gpuTotalMB: gpu?.totalMB ?? undefined })
+    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias, reasoningEffort: 'medium', enableTools: true, gpuTotalMB: gpu?.totalMB ?? undefined, ...(mmprojPath ? { mmprojPath } : {}) })
     const endpoint = `http://127.0.0.1:${port}/v1`
     const tracked: TrackedInstance = {
       id, modelId: modelId as ModelId, runtimeId, status: statusFor('LOADING'), state: 'LOADING', ctxLen, port,
@@ -635,7 +645,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     let proc: ChildProcess
     try {
       const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
-      proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: ngl, alias, logDir })
+      proc = this.deps.spawn({ exePath: selection.executable, modelPath, port, ctxLen, nGpuLayers: ngl, alias, logDir, ...(mmprojPath ? { mmprojPath } : {}) })
       // Catch async spawn errors (Windows WDAC emits 'error' not throw). If spawn failed, surface immediately.
       await new Promise<void>((resolve, reject) => {
         const removeListeners = () => {
@@ -696,7 +706,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         const isArgError = /argument|option|flag|usage:/i.test(raw)
         let proc2: ChildProcess
         try {
-          proc2 = this.deps.spawn({ exePath: selection.executable, modelPath, port: retryPort, ctxLen, nGpuLayers: ngl, alias, logDir, safeArgs: isArgError })
+          proc2 = this.deps.spawn({ exePath: selection.executable, modelPath, port: retryPort, ctxLen, nGpuLayers: ngl, alias, logDir, safeArgs: isArgError, ...(mmprojPath ? { mmprojPath } : {}) })
         } catch (e2) {
           throw new Error(`model-load-failed: retry spawn failed (${e2 instanceof Error ? e2.message : String(e2)})`)
         }
@@ -729,7 +739,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
           const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
           let reducedProc: ChildProcess
           try {
-            reducedProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: reducedPort, ctxLen: reducedCtx, nGpuLayers: reducedNgl, alias, logDir, safeArgs: true })
+            reducedProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: reducedPort, ctxLen: reducedCtx, nGpuLayers: reducedNgl, alias, logDir, safeArgs: true, ...(mmprojPath ? { mmprojPath } : {}) })
             const tReduced: TrackedInstance = { ...tracked, port: reducedPort, endpoint: reducedEndpoint, proc: reducedProc, pid: reducedProc.pid, ctxLen: reducedCtx, offloadedLayers: reducedNgl, partialOffload: true }
             this.instances.set(key, tReduced)
             reducedProc.once('exit', (code, signal) => {
@@ -755,14 +765,14 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       if (c.kind === 'backend-failure' && ngl !== 0) {
         appendLlamaLog(this.baseDir, 'load-cuda-fallback-cpu', { modelId, error: (extractLoadRootCause(raw) ?? raw.slice(0, 400)) })
         const cpuPort = await this.deps.findPort()
-        const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, reasoningEffort: 'medium', enableTools: true })
+        const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, reasoningEffort: 'medium', enableTools: true, ...(mmprojPath ? { mmprojPath } : {}) })
         const cpuEndpoint = `http://127.0.0.1:${cpuPort}/v1`
         // exe already verified; same binary runs CPU when -ngl 0 but some
         // builds need cpu exe path — we reuse same exe with 0 layers.
         let cpuProc: ChildProcess
         try {
           const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
-          cpuProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, logDir })
+          cpuProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, logDir, ...(mmprojPath ? { mmprojPath } : {}) })
         } catch (e2) {
           throw new Error(`model-load-failed: CPU fallback spawn failed (${e2 instanceof Error ? e2.message : String(e2)})`)
         }

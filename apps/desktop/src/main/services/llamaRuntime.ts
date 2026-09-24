@@ -1059,6 +1059,40 @@ export async function ensureLlamaRuntime(
 
 // ── Process lifecycle ───────────────────────────────────────────────────
 
+/**
+ * Locate the vision projector (mmproj) companion for a model GGUF.
+ *
+ * Layout: every model lives in its own repo folder and the companion
+ * projector downloads beside the weights (`<repo>/mmproj-*.gguf`).
+ * llama-server rejects image parts with 500 "image input is not supported -
+ * hint: … provide the mmproj" unless spawned with `--mmproj`, so the sidecar
+ * must resolve it at spawn time. Returns null when no projector exists
+ * (text-only model, or the companion was never downloaded).
+ */
+export function resolveMmprojPath(modelPath: string): string | null {
+  try {
+    const dir = path.dirname(modelPath)
+    const entries = fs.readdirSync(dir)
+    const mmprojs = entries.filter((f) => f.toLowerCase().endsWith('.gguf') && f.toLowerCase().includes('mmproj'))
+    if (mmprojs.length === 0) return null
+    if (mmprojs.length === 1) return path.join(dir, mmprojs[0]!)
+    // Several projectors in one folder — prefer the one sharing the longest
+    // name tokens with the model file (GLM-4.6V-Flash-* vs gemma-4-*-BF16).
+    const base = path.basename(modelPath).toLowerCase().replace(/\.gguf$/, '')
+    const tokens = base.split(/[^a-z0-9]+/).filter((t) => t.length >= 4)
+    let bestFile: string | null = null
+    let bestScore = -1
+    for (const f of mmprojs) {
+      const lf = f.toLowerCase()
+      const score = tokens.reduce((n, t) => n + (lf.includes(t) ? 1 : 0), 0)
+      if (score > bestScore) { bestScore = score; bestFile = f }
+    }
+    return bestFile ? path.join(dir, bestFile) : null
+  } catch {
+    return null
+  }
+}
+
 export interface SpawnOpts {
   exePath: string
   modelPath: string
@@ -1068,6 +1102,7 @@ export interface SpawnOpts {
   alias?: string
   logDir?: string
   safeArgs?: boolean
+  mmprojPath?: string
 }
 
 export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
@@ -1078,6 +1113,7 @@ export function spawnLlamaServer(opts: SpawnOpts): ChildProcess {
     nGpuLayers: opts.nGpuLayers,
     alias: opts.alias,
     safeArgs: opts.safeArgs,
+    ...(opts.mmprojPath ? { mmprojPath: opts.mmprojPath } : {}),
   })
   if (!opts.exePath || !fs.existsSync(opts.exePath)) {
     throw new Error(`local runtime not installed — open Models → Install local runtime to provision llama-server.exe (missing ${opts.exePath ?? 'llama-server.exe'}). Sovara runs its own llama.cpp sidecar; there is no LM Studio / Ollama fallback.`)

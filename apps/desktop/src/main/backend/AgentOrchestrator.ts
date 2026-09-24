@@ -23,6 +23,7 @@ import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
 import { getArtifactsDir } from '../storage/paths'
 import { gateDispatch } from '../services/execPermissions'
+import { resolveMmprojPath } from '../services/llamaRuntime'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
 import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
@@ -1092,7 +1093,27 @@ export class AgentOrchestrator {
         routedModel?.capabilities,
         routedModel?.contextLength ?? classification.contextLengthNeeded
       )
-      const visionCapable = routedCaps.capabilities.includes('vision')
+      let visionCapable = routedCaps.capabilities.includes('vision')
+      // The sidecar's llama-server serves image parts ONLY when spawned with
+      // --mmproj. When the projector is not beside the weights, sending pixels
+      // is a guaranteed 500 ("image input is not supported … provide the
+      // mmproj") — degrade honestly to the OCR path below instead of failing
+      // the whole turn. External runtimes (lmstudio/ollama) decide for themselves.
+      if (visionCapable && routing.runtimeId === 'local') {
+        const vPath = this.resolveModelFilePath(routing.modelId!)
+          ?? (routedModel as { path?: string })?.path
+          ?? (routedModel as { filePath?: string })?.filePath
+        if (vPath && fs.existsSync(vPath) && !resolveMmprojPath(vPath)) {
+          visionCapable = false
+          appendChatLog(this.deps.baseDir, {
+            sessionId: sid,
+            action: 'send',
+            modelId: routing.modelId!,
+            runtimeId: routing.runtimeId!,
+            detail: 'vision degraded: no mmproj projector beside the model weights — images read via OCR, not vision',
+          })
+        }
+      }
       const visionImages: LlmImagePart[] = []
       for (const f of attached.files) {
         if (f.kind !== 'image' || !f.imageBase64 || !visionCapable) continue

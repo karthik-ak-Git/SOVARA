@@ -19,6 +19,7 @@ import {
   classifyLoadFailure,
   extractLoadRootCause,
   preflightGgufArchitecture,
+  resolveMmprojPath,
 } from '../src/main/services/llamaRuntime'
 import { LlamaCppServerAdapter } from '../src/main/backend/ports/LlamaCppServerAdapter'
 import { SystemResourceStub } from '../src/main/backend/ports/SystemResourceStub'
@@ -117,6 +118,48 @@ describe('llamaRuntime — pure helpers', () => {
     expect(args).not.toContain('--tools')
     expect(args).not.toContain('--reasoning-effort')
     expect(args).not.toContain('--cont-batching')
+  })
+
+  it('passes --mmproj when a projector path is provided (vision models)', () => {
+    const args = buildServerArgs({
+      modelPath: 'C:\\m\\GLM-4.6V-Flash-Q4_K_M.gguf',
+      port: 18777,
+      ctxLen: 4096,
+      alias: 'glm',
+      mmprojPath: 'C:\\m\\mmproj-GLM-4.6V-Flash-F16.gguf',
+    })
+    const i = args.indexOf('--mmproj')
+    expect(i).toBeGreaterThan(-1)
+    expect(args[i + 1]).toBe('C:\\m\\mmproj-GLM-4.6V-Flash-F16.gguf')
+  })
+
+  it('omits --mmproj entirely when no projector is provided', () => {
+    const args = buildServerArgs({ modelPath: 'C:\\m\\q.gguf', port: 18777, ctxLen: 4096, alias: 'q' })
+    expect(args).not.toContain('--mmproj')
+  })
+
+  it('resolveMmprojPath finds the projector sitting beside the weights', () => {
+    const dir = mkTmp()
+    const model = path.join(dir, 'GLM-4.6V-Flash-Q4_K_M.gguf')
+    fs.writeFileSync(model, 'x')
+    expect(resolveMmprojPath(model)).toBeNull() // companion not downloaded
+    const proj = path.join(dir, 'mmproj-GLM-4.6V-Flash-F16.gguf')
+    fs.writeFileSync(proj, 'x')
+    expect(resolveMmprojPath(model)).toBe(proj)
+  })
+
+  it('resolveMmprojPath prefers the name-matching projector when several exist', () => {
+    const dir = mkTmp()
+    const model = path.join(dir, 'GLM-4.6V-Flash-Q4_K_M.gguf')
+    fs.writeFileSync(model, 'x')
+    fs.writeFileSync(path.join(dir, 'mmproj-gemma-4-12B-it-BF16.gguf'), 'x')
+    const want = path.join(dir, 'mmproj-GLM-4.6V-Flash-F16.gguf')
+    fs.writeFileSync(want, 'x')
+    expect(resolveMmprojPath(model)).toBe(want)
+  })
+
+  it('resolveMmprojPath never treats the model itself as a projector and survives bad paths', () => {
+    expect(resolveMmprojPath(path.join(os.tmpdir(), 'sovara-missing-dir', 'q.gguf'))).toBeNull()
   })
 
   it('classifies CLI argument errors as recoverable startup-failure', () => {
