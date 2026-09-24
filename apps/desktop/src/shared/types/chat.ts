@@ -24,6 +24,7 @@ export type ChatStreamKind =
   | 'task:reading'
   | 'task:prompting'
   | 'agent:needs-approval'
+  | 'agent:clarify'
   | 'task:thinking'
   | 'model:selecting'
   | 'model:loading'
@@ -72,4 +73,6 @@ export interface ChatStreamEvent {
   artifactKind?: string
   toolCallId?: string
   args?: Record<string, unknown>
+  /** agent:clarify — guided questions for the ClarifyWizardCard */
+  questions?: Array<{ id: string; question: string; options: string[]; allowOther?: boolean }>
 }

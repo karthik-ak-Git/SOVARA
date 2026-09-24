@@ -319,6 +319,42 @@ export class ToolStubAdapter implements ToolPort {
   list(): ToolDefinition[] {
     const base: ToolDefinition[] = [
       {
+        name: 'clarify',
+        toolset: 'user',
+        description:
+          'Ask the user clarifying questions when the request is ambiguous, underspecified, or you find yourself repeating the same approach without progress. ' +
+          'Input: { questions: [{ question: string, options: string[], allow_other?: boolean }] } (1-4 questions, each with 2-5 concrete options). ' +
+          'The user answers one question at a time in a guided card; your tool result is a JSON map of question -> selected answer. ' +
+          'Use it BEFORE guessing or looping — never retry an identical failed approach more than twice without clarifying.',
+        parameters: {
+          type: 'object',
+          properties: {
+            questions: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 4,
+              description: 'Questions to ask the user, each with concrete selectable options',
+              items: {
+                type: 'object',
+                properties: {
+                  question: { type: 'string', description: 'The question to ask' },
+                  options: {
+                    type: 'array',
+                    minItems: 2,
+                    maxItems: 5,
+                    items: { type: 'string' },
+                    description: '2-5 concrete answer options',
+                  },
+                  allow_other: { type: 'boolean', description: 'Also allow a free-text answer (default true)' },
+                },
+                required: ['question', 'options'],
+              },
+            },
+          },
+          required: ['questions'],
+        },
+      },
+      {
         name: 'search_skills',
         toolset: 'skills',
         description: 'Search available enterprise skills by keyword. Input: { query: string }. Returns a list of matching skill names and their sources. Use this when you need specialized knowledge but it is not in your immediate context.',

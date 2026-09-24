@@ -74,6 +74,8 @@ export interface AgentExecutionState {
   artifactKind?: string
   toolCallId?: string
   args?: Record<string, unknown>
+  /** clarify tool: guided questions awaiting user answers (renders ClarifyWizardCard). */
+  clarifyQuestions?: Array<{ id: string; question: string; options: string[]; allowOther?: boolean }>
 }
 
 export function useChatSession() {
@@ -235,6 +237,18 @@ export function useChatSession() {
       if (ev.kind === 'agent:needs-approval') {
         if (!isSelected) return
         setExecution({ taskKind: null, phase: 'tool', toolName: ev.toolName, detail: 'Waiting for permission...', toolCallId: ev.toolCallId, args: ev.args })
+        return
+      }
+      if (ev.kind === 'agent:clarify') {
+        if (!isSelected) return
+        setExecution({
+          taskKind: null,
+          phase: 'tool',
+          toolName: 'clarify',
+          detail: 'Waiting for your answers...',
+          toolCallId: ev.toolCallId,
+          clarifyQuestions: ev.questions ?? [],
+        })
         return
       }
       if (ev.kind === 'task:complete') {

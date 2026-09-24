@@ -14,6 +14,7 @@ export const SECTION_ORDERS = {
   TONE_STYLE: 200,
   THINK_TODO_COMPACT: 300,
   ARTIFACT_PIPELINE: 900,
+  TOOL_CLARIFY: 950,
   TOOL_READ: 1000,
   TOOL_WRITE: 1100,
   TOOL_EDIT: 1200,
@@ -78,6 +79,11 @@ text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc):
 - For PPTX/XLSX/DOCX/PDF the skill will instruct you to write a Python script (e.g. generate_pptx.py) with fs_write, then execute it via shell_exec {"command":"python generate_pptx.py"} in the workspace root so the binary is materialized. Never output raw markdown as binary.
 - For HTML/React artifacts the skill will instruct a single-file fenced \`\`\`html or \`\`\`tsx block so Artifacts Preview renders. Binary files show as download cards.
 - Always emit full code in a named block for live viewer when the skill requires it.`
+},
+{
+name: 'tool:clarify',
+order: SECTION_ORDERS.TOOL_CLARIFY,
+text: `Tool clarify — ask the user 1-4 clarifying questions when the request is ambiguous, you are about to guess, or your last approach failed repeatedly. Input {"questions": [{"question": "...", "options": ["...", "..."], "allow_other": true}]}. The user answers in a guided card (one question at a time) and you receive their exact answers as the tool result — then proceed using those answers + prior context. When unsure, CLARIFY instead of hallucinating or retrying the same failed step.`
 },
 {
 name: 'tool:read',

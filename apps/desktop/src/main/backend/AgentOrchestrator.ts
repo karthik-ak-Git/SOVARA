@@ -455,8 +455,18 @@ function remoteModelId(qualified: string): string {
 export class AgentOrchestrator {
   private readonly inFlight = new Map<string, AbortController>()
   private readonly pendingApprovals = new Map<string, { resolve: (val: { approved: boolean, modifiedArgs?: any }) => void, toolName: string, toolArgs: Record<string, unknown>, sessionId: string, projectId: string | null }>()
+  /** clarify tool: toolCallId → resolve fn for the guided question card (answered by chat:approve). */
+  private readonly pendingClarifies = new Map<string, (answers: Record<string, string> | null) => void>()
 
   public resolveToolApproval(toolCallId: string, approved: boolean, modifiedArgs?: any) {
+    // clarify answers ride the same chat:approve channel — route them first
+    const clarifyResolve = this.pendingClarifies.get(toolCallId)
+    if (clarifyResolve) {
+      this.pendingClarifies.delete(toolCallId)
+      const answers = approved ? ((modifiedArgs as Record<string, unknown> | undefined)?.['answers'] as Record<string, string> | undefined) ?? {} : null
+      clarifyResolve(answers)
+      return
+    }
     const pending = this.pendingApprovals.get(toolCallId)
     if (pending) {
       // Persist scoped allowlist so next identical command auto-runs
@@ -473,6 +483,48 @@ export class AgentOrchestrator {
       pending.resolve({ approved, modifiedArgs })
       this.pendingApprovals.delete(toolCallId)
     }
+  }
+
+  /**
+   * clarify tool — surface 1-4 guided questions to the user (permission-card style),
+   * await their selections, and return them to the model as the tool result so it
+   * proceeds on real answers + prior context instead of hallucinating.
+   */
+  private async handleClarifyCall(
+    sessionId: string,
+    toolCallId: string,
+    toolArgs: Record<string, unknown>,
+    projectId: string | null
+  ): Promise<string> {
+    const raw = Array.isArray(toolArgs['questions']) ? (toolArgs['questions'] as unknown[]) : []
+    const questions = raw
+      .map((q, i) => {
+        const o = (q ?? {}) as Record<string, unknown>
+        const question = typeof o['question'] === 'string' && (o['question'] as string).trim()
+          ? (o['question'] as string).trim()
+          : `Question ${i + 1}`
+        let options = Array.isArray(o['options'])
+          ? (o['options'] as unknown[]).map((x) => String(x)).filter(Boolean).slice(0, 5)
+          : []
+        if (options.length < 2) options = [...options, 'Yes', 'No'].slice(0, 2)
+        return { id: `q${i + 1}`, question, options, allowOther: o['allow_other'] !== false }
+      })
+      .slice(0, 4)
+    if (questions.length === 0) return JSON.stringify({ error: 'clarify requires 1-4 questions' })
+
+    console.log(`[SOVARA][ORCH] clarify: asking ${questions.length} question(s) (toolCallId=${toolCallId})`)
+    this.deps.emit({ sessionId, kind: 'agent:clarify', toolCallId, questions, projectId } as never)
+    const answers = await new Promise<Record<string, string> | null>((resolve) => {
+      this.pendingClarifies.set(toolCallId, resolve)
+      // Safety: never hang the tool loop forever if the card is never answered
+      setTimeout(() => {
+        if (this.pendingClarifies.delete(toolCallId)) {
+          console.warn(`[SOVARA][ORCH] clarify: timed out waiting for answers (${toolCallId})`)
+          resolve(null)
+        }
+      }, 600_000)
+    })
+    return JSON.stringify({ answers, skipped: answers === null })
   }
 
   constructor(private readonly deps: AgentOrchestratorDeps) {}
@@ -1445,7 +1497,7 @@ export class AgentOrchestrator {
         classification.kind === 'coding' ||
         classification.kind === 'reasoning' ||
         hasPathInPrompt ||
-        /\b(read|write|list|file|files|code|build|create|dashboard|make|generate|implement|path|folder|dir|directory|content|inspect|view|show|check|find)\b/i.test(content)
+        /\b(read|write|list|file|files|code|build|create|dashboard|make|generate|implement|path|folder|dir|directory|content|inspect|view|show|check|find|which|choose|prefer|clarify|option|options)\b/i.test(content)
       )
       const toolsForRequest = shouldSendTools ? this.deps.tools.list() : []
 
@@ -1746,6 +1798,8 @@ export class AgentOrchestrator {
             messages.push(assistantToolCallMsg)
 
             // Execute each requested tool and append its result
+            let lastCallSig = ''
+            let dupStreak = 0
             for (const tc of chunk.toolCalls) {
               const toolName = tc.function.name
               let toolArgs: Record<string, unknown> = {}
@@ -1761,9 +1815,25 @@ export class AgentOrchestrator {
               console.log(`[SOVARA][TOOL_DISPATCH] Starting tool="${toolName}" step=${loopSteps} args=${JSON.stringify(toolArgs)}`)
 
               let toolResult: string
+              // ── clarify: guided question card — ask the user instead of hallucinating/looping ──
+              if (toolName === 'clarify') {
+                toolResult = await this.handleClarifyCall(sid, tc.id, toolArgs, sessionProjectId)
+              } else {
               try {
                 const projId = sessionProjectId
                 const wsRoot = sessionWsRoot
+                // ── Loop breaker: identical tool + args repeated → stop spinning, ask the user ──
+                const callSig = `${toolName}:${JSON.stringify(toolArgs)}`
+                dupStreak = callSig === lastCallSig ? dupStreak + 1 : 0
+                lastCallSig = callSig
+                if (dupStreak >= 2) {
+                  console.warn(`[SOVARA][ORCH] Loop detected: ${toolName} repeated ${dupStreak + 1}x with identical args — forcing clarify`)
+                  toolResult = JSON.stringify({
+                    error: `Loop detected: ${toolName} was called ${dupStreak + 1} times with identical arguments. Do NOT retry the same approach. Call the clarify tool with 1-4 concrete questions (each with 2-5 options) to ask the user how to proceed.`,
+                    loop_detected: true,
+                    suggest: 'clarify',
+                  })
+                } else {
                 const mode = this.deps.getExecMode?.() ?? 'review'
                 const gate = gateDispatch(mode, toolName, toolArgs, sid, projId, wsRoot)
                 
@@ -1789,9 +1859,11 @@ export class AgentOrchestrator {
                   const result = await execTool(toolName, toolArgs)
                   toolResult = result.output || (result.error ? `Error: ${result.error}` : '{}')
                 }
+                } // end loop-breaker else
               } catch (toolErr) {
                 toolResult = JSON.stringify({ error: String(toolErr) })
               }
+              } // end non-clarify branch
 
               console.log(`[SOVARA][TOOL_DISPATCH] Completed tool="${toolName}" resultLen=${toolResult.length} preview="${toolResult.slice(0, 150).replace(/\s+/g, ' ')}"`)
               // Trace for audit + gate history
@@ -2164,6 +2236,16 @@ export class AgentOrchestrator {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
         executedSignatures.add(sig)
+        // clarify fence in final text — same guided-question flow as the tool loop
+        if (tName === 'clarify') {
+          try {
+            const tid = `clarify-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+            const out = await this.handleClarifyCall(sid, tid, args, pid2)
+            inlineToolOutputs.push(`[clarify]\n${out}`)
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, content: out } as never) } catch {}
+            return true
+          } catch { return false }
+        }
         // Enforce exec permission gate — do not auto-run risky tools under review/ask
         try {
           const mode = this.deps.getExecMode?.() ?? 'review'
@@ -2859,6 +2941,18 @@ export class AgentOrchestrator {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
         executedSignatures.add(sig)
+        // clarify fence in final text — same guided-question flow (regenerate path)
+        if (tName === 'clarify') {
+          try {
+            const tid = `clarify-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+            let clarifyPid: string | null = null
+            try { clarifyPid = ((await this.deps.persistence.get(sessionId).catch(() => null)) as { projectId?: string | null } | null)?.projectId ?? null } catch {}
+            const out = await this.handleClarifyCall(sid, tid, args, clarifyPid)
+            inlineToolOutputs.push(`[clarify]\n${out}`)
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, content: out } as never) } catch {}
+            return true
+          } catch { return false }
+        }
         try {
           this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName: tName, detail: `post-stream ${tName} — dispatching` } as never)
           const r = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tName, args)

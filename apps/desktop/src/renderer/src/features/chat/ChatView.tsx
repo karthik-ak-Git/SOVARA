@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, type ReactElement } from 'react'
+import { useEffect, useState, useCallback, type ReactElement, type ReactNode } from 'react'
 import { MessageList } from './MessageList'
 import { Composer, type FileAttachment } from './Composer'
 import type { SessionEventLike } from './conversation'
@@ -82,29 +82,67 @@ interface ChatViewProps {
 }
 
 import { PermissionApprovalCard } from './components/PermissionApprovalCard'
+import { ClarifyWizardCard } from './components/ClarifyWizardCard'
+import { createPortal } from 'react-dom'
+
+/** Fixed centered overlay (portal to body so no ancestor transform clips it). */
+function CenteredOverlay({ children }: { children: ReactNode }) {
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 950,
+        background: 'rgba(2,6,23,0.45)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: 560 }}>{children}</div>
+    </div>,
+    document.body
+  )
+}
 
 function PermissionApprovalWrapper({ execution, onApproveTool }: { execution: AgentExecutionState; onApproveTool?: (id: string, approved: boolean, args?: any) => void }) {
   if (!execution.toolCallId || !onApproveTool) return null
 
+  // clarify tool → guided multi-step question wizard (centered)
+  if (execution.clarifyQuestions && execution.clarifyQuestions.length > 0) {
+    return (
+      <ClarifyWizardCard
+        questions={execution.clarifyQuestions}
+        onResolve={(answers) => onApproveTool(execution.toolCallId!, true, { answers })}
+        onSkip={() => onApproveTool(execution.toolCallId!, false)}
+      />
+    )
+  }
+
+  // permission card — centered overlay instead of left-aligned inline
   return (
-    <PermissionApprovalCard
-      toolCallId={execution.toolCallId}
-      toolName={execution.toolName ?? 'command'}
-      args={execution.args ?? {}}
-      onApprove={(optionIndex, feedback) => {
-        if (optionIndex === 5) {
-          onApproveTool(execution.toolCallId!, false, feedback ? { feedback } : undefined)
-        } else {
-          const modifiedArgs = {
-            ...(execution.args ?? {}),
-            _forceApprove: true,
-            _permissionScope: optionIndex === 2 ? 'conversation' : optionIndex === 3 ? 'project' : optionIndex === 4 ? 'global' : 'once',
+    <CenteredOverlay>
+      <PermissionApprovalCard
+        toolCallId={execution.toolCallId}
+        toolName={execution.toolName ?? 'command'}
+        args={execution.args ?? {}}
+        onApprove={(optionIndex, feedback) => {
+          if (optionIndex === 5) {
+            onApproveTool(execution.toolCallId!, false, feedback ? { feedback } : undefined)
+          } else {
+            const modifiedArgs = {
+              ...(execution.args ?? {}),
+              _forceApprove: true,
+              _permissionScope: optionIndex === 2 ? 'conversation' : optionIndex === 3 ? 'project' : optionIndex === 4 ? 'global' : 'once',
+            }
+            onApproveTool(execution.toolCallId!, true, modifiedArgs)
           }
-          onApproveTool(execution.toolCallId!, true, modifiedArgs)
-        }
-      }}
-      onSkip={() => onApproveTool(execution.toolCallId!, false)}
-    />
+        }}
+        onSkip={() => onApproveTool(execution.toolCallId!, false)}
+      />
+    </CenteredOverlay>
   )
 }
 
