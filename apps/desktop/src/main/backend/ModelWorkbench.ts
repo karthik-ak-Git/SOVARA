@@ -329,7 +329,8 @@ export class ModelWorkbench {
 
   private isMmprojId(modelId: string): boolean {
     const b = String(modelId).split('/').pop()?.toLowerCase() ?? ''
-    return b === 'mmproj.gguf' || b.startsWith('mmproj-')
+    const lower = b.toLowerCase()
+    return lower === 'mmproj.gguf' || lower.startsWith('mmproj-') || lower.includes('mmproj') || lower.includes('projector')
   }
 
   private isModelLive(modelId: string): boolean {
@@ -512,6 +513,11 @@ export class ModelWorkbench {
   }
 
   async selectModel(runtimeId: string, modelId: string, opts?: { fit?: boolean }): Promise<ActiveModelState> {
+    // Dedupe: UI sometimes fires select twice for same model (dropdown + restore) → log once
+    const curSel = this.config.getActiveSelection()
+    if (curSel && curSel.runtimeId === runtimeId && curSel.modelId === modelId && opts?.fit !== true) {
+      return this.getActiveModel()
+    }
     // Auto smart-routing: user wants per-task best model, not pinned.
     if (runtimeId === 'auto' && modelId === '__auto__') {
       this.config.setAppSetting('sovara_auto_routing', 'true')
@@ -604,8 +610,9 @@ export class ModelWorkbench {
     }
     this.config.setActiveSelection({ runtimeId, modelId })
     // Dropdown selection is instant — don't block UI loading VRAM. Actual
-    // load is deferred to chat:send (AgentOrchestrator ensures healthy). Log only.
-    appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: 'selection updated (load deferred to next chat)', fit: opts?.fit === true })
+    // VRAM fit is checked at load time (LlamaCppServerAdapter:542 planMemory), not here.
+    // fitMode here is NOT "does it fit?" — it's "did user request partial offload?".
+    appendLlamaLog(this.baseDir, 'select', { modelId, runtimeId, detail: `selection updated (load deferred to next chat) — fitMode=${opts?.fit ? 'partial (Fit)' : 'full (auto)'}; VRAM check happens on next chat`, fitMode: opts?.fit ? 'partial' : 'full' })
     return this.getActiveModel()
   }
 
