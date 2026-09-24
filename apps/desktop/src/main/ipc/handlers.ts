@@ -184,7 +184,13 @@ export function registerIpcHandlers(): void {
       const code = (e as { code?: string })?.code
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
-      if (code === 'model-load-failed' || code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (code === 'resource-pressure') throw new Error(prefixed(raw, 'resource-pressure: '))
+      if (code === 'model-load-failed') throw new Error(prefixed(raw, 'model-load-failed: '))
+      // Bare Errors from the adapter (no code) that are resource-fit → prefix honestly.
+      if (!code && /resource-pressure|insufficient VRAM|needs ~\d+|cannot fit this GPU/i.test(raw) && !/max concurrent|model\(s\) already resident|eligible for eviction/i.test(raw)) {
+        throw new Error(prefixed(raw, 'resource-pressure: '))
+      }
+      if (code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       if (code === 'llm-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       // Graceful empty-reply should already have been converted to ack in orchestrator — but if it slips, make it retryable not a handler crash
       if (raw.includes('invalid-response') && raw.includes('empty reply')) throw new Error('runtime-unavailable: the local model returned an empty reply — try /compact or a shorter prompt')
@@ -298,6 +304,13 @@ export function registerIpcHandlers(): void {
       const code = (e as { code?: string })?.code
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
+      if (code === 'resource-pressure') throw new Error(prefixed(raw, 'resource-pressure: '))
+      if (code === 'model-load-failed') throw new Error(prefixed(raw, 'model-load-failed: '))
+      if (!code && /resource-pressure|insufficient VRAM|needs ~\d+|cannot fit this GPU/i.test(raw) && !/max concurrent|model\(s\) already resident|eligible for eviction/i.test(raw)) {
+        throw new Error(prefixed(raw, 'resource-pressure: '))
+      }
+      if (code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (code === 'llm-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       throw new Error(raw)
     }
   })
@@ -350,7 +363,8 @@ export function registerIpcHandlers(): void {
       const code = (e as { code?: string })?.code
       if (code === 'no-model-available') throw new Error(prefixed(raw, 'no-active-model: '))
       if (code === 'resource-blocked') throw new Error(prefixed(raw, 'resource-pressure: '))
-      if (code === 'runtime-unavailable' || code === 'model-load-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
+      if (code === 'model-load-failed') throw new Error(prefixed(raw, 'model-load-failed: '))
+      if (code === 'runtime-unavailable') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       if (code === 'llm-failed') throw new Error(prefixed(raw, 'runtime-unavailable: '))
       if (raw.includes('invalid-response') && raw.includes('empty reply')) throw new Error('runtime-unavailable: the local model returned an empty reply — try /compact or a shorter prompt (editResend)')
       // Never surface raw "Cannot read properties of undefined" to UI — map to user-friendly retryable error
@@ -578,7 +592,8 @@ export function registerIpcHandlers(): void {
         rememberApproval(parsed.data.name, clean, scope as any, sessForGate, projForGate)
       }
     } catch {}
-    const verdict = gateDispatch(mode, parsed.data.name, args as Record<string, unknown>, sessForGate, projForGate)
+    const wsRoot = projForGate ? (getBackend().getProjectWorkspace(projForGate) ?? getBackend().getGlobalWorkspace()) : getBackend().getGlobalWorkspace()
+    const verdict = gateDispatch(mode, parsed.data.name, args as Record<string, unknown>, sessForGate, projForGate, wsRoot)
     if (!verdict.allowed && !force) {
       return { ok: false, blocked: true, reason: verdict.reason, message: verdict.message, toolName: parsed.data.name, toolArgs: parsed.data.args }
     }

@@ -267,8 +267,11 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     await expect(orchestrator.execute(sid, 'hello', {})).rejects.toMatchObject({ code: 'no-model-available' })
     expect(emitted.some((e) => e.kind === 'task:error')).toBe(true)
     const evts = await persistence.getEvents(sid)
-    // User event must NOT be persisted when routing fails (honest, no fake)
-    expect(evts.length).toBe(0)
+    // Pre-stream failure now persists user + ⚠️ bubble so the timeline
+    // isn't left with a bubble-less user prompt (no fake success text).
+    expect(evts.map((e) => e.type)).toEqual(['user/message', 'assistant/message'])
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toMatch(/^⚠️ /)
+    expect(evts.some((e) => e.type === 'assistant/done' || e.type === 'assistant/message')).toBe(true)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -299,7 +302,7 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('resource pressure blocks honestly and persists nothing', async () => {
+  it('resource pressure blocks honestly and persists user + ⚠️ bubble', async () => {
     const dir = mkTmp()
     const persistence = makePersistence()
     const blockedResources: SystemResourceManagerPort = {
@@ -321,7 +324,9 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     const sid = 'sess-1' as SessionId
     await expect(orchestrator.execute(sid, 'hello', {})).rejects.toMatchObject({ code: 'resource-blocked' })
     const evts = await persistence.getEvents(sid)
-    expect(evts.length).toBe(0)
+    // Pre-stream resource block persists user + ⚠️ bubble (bubble-less fix).
+    expect(evts.map((e) => e.type)).toEqual(['user/message', 'assistant/message'])
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toMatch(/^⚠️ /)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

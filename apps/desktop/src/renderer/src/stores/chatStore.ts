@@ -256,6 +256,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (ev.kind === 'model:failed') {
       if (!isSelected) return
       set({ execution: { taskKind: (ev.taskKind as TaskKind) ?? get().execution.taskKind, phase: 'error', modelId: ev.modelId, runtimeId: ev.runtimeId, error: ev.error ?? ev.detail, detail: ev.detail }, error: ev.error ?? ev.detail ?? 'Model could not be loaded', status: 'error' as ChatStatus })
+      // Optimistically mark unavailable — backend getActiveModel won't flip
+      // availability for local file-exists models, but the pill must not show
+      // "Ready" after a confirmed load failure.
+      if (get().model) set({ model: { ...get().model!, available: false } })
       return
     }
     if (ev.kind === 'step:start') {

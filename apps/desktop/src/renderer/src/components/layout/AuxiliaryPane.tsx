@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, type ReactElement } from 'react'
 import {
   BookOpen,
+  Code2,
   FileCode2,
   Terminal as TerminalIcon,
   Plus,
@@ -21,7 +22,9 @@ import {
   X,
   RefreshCw,
 } from 'lucide-react'
-import { dispatchTool, type SessionEventView } from '@/lib/client/api'
+import { dispatchTool, openArtifact, type SessionEventView } from '@/lib/client/api'
+import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact } from '../../utils/previewBundler'
+import { parseMessageContent } from '../../features/chat/MessageBubble'
 
 export type AuxiliaryTab = 'overview' | 'diffs' | 'terminal' | 'artifacts' | 'subagents'
 
@@ -48,6 +51,9 @@ interface Props {
   artifactContent?: string
   artifactTitle?: string
   artifactType?: 'html' | 'markdown' | 'svg' | 'code'
+  /** Artifact opened from chat (Split View / Preview) — rendered by the Artifact Viewer tab. */
+  activeArtifact?: { title: string; language: string; code: string } | null
+  onOpenArtifactFile?: (path: string) => void
   activeSubagents?: Array<{ id: string; role: string; type: string; state: string; detail?: string; duration?: string }>
   activeTasks?: Array<{ id: string; name: string; status: string; progress?: string }>
   terminalLogs?: string[]
@@ -68,6 +74,8 @@ export function AuxiliaryPane({
   artifactContent = '',
   artifactTitle = 'Implementation Plan',
   artifactType = 'html',
+  activeArtifact = null,
+  onOpenArtifactFile,
   activeSubagents = [],
   activeTasks = [],
   terminalLogs = [],
@@ -113,26 +121,49 @@ export function AuxiliaryPane({
   const dynamicFiles = useMemo(() => {
     if (changedFiles.length > 0) return changedFiles
     const map = new Map<string, ChangedFileItem>()
+
+    const registerPath = (p: string) => {
+      const clean = p.replace(/\\/g, '/').trim()
+      if (!clean || clean === '.' || clean === './' || clean.startsWith('http') || clean.length < 2) return
+      if (!map.has(clean)) {
+        map.set(clean, {
+          path: clean,
+          staged: false,
+          additions: 12,
+          deletions: 2,
+          diffChunks: [
+            { lineOld: 1, lineNew: 1, type: 'context', content: `// File: ${clean}` },
+            { lineNew: 2, type: 'add', content: '+ // Created or modified by AI assistant' },
+          ],
+        })
+      }
+    }
+
     for (const e of events) {
-      if (e.type === 'tool/result') {
-        const raw = typeof e.data === 'string' ? e.data : (e.data as { content?: string })?.content ?? ''
-        const matches = raw.matchAll(/(?:written to\s+|created\s+|"ok"\s*:\s*true\s*,\s*"path"\s*:\s*["'])([^"'\r\n,}]+\.[a-z0-9]+)/gi)
+      if (e.type === 'tool/call') {
+        const d = (e.data ?? {}) as Record<string, unknown>
+        const toolName = (d['name'] || d['toolName'] || (d['toolCall'] as any)?.name) as string
+        if (toolName === 'fs_write' || toolName === 'fs_patch') {
+          const args = (d['args'] ?? (d['toolCall'] as any)?.args ?? {}) as Record<string, unknown>
+          if (typeof args['path'] === 'string') registerPath(args['path'])
+        }
+      } else if (e.type === 'artifact/created') {
+        const d: any = e.data || {}
+        if (typeof d.path === 'string') registerPath(d.path)
+      } else if (e.type === 'tool/result') {
+        const d = (e.data ?? {}) as Record<string, unknown>
+        if (typeof d === 'object' && d !== null) {
+          if (typeof d['path'] === 'string') registerPath(d['path'])
+          if (typeof d['file'] === 'string') registerPath(d['file'])
+        }
+        const raw = typeof e.data === 'string' ? e.data : (e.data as { content?: string })?.content ?? JSON.stringify(e.data ?? {})
+        const matches = raw.matchAll(/"path"\s*:\s*["']([^"'\r\n,]+)["']/gi)
         for (const m of matches) {
-          if (m[1]) {
-            const path = m[1]
-            if (!map.has(path)) {
-              map.set(path, {
-                path,
-                staged: false,
-                additions: 10,
-                deletions: 2,
-                diffChunks: [
-                  { lineOld: 1, lineNew: 1, type: 'context', content: `// File: ${path}` },
-                  { lineNew: 2, type: 'add', content: '+ // Modified dynamically during AI session' },
-                ],
-              })
-            }
-          }
+          if (m[1]) registerPath(m[1])
+        }
+        const fileMatches = raw.matchAll(/(?:written to\s+|created\s+)([a-zA-Z0-9_./\\-]+)/gi)
+        for (const m of fileMatches) {
+          if (m[1]) registerPath(m[1])
         }
       }
     }
@@ -143,6 +174,44 @@ export function AuxiliaryPane({
   const unstagedFiles = useMemo(() => dynamicFiles.filter((f) => !f.staged), [dynamicFiles])
 
   const [selectedReviewFile, setSelectedReviewFile] = useState<ChangedFileItem | null>(null)
+
+  // Artifact Viewer tab state — mirrors the artifact opened from chat.
+  // viewerOverride lets a sidebar selection render in the viewer; it clears when
+  // chat opens a new artifact so chat stays the source of truth.
+  const [viewerTab, setViewerTab] = useState<'code' | 'preview'>('code')
+  const [viewerHtml, setViewerHtml] = useState('')
+  const [viewerOverride, setViewerOverride] = useState<{ title: string; language: string; code: string } | null>(null)
+  const viewerArtifact = viewerOverride ?? activeArtifact
+
+  useEffect(() => {
+    if (activeArtifact) {
+      // Chat opened a (new) artifact — clear any sidebar override and show the viewer
+      setViewerOverride(null)
+      setTab('artifacts')
+    }
+  }, [activeArtifact])
+
+  useEffect(() => {
+    if (viewerArtifact) {
+      setViewerTab(isVisualArtifact(viewerArtifact.code, viewerArtifact.language.toLowerCase()) ? 'preview' : 'code')
+    }
+  }, [viewerArtifact])
+
+  const viewerCanPreview = !!viewerArtifact && isVisualArtifact(viewerArtifact.code, viewerArtifact.language.toLowerCase()) && !isBinaryArtifact(viewerArtifact.code, viewerArtifact.language.toLowerCase())
+
+  useEffect(() => {
+    if (!viewerArtifact || viewerTab !== 'preview' || !viewerCanPreview) {
+      setViewerHtml('')
+      return
+    }
+    let isCancelled = false
+    preparePreviewHtml(viewerArtifact.code, events as never, sessionId, viewerArtifact.language.toLowerCase()).then((res) => {
+      if (!isCancelled) setViewerHtml(res)
+    })
+    return () => {
+      isCancelled = true
+    }
+  }, [viewerArtifact, viewerTab, viewerCanPreview, events, sessionId])
 
   const dynamicSubagents = useMemo(() => {
     if (activeSubagents.length > 0) return activeSubagents
@@ -166,22 +235,38 @@ export function AuxiliaryPane({
     return list
   }, [events, activeSubagents])
 
+  // Sidebar mirrors the chat: code blocks parsed from assistant messages are the source
+  // of truth, plus backend artifact/created files. The artifact currently open in the
+  // viewer (Split View / Preview in chat) is listed first so both panes stay in sync.
   const dynamicArtifacts = useMemo(() => {
-    const list: Array<{ id: string; title: string; type: string }> = []
-    if (artifactTitle && artifactContent) {
-      list.push({ id: 'art-prop', title: artifactTitle, type: artifactType })
+    const list: Array<{ id: string; title: string; type: string; language: string; code: string }> = []
+    const push = (title: string, language: string, code: string, id: string): void => {
+      if (!code || !code.trim()) return
+      if (!list.some((a) => a.title === title && a.code === code)) {
+        list.push({ id, title, type: isVisualArtifact(code, language) ? 'preview' : 'code', language, code })
+      }
     }
+    if (activeArtifact) push(activeArtifact.title, activeArtifact.language, activeArtifact.code, 'art-active')
     for (const e of events) {
       if (e.type === 'artifact/created') {
         const d: any = e.data || {}
         const title = d.name || d.fileName || d.title || (d.path ? d.path.split(/[/\\]/).pop() : 'Artifact')
         if (title && !list.some((a) => a.title === title)) {
-          list.push({ id: String(e.seq || Math.random()), title: String(title), type: 'markdown' })
+          list.push({ id: String(e.seq || Math.random()), title: String(title), type: 'file', language: String(d.kind || 'file'), code: String(d.path || '') })
+        }
+      }
+    }
+    for (const e of events) {
+      if (e.type === 'assistant/message' && e.data) {
+        const raw = typeof e.data === 'string' ? e.data : ((e.data as { content?: string }).content ?? '')
+        if (typeof raw !== 'string' || !raw.includes('```')) continue
+        for (const part of parseMessageContent(raw)) {
+          if (part.type === 'code') push(part.title, part.language, part.code, `art-${e.seq}-${list.length}`)
         }
       }
     }
     return list
-  }, [events, artifactTitle, artifactContent, artifactType])
+  }, [events, activeArtifact])
 
   const dynamicUploads = useMemo(() => {
     const list: Array<{ id: string; name: string; date: string }> = []
@@ -200,70 +285,16 @@ export function AuxiliaryPane({
     return list
   }, [events])
 
-  // Skills — dynamic from actual enabled sources (Settings → Skill Directory Sources), not hardcoded.
-  // Shows both explicitly called skills (tool/call) AND the injected top-scored skills for this chat prompt.
-  const [injectedSkills, setInjectedSkills] = useState<Array<{ name: string; path?: string; source: string }>>([])
-  useEffect(() => {
-    let cancelled = false
-    const load = async (): Promise<void> => {
-      try {
-        const w: any = window as any
-        if (!w.sovara?.invoke) return
-        // Fetch enabled detailed skills — represents what is truly configured in Settings
-        const detailed = (await w.sovara.invoke('skills:listDetailed').catch(() => [])) as Array<{ name: string; path: string; skills: Array<{ name: string; path: string }> }>
-        // Also fetch scan to know which sources are enabled (we keep only enabled sources)
-        const scanned = (await w.sovara.invoke('skills:scan').catch(() => [])) as Array<{ name: string; enabled: boolean }>
-        const enabledSet = new Set(scanned.filter((s) => s.enabled).map((s) => s.name))
-        const flat: Array<{ name: string; path?: string; source: string }> = []
-        for (const grp of detailed) {
-          if (enabledSet.size > 0 && !enabledSet.has(grp.name)) continue
-          for (const s of grp.skills ?? []) {
-            if (!flat.some((x) => x.name.toLowerCase() === s.name.toLowerCase())) {
-              flat.push({ name: s.name, path: s.path, source: grp.name })
-            }
-          }
-        }
-        // If user typed a PPT/prompt, prioritize those skills in display (same heuristics as backend)
-        const chatText = events
-          .filter((e) => e.type === 'user/message' || e.type === 'assistant/message')
-          .map((e) => {
-            const d: any = e.data
-            return typeof d === 'string' ? d : typeof d?.content === 'string' ? d.content : ''
-          })
-          .join(' ')
-          .toLowerCase()
-        const isPpt = /\b(ppt|pptx|presentation|slides|deck|powerpoint)\b/.test(chatText)
-        const ordered = isPpt
-          ? flat.sort((a, b) => {
-              const score = (x: typeof a) => {
-                const n = x.name.toLowerCase()
-                if (n.includes('pptx') || n === 'pptx-official') return 100
-                if (n.includes('python-pptx')) return 95
-                if (n.includes('frontend-design')) return 40
-                if (n.includes('superpower')) return 30
-                return 0
-              }
-              return score(b) - score(a)
-            })
-          : flat
-        if (!cancelled) setInjectedSkills(ordered.slice(0, 8))
-      } catch {}
-    }
-    void load()
-    // Reload when events change (new chat prompt may change prioritization)
-    const t = setTimeout(load, 300)
-    return () => { cancelled = true; clearTimeout(t) }
-  }, [events])
-
+  // Skills — honest: only count skills actually read via tool calls (search_skills/read_skill), not injected context
   const dynamicSkills = useMemo(() => {
     const fromCalls: Array<{ name: string; path?: string; source?: string }> = []
     for (const e of events) {
-      if (e.type === 'tool/call' || e.type === 'tool/result') {
+      if (e.type === 'tool/call' || e.type === 'tool/result' || e.type === 'tool/call' as any) {
         const d: any = e.data || {}
-        const toolName = d.name || d.toolName || d.toolCall?.name
-        const isSkillTool = toolName === 'use_skill' || toolName === 'scan_skills' || toolName === 'read_skill' || toolName === 'search_skills' || toolName === 'read_skill'
+        const toolName = d.name || d.toolName || d.toolCall?.name || d.tool_name
+        const isSkillTool = toolName === 'search_skills' || toolName === 'read_skill'
         if (isSkillTool) {
-          const name = d.args?.skillName || d.args?.skill_name || d.args?.name || d.args?.query || 'skill'
+          const name = d.args?.skill_name || d.args?.skillName || d.args?.name || d.args?.query || d.args?.skill || 'skill'
           if (!fromCalls.some((s) => s.name === name)) {
             fromCalls.push({ name: String(name), path: d.args?.path, source: 'tool' })
           }
@@ -277,14 +308,9 @@ export function AuxiliaryPane({
         }
       }
     }
-    // Merge explicit calls (highest priority) + injected enabled skills
-    const merged: Array<{ name: string; path?: string }> = [...fromCalls]
-    for (const s of injectedSkills) {
-      if (!merged.some((m) => m.name.toLowerCase() === s.name.toLowerCase())) merged.push(s)
-    }
-    // De-duplicate and cap for sidebar
-    return merged.slice(0, 10)
-  }, [events, injectedSkills])
+    // Cap for sidebar
+    return fromCalls.slice(0, 10)
+  }, [events])
 
   // --- Dynamic Terminal Sessions & Command Execution with Full Persistence ---
   interface TerminalInstance {
@@ -431,25 +457,68 @@ export function AuxiliaryPane({
     return `PS ${ws}>`
   }, [activeTerminal?.shellType, workspaceRoot, workspaceLabel])
 
+  // Track which events we have already processed into the terminal logs
+  const processedEvents = useRef<Set<string>>(new Set())
+
   // Stream AI tool execution outputs into the active terminal instance
   useEffect(() => {
+    let changed = false
+    const newLogs: string[] = []
+
     for (const e of events) {
-      if (e.type === 'tool/call') {
+      const eventId = String(e.seq ?? Math.random())
+      if (processedEvents.current.has(eventId)) continue
+
+      if (e.type === 'tool/call' || (e.type as any) === 'tool/result') {
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
+        
         if (toolName === 'run_command' || toolName === 'exec_shell_command' || toolName === 'shell_exec') {
-          const cmd = d.args?.CommandLine || d.args?.cmd || d.args?.command || ''
-          if (cmd) {
-            setTerminalInstances((prev) =>
-              prev.map((t) =>
-                t.id === activeTerminalId
-                  ? { ...t, logs: [...t.logs, `${promptPrefix} ${cmd}`, 'Running command via AI assistant...'] }
-                  : t
-              )
-            )
+          if (e.type === 'tool/call') {
+            const cmd = d.args?.CommandLine || d.args?.cmd || d.args?.command || ''
+            if (cmd) {
+              newLogs.push(`${promptPrefix} ${cmd}`)
+              newLogs.push('Running command via AI assistant...')
+              processedEvents.current.add(eventId)
+              changed = true
+            }
+          } else if ((e.type as any) === 'tool/result') {
+            let outText = ''
+            const res = d.content || d.result || d
+            if (typeof res === 'string') {
+              try {
+                const parsed = JSON.parse(res)
+                if (parsed && typeof parsed === 'object') {
+                  outText = parsed.stdout || parsed.stderr || parsed.message || parsed.error || res
+                } else {
+                  outText = res
+                }
+              } catch {
+                outText = res
+              }
+            } else if (res && typeof res === 'object') {
+              outText = res.stdout || res.stderr || res.message || res.error || JSON.stringify(res)
+            } else {
+              outText = 'Done.'
+            }
+            if (outText.trim()) {
+              newLogs.push(outText.trim())
+            }
+            processedEvents.current.add(eventId)
+            changed = true
           }
         }
       }
+    }
+
+    if (changed && newLogs.length > 0) {
+      setTerminalInstances((prev) =>
+        prev.map((t) =>
+          t.id === activeTerminalId
+            ? { ...t, logs: [...t.logs, ...newLogs] }
+            : t
+        )
+      )
     }
   }, [events, activeTerminalId, promptPrefix])
 
@@ -585,7 +654,7 @@ export function AuxiliaryPane({
   }
 
   // Section Collapse states for Overview
-  const [filesOpen, setFilesOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(true)
   const [artifactsSectionOpen, setArtifactsSectionOpen] = useState(true)
   const [uploadsOpen, setUploadsOpen] = useState(true)
   const [tasksOpen, setTasksOpen] = useState(false)
@@ -602,12 +671,12 @@ export function AuxiliaryPane({
         flex: isExpanded ? 1 : 'none',
         width: isExpanded ? '100%' : 460,
         height: '100%',
-        background: '#ffffff',
-        borderLeft: '1px solid #e2e8f0',
+        background: 'var(--bg, #ffffff)',
+        borderLeft: '1px solid var(--border, #e2e8f0)',
         display: 'flex',
         flexDirection: 'column',
         zIndex: 50,
-        boxShadow: isExpanded ? 'none' : '-4px 0 20px rgba(0,0,0,0.05)',
+        boxShadow: isExpanded ? 'none' : 'var(--shadow-panel)',
         userSelect: 'none',
       }}
     >
@@ -620,8 +689,8 @@ export function AuxiliaryPane({
           justifyContent: 'space-between',
           padding: '0 12px',
           height: 44,
-          borderBottom: '1px solid #e2e8f0',
-          background: '#ffffff',
+          borderBottom: '1px solid var(--border, #e2e8f0)',
+          background: 'var(--bg-elevated, #ffffff)',
           position: 'relative',
         }}
       >
@@ -637,12 +706,12 @@ export function AuxiliaryPane({
               border: 'none',
               padding: 4,
               cursor: 'pointer',
-              color: tab === 'overview' ? '#0f172a' : '#94a3b8',
+              color: tab === 'overview' ? 'var(--text, #0f172a)' : 'var(--muted-2, #94a3b8)',
               borderRadius: 4,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              borderBottom: tab === 'overview' ? '2px solid #0f172a' : '2px solid transparent',
+              borderBottom: tab === 'overview' ? '2px solid var(--text, #0f172a)' : '2px solid transparent',
             }}
           >
             <BookOpen size={17} aria-hidden />
@@ -658,12 +727,12 @@ export function AuxiliaryPane({
               border: 'none',
               padding: 4,
               cursor: 'pointer',
-              color: tab === 'diffs' ? '#0f172a' : '#94a3b8',
+              color: tab === 'diffs' ? 'var(--text, #0f172a)' : 'var(--muted-2, #94a3b8)',
               borderRadius: 4,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              borderBottom: tab === 'diffs' ? '2px solid #0f172a' : '2px solid transparent',
+              borderBottom: tab === 'diffs' ? '2px solid var(--text, #0f172a)' : '2px solid transparent',
             }}
           >
             <FileCode2 size={17} aria-hidden />
@@ -679,15 +748,38 @@ export function AuxiliaryPane({
               border: 'none',
               padding: 4,
               cursor: 'pointer',
-              color: tab === 'terminal' ? '#0f172a' : '#94a3b8',
+              color: tab === 'terminal' ? 'var(--text, #0f172a)' : 'var(--muted-2, #94a3b8)',
               borderRadius: 4,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              borderBottom: tab === 'terminal' ? '2px solid #0f172a' : '2px solid transparent',
+              borderBottom: tab === 'terminal' ? '2px solid var(--text, #0f172a)' : '2px solid transparent',
             }}
           >
             <TerminalIcon size={17} aria-hidden />
+          </button>
+
+          <button
+            type="button"
+            aria-label="Artifact Viewer"
+            title={viewerArtifact ? 'Artifact Viewer' : 'Artifact Viewer (open an artifact from chat first)'}
+            onClick={() => setTab('artifacts')}
+            disabled={!viewerArtifact}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 4,
+              cursor: viewerArtifact ? 'pointer' : 'default',
+              color: tab === 'artifacts' ? 'var(--text, #0f172a)' : viewerArtifact ? 'var(--muted-2, #94a3b8)' : '#cbd5e1',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderBottom: tab === 'artifacts' ? '2px solid var(--text, #0f172a)' : '2px solid transparent',
+              opacity: viewerArtifact ? 1 : 0.45,
+            }}
+          >
+            <Code2 size={17} aria-hidden />
           </button>
         </div>
 
@@ -704,7 +796,7 @@ export function AuxiliaryPane({
                 border: 'none',
                 padding: 4,
                 cursor: 'pointer',
-                color: '#64748b',
+                color: 'var(--muted, #64748b)',
                 borderRadius: 4,
                 display: 'flex',
                 alignItems: 'center',
@@ -723,10 +815,10 @@ export function AuxiliaryPane({
                   right: 0,
                   marginTop: 4,
                   width: 170,
-                  background: '#ffffff',
-                  border: '1px solid #e2e8f0',
+                  background: 'var(--bg-elevated, #ffffff)',
+                  border: '1px solid var(--border, #e2e8f0)',
                   borderRadius: 8,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                  boxShadow: 'var(--shadow-panel)',
                   zIndex: 999,
                   padding: '4px 0',
                 }}
@@ -832,7 +924,7 @@ export function AuxiliaryPane({
       </header>
 
       {/* Main Content Area */}
-      <div className="sv-aux-body" style={{ flex: 1, overflowY: 'auto', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
+      <div className="sv-aux-body" style={{ flex: 1, overflowY: 'auto', background: 'var(--bg, #ffffff)', display: 'flex', flexDirection: 'column' }}>
         {/* VIEW 1: OVERVIEW TAB */}
         {tab === 'overview' ? (
           <div style={{ padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -847,13 +939,13 @@ export function AuxiliaryPane({
                     justifyContent: 'space-between',
                     padding: '10px 12px',
                     borderRadius: 8,
-                    background: '#f8fafc',
-                    border: '1px solid #f1f5f9',
+                    background: 'var(--panel, #f8fafc)',
+                    border: '1px solid var(--border-soft, #f1f5f9)',
                   }}
                 >
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: '#0f172a' }}>{sa.role}</div>
-                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text, #0f172a)' }}>{sa.role}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted, #64748b)', marginTop: 2 }}>
                       {sa.duration || 'Worked for subagent'}
                     </div>
                   </div>
@@ -863,7 +955,7 @@ export function AuxiliaryPane({
             ) : null}
 
             {/* Section 1: Files Changed */}
-            <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 10 }}>
+            <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
                 style={{
                   display: 'flex',
@@ -874,12 +966,12 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setFilesOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Files Changed</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicFiles.length}</span>
-                  <ChevronRight size={14} style={{ color: '#94a3b8', transform: filesOpen ? 'rotate(90deg)' : 'none' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{dynamicFiles.length}</span>
+                  <ChevronRight size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: filesOpen ? 'rotate(90deg)' : 'none' }} />
                 </div>
-                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0' }}>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: 'var(--panel, #f1f5f9)', color: 'var(--text, #475569)', border: '1px solid var(--border, #e2e8f0)' }}>
                   Uncommitted v
                 </span>
               </div>
@@ -902,13 +994,13 @@ export function AuxiliaryPane({
                         border: 'none',
                         fontSize: 13,
                         fontWeight: 500,
-                        color: '#334155',
+                        color: 'var(--text, #334155)',
                         cursor: 'pointer',
                         textAlign: 'left',
                         padding: '2px 0',
                       }}
                     >
-                      <FileCode2 size={14} style={{ color: '#64748b' }} />
+                      <FileCode2 size={14} style={{ color: 'var(--muted, #64748b)' }} />
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
                     </button>
                   ))}
@@ -917,7 +1009,7 @@ export function AuxiliaryPane({
             </div>
 
             {/* Section 2: Artifacts */}
-            <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 10 }}>
+            <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
                 style={{
                   display: 'flex',
@@ -928,10 +1020,10 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setArtifactsSectionOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Artifacts</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicArtifacts.length}</span>
-                  <ChevronDown size={14} style={{ color: '#94a3b8', transform: artifactsSectionOpen ? 'none' : 'rotate(-90deg)' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{dynamicArtifacts.length}</span>
+                  <ChevronDown size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: artifactsSectionOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
@@ -942,7 +1034,15 @@ export function AuxiliaryPane({
                       <button
                         key={art.id}
                         type="button"
-                        onClick={() => setTab('diffs')}
+                        onClick={() => {
+                          if (art.type === 'file') {
+                            if (art.code) onOpenArtifactFile?.(art.code)
+                          } else {
+                            setViewerOverride(art)
+                            setViewerTab(art.type === 'preview' ? 'preview' : 'code')
+                            setTab('artifacts')
+                          }
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -951,25 +1051,25 @@ export function AuxiliaryPane({
                           border: 'none',
                           fontSize: 13,
                           fontWeight: 500,
-                          color: '#334155',
+                          color: 'var(--text, #334155)',
                           cursor: 'pointer',
                           textAlign: 'left',
                           padding: '2px 0',
                         }}
                       >
-                        <BookOpen size={14} style={{ color: '#64748b' }} />
+                        <BookOpen size={14} style={{ color: 'var(--muted, #64748b)' }} />
                         <span>{art.title}</span>
                       </button>
                     ))
                   ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8', padding: '2px 0' }}>No artifacts generated yet in this chat.</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)', padding: '2px 0' }}>No artifacts generated yet in this chat.</div>
                   )}
                 </div>
               ) : null}
             </div>
 
             {/* Section 3: Uploads */}
-            <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 10 }}>
+            <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
                 style={{
                   display: 'flex',
@@ -980,10 +1080,10 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setUploadsOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Uploads</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicUploads.length}</span>
-                  <ChevronDown size={14} style={{ color: '#94a3b8', transform: uploadsOpen ? 'none' : 'rotate(-90deg)' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{dynamicUploads.length}</span>
+                  <ChevronDown size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: uploadsOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
@@ -991,20 +1091,20 @@ export function AuxiliaryPane({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 4 }}>
                   {dynamicUploads.length > 0 ? (
                     dynamicUploads.map((up) => (
-                      <div key={up.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#334155' }}>
-                        <File size={14} style={{ color: '#94a3b8' }} />
+                      <div key={up.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text, #334155)' }}>
+                        <File size={14} style={{ color: 'var(--muted-2, #94a3b8)' }} />
                         <span>{up.name}</span>
                       </div>
                     ))
                   ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8', padding: '2px 0' }}>No files uploaded in this chat.</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)', padding: '2px 0' }}>No files uploaded in this chat.</div>
                   )}
                 </div>
               ) : null}
             </div>
 
             {/* Section 4: Background Tasks */}
-            <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 10 }}>
+            <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
                 style={{
                   display: 'flex',
@@ -1014,16 +1114,16 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setTasksOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Background Tasks</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{activeTasks.length}</span>
-                  <ChevronRight size={14} style={{ color: '#94a3b8', transform: tasksOpen ? 'rotate(90deg)' : 'none' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{activeTasks.length}</span>
+                  <ChevronRight size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: tasksOpen ? 'rotate(90deg)' : 'none' }} />
                 </div>
               </div>
             </div>
 
             {/* Section 5: Terminals */}
-            <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 10 }}>
+            <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
                 style={{
                   display: 'flex',
@@ -1034,10 +1134,10 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setTerminalsOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Terminals</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{terminalInstances.length}</span>
-                  <ChevronDown size={14} style={{ color: '#94a3b8', transform: terminalsOpen ? 'none' : 'rotate(-90deg)' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{terminalInstances.length}</span>
+                  <ChevronDown size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: terminalsOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
@@ -1059,17 +1159,17 @@ export function AuxiliaryPane({
                         background: 'transparent',
                         border: 'none',
                         fontSize: 13,
-                        color: '#334155',
+                        color: 'var(--text, #334155)',
                         cursor: 'pointer',
                         textAlign: 'left',
                         padding: '4px 0',
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <TerminalIcon size={14} style={{ color: '#64748b' }} />
+                        <TerminalIcon size={14} style={{ color: 'var(--muted, #64748b)' }} />
                         <span>{t.name}</span>
                       </div>
-                      <span style={{ fontSize: 10, color: '#94a3b8' }}>{t.pid}</span>
+                      <span style={{ fontSize: 10, color: 'var(--muted-2, #94a3b8)' }}>{t.pid}</span>
                     </button>
                   ))}
                 </div>
@@ -1088,10 +1188,10 @@ export function AuxiliaryPane({
                 }}
                 onClick={() => setSkillsOpen((v) => !v)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: '#475569' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Skills Used</span>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{dynamicSkills.length}</span>
-                  <ChevronDown size={14} style={{ color: '#94a3b8', transform: skillsOpen ? 'none' : 'rotate(-90deg)' }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{dynamicSkills.length}</span>
+                  <ChevronDown size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: skillsOpen ? 'none' : 'rotate(-90deg)' }} />
                 </div>
               </div>
 
@@ -1099,14 +1199,35 @@ export function AuxiliaryPane({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 4 }}>
                   {dynamicSkills.length > 0 ? (
                     dynamicSkills.map((sk, idx) => (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#334155' }}>
-                        <FileText size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          if (sk.path) {
+                            openArtifact(sk.path + (sk.path.endsWith('SKILL.md') ? '' : '/SKILL.md'))
+                          }
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: 12,
+                          color: 'var(--text, #334155)',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: sk.path ? 'pointer' : 'default',
+                          textAlign: 'left',
+                          padding: '2px 0',
+                          width: '100%',
+                        }}
+                      >
+                        <FileText size={14} style={{ color: 'var(--muted-2, #94a3b8)', flexShrink: 0 }} />
                         <span style={{ fontWeight: 500 }}>{sk.name}</span>
-                        {sk.path ? <span style={{ fontSize: 10, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.path}</span> : null}
-                      </div>
+                        {sk.path ? <span style={{ fontSize: 10, color: 'var(--muted-2, #94a3b8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.path}</span> : null}
+                      </button>
                     ))
                   ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8', padding: '2px 0' }}>No skills used in this chat.</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)', padding: '2px 0' }}>No skills used in this chat.</div>
                   )}
                 </div>
               ) : null}
@@ -1454,6 +1575,111 @@ export function AuxiliaryPane({
               ) : null}
             </div>
           </div>
+        ) : null}
+
+        {/* VIEW 4: ARTIFACT VIEWER TAB — renders the artifact opened from chat */}
+        {tab === 'artifacts' ? (
+          viewerArtifact ? (
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 12px',
+                  borderBottom: '1px solid #e2e8f0',
+                  background: '#ffffff',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <Code2 size={15} style={{ color: '#64748b', flexShrink: 0 }} aria-hidden />
+                  <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{viewerArtifact.title}</span>
+                  <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 6, background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', flexShrink: 0 }}>{viewerArtifact.language}</span>
+                </div>
+                {viewerCanPreview ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} role="tablist" aria-label="Artifact view">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={viewerTab === 'code'}
+                      onClick={() => setViewerTab('code')}
+                      style={{
+                        padding: '3px 12px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 999,
+                        border: '1px solid ' + (viewerTab === 'code' ? '#0f172a' : '#e2e8f0'),
+                        background: viewerTab === 'code' ? '#0f172a' : '#ffffff',
+                        color: viewerTab === 'code' ? '#ffffff' : '#475569',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Code
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={viewerTab === 'preview'}
+                      onClick={() => setViewerTab('preview')}
+                      style={{
+                        padding: '3px 12px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 999,
+                        border: '1px solid ' + (viewerTab === 'preview' ? '#0f172a' : '#e2e8f0'),
+                        background: viewerTab === 'preview' ? '#0f172a' : '#ffffff',
+                        color: viewerTab === 'preview' ? '#ffffff' : '#475569',
+                        cursor: 'pointer',
+                        opacity: viewerCanPreview ? 1 : 0.5,
+                      }}
+                    >
+                      Preview
+                    </button>
+                </div>
+                ) : null}
+              </div>
+              {viewerTab === 'preview' && viewerCanPreview ? (
+                <div style={{ flex: 1, minHeight: 0, background: '#090d16', display: 'flex' }}>
+                  {viewerHtml ? (
+                    <iframe
+                      srcDoc={viewerHtml}
+                      title={viewerArtifact.title}
+                      sandbox="allow-scripts allow-modals"
+                      style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: '#090d16' }}
+                    />
+                    ) : (
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#475569', fontSize: 13 }}>
+                      <div style={{ width: 28, height: 28, border: '2px solid #334155', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                      <span>Preparing preview…</span>
+                      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <pre
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflow: 'auto',
+                    margin: 0,
+                    padding: 14,
+                    background: '#fffefa',
+                    color: '#1A1614',
+                    font: '12px/1.6 ui-monospace, Menlo, monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    userSelect: 'text',
+                  }}
+                >
+                  <code>{viewerArtifact.code}</code>
+                </pre>
+              )}
+            </div>
+          ) : (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 13 }}>
+              Open an artifact from chat (Split View / Preview) and it renders here.
+            </div>
+          )
         ) : null}
       </div>
     </aside>

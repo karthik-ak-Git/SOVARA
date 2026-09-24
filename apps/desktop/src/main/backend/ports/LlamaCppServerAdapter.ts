@@ -44,6 +44,7 @@ import {
   buildServerArgs,
   classifyLoadFailure,
   ensureLlamaRuntime,
+  extractLoadRootCause,
   findFreePort,
   getLlamaServerPath,
   getLlamaVersion,
@@ -53,13 +54,13 @@ import {
   parseParamsB,
   planMemory,
   planPartialFit,
+  preflightGgufArchitecture,
   queryGpuVram,
   readGgufModelInfo,
   selectRuntimeForModel,
   spawnLlamaServer,
   waitForServerReady,
 } from '../../services/llamaRuntime'
-import { HIDDEN_NEEDLE_MODEL_ID, hiddenNeedlePath, isHiddenNeedleDownloaded } from '../../services/hiddenModels'
 
 export interface AdapterDeps {
   spawn?: typeof spawnLlamaServer
@@ -213,7 +214,9 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const out: string[] = []
     walkGguf(this.libraryDir(), out)
     for (const dir of this.lmStudioCandidateDirs()) walkGguf(dir, out)
-    return [...new Set(out)].sort()
+    // Hide GGUFs whose arch stock llama.cpp cannot load (preflight ok:true on
+    // non-GGUF/bad-magic/parse-fail — only known-bad arch is dropped).
+    return [...new Set(out)].filter((f) => preflightGgufArchitecture(f).ok).sort()
   }
 
   private lmStudioCandidateDirs(): string[] {
@@ -258,12 +261,6 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    * (with or without `.gguf`), or display name. Throws model-not-found.
    */
   resolveModelPath(modelId: string): string {
-    // Hidden needle3 — not in registry, hidden path outside library scan
-    if (String(modelId) === HIDDEN_NEEDLE_MODEL_ID) {
-      const hp = hiddenNeedlePath(this.baseDir)
-      if (fs.existsSync(hp) && hp.toLowerCase().endsWith('.gguf')) return hp
-      throw new Error(`model-not-found: hidden needle3 not yet downloaded (run ensureHiddenNeedle3)`)
-    }
     const clean = String(modelId ?? '').trim()
     if (!clean) throw new Error('model-not-found: empty model id')
     if (path.isAbsolute(clean)) {
@@ -344,18 +341,22 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const key = String(instanceIdFor(String(modelId)))
     const cur = this.instances.get(key)
     if (cur) {
-      // Floor 8192 — never downgrade a resident 8192 to 4096 (that caused the 8192→4096→8192 ping-pong and 7-layer reload).
-      // Sovereign prompt is 6460 tokens; 4096 always overflows. So treat any request <8192 as 8192.
-      const want = Math.max(8192, opts?.ctxLen ?? 8192)
+      // Floor 12288 — sovereign prompt + tool catalog + workspace + injected contexts
+      // routinely hit ~6500-8500 prompt tokens; 8192 overflowed on the first
+      // tool turn (Nemotron-3-Nano measured 8372 vs 8192 server ctx). Bump to 12288
+      // fits comfortably on 6GB GPUs (Nemotron 4B Q4_K_M: 2706MB weights +
+      // ~2016MB KV@12288 + ~256MB workspace = ~4978MB total, leaves headroom).
+      // Never downgrade a resident higher ctx to a lower one (would ping-pong).
+      const want = Math.max(12288, opts?.ctxLen ?? 12288)
       const have = cur.ctxLen ?? 0
       if (have !== want && want > have) {
-        // Only upgrade, never downgrade — downgrade would trash VRAM fit and reintroduce 6460>4096.
+        // Only upgrade, never downgrade — downgrade would trash VRAM fit and reintroduce the overflow.
         appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-mismatch', { modelId: String(modelId), have, want })
         await this.unload(cur.id).catch(() => {})
         return this.load(modelId, { ...opts, ctxLen: want })
       }
       if (have !== want && want < have) {
-        // Caller asked for smaller ctx than resident — keep resident (8192 superset of 4096).
+        // Caller asked for smaller ctx than resident — keep resident (12288 superset of 8192).
         appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-keep', { modelId: String(modelId), have, want, keep: have })
       }
       const h = await this.health(cur.id)
@@ -364,7 +365,9 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         return this.publicView(cur)
       }
     }
-    return this.load(modelId, opts)
+    // Cold-load floor: classification can pass 1024/2048 — never spawn below 12288
+    // (sovereign prompt ~6500-8500 tokens with tool catalog + workspace + skills injected).
+    return this.load(modelId, { ...opts, ctxLen: Math.max(12288, opts?.ctxLen ?? 12288) })
   }
 
   /** Streaming accounting (spec §11–12): request start. */
@@ -430,7 +433,10 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<TrackedInstance> {
     const t0 = Date.now()
     const runtimeId = opts?.runtimeId ?? 'local'
-    let ctxLen = Math.max(512, opts?.ctxLen ?? 8192)
+    // Keep caller's ctxLen (tests/offload harnesses pass small values on purpose).
+    // App paths floor at ensureHealthy cold-load + orchestrator call sites instead.
+    // Default 12288 to match the orchestrator floor (Nemotron-3-Nano measured 8372 tokens > 8192 ctx).
+    let ctxLen = Math.max(512, opts?.ctxLen ?? 12288)
     const id = instanceIdFor(modelId)
     const key = id as string
 
@@ -457,6 +463,13 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     const modelPath = this.resolveModelPath(modelId)
     if (isMmprojFile(path.basename(modelPath))) {
       throw new Error(`invalid-model: "${path.basename(modelPath)}" is a vision projector shard (--mmproj), not a runnable language model -- load its companion LLM GGUF instead`)
+    }
+    // Preflight GGUF arch before any spawn/VRAM work — fail fast with a
+    // precise message when the header declares an architecture stock
+    // llama.cpp cannot load (custom/experimental, missing transformer shape).
+    const preflight = preflightGgufArchitecture(modelPath)
+    if (!preflight.ok) {
+      throw new Error(`model-load-failed: "${path.basename(modelPath)}" — ${preflight.reason}`)
     }
     let fileSize = 0
     try { fileSize = fs.statSync(modelPath).size } catch { /* resolved above, race-proof anyway */ }
@@ -523,8 +536,10 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     }
 
     await this.withGlobalMutex(async () => {
-      // Honest capacity gate — skipped when caller explicitly asked for cpu/fit/explicit-ngl.
-      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu?.totalMB && estimatedVramMB > gpu.totalMB) {
+      // Honest capacity gate (spec §6) — refusal is ASCII-only, names
+      // fitting alternatives from the user's actual library, and suggests
+      // Fit mode if partial offload could salvage the request.
+      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu.totalMB > 0 && estimatedVramMB > gpu.totalMB) {
         const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
         const altHint = alternatives.length > 0
           ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
@@ -697,14 +712,46 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
           await killServer(proc2).catch(() => {})
           this.instances.delete(key)
           const raw2 = e2 instanceof Error ? e2.message : String(e2)
-          throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready on retry (${raw2.slice(0, 200)})`)
+          const cause2 = extractLoadRootCause(raw2) ?? raw2.slice(0, 400)
+          throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready on retry — ${cause2}`)
         }
         return this.finishLoad(t2, { modelId, modelPath, fileSize, estimatedVramMB, plan, ctxLen, vramBefore, t0 })
       }
-      if (c.kind === 'oom') throw new Error(`oom: "${path.basename(modelPath)}" exhausted GPU memory during load -- pick a smaller quant or lower context (no automatic -ngl reduction applied)`)
+      if (c.kind === 'oom') {
+        if (ngl > 0) {
+          appendLlamaLog(this.baseDir, 'load-oom-retry-reduced', { modelId, originalNgl: ngl, originalCtx: ctxLen })
+          const reducedPort = await this.deps.findPort()
+          const reducedCtx = Math.max(2048, Math.floor(ctxLen / 2))
+          const reducedNgl = Math.floor(ngl * 0.65)
+          const reducedEndpoint = `http://127.0.0.1:${reducedPort}/v1`
+          const logDir = path.join(getSovaraDataDir(this.baseDir), 'logs')
+          let reducedProc: ChildProcess
+          try {
+            reducedProc = this.deps.spawn({ exePath: selection.executable, modelPath, port: reducedPort, ctxLen: reducedCtx, nGpuLayers: reducedNgl, alias, logDir, safeArgs: true })
+            const tReduced: TrackedInstance = { ...tracked, port: reducedPort, endpoint: reducedEndpoint, proc: reducedProc, pid: reducedProc.pid, ctxLen: reducedCtx, offloadedLayers: reducedNgl, partialOffload: true }
+            this.instances.set(key, tReduced)
+            reducedProc.once('exit', (code, signal) => {
+              const cur = this.instances.get(key)
+              if (!cur || cur.state === 'EVICTING') return
+              cur.state = 'FAILED'; cur.status = statusFor('FAILED'); cur.health = 'unhealthy'
+              cur.failureReason = 'runner-crash'; cur.lastError = `runner exited (code=${code ?? 'unknown'} signal=${signal ?? 'none'})`
+            })
+            await this.deps.waitReady(reducedPort, 120_000, reducedProc)
+            return this.finishLoad(tReduced, { modelId, modelPath, fileSize, estimatedVramMB: Math.round(estimatedVramMB * 0.65), plan, ctxLen: reducedCtx, vramBefore, t0 })
+          } catch {
+            await killServer(reducedProc!).catch(() => {})
+            this.instances.delete(key)
+          }
+        }
+        throw new Error(`resource-pressure: oom: "${path.basename(modelPath)}" exhausted GPU memory during load (needs ~${estimatedVramMB}MB) -- insufficient VRAM: cannot fit this GPU`)
+      }
+      if (c.kind === 'invalid-model') {
+        const cause = extractLoadRootCause(raw) ?? c.message.slice(0, 400)
+        throw new Error(`model-load-failed: "${path.basename(modelPath)}" — ${cause}`)
+      }
       // CUDA runtime missing → retry once on CPU (Ollama fallback)
       if (c.kind === 'backend-failure' && ngl !== 0) {
-        appendLlamaLog(this.baseDir, 'load-cuda-fallback-cpu', { modelId, error: raw.slice(0,200) })
+        appendLlamaLog(this.baseDir, 'load-cuda-fallback-cpu', { modelId, error: (extractLoadRootCause(raw) ?? raw.slice(0, 400)) })
         const cpuPort = await this.deps.findPort()
         const cpuArgs = buildServerArgs({ modelPath, port: cpuPort, ctxLen, nGpuLayers: 0, alias, reasoningEffort: 'medium', enableTools: true })
         const cpuEndpoint = `http://127.0.0.1:${cpuPort}/v1`
@@ -731,11 +778,13 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
           await killServer(cpuProc).catch(() => {})
           this.instances.delete(key)
           const raw2 = e2 instanceof Error ? e2.message : String(e2)
-          throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready on CPU fallback (${raw2.slice(0,200)})`)
+          const cause2 = extractLoadRootCause(raw2) ?? raw2.slice(0, 400)
+          throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready on CPU fallback — ${cause2}`)
         }
         return this.finishLoad(cpuTracked, { modelId, modelPath, fileSize, estimatedVramMB: 0, plan, ctxLen, vramBefore, t0 })
       }
-      throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready (${raw.slice(0, 200)})`)
+      const rootCause = extractLoadRootCause(raw) ?? raw.slice(0, 400)
+      throw new Error(`model-load-failed: "${path.basename(modelPath)}" did not become ready — ${rootCause}`)
     }
 
     return this.finishLoad(tracked, { modelId, modelPath, fileSize, estimatedVramMB, plan, ctxLen, vramBefore, t0 })

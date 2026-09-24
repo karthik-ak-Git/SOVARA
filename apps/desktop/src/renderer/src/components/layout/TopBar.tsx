@@ -101,7 +101,7 @@ export function TopBar({
   }, [modelOpen, gpuOpen, sessionMenuOpen])
 
   return (
-    <header className="topbar" role="banner" style={{ background: '#ffffff', borderBottom: '1px solid #e2e8f0', height: 48, padding: '0 12px' }}>
+    <header className="topbar" role="banner" style={{ background: 'var(--bg-elevated, #ffffff)', borderBottom: '1px solid var(--border, #e2e8f0)', height: 48, padding: '0 12px' }}>
       <div className="topbar-drag-region" />
       
       <div className="brand-group" style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, height: '100%' }}>
@@ -110,7 +110,7 @@ export function TopBar({
           className="topbar-icon-btn"
           aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
           onClick={onToggleSidebar}
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted, #64748b)', padding: 4, flexShrink: 0 }}
         >
           <Menu size={16} aria-hidden />
         </button>
@@ -152,10 +152,10 @@ export function TopBar({
                   gap: 6,
                   padding: '6px 12px',
                   borderRadius: '6px 6px 0 0',
-                  background: isSelected ? '#ffffff' : '#f8fafc',
-                  border: isSelected ? '1px solid #e2e8f0' : '1px solid transparent',
-                  borderBottom: isSelected ? '2px solid #0284c7' : '1px solid transparent',
-                  color: isSelected ? '#0f172a' : '#64748b',
+                  background: isSelected ? 'var(--bg-elevated, #ffffff)' : 'var(--bg-soft, #f8fafc)',
+                  border: isSelected ? '1px solid var(--border, #e2e8f0)' : '1px solid transparent',
+                  borderBottom: isSelected ? '2px solid var(--accent, #0284c7)' : '1px solid transparent',
+                  color: isSelected ? 'var(--text, #0f172a)' : 'var(--muted, #64748b)',
                   fontWeight: isSelected ? 600 : 400,
                   fontSize: 12,
                   cursor: 'pointer',
@@ -163,7 +163,7 @@ export function TopBar({
                   minWidth: 90,
                   userSelect: 'none',
                   height: 36,
-                  boxShadow: isSelected ? '0 -1px 3px rgba(0,0,0,0.04)' : 'none',
+                  boxShadow: isSelected ? 'var(--shadow-panel)' : 'none',
                   transition: 'background 120ms ease, color 120ms ease',
                 }}
               >
@@ -234,15 +234,15 @@ export function TopBar({
       <div className="header-status" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div className="status-popover-wrap" ref={modelRef}>
           <button type="button" className="status-chip" onClick={() => setModelOpen((v) => !v)} aria-expanded={modelOpen} aria-haspopup="dialog" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#334155' }}>
-            <span className="status-dot" aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
-            {activeModelName ?? 'Qwen3 8B'}
+            <span className="status-dot" aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: (activeModelContext ?? '').includes('Ready') ? '#10b981' : (activeModelName ? '#f59e0b' : '#cbd5e1') }} />
+            {activeModelName ?? 'No model selected'}
             <ChevronDown size={12} aria-hidden />
           </button>
           {modelOpen ? (
             <div className="popover" role="dialog" aria-label="Local model" style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, color: '#0f172a' }}>
               <div className="popover-title" style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Active Inference Model</div>
-              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Model</span><strong>{activeModelName ?? 'Qwen3 8B'}</strong></div>
-              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Status</span><strong style={{ color: '#10b981' }}>Ready</strong></div>
+              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Model</span><strong>{activeModelName ?? 'No model selected'}</strong></div>
+              <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Status</span><strong style={{ color: (activeModelContext ?? '').includes('Ready') ? '#10b981' : '#94a3b8' }}>{(activeModelContext ?? 'Offline')}</strong></div>
             </div>
           ) : null}
         </div>

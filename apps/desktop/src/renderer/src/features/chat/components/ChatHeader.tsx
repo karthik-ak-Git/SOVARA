@@ -12,14 +12,19 @@ interface ChatHeaderProps {
  * Consumes ActiveModelState without knowing runtime (llama.cpp/Ollama/LM Studio).
  */
 export function ChatHeader({ model, onOpenModels }: ChatHeaderProps): ReactElement {
-  const available = model.available && !!model.displayName
+  const hasName = !!model.displayName
+  const isReady = model.available && hasName
   return (
     <header className="chat-header" role="banner" aria-label="Chat header">
       <div className="chat-header-model">
         <span className="chat-header-label muted small">Model</span>
-        {available ? (
+        {isReady ? (
           <span className="status-badge" role="status" aria-label={`Local model ${model.displayName}`}>
             <span aria-hidden>●</span> {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''} — Ready
+          </span>
+        ) : hasName ? (
+          <span className="status-badge status-badge--unavailable" role="status" aria-label={`Model ${model.displayName} offline`}>
+            <span aria-hidden>●</span> {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''} — Offline
           </span>
         ) : (
           <span className="status-badge status-badge--unavailable" role="status" aria-label="No local model selected">
@@ -27,7 +32,7 @@ export function ChatHeader({ model, onOpenModels }: ChatHeaderProps): ReactEleme
           </span>
         )}
       </div>
-      {!available && onOpenModels ? (
+      {!isReady && onOpenModels ? (
         <button type="button" className="btn btn-sm" onClick={onOpenModels} aria-label="Open Models">
           Open Models
         </button>

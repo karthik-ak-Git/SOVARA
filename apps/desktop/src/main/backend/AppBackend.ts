@@ -28,9 +28,11 @@ import {
   getFileStatus, reconcileLibrary, resolveModelFolder,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
 import { downloadRowId } from '../config/RuntimeConfigStore'
-import { ensureHiddenNeedle3 } from '../services/hiddenModels'
+import { initLayaDecision, LAYA_MODEL_ID, decideLaya, isLayaReady, getLayaModelDir, LAYA_TIE_THRESHOLD } from '../services/layaDecision'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -246,13 +248,25 @@ export class AppBackend {
       models,
       resources
     }
-    // Hidden auto-router: Cactus-Compute/needle3 — download by default, invisible, tool-use.
-    void ensureHiddenNeedle3(baseDir).catch(() => {})
+    // Laya decision sidecar: visible to the user via Library; once the user
+    // downloads convaiinnovations/laya, the manager below spins up the Python
+    // sidecar on 127.0.0.1:51830 and the smart router can call decideLaya()
+    // for tie-breaks. Replaces the old hidden needle3 auto-router hack.
+    const libraryDir = this.getLibraryDir()
+    const layaCandidate = join(libraryDir, ...LAYA_MODEL_ID.split('/'))
+    initLayaDecision({ modelDir: existsSync(layaCandidate) ? layaCandidate : null })
     // Initialize tool infrastructure asynchronously
     void this.toolInfrastructure.initialize().catch((e) => {
       console.error('[AppBackend] ToolInfrastructure initialization failed:', e)
     })
   }
+
+  /** Expose the Laya decision surface so smart router can ask the user-visible
+   *  classifier to break routing ties without a separate dependency injection. */
+  askLayaDecision = decideLaya
+  isLayaDecisionReady = isLayaReady
+  getLayaDecisionModelDir = getLayaModelDir
+  readonly LAYA_TIE_THRESHOLD = LAYA_TIE_THRESHOLD
 
   /**
    * Initialize tool infrastructure - call after construction if not already initialized
@@ -666,6 +680,16 @@ export class AppBackend {
     const stored = this.runtimeConfig.getAppSetting('global_workspace_root')
     if (stored) return stored
     return path.join(app.getPath('userData'), 'SovaraWorkspace')
+  }
+
+  getProjectWorkspace(projectId: string | null): string | null {
+    if (!projectId) return null
+    try {
+      const p = (this.persistenceAdapter as unknown as { getProjectSync: (id: string) => { rootPath: string } | null }).getProjectSync(projectId)
+      return p?.rootPath ?? null
+    } catch {
+      return null
+    }
   }
 
   ensureGlobalWorkspace(): string {

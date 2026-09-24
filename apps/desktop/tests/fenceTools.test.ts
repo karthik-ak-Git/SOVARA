@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractToolFences, stripToolFences, looksLikeToolFence, parseLenientJson } from '../src/main/backend/tools/fenceTools'
+import { extractToolFences, stripToolFences, looksLikeToolFence, parseLenientJson, extractBareToolCalls, stripBareToolCalls, looksLikeBareToolCall } from '../src/main/backend/tools/fenceTools'
 
 describe('extractToolFences', () => {
   it('parses a standard 3-tick fence', () => {
@@ -98,5 +98,49 @@ describe('parseLenientJson', () => {
     expect(parseLenientJson('', 'fs_list')).toEqual({ path: '.' })
     expect(parseLenientJson('%%%')).toEqual({})
     expect(parseLenientJson('%%%', 'fs_list')).toEqual({ path: '.' })
+  })
+})
+
+describe('extractBareToolCalls and stripBareToolCalls', () => {
+  it('parses Spark XHToken XML tool call with arg_key and arg_value', () => {
+    const raw = '<tool_call>fs_read<arg_key>path</arg_key><arg_value>D:\\synthetic-vivarium\\Synthetic-Vivarium-Frontend\\README.md</arg_value></tool_call>'
+    expect(looksLikeBareToolCall(raw)).toBe(true)
+    const calls = extractBareToolCalls(raw)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].toolName).toBe('fs_read')
+    expect(calls[0].args).toEqual({ path: 'D:\\synthetic-vivarium\\Synthetic-Vivarium-Frontend\\README.md' })
+    expect(stripBareToolCalls(raw)).toBe('')
+  })
+
+  it('parses tool_call containing JSON', () => {
+    const raw = '<tool_call>{"name": "fs_read", "arguments": {"path": "src/App.tsx"}}</tool_call>'
+    const calls = extractBareToolCalls(raw)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].toolName).toBe('fs_read')
+    expect(calls[0].args).toEqual({ path: 'src/App.tsx' })
+  })
+
+  it('parses invoke name with parameter tags', () => {
+    const raw = '<invoke name="fs_read"><parameter name="path">README.md</parameter></invoke>'
+    const calls = extractBareToolCalls(raw)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].toolName).toBe('fs_read')
+    expect(calls[0].args).toEqual({ path: 'README.md' })
+  })
+
+  it('parses XML tag style <fs_read path="..."/>', () => {
+    const raw = '<fs_read path="D:/test.txt">'
+    const calls = extractBareToolCalls(raw)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].toolName).toBe('fs_read')
+    expect(calls[0].args).toEqual({ path: 'D:/test.txt' })
+  })
+
+  it('parses bare tool_call with trailing arguments', () => {
+    const raw = 'fs_read {"path": "test.txt"}'
+    const calls = extractBareToolCalls(raw)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].toolName).toBe('fs_read')
+    expect(calls[0].args).toEqual({ path: 'test.txt' })
   })
 })

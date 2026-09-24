@@ -54,6 +54,15 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
   const isStackTraceOrLog = /^[A-Za-z0-9_.-]+\.[a-z]{2,4}:\d+/m.test(text.trim()) ||
     /\b(?:Uncaught|TypeError|SyntaxError|ReferenceError|at\s+\S+|line\s+\d+|:\d+:\d+)\b/i.test(text)
 
+  // Read/inspect intent: the user wants a file's CONTENTS, not a new file
+  // written. Without this guard, "read README.md" matched fileRe below and
+  // triggered the artifact fallback ("Generated file: README.md").
+  const wantsCreateArtifact =
+    /\b(?:create|generate|make|build|export|save|download|produce|compile|convert)\b[^.\n]{0,80}\b(?:file|pdf|pptx?|docx?|xlsx?|csv|excel|spreadsheet|word|presentation|slide deck|document|report|script|code)\b/i.test(text) ||
+    /\b(?:save|write|create|generate|export)\s+(?:it|this|the|that|them)?\s*(?:as|to|into)\s+[A-Za-z0-9 _\-]+\.[A-Za-z0-9]+/i.test(text)
+  const isReadIntent = /\b(?:read|open|show|display|view|load|fetch|print|cat|preview|summar(?:y|ize|ise)|review|analy[sz]e|inspect|check|contents?\s+of|what(?:'s| is| are)\s+in)\b/i.test(text)
+  if (isReadIntent && !wantsCreateArtifact) return null
+
   // 1. Explicit filename with a known extension wins (only if not a stack trace/log paste).
   const fileRe = /([A-Za-z0-9 _\-][A-Za-z0-9 _\-.]{0,90}\.(pdf|xlsx?|docx?|pptx?|csv|py|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|cpp|h|hpp|cs|rb|php|swift|html|css|json|ya?ml|xml|md|txt|sh|ps1|sql|r|lua|toml|vue|svelte))\b/i
   const fileM = !isStackTraceOrLog ? fileRe.exec(text) : null

@@ -230,21 +230,56 @@ export function buildBudgetedHistory(
 
 function compactForCtx(messages: LlmChatMessage[], nCtx: number): LlmChatMessage[] {
   // Budget-aware final guard — never exceed nCtx. System at [0] is sacred.
+  // Tool-aware: never orphan a tool result or drop the active tool exchange.
   const reserved = 1200
   const budgetTokens = Math.max(800, nCtx - reserved)
   const budgetChars = budgetTokens * 4
   let chars = messages.reduce((n, m) => n + m.content.length, 0)
   if (chars <= budgetChars) return messages
-  const out = [...messages]
-  // Drop oldest history first (index 1..), never system(0) or last user(tail)
-  while (out.length > 2 && chars > budgetChars) {
-    const dropIdx = 1
-    chars -= out[dropIdx].content.length
-    out.splice(dropIdx, 1)
+
+  // Active exchange = from last user message to end (user + assistant tool_calls + tool results).
+  let lastUserIdx = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') { lastUserIdx = i; break }
   }
-  if (chars > budgetChars && out.length > 2) {
-    const excess = chars - budgetChars
-    out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
+  const hasToolCalls = (m: LlmChatMessage): boolean => {
+    const tc = (m as unknown as { tool_calls?: unknown }).tool_calls
+    return Array.isArray(tc) && tc.length > 0
+  }
+
+  const out = [...messages]
+  // Drop oldest history first (index 1 .. lastUserIdx-1), never system(0),
+  // never the active exchange, and keep tool_calls+tool groups intact.
+  while (out.length > lastUserIdx + 1 && chars > budgetChars && lastUserIdx >= 2) {
+    const m = out[1]!
+    let dropCount = 1
+    if (m.role === 'assistant' && hasToolCalls(m)) {
+      while (1 + dropCount < lastUserIdx && out[1 + dropCount]!.role === 'tool') dropCount++
+    } else if (m.role === 'tool') {
+      while (1 + dropCount < lastUserIdx && out[1 + dropCount]!.role === 'tool') dropCount++
+    }
+    if (1 + dropCount > lastUserIdx) dropCount = lastUserIdx - 1
+    if (dropCount <= 0) break
+    for (let k = 0; k < dropCount; k++) chars -= out[1]!.content.length
+    out.splice(1, dropCount)
+    lastUserIdx -= dropCount
+  }
+  // Still over? Truncate largest history message, then largest non-system — never drop.
+  if (chars > budgetChars) {
+    let targetIdx = -1
+    for (let i = 1; i < lastUserIdx && i < out.length; i++) {
+      if (targetIdx < 0 || out[i]!.content.length > out[targetIdx]!.content.length) targetIdx = i
+    }
+    if (targetIdx < 0 && out.length > 1) {
+      for (let i = 1; i < out.length; i++) {
+        if (targetIdx < 0 || out[i]!.content.length > out[targetIdx]!.content.length) targetIdx = i
+      }
+    }
+    if (targetIdx >= 0) {
+      const excess = chars - budgetChars
+      const c = out[targetIdx]!.content
+      out[targetIdx] = { ...out[targetIdx]!, content: c.slice(0, Math.max(200, c.length - excess - 100)) + '…[truncated]' }
+    }
   }
   return out
 }
@@ -363,7 +398,9 @@ export class ChatService {
     let active = this.deps.workbench.getActiveModel()
     const isAutoActive = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
     if (isAutoActive) {
-      // Auto smart-routing: hidden needle3 (Cactus-Compute/needle3) is first in listModelsForRouting when downloaded — tool-use will prefer it
+      // Auto smart-routing via ModelRouter; tie-breaks consult the Laya
+      // decision sidecar (`services/layaDecision.ts`) when both candidates
+      // score within `LAYA_TIE_THRESHOLD`.
       try {
         const wbWithRouting = this.deps.workbench as unknown as { listModelsForRouting?: () => import('@shared/types/models').DiscoveredModel[] }
         const rawForAuto = typeof wbWithRouting.listModelsForRouting === 'function'
@@ -530,7 +567,7 @@ export class ChatService {
     if (ownedInstanceId) this.noteStart(ownedInstanceId)
     try {
       let reasoningBuffer = ''
-      let inReasoning = !!opts?.reasoning
+      let inReasoning = false
       for await (const chunk of this.deps.llm.streamChat({
         endpoint,
         model,
@@ -967,9 +1004,12 @@ export class ChatService {
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: 'model-load-failed', error: raw, modelId, runtimeId })
       // eslint-disable-next-line no-console
       console.error(`[SOVARA][CHAT][ERROR] load failed model=${modelId}: ${raw}`)
-      // Transparent fallback for even-partial no-fit — dynamic: rank by ACTUAL
+      // Transparent fallback for resource-fit failures — dynamic: rank by ACTUAL
       // free VRAM/RAM fit via pickFittingModel (no hardcoded model names).
-      if (/even partial offload does not fit/i.test(raw)) {
+      // Concurrency refusals are NOT size problems — never swap for those.
+      const isResourceFit = /even partial offload does not fit|cannot fit this GPU|resource-pressure|insufficient VRAM|needs ~\d+/i.test(raw)
+      const isConcurrency = /max concurrent|model\(s\) already resident|eligible for eviction/i.test(raw)
+      if (isResourceFit && !isConcurrency) {
         let fallbackId: string | null = null
         try {
           const [avail, snap] = await Promise.all([
@@ -989,8 +1029,8 @@ export class ChatService {
             // Retry once with fitting model (evicts old resident)
             const models2 = this.deps.models as ModelRuntimePort & { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }
             const inst2 = models2.ensureHealthy
-              ? await models2.ensureHealthy(fallbackId as never, { runtimeId: 'local' } as never)
-              : await this.deps.models.load(fallbackId as never, { runtimeId: 'local' } as never)
+              ? await models2.ensureHealthy(fallbackId as never, { runtimeId: 'local', gpu: 'fit' } as never)
+              : await this.deps.models.load(fallbackId as never, { runtimeId: 'local', gpu: 'fit' } as never)
             const h2 = await this.deps.models.health(inst2.id).catch(() => ({ ok: false }))
             if (h2.ok) {
               const endpoint2 = this.deps.models.baseUrl(inst2.id)

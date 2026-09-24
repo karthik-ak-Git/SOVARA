@@ -1,10 +1,13 @@
 'use client'
 
-import { useState, useMemo, type ReactElement } from 'react'
+import { useState, useEffect, useMemo, type ReactElement } from 'react'
 import { PersonStanding, Sparkles, Copy, Check } from 'lucide-react'
 import { MessageActions } from './components/MessageActions'
 import { ArtifactCard } from '../../components/ui/ArtifactCard'
 import { ReasoningBlock } from '../../components/ui/ReasoningBlock'
+import { coalesceFragmentedProse } from '../../utils/proseFormatter'
+
+export { coalesceFragmentedProse }
 
 export interface ArtifactInfo {
   title: string
@@ -60,7 +63,8 @@ interface StructuredResponseItem {
 
 type ParsedPart = CodeBlockItem | TextItem | StructuredResponseItem
 
-function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
+
+export function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
   // Hide raw tool/thinking leaks: <thinking>...</thinking> should be ReasoningBlock, not bubble text (your 10:49 PM screenshot).
   // Also <atem:invoke> leaked as "— used tool —" must be card. Strip both so bubble shows only the final answer.
   const stripToolTags = (s: string): string => {
@@ -98,6 +102,7 @@ function parseMessageContent(raw: string, streaming = false): ParsedPart[] {
     return out.trim()
   }
   raw = stripToolTags(raw)
+  raw = coalesceFragmentedProse(raw)
   // Force English lang for HTML artifact preview
   const normalizeCode = (code: string): string => code.replace(/<html\s+lang="es"/gi, '<html lang="en"').replace(/<html lang='es'/gi, "<html lang='en'")
   // Raw HTML diagram without fence (diagram-design outputs whole HTML file) — render as preview
@@ -270,8 +275,19 @@ export function MessageBubble({
   const isUser = role === 'user'
   const [isEditing, setIsEditing] = useState(false)
   const [editDraft, setEditDraft] = useState(content)
-  const [showReasoning, setShowReasoning] = useState(true)
+  const [userToggledReasoning, setUserToggledReasoning] = useState(false)
+  const [showReasoning, setShowReasoning] = useState(Boolean(reasoningStreaming))
   const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!userToggledReasoning) {
+      if (reasoningStreaming) {
+        setShowReasoning(true)
+      } else if (!streaming) {
+        setShowReasoning(false)
+      }
+    }
+  }, [reasoningStreaming, streaming, userToggledReasoning])
 
   const parsedParts = useMemo(() => {
     if (isUser || !content) return [{ type: 'text' as const, text: content }]
@@ -479,7 +495,10 @@ export function MessageBubble({
             reasoning={reasoning ?? ''}
             streaming={reasoningStreaming}
             open={showReasoning}
-            onToggle={setShowReasoning}
+            onToggle={(next) => {
+              setUserToggledReasoning(true)
+              setShowReasoning(next)
+            }}
           />
         ) : null}
 

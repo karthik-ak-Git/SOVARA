@@ -564,9 +564,9 @@ export function planMemory(
     const kvPerSeqMB = Math.round((resolvedCtx / 1024) * 430 * scale)
     kvCacheMB = kvPerSeqMB * nParallel
   }
-  const workspaceMB = opts?.workspaceMB ?? Math.round(weightsMB * 0.05)
+  const workspaceMB = opts?.workspaceMB ?? Math.max(128, Math.round(weightsMB * 0.08))
   const overheadMB = opts?.overheadMB ?? 256
-  const estimatedMB = Math.round(weightsMB * 1.02) + kvCacheMB + workspaceMB + 40 // ollama graph 8% + batch 60MB, not 10% 256 overhead
+  const estimatedMB = Math.round(weightsMB * 1.02) + kvCacheMB + workspaceMB + overheadMB
   return { estimatedMB, weightsMB, kvCacheMB, workspaceMB, overheadMB, ctxLen: resolvedCtx, nParallel, archAware }
 }
 
@@ -637,6 +637,10 @@ export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'run
   const lower = msg.toLowerCase()
   if (/cancelled/.test(lower)) return { kind: 'cancelled', recoverable: false, message: msg }
   if (/model-not-found|invalid model|no gguf|empty model id|not in the sovara library/i.test(msg)) return { kind: 'invalid-model', recoverable: false, message: msg }
+  // Root-cause patterns first — must precede readiness/exit checks so the true
+  // failure ("unknown model architecture") is classified as invalid-model,
+  // not swallowed as a generic readiness-timeout / runner-crash.
+  if (/unknown model architecture|error loading model|failed to read magic|invalid magic/i.test(msg)) return { kind: 'invalid-model', recoverable: false, message: msg }
   if (/runtime-not-installed|not installed|local runtime not installed|runner.*missing|llama-server.*not found/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
   if (/could not start.*spawn UNKNOWN|spawn UNKNOWN|windows blocked|w dac|controlled folder|allow-list/i.test(msg)) return { kind: 'runner-missing', recoverable: false, message: msg }
   if (/did not become ready|readiness|time\s*out|timeout/i.test(msg)) return { kind: 'readiness-timeout', recoverable: false, message: msg }
@@ -647,6 +651,99 @@ export function classifyLoadFailure(raw: string): { kind: 'invalid-model' | 'run
   if (/exit|crash|signal|died|killed/i.test(msg)) return { kind: 'runner-crash', recoverable: false, message: msg }
   if (/could not start|spawn|enoent/i.test(msg)) return { kind: 'startup-failure', recoverable: false, message: msg }
   return { kind: 'unknown', recoverable: false, message: msg }
+}
+
+/**
+ * Extract the true root-cause line from llama-server stderr.
+ * Scans the FULL stderr ring for high-confidence failure patterns; returns null when none match.
+ */
+export function extractLoadRootCause(raw: string): string | null {
+  const s = String(raw ?? '')
+  if (!s.trim()) return null
+  const patterns: RegExp[] = [
+    /unknown model architecture[:\s]+'[^']+'/,
+    /error loading model:\s*[^\n\r]+/i,
+    /failed to read magic[^\n\r]*/i,
+    /invalid magic[^\n\r]*/i,
+    /gguf_init[^\n\r]*magic[^\n\r]*/i,
+    /cuda out of memory/i,
+    /address already in use/i,
+    /not a valid gguf/i,
+    /architecture '[^']+' is not supported/i,
+  ]
+  for (const p of patterns) {
+    const m = s.match(p)
+    if (m) return m[0].trim().slice(0, 400)
+  }
+  // Fallback: first llama.cpp E-level error mentioning load/model/gguf
+  for (const line of s.split(/\r?\n/)) {
+    if (/^\s*E\s+/.test(line) && /model|gguf|magic|arch|load/i.test(line)) {
+      return line.trim().slice(0, 400)
+    }
+  }
+  return null
+}
+
+/**
+ * Preflight GGUF before spawning llama-server.
+ * Only fails when the header is readable, general.architecture is present,
+ * but the transformer shape keys (e.g. `${arch}.block_count`) are missing —
+ * which indicates a custom/experimental arch stock llama.cpp cannot load.
+ * All other cases fall through to let llama-server surface the real error.
+ */
+export function preflightGgufArchitecture(modelPath: string): { ok: true; arch: string } | { ok: false; reason: string } {
+  try {
+    if (!modelPath.toLowerCase().endsWith('.gguf')) return { ok: true, arch: '' }
+    const fd = fs.openSync(modelPath, 'r')
+    try {
+      const stat = fs.fstatSync(fd)
+      if (stat.size < 32) return { ok: true, arch: '' } // too small — let llama-server error
+      const buf = Buffer.alloc(Math.min(4 << 20, stat.size))
+      fs.readSync(fd, buf, 0, buf.length, 0)
+      const cursor = { off: 0 }
+      const take = (n: number): Buffer => {
+        if (cursor.off + n > buf.length) throw new Error('short read')
+        const s = buf.subarray(cursor.off, cursor.off + n)
+        cursor.off += n
+        return s
+      }
+      if (take(4).toString('binary') !== 'GGUF') return { ok: true, arch: '' } // not our job — llama-server handles
+      take(4) // version
+      take(8) // tensor count
+      const kvCount = Number(take(8).readBigUInt64LE())
+      if (!Number.isFinite(kvCount) || kvCount > 1 << 16) return { ok: true, arch: '' }
+      const meta = new Map<string, unknown>()
+      for (let i = 0; i < kvCount; i++) {
+        const keyLen = Number(take(8).readBigUInt64LE())
+        if (keyLen > 1 << 16) break
+        const key = take(keyLen).toString('utf8')
+        const type = take(4).readUInt32LE()
+        if (key.startsWith('tokenizer.')) {
+          try { skipGgufValue(take, cursor, buf.length, type) } catch { break }
+        } else {
+          try {
+            meta.set(key, readGgufValue(buf, cursor, type))
+          } catch {
+            break
+          }
+        }
+      }
+      const arch = meta.get('general.architecture')
+      if (typeof arch !== 'string' || !arch) return { ok: true, arch: '' } // no arch — let llama-server error
+      const blockCount = meta.get(`${arch}.block_count`)
+      if (blockCount === undefined || blockCount === null) {
+        return {
+          ok: false,
+          reason: `GGUF architecture '${arch}' is not supported by the bundled llama.cpp — missing ${arch}.block_count (custom/experimental model; re-export as a standard llama.cpp GGUF)`,
+        }
+      }
+      return { ok: true, arch }
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return { ok: true, arch: '' } // parse failure — let llama-server surface the real error
+  }
 }
 
 /**
@@ -726,19 +823,19 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   const threads = pickThreads(4, 64)
   const threadsBatch = threads
   const isPartialOffload = (opts.nGpuLayers ?? 999) < 999
-  const ctx = Math.max(2048, opts.ctxLen ?? 8192)
+  const ctx = Math.max(2048, opts.ctxLen ?? 12288)
   let fileMB = 0
   try { fileMB = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)) } catch { fileMB = 0 }
-  const isHeavy = fileMB >= 5000
-  const batch = ctx >= 8192
-    ? (isHeavy ? 3072 : 4096)
-    : ctx >= 4096
+  const isHeavy = fileMB >= 4500
+  const isMedium = fileMB >= 2500
+  const batch = opts.safeArgs || isHeavy
+    ? 1024
+    : isMedium
+    ? 2048
+    : ctx >= 8192
     ? 2048
     : 1024
-  const ubatch = Math.min(
-    Math.max(Math.ceil(ctx / 2), 512),
-    4096
-  )
+  const ubatch = Math.min(batch, 512)
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
@@ -1088,7 +1185,8 @@ export async function waitForServerReady(
       const code = proc.exitCode
       const signal = proc.signalCode
       const stderrTail = (proc as unknown as { __stderrTail?: () => string }).__stderrTail?.() ?? ''
-      const tailLine = stderrTail.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 600)
+      const rootCause = extractLoadRootCause(stderrTail)
+      const tailLine = rootCause ?? stderrTail.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 600)
       throw new Error(
         `llama-server exited before becoming ready (code=${code ?? 'null'}, signal=${signal ?? 'null'})` +
         (tailLine ? ` — ${tailLine}` : ''),
@@ -1101,7 +1199,9 @@ export async function waitForServerReady(
       // not up yet — keep polling (connection-refused is the normal pre-ready state)
     }
     if (Date.now() - started > timeoutMs) {
-      const stderrTail = proc ? ((proc as unknown as { __stderrTail?: () => string }).__stderrTail?.() ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 600) : ''
+      const fullStderr = proc ? ((proc as unknown as { __stderrTail?: () => string }).__stderrTail?.() ?? '') : ''
+      const rootCause = extractLoadRootCause(fullStderr)
+      const stderrTail = rootCause ?? fullStderr.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 600)
       throw new Error(
         `local model did not become ready within ${Math.round(timeoutMs / 1000)}s` +
         (stderrTail ? ` — last stderr: ${stderrTail}` : ''),

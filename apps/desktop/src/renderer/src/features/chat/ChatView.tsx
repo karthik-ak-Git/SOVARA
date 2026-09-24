@@ -32,7 +32,8 @@ import {
 import type { AgentExecutionState } from './useChatSession'
 import { SessionBadge } from '../../components/ui/SessionBadge'
 import { ProjectSelector } from './ProjectSelector'
-import { preparePreviewHtml, isVisualArtifact } from '../../utils/previewBundler'
+import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact, bundleBinaryPreview } from '../../utils/previewBundler'
+import { ArtifactCard } from '../../components/ui/ArtifactCard'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -76,6 +77,8 @@ interface ChatViewProps {
   selectedProjectId?: string | null
   onSelectProject?: (id: string) => void
   onOpenArtifactFile?: (path: string) => void
+  /** Notifies the shell (right-rail sidebar) which artifact is currently open in chat. */
+  onActiveArtifactChange?: (artifact: { title: string; language: string; code: string } | null) => void
 }
 
 import { PermissionApprovalCard } from './components/PermissionApprovalCard'
@@ -151,6 +154,7 @@ export function ChatView({
   selectedProjectId,
   onSelectProject,
   onOpenArtifactFile = (): void => {},
+  onActiveArtifactChange,
 }: ChatViewProps): ReactElement {
   const exec = execution ?? { taskKind: null, phase: phase as AgentExecutionState['phase'] }
   const isStreaming =
@@ -247,6 +251,11 @@ export function ChatView({
     setArtifactsPanelOpen(true)
   }, [])
 
+  // Keep the right-rail sidebar's Artifact Viewer in sync with chat's active artifact
+  useEffect(() => {
+    onActiveArtifactChange?.(activeArtifact)
+  }, [activeArtifact, onActiveArtifactChange])
+
   const handleOpenArtifactFileWithPanel = useCallback(async (filePath: string) => {
     onOpenArtifactFile(filePath)
     try {
@@ -277,13 +286,21 @@ export function ChatView({
     const lower = err.toLowerCase()
     if (lower.includes('no active local model') || lower.includes('no-active-model') || lower.includes('no compatible model'))
       return { title: 'No local model available', hint: 'No compatible model is available for this task. Open Models and select a model or download one.', action: 'models' }
-    if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable'))
-      return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
     if (lower.includes('invalid-response') || lower.includes('runtime answered 500') || lower.includes('runtime answered 502') || lower.includes('runtime answered 503')) {
       // Suppressed — server auto-compacts and retries; no scary banner. Check logs if persists.
+      // Must precede the runtime-unavailable check: handlers wrap 400s as
+      // "runtime-unavailable: invalid-response: ..." and the generic branch
+      // would otherwise swallow the suppression.
       return null
     }
-    if (lower.includes('model could not be loaded') || lower.includes('model-load-failed') || lower.includes('failed')) {
+    // Narrow model-load check MUST precede the broad runtime-unavailable check:
+    // handlers now prefix model-load-failed separately, but pre-existing messages
+    // or inner throws may still carry both substrings — model load wins.
+    if (lower.includes('model-load-failed') || lower.includes('invalid-model') || lower.includes('unknown model architecture') || lower.includes('architecture') && lower.includes('not supported'))
+      return { title: 'Model could not be loaded', hint: err.replace(/^(model-load-failed|invalid-model):\s*/i, ''), action: 'models' }
+    if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable'))
+      return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
+    if (lower.includes('model could not be loaded') || lower.includes('failed')) {
       if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }
       return { title: 'Model could not be loaded', hint: err, action: 'models' }
     }
@@ -469,7 +486,34 @@ export function ChatView({
             onOpenArtifact={handleOpenArtifactInPanel}
           />
 
-          <div className="sv-status-bar" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 24px', fontSize: 11, color: '#8A8279', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
+          {activeArtifact && artifactsPanelOpen ? (
+            <div style={{ padding: '4px 44px 8px' }} aria-label="Active artifact">
+              {(() => {
+                const lang = activeArtifact.language.toLowerCase()
+                const isBinary = isBinaryArtifact(activeArtifact.code, lang) || /\.(pptx|xlsx|docx|pdf)$/i.test(activeArtifact.title)
+                if (isBinary) {
+                  return (
+                    <iframe
+                      srcDoc={bundleBinaryPreview(activeArtifact.title, lang)}
+                      title={activeArtifact.title}
+                      sandbox="allow-scripts allow-modals"
+                      style={{ width: '100%', height: 360, border: '1px solid var(--stitch-border, #E8E4DE)', borderRadius: 8, display: 'block', background: '#f8fafc' }}
+                    />
+                  )
+                }
+                return (
+                  <ArtifactCard
+                    title={activeArtifact.title}
+                    language={activeArtifact.language}
+                    code={activeArtifact.code}
+                    onOpenSplit={undefined}
+                  />
+                )
+              })()}
+            </div>
+          ) : null}
+
+          <div className="sv-status-bar" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 24px', fontSize: 11, color: 'var(--muted, #8A8279)', borderTop: '1px solid var(--stitch-border, #E8E4DE)' }}>
             {model.available && model.displayName ? (
               <span role="status" aria-label={`Local model ${model.displayName}`}>LOCAL MODEL — {model.displayName}{model.runtimeDisplayName ? ` on ${model.runtimeDisplayName}` : ''}</span>
             ) : (

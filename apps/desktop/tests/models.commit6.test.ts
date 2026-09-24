@@ -369,7 +369,7 @@ describe('Commit 6 — sovereignty proofs', () => {
           // — no data collection), and in main/window.ts CSP connect/img-src
           // (Explore model images) — all are user-invoked Explore surfaces,
           // never telemetry. Also allowed in hardwareCheck (fallback dummy URL) and hardwareProfile (no telemetry).
-          if (!norm.includes('hfCatalog.ts') && !norm.includes('explorerCatalog.ts') && !norm.includes('modelDownloads.ts') && !norm.includes('main/window.ts') && !norm.includes('ExplorePage.tsx') && !norm.includes('hardwareCheck.ts') && !norm.includes('hardwareProfile.ts') && !norm.includes('explorerFit.ts') && !norm.includes('hiddenModels.ts') && !norm.includes('AppBackend.ts') && !norm.includes('LibraryPage.tsx') && !norm.includes('api.ts') && txt.includes('huggingface.co')) {
+          if (!norm.includes('hfCatalog.ts') && !norm.includes('explorerCatalog.ts') && !norm.includes('modelDownloads.ts') && !norm.includes('main/window.ts') && !norm.includes('ExplorePage.tsx') && !norm.includes('hardwareCheck.ts') && !norm.includes('hardwareProfile.ts') && !norm.includes('explorerFit.ts') && !norm.includes('hiddenModels.ts') && !norm.includes('AppBackend.ts') && !norm.includes('LibraryPage.tsx') && !norm.includes('api.ts') && !norm.includes('layaRegistration.ts') && txt.includes('huggingface.co')) {
             hits.push(`${p}: huggingface.co`)
           }
           // Telemetry *machinery* (sending/tracking), not the UI label.

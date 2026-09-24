@@ -129,7 +129,7 @@ describe('lifecycle — loading', () => {
     writeGguf(lib, 'tiny-0.5B-Q4_K_M.gguf')
     const { deps } = makeDeps()
     const a = makeAdapter(lib, dir, deps)
-    const inst = await a.load('tiny-0.5B-Q4_K_M' as never, { runtimeId: 'local' })
+    const inst = await a.load('tiny-0.5B-Q4_K_M' as never, { runtimeId: 'local', ctxLen: 8192 })
     expect(inst.state).toBe('ACTIVE')
     expect(inst.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/)
     expect(inst.pid).toBeGreaterThan(0)

@@ -145,11 +145,8 @@ export function SmartNotificationDrawer({
       }
 
   const handleClick = () => {
-    if (onOpenSettings) {
-      onOpenSettings('notifications')
-    } else {
-      setOpen((p) => !p)
-    }
+    // Always toggle the drawer (popover) — the settings link lives inside the panel
+    setOpen((p) => !p)
   }
 
   return (
@@ -222,16 +219,45 @@ export function SmartNotificationDrawer({
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 13, color: '#1A1614' }}>
               <Sparkles size={16} color="var(--accent, #C65D3B)" />
               Smart Notifications & Hardware
+            </div>              <div style={{ padding: '8px 12px 10px', borderTop: '1px solid var(--border, #E8E4DE)', display: 'flex', justifyContent: 'flex-end' }}>
+                {onOpenSettings ? (
+                  <button
+                    type="button"
+                    className="sv-btn sv-btn-ghost"
+                    onClick={() => {
+                      setOpen(false)
+                      onOpenSettings('notifications')
+                    }}
+                    style={{ fontSize: 11, fontWeight: 500, padding: '4px 10px', borderRadius: 6, border: 'none', background: 'var(--bg-2, #F7F5F2)', cursor: 'pointer', color: '#1A1614' }}
+                  >
+                    Open notification settings
+                  </button>
+                ) : null}
+            <div style={{ padding: '8px 12px 10px', borderTop: '1px solid var(--border, #E8E4DE)', display: 'flex', justifyContent: 'flex-end' }}>
+              {onOpenSettings ? (
+                <button
+                  type="button"
+                  className="sv-btn sv-btn-ghost"
+                  onClick={() => {
+                    setOpen(false)
+                    onOpenSettings('notifications')
+                  }}
+                  style={{ fontSize: 11, fontWeight: 500, padding: '4px 10px', borderRadius: 6, border: 'none', background: 'var(--bg-2, #F7F5F2)', cursor: 'pointer', color: '#1A1614' }}
+                >
+                  Open notification settings
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="sv-btn sv-btn-ghost"
+                style={{ padding: 2 }}
+                onClick={() => setOpen(false)}
+                aria-label="Close notifications"
+              >
+                <X size={14} />
+              </button>
             </div>
-            <button
-              type="button"
-              className="sv-btn sv-btn-ghost"
-              style={{ padding: 2 }}
-              onClick={() => setOpen(false)}
-              aria-label="Close notifications"
-            >
-              <X size={14} />
-            </button>
+              </div>
           </div>
 
           <div style={{ padding: 12, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>

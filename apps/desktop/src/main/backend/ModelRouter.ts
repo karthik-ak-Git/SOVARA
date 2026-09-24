@@ -11,12 +11,34 @@ import type { SystemResources } from '@shared/types/ports'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
 import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
 import { DEFAULT_TUNING, pickTierAtOrBelow } from '../config/tuning'
+import { LAYA_TIE_THRESHOLD } from '../services/layaDecision'
 
 /**
  * Hardware-aware context sizing (test/main.js parity): the largest discrete
  * tier that fits free VRAM (with GPU) or free RAM (CPU-only), at the given
  * KV cost, with the configured safety margin. Never hard-codes a GPU size.
  */
+export function buildLayaQuestion(task: TaskClassification): string {
+  // Short, structured question — Laya's premise/context window is tight (~512 tokens)
+  // and it sees the option label as the hypothesis. Keep the prompt factual so the
+  // model reasons on capability/vram fit, not on subjective style. We don't reveal
+  // internal scoring; laya picks the option whose label it confirms against the task.
+  const ctxPart = task.contextLengthNeeded > 0
+    ? ` with up to ${task.contextLengthNeeded} tokens of context`
+    : ''
+  const reasonPart = task.reason ? ` (situation: ${task.reason})` : ''
+  return `Which local model is the right choice for a ${task.kind} task${ctxPart}${reasonPart}?`
+}
+
+export function buildLayaOptions(
+  candidates: Array<{ model: { modelId: string; displayName?: string }; capabilities: string[]; contextLength: number }>,
+): { id: string; label: string }[] {
+  return candidates.map((c) => {
+    const cap = c.capabilities.length > 0 ? c.capabilities.join('/') : 'general'
+    const label = `${c.model.displayName ?? c.model.modelId} (${cap}, ctx=${c.contextLength})`
+    return { id: c.model.modelId, label }
+  })
+}
 export function suggestContextSize(
   resources: Pick<SystemResources, 'vram' | 'ram'>,
   modelSizeMb: number,
@@ -104,6 +126,17 @@ export interface RouterContext {
   checkBeforeLoad?: (modelId: string) => Promise<{ level: 'ok' | 'warn' | 'critical'; blocking?: boolean; reason?: string }>
   /** Preference for reasoning flag etc. (future) */
   preferReasoning?: boolean
+  /** Optional Laya decision hook — when present and top-2 candidates are within
+   *  `layaTieThreshold` of each other, routeModel calls this with the question
+   *  and 2-N candidate options to pick the winner. Returning without throwing
+   *  keeps the heuristic fallback. */
+  layaDecide?: (
+    question: string,
+    options: { id: string; label: string }[],
+    context?: string,
+  ) => Promise<{ decision: { id: string; label: string; probability: number; predicted_label?: string } }>
+  /** Score delta below which Laya is consulted. Default `LAYA_TIE_THRESHOLD` (12). */
+  layaTieThreshold?: number
 }
 
 export interface ScoredModel {
@@ -176,7 +209,7 @@ function scoreModel(
   // handled in routeModel scoring below
 
   // 3-5x speed + all-layers: prefer small/fast that fits fully at 8192 over xlarge partial 7/32 (hallucinates)
-  // Harness-style: small models (needle3, 0.5B-4B) fit 999 layers at 8192 with 655MB, Qwen 9B needs 7/32 at 8192 → 6.5 t/s vs 30 t/s
+  // Harness-style: small models (≤4B-class) fit 999 layers at 8192 with 655MB, Qwen 9B needs 7/32 at 8192 → 6.5 t/s vs 30 t/s
   const vramFree = resources.vram.freeMB
   const vramTotal = resources.vram.totalMB
   // Only true-small (needle/phi/gemma ≤4B) fits 8192 fully 999/999. Qwen-9B is 'medium' but 5.3GB file → 7/32 partial at 8192.
@@ -259,6 +292,31 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
   // Sort by score desc, then context length desc, then displayName for stability
   scored.sort((a, b) => b.score - a.score || b.contextLength - a.contextLength || a.model.displayName.localeCompare(b.model.displayName))
 
+  // Laya tie-breaker — when the top two candidates are within `LAYA_TIE_THRESHOLD`
+  // of each other, ask the user-visible classifier (convaiinnovations/laya)
+  // to make the final pick with proper question + options. Returns the
+  // winning id (which is the modelId) so we can promote it to the top.
+  // Sidecar unavailable (no download / Python env not ready) → leave heuristic.
+  if (scored.length >= 2) {
+    const top = scored[0]!
+    const second = scored[1]!
+    const delta = (top.score ?? 0) - (second.score ?? 0)
+    const threshold = ctx.layaTieThreshold ?? LAYA_TIE_THRESHOLD
+    if (delta <= threshold && ctx.layaDecide) {
+      try {
+        const result = await ctx.layaDecide(buildLayaQuestion(task), buildLayaOptions([top, second]))
+        const winner = scored.find((s) => s.model.modelId === result.decision.id)
+        if (winner && winner !== top) {
+          // Promote winner to front, preserving original order below it.
+          const rest = scored.filter((s) => s !== winner)
+          scored = [winner, ...rest]
+          winner.reason += `, laya tie-break (Δ=${delta.toFixed(1)})`
+        }
+      } catch {
+        // Laya unavailable or refused — keep heuristic winner.
+      }
+    }
+  }
   // Resource-aware filtering: walk in score order, check blocking pressure
   for (const s of scored) {
     if (ctx.checkBeforeLoad) {

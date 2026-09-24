@@ -51,8 +51,17 @@ export function deriveMessages(events: SessionEventLike[]): ChatMessage[] {
     if (e.type === 'assistant/reasoning') {
       const content = extractContent(e.data)
       if (content === null) continue
-      // Store as pending to attach to next assistant message, or as standalone if no following message
-      pendingReasoning = { seq: e.seq, time: e.time, content }
+      let delimiter = '\n\n'
+      if (pendingReasoning) {
+        const prev = pendingReasoning.content.trimEnd()
+        const isSentenceEnd = /[.!?:]$/.test(prev)
+        if (!isSentenceEnd && content.length <= 50 && !content.includes('\n')) {
+          delimiter = ''
+        }
+      }
+      pendingReasoning = pendingReasoning
+        ? { seq: pendingReasoning.seq, time: pendingReasoning.time, content: `${pendingReasoning.content}${delimiter}${content}` }
+        : { seq: e.seq, time: e.time, content }
       continue
     }
     const content = extractContent(e.data)
@@ -64,8 +73,22 @@ export function deriveMessages(events: SessionEventLike[]): ChatMessage[] {
       content,
     }
     if (e.type === 'assistant/message' && pendingReasoning) {
-      msg.reasoning = pendingReasoning.content
-      // Use reasoning's seq for ordering if needed, but keep message seq
+      // Dedupe: Orchestrator promotes reasoning→text when model returns only  (text empty)
+      // That creates identical reasoning + message content → would render Thought + duplicate body.
+      const r = pendingReasoning.content.trim()
+      const c = content.trim()
+      const isDuplicate =
+        r.length > 0 &&
+        (c === r ||
+          c.startsWith(r.slice(0, Math.min(200, r.length))) ||
+          c.includes(r.slice(0, 120)))
+      const cWithoutNote = c.replace(/\n\n\[Note: model returned only reasoning[^\]]*\]$/, '').trim()
+      const isPromotedDuplicate = r.length > 0 && (cWithoutNote === r || cWithoutNote.startsWith(r.slice(0, 120)))
+      if (!isDuplicate && !isPromotedDuplicate) {
+        msg.reasoning = pendingReasoning.content
+      } else if (isPromotedDuplicate) {
+        msg.content = cWithoutNote
+      }
       pendingReasoning = null
     }
     out.push(msg)

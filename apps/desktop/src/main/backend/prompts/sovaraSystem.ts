@@ -82,32 +82,32 @@ text: `User asks file (ppt/pdf/xlsx/docx/diagram/etc):
 {
 name: 'tool:read',
 order: SECTION_ORDERS.TOOL_READ,
-text: `Tool Read — read file/dir (up to 2000 lines, offset/limit). Use before Edit. For "list files and build drawing" first fs_list {path:"."}.`
+text: `Tool fs_read — read file content (supports start_line, end_line). To inspect or read ANY file (relative to workspace or an absolute path like D:\\path\\file.txt or C:\\...), call fs_read {"path": "..."}. SOVARA will automatically ask the user for permission to access external paths. When given a file path, immediately call fs_read {"path": path}. NEVER call fs_list when asked to read a specific file or skill!`
 },
 {
 name: 'tool:write',
 order: SECTION_ORDERS.TOOL_WRITE,
-text: `Tool Write — write/overwrite file. Read first if exists. Single fenced block for artifacts.`
+text: `Tool fs_write — create or overwrite file in workspace {"path": "...", "content": "..."}. Creates directories automatically.`
 },
 {
 name: 'tool:edit',
 order: SECTION_ORDERS.TOOL_EDIT,
-text: `Tool Edit — exact oldString replacement, fails if not unique. Use replaceAll for renames.`
+text: `Tool fs_patch — search-and-replace edit {"path": "...", "search": "exact string", "replace": "new string"}.`
 },
 {
-name: 'tool:glob',
+name: 'tool:list',
 order: SECTION_ORDERS.TOOL_GLOB,
-text: `Tool Glob — fast pattern **/*.ts to find files before reading.`
+text: `Tool fs_list — list files and folders in directory {"path": "."} or external directory {"path": "D:\\folder"}. SOVARA will ask permission for external directories. Use when exploring directory structure.`
 },
 {
-name: 'tool:grep',
+name: 'tool:search',
 order: SECTION_ORDERS.TOOL_GREP,
-text: `Tool Grep — regex content search with include filter.`
+text: `Tool fs_search — keyword/pattern search across files {"path": ".", "query": "keyword"}. Returns matching files and line numbers.`
 },
 {
-name: 'tool:bash',
+name: 'tool:shell',
 order: SECTION_ORDERS.TOOL_BASH,
-text: `Tool Bash — Windows PowerShell 5.1 only for git/npm/docker. Quote paths, chain with ; if ($?) {}. Never for file ops.`
+text: `Tool shell_exec — run terminal commands (PowerShell/cmd/bash) for npm, python, git, build scripts. {"command": "..."}.`
 },
 {
 name: 'tool:todo',

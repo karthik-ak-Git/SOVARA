@@ -21,7 +21,7 @@ import {
   postLoopback,
   readBoundedBody,
 } from '../../network/HttpClient'
-import type { LlmChatRequest, LlmChunk, LlmPort, LlmUsage } from '@shared/types/ports'
+import type { LlmChatMessage, LlmChatRequest, LlmChunk, LlmPort, LlmUsage } from '@shared/types/ports'
 
 export type ChatErrorCode =
   | 'connection-refused'
@@ -125,6 +125,73 @@ function extractUsage(json: unknown): LlmUsage | undefined {
   return { promptTokens: prompt, completionTokens: completion, totalTokens: total }
 }
 
+/**
+ * Repair tool-call message shapes before serialization.
+ *
+ * llama-server rejects a continuation with 400 "Cannot continue an assistant
+ * message that contains tool calls" when an assistant(tool_calls) turn is not
+ * fully followed by matching role:'tool' results. Two shapes reach the wire:
+ *
+ *  - trailing assistant(tool_calls) with no tool results after it (edit/resend,
+ *    interrupted loop, compaction dropping the tail) — strip tool_calls, keep
+ *    any non-empty content as a plain assistant message;
+ *  - partially answered assistant(tool_calls) — keep only the answered subset
+ *    of tool_calls plus their matching tool results.
+ *
+ * Orphaned tool results (tool_call_id not claimed by a preceding kept
+ * assistant) are dropped. User/system messages are never touched.
+ * Idempotent on already-valid history.
+ */
+export function sanitizeToolCallMessages(messages: LlmChatMessage[]): LlmChatMessage[] {
+  const out: LlmChatMessage[] = []
+  let i = 0
+  while (i < messages.length) {
+    const m = messages[i]!
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      // Consecutive tool results immediately following this assistant turn.
+      const toolResults: LlmChatMessage[] = []
+      let j = i + 1
+      while (j < messages.length && messages[j]!.role === 'tool') {
+        toolResults.push(messages[j]!)
+        j++
+      }
+      const answeredIds = new Set(toolResults.map((t) => t.tool_call_id).filter((id): id is string => !!id))
+      const answeredCalls = m.tool_calls.filter((c) => answeredIds.has(c.id))
+      if (answeredCalls.length === m.tool_calls.length) {
+        // Fully answered — keep assistant + its results (in original order).
+        out.push(m)
+        out.push(...toolResults)
+      } else if (answeredCalls.length > 0) {
+        // Partially answered — keep only the answered subset + matching results.
+        const keptIds = new Set(answeredCalls.map((c) => c.id))
+        out.push({ ...m, tool_calls: answeredCalls })
+        out.push(...toolResults.filter((t) => t.tool_call_id && keptIds.has(t.tool_call_id)))
+      } else {
+        // Unanswered (trailing or orphaned) — strip tool_calls; keep content.
+        const content = (m.content ?? '').trim()
+        if (content.length > 0) out.push({ role: 'assistant', content: m.content })
+        // Non-matching tool results in this run are orphans — dropped.
+      }
+      i = j
+      continue
+    }
+    if (m.role === 'tool') {
+      // Orphaned tool result with no preceding kept assistant claiming it.
+      const tid = m.tool_call_id
+      const claimed = !!tid && out.some(
+        (prev) => prev.role === 'assistant' && prev.tool_calls?.some((c) => c.id === tid)
+      )
+      if (!claimed) {
+        i++
+        continue
+      }
+    }
+    out.push(m)
+    i++
+  }
+  return out
+}
+
 export class LocalOpenAIChatAdapter implements LlmPort {
   async *stream(_prompt: string): AsyncIterable<LlmChunk> {
     void _prompt
@@ -147,7 +214,9 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     const maxTokens = request.maxCompletionTokens ?? 4096
 
     // ── Serialize messages — support role:'tool' for tool result turns ──────
-    const serializedMessages = request.messages.map((m) => {
+    // Sanitize first: repair trailing/partial assistant(tool_calls) so the
+    // server never sees a continuation it must reject with 400.
+    const serializedMessages = sanitizeToolCallMessages(request.messages).map((m) => {
       if (m.role === 'tool') {
         // Tool result: llama-server needs tool_call_id to correlate with the request
         return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content }

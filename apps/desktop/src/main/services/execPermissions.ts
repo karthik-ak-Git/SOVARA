@@ -12,6 +12,8 @@
  * structured denial the renderer can turn into a prompt.
  */
 
+import path from 'node:path'
+
 export type ExecMode = 'off' | 'ask' | 'review' | 'allow'
 
 export const EXEC_MODES: ExecMode[] = ['off', 'ask', 'review', 'allow']
@@ -26,7 +28,7 @@ const SAFE_PREFIXES = [
   'show', 'check', 'fetch', 'inspect', 'scan', 'detect',
 ]
 
-/** Explicit read-only safe tools that always auto-run under `review`. */
+/** Explicit read-only safe tools that always auto-run under `review` within workspace. */
 const SAFE_EXPLICIT_TOOLS = new Set([
   'fs_list', 'fs_read', 'web_search', 'web_fetch', 'ocr'
 ])
@@ -40,6 +42,21 @@ export function isSafeTool(toolName: string): boolean {
   return SAFE_PREFIXES.some((p) => n === p || n.startsWith(`${p}_`) || n.startsWith(`${p}-`) || n.startsWith(`${p}.`) || n.startsWith(p))
 }
 
+export function isExternalPath(filePath?: string, workspaceRoot?: string | null): boolean {
+  if (!filePath || typeof filePath !== 'string') return false
+  const p = filePath.trim().replace(/^["']|["']$/g, '')
+  const isAbs = path.isAbsolute(p) || /^[a-z]:[\\/]/i.test(p)
+  if (!isAbs) return false
+  if (!workspaceRoot) return true
+  try {
+    const normPath = path.resolve(p).toLowerCase().replace(/\\/g, '/')
+    const normRoot = path.resolve(workspaceRoot).toLowerCase().replace(/\\/g, '/')
+    return !normPath.startsWith(normRoot + '/') && normPath !== normRoot
+  } catch {
+    return true
+  }
+}
+
 export type PermissionScope = 'once' | 'conversation' | 'project' | 'global'
 
 const allowedByScope = {
@@ -48,9 +65,13 @@ const allowedByScope = {
   conversation: new Map<string, Set<string>>(), // sessionId -> set
 }
 
+function normalizeKeyPath(p: string): string {
+  return p.trim().replace(/^["']|["']$/g, '').replace(/\\/g, '/').toLowerCase()
+}
+
 function toolKey(toolName: string, args: Record<string, unknown> = {}): string {
-  const cmd = (args['command'] as string) || (args['CommandLine'] as string) || (args['cmd'] as string) || (args['path'] as string) || ''
-  return `${toolName}::${cmd.slice(0, 200)}`
+  const raw = (args['command'] as string) || (args['CommandLine'] as string) || (args['cmd'] as string) || (args['path'] as string) || (args['file_path'] as string) || ''
+  return `${toolName.toLowerCase()}::${normalizeKeyPath(raw.slice(0, 300))}`
 }
 
 export function rememberApproval(toolName: string, args: Record<string, unknown>, scope: PermissionScope, sessionId?: string, projectId?: string | null): void {
@@ -70,9 +91,29 @@ export function rememberApproval(toolName: string, args: Record<string, unknown>
 
 export function isScopedAllowed(toolName: string, args: Record<string, unknown>, sessionId?: string, projectId?: string | null): boolean {
   const key = toolKey(toolName, args)
-  if (allowedByScope.global.has(key)) return true
-  if (projectId && allowedByScope.project.get(projectId)?.has(key)) return true
-  if (sessionId && allowedByScope.conversation.get(sessionId)?.has(key)) return true
+  const rawPath = (args['path'] as string) || (args['file_path'] as string) || ''
+  const normPath = rawPath ? normalizeKeyPath(rawPath) : ''
+
+  const checkSet = (set: Set<string> | undefined): boolean => {
+    if (!set) return false
+    if (set.has(key)) return true
+    if (normPath) {
+      const prefix = `${toolName.toLowerCase()}::`
+      for (const item of set) {
+        if (item.startsWith(prefix)) {
+          const approvedPath = item.slice(prefix.length)
+          if (normPath === approvedPath || normPath.startsWith(approvedPath + '/')) {
+            return true
+          }
+        }
+      }
+    }
+    return false
+  }
+
+  if (checkSet(allowedByScope.global)) return true
+  if (projectId && checkSet(allowedByScope.project.get(projectId))) return true
+  if (sessionId && checkSet(allowedByScope.conversation.get(sessionId))) return true
   return false
 }
 
@@ -80,12 +121,23 @@ export type GateVerdict =
   | { allowed: true; autoApproved: boolean }
   | { allowed: false; reason: 'disabled' | 'needs-approval'; message: string }
 
-export function gateDispatch(mode: ExecMode, toolName: string, args?: Record<string, unknown>, sessionId?: string, projectId?: string | null): GateVerdict {
+export function gateDispatch(
+  mode: ExecMode,
+  toolName: string,
+  args?: Record<string, unknown>,
+  sessionId?: string,
+  projectId?: string | null,
+  workspaceRoot?: string | null
+): GateVerdict {
   const name = toolName || 'unknown-tool'
   // Scoped allowlist overrides mode (conversation/project/global remember)
   if (args && isScopedAllowed(toolName, args, sessionId, projectId)) {
     return { allowed: true, autoApproved: true }
   }
+
+  const rawPath = (args?.['path'] as string) || (args?.['file_path'] as string)
+  const isAccessingExternal = (name === 'fs_read' || name === 'fs_list' || name === 'fs_search') && isExternalPath(rawPath, workspaceRoot)
+
   switch (mode) {
     case 'off':
       return {
@@ -96,6 +148,14 @@ export function gateDispatch(mode: ExecMode, toolName: string, args?: Record<str
     case 'allow':
       return { allowed: true, autoApproved: true }
     case 'review':
+      if (isAccessingExternal) {
+        const cleanPath = (rawPath || '').trim().replace(/^["']|["']$/g, '')
+        return {
+          allowed: false,
+          reason: 'needs-approval',
+          message: `Approval required: "${name}" is requesting access to external file/folder "${cleanPath}" outside workspace.`,
+        }
+      }
       if (isSafeTool(name)) return { allowed: true, autoApproved: true }
       return {
         allowed: false,

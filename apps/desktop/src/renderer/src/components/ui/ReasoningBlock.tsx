@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, type ReactElement } from 'react'
 import { ChevronRight, ChevronDown, Sparkles } from 'lucide-react'
+import { coalesceFragmentedProse } from '../../utils/proseFormatter'
 
 interface Props {
   reasoning: string
@@ -116,7 +117,7 @@ export function ReasoningBlock({
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
             }}
           >
-            {reasoning}
+            {coalesceFragmentedProse(reasoning)}
             {streaming ? (
               <span
                 className="sv-stream-caret inline-block w-1.5 h-3.5 ml-1 align-middle animate-pulse"

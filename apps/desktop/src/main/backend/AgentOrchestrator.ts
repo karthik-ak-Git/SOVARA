@@ -11,7 +11,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import type { SessionId } from '@shared/types/branded'
+import type { SessionId, InstanceId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimePort, ToolPort, LlmImagePart } from '@shared/types/ports'
 import type { ModelWorkbench } from './ModelWorkbench'
@@ -28,6 +28,7 @@ import type { TaskClassification, ModelRoutingDecision } from '@shared/types/tas
 import type { DiscoveredModel } from '@shared/types/models'
 import { SOVARA_SYSTEM_PROMPT, STRUCTURED_OUTPUT_INSTRUCTION } from './prompts/sovaraSystem'
 import { DEFAULT_TUNING } from '../config/tuning'
+import { decideLaya, isLayaReady, LAYA_TIE_THRESHOLD } from '../services/layaDecision'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
@@ -39,6 +40,26 @@ import type {
   ExecutionMode,
   ToolExecutionResult,
 } from './tools/types'
+
+/**
+ * Normalizes tool paths (especially for fs_list and fs_read).
+ * Absolute paths inside the active workspace are converted to workspace-relative ('.' or subpath).
+ * Absolute paths outside the workspace are kept intact so external files/folders can be approved and accessed.
+ */
+function normalizeToolPath(toolName: string, rawPath: string, wsRoot: string | null): string {
+  const p = rawPath.replace(/\\/g, '/').trim()
+  if (toolName !== 'fs_list' || (!/^[a-z]:\//i.test(p) && !path.isAbsolute(p))) {
+    return p
+  }
+  if (!wsRoot) return p
+  try {
+    const wsNorm = path.resolve(wsRoot).replace(/\\/g, '/').toLowerCase()
+    const lowerP = p.toLowerCase()
+    if (lowerP === wsNorm || lowerP === wsNorm + '/') return '.'
+    if (lowerP.startsWith(wsNorm + '/')) return p.slice(wsNorm.length + 1) || '.'
+  } catch {}
+  return p
+}
 
 /** Audit: per-turn execution trace (model, skills, tools, gates, artifact) */
 export interface SovaraExecutionTrace {
@@ -199,28 +220,70 @@ function compactForCtx(messages: import('@shared/types/ports').LlmChatMessage[],
   const budgetChars = budgetTokens * 4
   let chars = messages.reduce((n, m) => n + m.content.length, 0)
   if (chars <= budgetChars) return messages
-  const out = [...messages]
-  // 1. Drop intermediate history turns first
-  while (out.length > 2 && chars > budgetChars) {
-    const dropIdx = 1
-    chars -= out[dropIdx].content.length
-    out.splice(dropIdx, 1)
+
+  // Tool-aware: never orphan a tool result or drop the active tool exchange.
+  // Find the last user message — everything from there is the active exchange
+  // (user request + assistant tool_calls + tool results). Protect it.
+  let lastUserIdx = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') { lastUserIdx = i; break }
   }
-  if (chars > budgetChars && out.length > 2) {
+  const hasToolCalls = (m: import('@shared/types/ports').LlmChatMessage): boolean => {
+    const tc = (m as unknown as { tool_calls?: unknown }).tool_calls
+    return Array.isArray(tc) && tc.length > 0
+  }
+
+  const out = [...messages]
+  // 1. Drop intermediate history turns (index 1 .. lastUserIdx-1) first,
+  //    keeping assistant(tool_calls) + tool(result) groups intact.
+  while (out.length > lastUserIdx + 1 && chars > budgetChars && lastUserIdx >= 2) {
+    const m = out[1]!
+    let dropCount = 1
+    if (m.role === 'assistant' && hasToolCalls(m)) {
+      // Drop the whole tool_calls group: assistant + following tool results.
+      while (1 + dropCount < lastUserIdx && out[1 + dropCount]!.role === 'tool') dropCount++
+    } else if (m.role === 'tool') {
+      // Orphan tool chain at history front — drop it whole.
+      while (1 + dropCount < lastUserIdx && out[1 + dropCount]!.role === 'tool') dropCount++
+    }
+    if (1 + dropCount > lastUserIdx) dropCount = lastUserIdx - 1
+    if (dropCount <= 0) break
+    for (let k = 0; k < dropCount; k++) chars -= out[1]!.content.length
+    out.splice(1, dropCount)
+    lastUserIdx -= dropCount
+  }
+  // 2. Still over? Truncate the largest history message (never touch system
+  //    or the active exchange under budget pressure first).
+  if (chars > budgetChars) {
+    let targetIdx = -1
+    for (let i = 1; i < lastUserIdx && i < out.length; i++) {
+      if (targetIdx < 0 || out[i]!.content.length > out[targetIdx]!.content.length) targetIdx = i
+    }
+    if (targetIdx >= 0) {
+      const excess = chars - budgetChars
+      const c = out[targetIdx]!.content
+      if (c.length > excess + 300) {
+        out[targetIdx] = { ...out[targetIdx]!, content: c.slice(0, Math.max(300, c.length - excess - 100)) + '…[truncated]' }
+        chars = out.reduce((n, m) => n + m.content.length, 0)
+      }
+    }
+  }
+  // 3. Still over with only system + active exchange? Truncate the largest
+  //    non-system message (user/tool content) — never drop below 2 messages.
+  if (chars > budgetChars && out.length > 1) {
+    let targetIdx = 1
+    for (let i = 1; i < out.length; i++) {
+      if (out[i]!.content.length > out[targetIdx]!.content.length) targetIdx = i
+    }
     const excess = chars - budgetChars
-    out[1].content = out[1].content.slice(0, Math.max(200, out[1].content.length - excess - 200)) + '…[truncated]'
+    const c = out[targetIdx]!.content
+    out[targetIdx] = { ...out[targetIdx]!, content: c.slice(0, Math.max(200, c.length - excess - 100)) + '…[truncated]' }
     chars = out.reduce((n, m) => n + m.content.length, 0)
   }
-  // 2. If still over budget with only system + user message, truncate oversized system block or prompt
+  // 4. Final fallback: truncate oversized system block.
   if (chars > budgetChars && out.length >= 1) {
     const excess = chars - budgetChars
-    if (out.length > 1 && out[0].content.length > out[1].content.length) {
-      out[0].content = out[0].content.slice(0, Math.max(1000, out[0].content.length - excess - 100)) + '\n…[system prompt truncated for context budget]'
-    } else if (out.length > 1) {
-      out[1].content = out[1].content.slice(0, Math.max(500, out[1].content.length - excess - 100)) + '\n…[user prompt truncated for context budget]'
-    } else {
-      out[0].content = out[0].content.slice(0, Math.max(1000, out[0].content.length - excess - 100)) + '\n…[truncated]'
-    }
+    out[0] = { ...out[0]!, content: out[0]!.content.slice(0, Math.max(1000, out[0]!.content.length - excess - 100)) + '\n…[system prompt truncated for context budget]' }
   }
   return out
 }
@@ -264,9 +327,106 @@ export interface AgentOrchestratorDeps {
 
 const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 
-function toRequestMessages(events: Array<{ seq: number; time: number; type: string; data: unknown }>): import('@shared/types/ports').LlmChatMessage[] {
-  const turns: import('@shared/types/ports').LlmChatMessage[] = []
+/**
+ * Fast Heuristic Context Compressor
+ * Extracts key user objectives, files created/modified, tool call summaries,
+ * and important decisions/errors without needing an expensive LLM call.
+ */
+function compressContext(events: Array<{ seq: number; time: number; type: string; data: unknown }>): string {
+  const userObjectives: string[] = []
+  const filesTouched = new Set<string>()
+  const toolActions: string[] = []
+  const keyNotes: string[] = []
+
   for (const e of events) {
+    if (e.type === 'user/message') {
+      let text = ''
+      if (typeof e.data === 'string') text = e.data
+      else if (e.data && typeof e.data === 'object') text = (e.data as Record<string, unknown>)['content'] as string || ''
+      text = text.trim()
+      if (text && !text.startsWith('/compact') && !text.startsWith('[Conversation Context Summary]')) {
+        const firstSentence = text.split(/(?<=[.!?\n])\s+/)[0]?.trim() || text.slice(0, 150)
+        if (firstSentence && !userObjectives.includes(firstSentence)) {
+          userObjectives.push(firstSentence.slice(0, 200))
+        }
+      }
+    } else if (e.type === 'tool/call') {
+      const d = (e.data ?? {}) as Record<string, unknown>
+      const name = (d['name'] || d['toolName']) as string
+      const args = (d['args'] ?? {}) as Record<string, unknown>
+      const p = (args['path'] || args['file_path']) as string
+      if (p) filesTouched.add(p)
+      if (name) {
+        const cmd = (args['command'] || args['cmd'] || args['query'] || p || '') as string
+        const shortCmd = typeof cmd === 'string' ? cmd.slice(0, 60) : ''
+        toolActions.push(`${name}(${shortCmd})`)
+      }
+    } else if (e.type === 'tool/result') {
+      const d = (e.data ?? {}) as Record<string, unknown>
+      const raw = typeof d === 'string' ? d : (d['content'] || d['result'] || '') as string
+      if (typeof raw === 'string') {
+        const matches = raw.matchAll(/"path"\s*:\s*["']([^"'\r\n,]+)["']/gi)
+        for (const m of matches) {
+          if (m[1]) filesTouched.add(m[1])
+        }
+      }
+    } else if (e.type === 'assistant/message') {
+      let text = ''
+      if (typeof e.data === 'string') text = e.data
+      else if (e.data && typeof e.data === 'object') text = (e.data as Record<string, unknown>)['content'] as string || ''
+      const sentences = text.split(/(?<=[.!?\n])\s+/)
+      for (const s of sentences) {
+        const trimmed = s.trim()
+        if (trimmed.length > 20 && trimmed.length < 250) {
+          if (/\b(fixed|created|resolved|implemented|decided|configured|error|updated|added)\b/i.test(trimmed)) {
+            if (keyNotes.length < 10 && !keyNotes.includes(trimmed)) {
+              keyNotes.push(trimmed)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const sections: string[] = []
+  if (userObjectives.length > 0) {
+    sections.push(`- Goals/Objectives:\n  ${userObjectives.slice(-6).map(o => `• ${o}`).join('\n  ')}`)
+  }
+  if (filesTouched.size > 0) {
+    sections.push(`- Key Files Modified/Referenced:\n  ${Array.from(filesTouched).slice(0, 15).map(f => `• ${f}`).join('\n  ')}`)
+  }
+  if (keyNotes.length > 0) {
+    sections.push(`- Key Actions & Decisions:\n  ${keyNotes.slice(-8).map(k => `• ${k}`).join('\n  ')}`)
+  }
+  if (toolActions.length > 0) {
+    sections.push(`- Recent Operations:\n  ${toolActions.slice(-8).join(', ')}`)
+  }
+
+  return sections.length > 0 ? sections.join('\n\n') : 'Conversation context compressed.'
+}
+
+function toRequestMessages(events: Array<{ seq: number; time: number; type: string; data: unknown }>): import('@shared/types/ports').LlmChatMessage[] {
+  let lastCompactIdx = -1
+  let compactSummary = ''
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === 'system/compact') {
+      lastCompactIdx = i
+      const d = events[i].data as { content?: string } | string
+      compactSummary = typeof d === 'string' ? d : d?.content ?? ''
+      break
+    }
+  }
+
+  const startIdx = lastCompactIdx >= 0 ? lastCompactIdx + 1 : 0
+  const turns: import('@shared/types/ports').LlmChatMessage[] = []
+
+  if (compactSummary) {
+    turns.push({ role: 'user', content: `[Conversation Context Summary]:\n${compactSummary}` })
+    turns.push({ role: 'assistant', content: 'Understood. I will proceed with this context in mind.' })
+  }
+
+  for (let i = startIdx; i < events.length; i++) {
+    const e = events[i]
     if (e.type !== 'user/message' && e.type !== 'assistant/message') continue
     let content: string | null = null
     if (typeof e.data === 'string') content = e.data
@@ -279,7 +439,7 @@ function toRequestMessages(events: Array<{ seq: number; time: number; type: stri
   }
   const bounded = turns.slice(-DEFAULT_TUNING.historyMaxMessages)
   let chars = bounded.reduce((n, m) => n + m.content.length, 0)
-  while (bounded.length > 1 && chars > DEFAULT_TUNING.historyMaxChars) {
+  while (bounded.length > (compactSummary ? 3 : 1) && chars > DEFAULT_TUNING.historyMaxChars) {
     const dropped = bounded.shift()
     chars -= dropped?.content.length ?? 0
   }
@@ -492,7 +652,25 @@ export class AgentOrchestrator {
       if (stallTimer && typeof (stallTimer as unknown as { unref?: () => void }).unref === 'function') (stallTimer as unknown as { unref: () => void }).unref!()
     }
 
+    // Hoisted so the outer catch can see it: pre-stream failures
+    // (no-model/resource/load/runtime) throw BEFORE the user event is
+    // persisted below — the catch must know whether to persist both turns.
+    let userSeq = -1
+
     try {
+      // ── HEURISTIC COMPACTION INTERCEPTION (/compact) ──
+      const trimmedContent = content.trim()
+      if (trimmedContent === '/compact' || trimmedContent.startsWith('/compact ')) {
+        const events = await this.deps.persistence.getEvents(sessionId)
+        const summary = compressContext(events)
+        const compSeq = await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: summary, compactedAt: Date.now(), originalEventsCount: events.length })
+        const replyText = `✓ Conversation context compressed and summarized:\n\n${summary}`
+        const asstSeq = await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: replyText })
+        this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: replyText })
+        this.emit(sid, 'step:end', { taskKind: 'chat', stepIndex: 0, detail: 'compacted' })
+        return { userSeq: compSeq, assistantSeq: asstSeq }
+      }
+
       // ── PHASE 1: task classification (real, not faked) ──
       this.emit(sid, 'task:start', { taskKind: 'chat', detail: 'request received' })
 
@@ -540,7 +718,7 @@ export class AgentOrchestrator {
 
       // Pinned vs Auto: user selected model is used for entire chat; Auto smart-routes per task.
       // The pill shows which: pinned = local model name, Auto = "Auto" smart.
-      // Hidden needle3 is included in modelsForRouting when Auto, so tool-use picks needle3.
+      // Auto mode may consult the Laya decision sidecar for tie-breaks.
       const isAuto = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
       let routing: Awaited<ReturnType<typeof routeModel>>
       if (!isAuto && baseSnapshot) {
@@ -554,13 +732,30 @@ export class AgentOrchestrator {
           switched: false,
         } as unknown as Awaited<ReturnType<typeof routeModel>>
       } else {
-        // Auto — smart route per task via ModelRouter (capability + VRAM aware)
-        // Hidden needle3 (Cactus-Compute/needle3) is first in listModelsForRouting when downloaded — tool-use will prefer it
+        // Auto — smart route per task via ModelRouter (capability + VRAM aware).
+        // When the top candidates are within `LAYA_TIE_THRESHOLD` of each other,
+        // the router consults the Laya decision sidecar (user-visible classifier)
+        // to make the call. If Laya is unavailable or downloads aren't done,
+        // the router falls back to the deterministic heuristic winner.
         routing = await routeModel({
           task: classification,
           models,
           active: isAuto ? null : active.selection ?? null,
           resources,
+          // Laya decision sidecar — when the heuristic puts two close-scoring
+          // candidates inside LAYA_TIE_THRESHOLD, let Laya call the question.
+          // Falls back silently to the heuristic when the sidecar is cold.
+          ...(isAuto
+            ? {
+                layaDecide: isLayaReady()
+                  ? async (q, options, ctx) => {
+                      const r = await decideLaya(q, options, ctx ?? '')
+                      return { decision: r.decision }
+                    }
+                  : undefined,
+                layaTieThreshold: LAYA_TIE_THRESHOLD,
+              }
+            : {}),
           checkBeforeLoad: async (modelId) => {
             try {
               const m = models.find((x) => x.modelId === modelId)
@@ -602,10 +797,12 @@ export class AgentOrchestrator {
       // Resource block already handled by router, but final guard with real path
       const routedM = models.find((x) => x.modelId === routing.modelId!)
       const routedPath = this.resolveModelFilePath(routing.modelId!) ?? (routedM as { path?: string })?.path ?? (routedM as { filePath?: string })?.filePath
+      // Fail-open: a checkBeforeLoad probe failure must never abort send —
+      // the loader re-verifies with real numbers at Phase 4.
       const pressure = await this.deps.resources.checkBeforeLoad(
         { id: routing.modelId! as never, displayName: routedM?.displayName ?? routing.modelId!, path: routedPath, source: 'custom', format: 'gguf' } as never,
         { ctxLen: classification.contextLengthNeeded }
-      )
+      ).catch(() => ({ level: 'ok' as const, blocking: false } as never))
       if (pressure.blocking) {
         const msg = pressure.reason ?? 'load refused'
         // Auto-fallback: try next model in router score order (score already computed) — pick first non-blocking
@@ -696,12 +893,12 @@ export class AgentOrchestrator {
           const gpuMode = (routing as unknown as { gpuMode?: string }).gpuMode as 'fit' | undefined
           const inst = models.ensureHealthy
             ? await models.ensureHealthy(routing.modelId! as never, {
-              ctxLen: classification.contextLengthNeeded,
+              ctxLen: Math.max(12288, classification.contextLengthNeeded || 12288),
               runtimeId: routing.runtimeId!,
               ...(gpuMode ? { gpu: gpuMode } : {}),
             })
             : await this.deps.models.load(routing.modelId! as never, {
-              ctxLen: classification.contextLengthNeeded,
+              ctxLen: Math.max(12288, classification.contextLengthNeeded || 12288),
               runtimeId: routing.runtimeId!,
               ...(gpuMode ? { gpu: gpuMode } : {}),
             })
@@ -732,11 +929,18 @@ export class AgentOrchestrator {
           throw new AgentOrchestratorError('cancelled', 'cancelled')
         }
         const msg = e instanceof Error ? e.message : String(e)
-        if (msg.toLowerCase().includes('resource') || msg.toLowerCase().includes('vram') || msg.toLowerCase().includes('max concurrent')) {
-          // Transparent fallback for "even partial does not fit" — dynamic: rank by ACTUAL
+        const lowerMsg = msg.toLowerCase()
+        const isResourceRelated = lowerMsg.includes('resource') || lowerMsg.includes('vram') || lowerMsg.includes('oom') || lowerMsg.includes('memory') || lowerMsg.includes('exhausted') || lowerMsg.includes('max concurrent') || lowerMsg.includes('exited')
+        if (isResourceRelated) {
+          // Transparent fallback for "even partial does not fit" or OOM — dynamic: rank by ACTUAL
           // free VRAM/RAM fit via pickFittingModel (no hardcoded model names).
           let handledFallback = false
-          if (/even partial offload does not fit/i.test(msg)) {
+          // Resource-fit failures → auto-fallback. Concurrency refusals
+          // ("max concurrent" / "already resident") are NOT size problems —
+          // never swap models for those; fail honestly as resource-blocked.
+          const isResourceFit = /even partial offload does not fit|cannot fit this GPU|resource-pressure|insufficient VRAM|needs ~\d+|oom|exhausted gpu|out of memory|cuda out of memory|failed to allocate context|runner exited|exited before becoming ready/i.test(msg)
+          const isConcurrency = /max concurrent|model\(s\) already resident|eligible for eviction/i.test(msg)
+          if (isResourceFit && !isConcurrency) {
             const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
             const fallback: DiscoveredModel | null = fit?.model ?? null
             if (fallback && fallback.modelId !== routing.modelId) {
@@ -751,8 +955,8 @@ export class AgentOrchestrator {
               // Retry load once with fitting model (evicts old resident transparently)
               try {
                 const retryInst = (this.deps.models as ModelRuntimePort & { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown }> }).ensureHealthy
-                  ? await (this.deps.models as ModelRuntimePort & { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown }> }).ensureHealthy(fallback.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: 'local' } as never)
-                  : await this.deps.models.load(fallback.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: 'local' } as never)
+                  ? await (this.deps.models as ModelRuntimePort & { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown }> }).ensureHealthy(fallback.modelId as never, { ctxLen: Math.max(12288, classification.contextLengthNeeded || 12288), runtimeId: 'local', gpu: 'fit' } as never)
+                  : await this.deps.models.load(fallback.modelId as never, { ctxLen: Math.max(12288, classification.contextLengthNeeded || 12288), runtimeId: 'local', gpu: 'fit' } as never)
                 const h2 = await this.deps.models.health(retryInst.id).catch(() => ({ ok: false }))
                 if (h2.ok) {
                   ownedEndpoint = this.deps.models.baseUrl(retryInst.id)
@@ -912,7 +1116,6 @@ export class AgentOrchestrator {
       // The attachment manifest rides with the message so the timeline shows
       // what was sent; extracted content travels as system context below.
       const userContent = attached.manifestLine ? `${attached.manifestLine}\n\n${content}` : content
-      let userSeq = -1
       try {
         userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content: userContent })).seq
       } catch (e) {
@@ -950,14 +1153,23 @@ export class AgentOrchestrator {
       let toolCatalog: string | null = null
       try {
         const infra = this.getToolInfra()
-        const defs = infra ? infra.getRegistry().list() : (this.deps.tools as unknown as { list?: () => Array<{ name: string; description: string }> }).list?.() ?? []
+        const infraDefs = infra ? infra.getRegistry().list() : []
+        const stubDefs = (this.deps.tools as unknown as { list?: () => Array<{ name: string; description: string }> }).list?.() ?? []
+        const defMap = new Map<string, { name: string; description: string }>()
+        for (const d of stubDefs) {
+          if (d?.name) defMap.set(d.name, d)
+        }
+        for (const d of infraDefs) {
+          if (d?.name) defMap.set(d.name, d)
+        }
+        const defs = Array.from(defMap.values())
         
         if (defs.length > 0) {
           const lines = defs.map((d) => `- ${d.name}: ${d.description}`).join('\n')
           toolCatalog =
             `TOOLS — call with a fenced block, NOT XML. Format exactly:\n\`\`\`tool:fs_list\n{"path": "."}\n\`\`\`\n` +
             `Available tools:\n${lines}\n` +
-            `Rules: 1) For exploration or inspections, you may call fs_list or fs_read directly. ` +
+            `Rules: 1) For exploration or inspections, you may call fs_list or fs_read directly. If the user provides a file or folder path (e.g. D:\\path or C:\\path or any file name), immediately call fs_read {"path": "..."} (for a file) or fs_list {"path": "..."} (for a folder). SOVARA will request user approval for files outside workspace. Never refuse to read a file or path! ` +
             `2) Emit ONE fenced tool block per step, then wait for its [Tool result] before the next. ` +
             `3) Use shell_exec for running python, bash, powershell, or npm scripts. Use run_code ONLY for JavaScript snippets executing programmatic tool calls (PTC). ` +
             `4) When asked to build, write, or generate code/apps/files, generate the complete functioning implementation immediately.`
@@ -984,7 +1196,11 @@ export class AgentOrchestrator {
       // Research: Microsoft "Summarized Context + Sliding Window" (3-5 recent full, older summarized),
       // ACC-RAG adaptive, VSCode ghost-data fix (lossy, omit tool traces, reference file path not content).
       // We fit prompt into nCtx minus reserved completion, preserving decisions/code/URLs via importance.
-      let nCtx = Math.max(8192, classification.contextLengthNeeded || 8192)
+      // Floor 12288 — sovereign prompt + tool catalog + workspace + injected contexts routinely hit
+      // ~6500-8500 prompt tokens; 8192 overflowed on the first tool turn (Nemotron-3-Nano measured
+      // 8372 vs 8192 server ctx). 12288 fits comfortably on 6GB GPUs (Nemotron 4B Q4_K_M: 2706MB
+      // weights + ~2016MB KV@12288 + ~256MB workspace = ~4978MB total).
+      let nCtx = Math.max(12288, classification.contextLengthNeeded || 12288)
       // Try to read actual server ctx from resident instance — but never downgrade below needed
       try {
         const insts = await this.deps.models?.listInstances?.() as unknown as Array<{ id: string; ctxLen?: number; modelId?: string }> | undefined
@@ -1007,11 +1223,16 @@ export class AgentOrchestrator {
         // Hybrid: last 3 turns verbatim, older summarized via importance (code/URLs/decisions/artifacts)
         historyMsgs = buildBudgetedHistory(prior, systemChars, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
       }
+      const sanitizedPromptPath = content.trim().replace(/^["']|["']$/g, '')
+      const isPathQuery = /^[a-z]:[\\/]/i.test(sanitizedPromptPath) || /^\/[a-zA-Z0-9_.-]+/.test(sanitizedPromptPath)
+      const userContentFormatted = isPathQuery && !/\b(read|open|show|inspect|list|what|view|explain)\b/i.test(content)
+        ? `${content}\n\n[Instruction: Read or inspect the specified file/path "${sanitizedPromptPath}" using fs_read (if file) or fs_list (if folder). SOVARA will request user approval for external access.]`
+        : content
       let messages: import('@shared/types/ports').LlmChatMessage[] = compactForCtx(
         [
           { role: 'system', content: systemBlocks.join('\n\n') },
           ...historyMsgs,
-          { role: 'user', content, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
+          { role: 'user', content: userContentFormatted, ...(visionImages.length > 0 ? { images: visionImages } : {}) },
         ],
         nCtx
       )
@@ -1079,8 +1300,8 @@ export class AgentOrchestrator {
             let tmInstanceId: string | null = null
             try {
               const inst = (this.deps.models as unknown as { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy
-                ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(tm.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: tm.runtimeId })
-                : await this.deps.models.load(tm.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: tm.runtimeId } as never)
+                ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(tm.modelId as never, { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: tm.runtimeId })
+                : await this.deps.models.load(tm.modelId as never, { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: tm.runtimeId } as never)
               const h = await this.deps.models.health(inst.id as never).catch(() => ({ ok: false, error: 'health-check-failed' }))
               if (!h.ok) throw new Error(`tool instance unhealthy (${h.error})`)
               tmEndpoint = this.deps.models.baseUrl(inst.id as never)
@@ -1124,8 +1345,8 @@ export class AgentOrchestrator {
               this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: baseSnapshot.modelId, runtimeId: baseSnapshot.runtimeId, detail: `reloading base ${baseSnapshot.modelId} for formatted response` })
               try {
                 const inst = (this.deps.models as unknown as { ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy
-                  ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(baseSnapshot.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: baseSnapshot.runtimeId })
-                  : await this.deps.models.load(baseSnapshot.modelId as never, { ctxLen: classification.contextLengthNeeded, runtimeId: baseSnapshot.runtimeId } as never)
+                  ? await (this.deps.models as unknown as { ensureHealthy: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }> }).ensureHealthy(baseSnapshot.modelId as never, { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: baseSnapshot.runtimeId })
+                  : await this.deps.models.load(baseSnapshot.modelId as never, { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: baseSnapshot.runtimeId } as never)
                 const h = await this.deps.models.health(inst.id as never).catch(() => ({ ok: false, error: 'health-check-failed' }))
                 if (!h.ok) throw new Error(`base reload unhealthy (${h.error})`)
                 ownedEndpoint = this.deps.models.baseUrl(inst.id as never)
@@ -1159,7 +1380,7 @@ export class AgentOrchestrator {
       let text = ''
       let reasoningBuffer = ''
       let allReasoning = ''
-      let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+      let inReasoning = false
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
       let orchFirstTokenAt: number | null = null
       const firstTokenRef = { value: null as number | null }
@@ -1189,12 +1410,21 @@ export class AgentOrchestrator {
       // the HTTP body so the model can emit native tool_calls.
       // For chat / reasoning / vision we skip tools to avoid confusing the model
       // and wasting context budget on tool descriptions.
+      const hasPathInPrompt = (
+        /^[a-z]:[\\/]/i.test(content.trim()) ||
+        /^["'][a-z]:[\\/]/i.test(content.trim()) ||
+        /^\/[a-zA-Z0-9_.-]+/.test(content.trim()) ||
+        /\b[a-z]:\\[^"'\n\s]+/i.test(content) ||
+        /\b[a-z]:\/[^"'\n\s]+/i.test(content) ||
+        /\b\w+\.(md|txt|json|ts|tsx|js|jsx|py|java|c|cpp|rs|go|html|css|yaml|yml|toml|xml|csv|log)\b/i.test(content)
+      )
       const shouldSendTools = (
         classification.kind === 'tool-use' ||
         classification.kind === 'agent' ||
         classification.kind === 'coding' ||
         classification.kind === 'reasoning' ||
-        /\b(read|write|list|file|files|code|build|create|dashboard|make|generate|implement)\b/i.test(content)
+        hasPathInPrompt ||
+        /\b(read|write|list|file|files|code|build|create|dashboard|make|generate|implement|path|folder|dir|directory|content|inspect|view|show|check|find)\b/i.test(content)
       )
       const toolsForRequest = shouldSendTools ? this.deps.tools.list() : []
 
@@ -1217,6 +1447,21 @@ export class AgentOrchestrator {
 
       toolLoop: while (loopSteps++ < MAX_LOOP) {
         shouldContinueLoop = false
+
+        // Context Compactor for Tool Loop:
+        // If prompt tokens exceed 75% of context window, compress earlier tool outputs to prevent context overflow
+        const currentTokens = messages.reduce((n, m) => n + Math.ceil((m.content || '').length / 4), 0)
+        if (currentTokens > nCtx * 0.75 && messages.length > 5) {
+          const protectedTail = 4
+          for (let idx = 2; idx < messages.length - protectedTail; idx++) {
+            const m = messages[idx]
+            if (m.role === 'tool' && m.content && m.content.length > 300) {
+              m.content = m.content.slice(0, 180) + '... [earlier tool output compressed]'
+            } else if (m.role === 'assistant' && m.content && m.content.length > 1000) {
+              m.content = m.content.slice(0, 500) + '... [earlier thoughts compressed]'
+            }
+          }
+        }
         // GATE 1: Skill-read enforcement — block artifact generation until required skills are read
         {
           const gate = checkSkillReadGate(classification as any, toolHistoryForGate, skillsReadSet)
@@ -1252,7 +1497,7 @@ export class AgentOrchestrator {
       text = ''
       reasoningBuffer = ''
       allReasoning = ''
-      inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+      inReasoning = false
       usage = undefined
       orchFirstTokenAt = null
       // Deduplicated fence set: fences collected during streaming are executed
@@ -1302,6 +1547,14 @@ export class AgentOrchestrator {
       // shouldContinueLoop is declared at the while (toolLoop) level so it is in scope
       // both here (inside the try) and in the RESUME-ON-TRUNCATE branch below.
       if (!chunkMode) try {
+        // Resolve project and workspace for this session once for tool loop permissions and path normalization
+        let sessionProjectId: string | null = null
+        try {
+          const hdr: any = await this.deps.persistence.get(sessionId as never).catch(() => null)
+          sessionProjectId = hdr?.projectId ?? null
+        } catch {}
+        const sessionWsRoot = (this.deps.getProjectWorkspace?.(sessionProjectId) ?? this.deps.getGlobalWorkspace?.()) || null
+
         // ── Helper: Execute tool with optional infrastructure (DeepSeek Harness-style) ──
         const execTool = async (toolName: string, args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> => {
           const infra = this.getToolInfra()
@@ -1409,8 +1662,7 @@ export class AgentOrchestrator {
               chunk.toolCalls = chunk.toolCalls || []
               for (const f of pendingStreamCalls) {
                 if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
-                  const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
-                  if (/^[a-z]:\//i.test(p) || require('path').isAbsolute(p)) f.args['path'] = '.'
+                  f.args['path'] = normalizeToolPath(f.toolName, f.args['path'] as string, sessionWsRoot)
                 }
                 chunk.toolCalls.push({
                   id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
@@ -1430,8 +1682,7 @@ export class AgentOrchestrator {
               
               for (const f of fences) {
                 if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
-                  const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
-                  if (/^[a-z]:\//i.test(p) || require('path').isAbsolute(p)) f.args['path'] = '.'
+                  f.args['path'] = normalizeToolPath(f.toolName, f.args['path'] as string, sessionWsRoot)
                 }
                 const sig = `${f.toolName}:${JSON.stringify(f.args)}`
                 if (!streamFenceSet.has(sig)) {
@@ -1481,10 +1732,7 @@ export class AgentOrchestrator {
 
               // Normalize paths emitted by local models (e.g. Windows absolute paths or escaped backslashes)
               if (typeof toolArgs['path'] === 'string') {
-                toolArgs['path'] = (toolArgs['path'] as string).replace(/\\/g, '/').trim()
-                if (toolName === 'fs_list' && (/^[a-z]:\//i.test(toolArgs['path'] as string) || path.isAbsolute(toolArgs['path'] as string))) {
-                  toolArgs['path'] = '.'
-                }
+                toolArgs['path'] = normalizeToolPath(toolName, toolArgs['path'] as string, sessionWsRoot)
               }
 
               this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `executing ${toolName}` })
@@ -1493,14 +1741,10 @@ export class AgentOrchestrator {
 
               let toolResult: string
               try {
-                // Resolve projectId for scoped checks (session -> project)
-                let projId: string | null = null
-                try {
-                  const hdr: any = await this.deps.persistence.get(sessionId as never).catch(() => null)
-                  projId = hdr?.projectId ?? null
-                } catch {}
+                const projId = sessionProjectId
+                const wsRoot = sessionWsRoot
                 const mode = this.deps.getExecMode?.() ?? 'review'
-                const gate = gateDispatch(mode, toolName, toolArgs, sid, projId)
+                const gate = gateDispatch(mode, toolName, toolArgs, sid, projId, wsRoot)
                 
                 if (!gate.allowed) {
                   if (gate.reason === 'disabled') {
@@ -1544,7 +1788,8 @@ export class AgentOrchestrator {
                 trace.gateChecks.push({ gate: 'fs_write', passed: true, message: `wrote ${String((toolArgs as any).path ?? '')}` })
               }
 
-              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, content: toolResult }) } catch {}
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: tc.id as never, name: toolName, args: toolArgs } as never) } catch {}
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, name: toolName, content: toolResult } as never) } catch {}
               this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `${toolName} → ${toolResult.slice(0, 120)}` })
               this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolResult.slice(0, 400), toolName } as never)
 
@@ -1584,11 +1829,50 @@ export class AgentOrchestrator {
         if (!autoRetried && (/exceed.*context|context.*size/i.test(errMsg) || errMsg.includes('exceed_context_size_error'))) {
           autoRetried = true
           if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-          console.warn(`[SOVARA][ORCH] Context size exceeded, auto-compacting and retrying once...`)
-          const reducedCtx = Math.max(2048, Math.floor(nCtx / 2))
-          nCtx = reducedCtx
-          messages = compactForCtx(messages, reducedCtx)
-          this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `compacted context to ${reducedCtx} tokens, retrying...` })
+          // Parse the SERVER's actual n_ctx from the error body — never guess
+          // from a halved client nCtx (that retried against 4096 while the
+          // server still had 2048 and failed the same way).
+          const nCtxMatch = errMsg.match(/available context size \((\d+)/i) ?? errMsg.match(/n_ctx[=: ]+(\d+)/i)
+          const serverCtx = nCtxMatch ? parseInt(nCtxMatch[1]!, 10) : 0
+          console.warn(`[SOVARA][ORCH] Context size exceeded (server n_ctx=${serverCtx || 'unknown'}, client nCtx=${nCtx}), recovering...`)
+          let recovered = false
+          // Root-cause recovery: upgrade the owned server's n_ctx when it's
+          // below the new 12288 floor. This is the path that was missing — the
+          // previous gate `serverCtx < 8192` skipped the upgrade for 8192-resident
+          // servers (Nemotron-3-Nano first measured 8372 > 8192 → loop failed).
+          // ensureHealthy evicts and respawns the model at the higher ctxLen.
+          if (serverCtx > 0 && serverCtx < 12288 && ownedEndpoint) {
+            try {
+              const models = this.deps.models as unknown as {
+                ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown }>
+                baseUrl?: (id: unknown) => string
+              }
+              if (models.ensureHealthy) {
+                const inst = await models.ensureHealthy(routing.modelId! as never, { ctxLen: 12288, runtimeId: routing.runtimeId! })
+                const newEndpoint = models.baseUrl?.(inst.id)
+                if (newEndpoint) {
+                  endpoint = newEndpoint
+                  ownedEndpoint = newEndpoint
+                  recovered = true
+                  appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `upgraded undersized server ctx ${serverCtx}→12288 and retrying` })
+                }
+              }
+            } catch { /* fall through to compact-against-real-budget */ }
+          }
+          if (!recovered) {
+            // Compact against the server's real budget (or client nCtx when unknown).
+            // Pass the live serverCtx so the budget reflects actual room — not the
+            // (possibly larger) client nCtx, which would under-compact.
+            const effectiveCtx = serverCtx > 0 ? serverCtx : nCtx
+            nCtx = Math.max(2048, effectiveCtx)
+            messages = compactForCtx(messages, nCtx)
+          } else {
+            // Server upgraded — bump client nCtx to match new server ctxLen so
+            // compactForCtx doesn't trim more than necessary.
+            nCtx = Math.max(12288, nCtx)
+            messages = compactForCtx(messages, nCtx)
+          }
+          this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 0, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: recovered ? `server ctx upgraded to 12288, retrying...` : `compacted context to ${nCtx} tokens, retrying...` })
           shouldContinueLoop = true
           continue
         }
@@ -1601,15 +1885,31 @@ export class AgentOrchestrator {
         this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
         appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: routing.runtimeId!, latencyMs: Date.now() - startedAll })
         this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: safe, error: safe })
-        this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+        // Persist a visible assistant bubble BEFORE rejecting the IPC — otherwise
+        // chat:send just rethrows ("Error occurred in handler for 'chat:send'")
+        // and the user sees no message at all in the timeline.
+        try {
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${safe}` })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+        } catch {
+          this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+        }
         this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `failed: ${safe}` })
         this.noteEndQuiet(ownedInstanceForMetrics)
         throw new AgentOrchestratorError('llm-failed', safe)
       }
-      // Set by the text.trim() === '' block above when the model returned empty text and
-      // we want to retry the turn rather than emit nothing.  Must be outside the try
-      // so the continue can legally jump to the while (toolLoop) header.
-      if (shouldContinueLoop) continue
+      // Persist unclosed thinking + set by the text.trim() === '' block above when the
+      // model returned empty text and we want to retry rather than emit nothing.
+      // Must stay outside the try so continue can jump to the while (toolLoop) header.
+      if (shouldContinueLoop) {
+        // Wipes reasoningBuffer otherwise — Thought block lost whenever the
+        // model ends its turn with a tool fence instead of </thinking>.
+        if (reasoningBuffer) {
+          try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+          reasoningBuffer = ''
+        }
+        continue
+      }
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
 
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars streamed=${streamed}` })
@@ -1617,9 +1917,9 @@ export class AgentOrchestrator {
       // Unclosed <thinking> block (model never emitted the close tag):
       // deltas already streamed incrementally — persist the full text so a
       // later refresh reconstructs the same reasoning instead of losing it.
+      // Do NOT re-append to allReasoning (already accumulated from deltas).
       if (reasoningBuffer) {
         try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
-        allReasoning += reasoningBuffer
         reasoningBuffer = ''
       }
 
@@ -1680,7 +1980,8 @@ export class AgentOrchestrator {
               this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolText.slice(0,400), toolName: 'web_search' })
               this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: 1, toolName: 'web_search', detail: `tool returned ${toolText.length} chars` })
             }
-            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, content: toolText }) } catch {}
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: `tool-${Date.now()}` as never, name: 'web_search', args: { queries: [content.slice(0, 200)] } } as never) } catch {}
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `tool-${Date.now()}` as never, name: 'web_search', content: toolText } as never) } catch {}
             if (toolText && !controller.signal.aborted) {
               // Second LLM step with tool context — honest agent loop continuation
               this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: 'llm generation (with tool context)' })
@@ -1736,22 +2037,27 @@ export class AgentOrchestrator {
       // If the model executed exploratory/planning tools (fs_list, fs_read, todo_write)
       // or reviewed workspace files, and the task requires coding/building/fixing/updating,
       // DO NOT STOP to ask the user to type "continue". Drive the next step automatically!
-      const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review)\b/i.test(content)
-      const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"'))) || /todo_write|list_files|fs_list|explore/i.test(text)
+      const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review|read|inspect|show|view|find|explain|analyze|describe)\b/i.test(content)
+      const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"') || m.content.includes('"matches"'))) || /todo_write|list_files|fs_list|search_skills|explore/i.test(text)
       const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|tsx|jsx|react|mermaid|css|svg|python|py|json|sh|bash|powershell)\b[\s\S]{80,}```/i.test(text)
       const hasWrittenCode = messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
+      const isReadOrExplainIntent = /\b(read|inspect|show|view|find|explain|analyze|describe|skill|content)\b/i.test(content)
+      const hasReadActualContent = messages.some((m) => m.role === 'tool' && (m.content.includes('"content"') || m.content.includes('"linesReturned"') || m.content.includes('"results"')))
       const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
+      const isReadInterrupted = isReadOrExplainIntent && didExploration && !hasReadActualContent
 
       // Continue autonomously if:
       // 1. Model emitted a fake JSON claim instead of writing code, OR
-      // 2. Model did exploration (fs_list) but hasn't written code yet
-      // Loop guard: limit consecutive continuation re-entries to avoid infinite loops when model output contains no tools or code
+      // 2. Model did exploration (fs_list or search_skills) but user wanted to read/inspect and actual content hasn't been read yet, OR
+      // 3. Model did exploration (fs_list) but hasn't written code yet for a build task
       const continuationCount = messages.filter((m) => m.role === 'user' && m.content.includes('[Autonomous Agent Directive]')).length
-      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || (didExploration && !hasWrittenCode)) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
+      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode)) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
           const nextDirective = isFakeFileClaim
             ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your <skills_context> and MCP tools if necessary. Write the real code now.`
+            : isReadInterrupted
+            ? `[Autonomous Agent Directive]: Listing/search complete. Do not stop or pause. Immediately read the actual content using fs_read (e.g. fs_read {"path": "filepath"}) or read_skill (e.g. read_skill {"skill_name": "skill_name"}) and explain or present the full content to the user.`
             : `[Autonomous Agent Directive]: Workspace inspection complete. Now proceed immediately to write the complete, functional code and implementation using fs_write (e.g. app.py, main.js) or a full markdown code block. Review the Enterprise Skills and MCP tools in your context before writing. Do not stop or ask for confirmation.`
 
         this.deps.emit({
@@ -1839,7 +2145,7 @@ export class AgentOrchestrator {
         // Enforce exec permission gate — do not auto-run risky tools under review/ask
         try {
           const mode = this.deps.getExecMode?.() ?? 'review'
-          const verdict = gateDispatch(mode as any, tName)
+          const verdict = gateDispatch(mode as any, tName, args, sid, pid2, fallbackWsRoot)
           if (!verdict.allowed) {
             const tid = `${tName}-${Date.now()}-${Math.floor(Math.random()*1000)}`
             this.deps.emit({ sessionId: sid, kind: 'agent:needs-approval' as any, toolCallId: tid, toolName: tName, args } as never)
@@ -1865,17 +2171,8 @@ export class AgentOrchestrator {
         // missed these, leaving empty text → "empty reply after Ns".
         for (const f of extractToolFences(text)) {
           const args = { ...f.args } as Record<string, unknown>
-          // Normalize absolute workspace path the model emits (D:\data\rewards) to relative "." so resolveWorkspacePath works
           if (f.toolName === 'fs_list' && typeof args['path'] === 'string') {
-            const p = (args['path'] as string).replace(/\\/g, '/').trim()
-            if (/^[a-z]:\//i.test(p) || path.isAbsolute(p as string)) {
-              try {
-                const wsNorm = fallbackWsRoot ? path.resolve(fallbackWsRoot).replace(/\\/g, '/').toLowerCase() : ''
-                if (wsNorm && (p.toLowerCase() === wsNorm || p.toLowerCase() === wsNorm + '/')) args['path'] = '.'
-                else if (wsNorm && p.toLowerCase().startsWith(wsNorm + '/')) args['path'] = p.slice(wsNorm.length + 1) || '.'
-                else args['path'] = '.'
-              } catch { args['path'] = '.' }
-            }
+            args['path'] = normalizeToolPath(f.toolName, args['path'] as string, fallbackWsRoot)
           }
           if (await dispatchMissedFence(f.toolName, args)) missed++
         }
@@ -1889,8 +2186,7 @@ export class AgentOrchestrator {
         for (const f of extractToolFences(allReasoning)) {
           const args = { ...f.args } as Record<string, unknown>
           if (f.toolName === 'fs_list' && typeof args['path'] === 'string') {
-            const p = (args['path'] as string).replace(/\\/g, '/').trim()
-            if (/^[a-z]:\//i.test(p) || path.isAbsolute(p as string)) args['path'] = '.'
+            args['path'] = normalizeToolPath(f.toolName, args['path'] as string, fallbackWsRoot)
           }
           if (await dispatchMissedFence(f.toolName, args)) missed++
         }
@@ -1900,8 +2196,7 @@ export class AgentOrchestrator {
       // backtick fences. Detect and dispatch these from both text and reasoning.
       const normBareArgs = (toolName: string, args: Record<string, unknown>): Record<string, unknown> => {
         if (toolName === 'fs_list' && typeof args['path'] === 'string') {
-          const p = (args['path'] as string).replace(/\\/g, '/').trim()
-          if (/^[a-z]:\//i.test(p) || path.isAbsolute(p)) args['path'] = '.'
+          args['path'] = normalizeToolPath(toolName, args['path'] as string, fallbackWsRoot)
         }
         return args
       }
@@ -1921,7 +2216,7 @@ export class AgentOrchestrator {
       // Inline fs/shell leak follow-up: Qwen at 7/32 layers often emits <fs_list path="."> as text instead of tool_call.
       // We already executed it via tryInlineTools and have inlineToolOutputs — now synthesize a final answer with those results
       // so we don't exit with just "I'll explore the workspace..." and the raw tag.
-      if (inlineToolOutputs.length > 0 && text.trim().length < 1200) {
+      if (inlineToolOutputs.length > 0) {
         const toolCtx = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
         this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: 1, detail: 'fs/shell result synthesis' })
         const followMessages: import('@shared/types/ports').LlmChatMessage[] = [
@@ -2168,9 +2463,37 @@ export class AgentOrchestrator {
 
       return { ok: true, userSeq, assistantSeq, routing, classification }
     } catch (e) {
-      if (e instanceof AgentOrchestratorError) throw e
+      const code = e instanceof AgentOrchestratorError ? e.code : undefined
+      // Pre-stream failures throw BEFORE user/assistant persistence — the
+      // timeline would otherwise show the user prompt with no reply (bubble-less).
+      // Persist a ⚠️ assistant bubble, then rethrow so IPC handlers still map codes.
+      // Skipped: cancelled / persistence-failed / llm-failed (already bubble or
+      // are caller-driven) and non-AgentOrchestratorError (handled below).
+      const bubbleCodes = ['no-model-available', 'resource-blocked', 'model-load-failed', 'runtime-unavailable']
+      const shouldBubble = code !== undefined && bubbleCodes.includes(code)
+      if (e instanceof AgentOrchestratorError && !shouldBubble) throw e
       const msg = e instanceof Error ? e.message : String(e)
       this.emit(sid, 'task:error', { taskKind: 'chat', detail: msg, error: msg })
+      if (shouldBubble) {
+        if (userSeq < 0) {
+          try {
+            userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content })).seq
+          } catch { /* best-effort — bubble must still surface */ }
+        }
+        try {
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${msg}` })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+        } catch {
+          this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
+        }
+        throw e
+      }
+      try {
+        const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${msg}` })).seq
+        this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+      } catch {
+        this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: msg })
+      }
       throw new AgentOrchestratorError('llm-failed', msg)
     } finally {
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
@@ -2234,10 +2557,22 @@ export class AgentOrchestrator {
           models,
           active: active.selection ?? null,
           resources,
+          // Laya tie-break is consulted only when the user is on Auto (we
+          // don't override an explicit pinned selection, even on regenerate).
+          ...(isAutoRegen && isLayaReady()
+            ? {
+                layaDecide: async (q, options, ctx) => {
+                  const r = await decideLaya(q, options, ctx ?? '')
+                  return { decision: r.decision }
+                },
+                layaTieThreshold: LAYA_TIE_THRESHOLD,
+              }
+            : {}),
           checkBeforeLoad: async (modelId) => {
             try {
+              const p = this.resolveModelFilePath(modelId)
               return await this.deps.resources.checkBeforeLoad(
-                { id: modelId as never, displayName: modelId, source: 'custom', format: 'unknown' } as never,
+                { id: modelId as never, displayName: modelId, path: p, source: 'custom', format: 'gguf' } as never,
                 { ctxLen: classification.contextLengthNeeded }
               )
             } catch { return { level: 'ok' as const } }
@@ -2245,10 +2580,11 @@ export class AgentOrchestrator {
         })
       }
       if (!routing.modelId! || !routing.runtimeId!) throw new AgentOrchestratorError('no-model-available', `No compatible model for "${classification.kind}". ${routing.reason}`)
+      const regenPath = this.resolveModelFilePath(routing.modelId!)
       const pressure = await this.deps.resources.checkBeforeLoad(
-        { id: routing.modelId! as never, displayName: routing.modelId!, source: 'custom', format: 'unknown' } as never,
+        { id: routing.modelId! as never, displayName: routing.modelId!, path: regenPath, source: 'custom', format: 'gguf' } as never,
         { ctxLen: classification.contextLengthNeeded }
-      )
+      ).catch(() => ({ level: 'ok' as const, blocking: false } as never))
       if (pressure.blocking) {
         // Pinned-but-unfittable: dynamic fallback ranked by ACTUAL free VRAM/RAM fit
         // (pickFittingModel) instead of hardcoded size/name assumptions.
@@ -2284,12 +2620,56 @@ export class AgentOrchestrator {
       const regenIsOwned = entry!.endpoint === 'local' || entry.id === 'local' || routing.runtimeId! === 'local'
       if (regenIsOwned) {
         this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramTotalMB: resources.vram.totalMB, progress: 35, detail: 'Loading GGUF into VRAM...' })
-        const models = this.deps.models as ModelRuntimePort & {
+        // Mirror Phase 3: fit mode sized to this GPU — never the auto
+        // capacity gate that throws a bare resource-pressure Error.
+        ;(routing as unknown as Record<string, unknown>).gpuMode = 'fit'
+        const regenGpuMode = 'fit' as const
+        const modelsPort = this.deps.models as ModelRuntimePort & {
           ensureHealthy?: (m: never, o?: unknown) => Promise<{ id: unknown; modelId: unknown }>
         }
-        const inst = models.ensureHealthy
-          ? await models.ensureHealthy(routing.modelId! as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId! })
-          : await this.deps.models.load(routing.modelId! as never, { ctxLen: classification.contextLengthNeeded, runtimeId: routing.runtimeId! })
+        let inst: { id: InstanceId; modelId?: unknown }
+        try {
+          const loadOpts = { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: routing.runtimeId!, gpu: regenGpuMode } as never
+          inst = modelsPort.ensureHealthy
+            ? await modelsPort.ensureHealthy(routing.modelId! as never, loadOpts)
+            : await this.deps.models.load(routing.modelId! as never, loadOpts)
+        } catch (loadErr) {
+          const msg = loadErr instanceof Error ? loadErr.message : String(loadErr)
+          const isResource = /resource-pressure|insufficient VRAM|cannot fit this GPU|needs ~\d+|even partial offload/i.test(msg) && !/max concurrent|model\(s\) already resident|eligible for eviction/i.test(msg)
+          if (isResource) {
+            // Same dynamic fallback as execute(): rank by ACTUAL free VRAM/RAM.
+            const fit = pickFittingModel(models, resources, { excludeModelId: routing.modelId!, ctxLenNeeded: classification.contextLengthNeeded })
+            const cand = fit?.model ?? null
+            if (cand && cand.modelId !== routing.modelId) {
+              this.emit(sid, 'model:selecting', { taskKind: classification.kind, detail: `regenerate: ${routing.modelId} does not fit → auto-fallback to ${cand.modelId}` })
+              try { await this.deps.workbench.selectModel(cand.runtimeId, cand.modelId) } catch {}
+              routing = {
+                modelId: cand.modelId,
+                runtimeId: cand.runtimeId,
+                reason: `regenerate auto-fallback: ${msg.slice(0, 80)} → ${cand.modelId}`,
+                task: classification,
+                candidatesConsidered: 1,
+                switched: true,
+              } as unknown as Awaited<ReturnType<typeof routeModel>>
+              try {
+                const retryOpts = { ctxLen: Math.max(8192, classification.contextLengthNeeded || 8192), runtimeId: routing.runtimeId!, gpu: 'fit' } as never
+                inst = modelsPort.ensureHealthy
+                  ? await modelsPort.ensureHealthy(routing.modelId! as never, retryOpts)
+                  : await this.deps.models.load(routing.modelId! as never, retryOpts)
+              } catch (e2) {
+                const m2 = e2 instanceof Error ? e2.message : String(e2)
+                this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: m2, error: m2 })
+                throw new AgentOrchestratorError('resource-blocked', m2)
+              }
+            } else {
+              this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
+              throw new AgentOrchestratorError('resource-blocked', msg)
+            }
+          } else {
+            this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: msg, error: msg })
+            throw new AgentOrchestratorError('model-load-failed', msg)
+          }
+        }
         this.emit(sid, 'model:loading', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, vramTotalMB: resources.vram.totalMB, progress: 75, detail: 'Verifying health...' })
         const h = await this.deps.models.health(inst.id).catch(() => ({ ok: false, error: 'health-check-failed' }))
         if (!h.ok) throw new AgentOrchestratorError('model-load-failed', `instance unhealthy (${h.error ?? 'health check failed'}) -- refusing to route`)
@@ -2421,6 +2801,10 @@ export class AgentOrchestrator {
             this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
             this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
             this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: `Context too large even after auto-compact — try /compact or new chat. (${raw.slice(0,150)})` })
+            try {
+              const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ Context too large even after auto-compact — try /compact or new chat. (${raw.slice(0,150)})` })).seq
+              this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+            } catch {}
             throw new AgentOrchestratorError('llm-failed', safe)
           }
         } else {
@@ -2428,15 +2812,19 @@ export class AgentOrchestrator {
           this.log(routing.runtimeId!, endpoint, model, startedAll, undefined, outcomeOf(e), streamed)
           this.emit(sid, 'task:error', { taskKind: classification.kind, detail: safe, error: safe })
           this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+          try {
+            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${safe}` })).seq
+            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          } catch {}
           throw new AgentOrchestratorError('llm-failed', safe)
         }
       }
       this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `llm done — ${text.length} chars` })
       // Unclosed <thinking> block: deltas already streamed — persist the
       // full text so a later refresh reconstructs it instead of losing it.
+      // Do NOT re-append to allReasoning (already accumulated from deltas).
       if (reasoningBuffer) {
         try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
-        allReasoning += reasoningBuffer
         reasoningBuffer = ''
       }
       // Post-stream recovery (mirrors execute()): the reasoning branch `continue`s
@@ -2459,11 +2847,15 @@ export class AgentOrchestrator {
         } catch { return false }
       }
       let missed = 0
+      let regenWsRoot: string | null = null
+      try {
+        const h = await this.deps.persistence.get(sessionId).catch(() => null) as { projectId?: string | null } | null
+        const pid2 = h?.projectId ?? null
+        regenWsRoot = this.deps.getProjectWorkspace?.(pid2) ?? this.deps.getGlobalWorkspace?.() ?? null
+      } catch {}
       const normalizeAbsPath = (f: { toolName: string; args: Record<string, unknown> }): void => {
-        // Absolute paths the model emits (D:\SOVARA) normalize to workspace-relative '.'
         if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
-          const p = (f.args['path'] as string).replace(/\\/g, '/').trim()
-          if (/^[a-z]:\//i.test(p) || path.isAbsolute(p)) f.args['path'] = '.'
+          f.args['path'] = normalizeToolPath(f.toolName, f.args['path'] as string, regenWsRoot)
         }
       }
       if (looksLikeToolFence(text)) {

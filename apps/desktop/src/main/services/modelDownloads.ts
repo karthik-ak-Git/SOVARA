@@ -14,6 +14,7 @@ import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
 import type { RuntimeConfigStore } from '../config/RuntimeConfigStore'
 import { downloadRowId, type DownloadRowStatus, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
+import { preflightGgufArchitecture } from './llamaRuntime'
 
 export type LibrarySource = 'registry' | 'filesystem'
 
@@ -120,6 +121,36 @@ export function confinePath(root: string, ...parts: string[]): string {
   return abs
 }
 
+/**
+ * Resolve a renderer-supplied entry path against the library root safely.
+ * Tolerates: mixed separators (Chromium hands back '/' on Windows), case
+ * differences on Windows (D:\Models vs d:\models), already-absolute paths,
+ * and paths that are relative to the library root. Returns the canonical
+ * absolute path only when it is contained by the library root, else null.
+ *
+ * Original bug surfaced as "Error: path escapes the model library" on every
+ * delete — the previous implementation blindly fed `relative(root, abs)`
+ * into `confinePath`, which is brittle to any of the above normalizations.
+ */
+function resolveEntrySafe(rootAbs: string, entryPath: string): string | null {
+  const tries: string[] = []
+  try { tries.push(resolve(entryPath)) } catch { /* ignore */ }
+  try { tries.push(resolve(rootAbs, entryPath)) } catch { /* ignore */ }
+  for (const t of tries) {
+    if (isUnder(rootAbs, t)) return t
+  }
+  // Windows: case-insensitive fallback — disk scan and config can disagree.
+  if (process.platform === 'win32') {
+    const lr = rootAbs.toLowerCase()
+    const lsep = sep.toLowerCase()
+    for (const t of tries) {
+      const lt = t.toLowerCase()
+      if (lt === lr || lt.startsWith(lr + lsep) || lt.startsWith(lr + '/')) return t
+    }
+  }
+  return null
+}
+
 export function repoFolder(modelId: string): string {
   return modelId.replace(/\//g, '__').slice(0, 128)
 }
@@ -141,6 +172,8 @@ export function scanLibraryFiles(root: string): LibraryEntry[] {
       if (dot < 0 || !MODEL_EXTENSIONS.has(lower.slice(dot))) continue
       // skip shard sidecars already handled by isDownloaded grouping
       if (lower.includes('-00001-of-') && !lower.endsWith('.gguf')) continue
+      // Hide unloadable GGUFs (e.g. custom arch stock llama.cpp can't load).
+      if (lower.endsWith('.gguf') && !preflightGgufArchitecture(full).ok) continue
       try {
         const st = statSync(full)
         const rel = relative(root, full)
@@ -512,13 +545,20 @@ function safeEmitTo(emit: Emit, event: DownloadEvent): void {
 }
 
 export function deleteLibraryEntry(root: string, entryPath: string, config?: RuntimeConfigStore): void {
-  const abs = confinePath(root, relative(root, resolve(entryPath)))
+  if (!entryPath || typeof entryPath !== 'string') throw new Error('delete: empty path')
+  const rootAbs = resolve(root)
+  const abs = resolveEntrySafe(rootAbs, entryPath)
+  if (!abs) {
+    throw new Error(`path escapes the model library (root: ${rootAbs}, entry: ${entryPath})`)
+  }
   if (!existsSync(abs)) return
   rmSync(abs, { force: true })
-  // Prune the now-empty repo folder.
+  // Prune the now-empty repo folder (don't walk above the library root).
   try {
     const parent = dirname(abs)
-    if (parent !== root && readdirSync(parent).length === 0) rmSync(parent, { recursive: true, force: true })
+    if (parent !== rootAbs && isUnder(rootAbs, parent) && readdirSync(parent).length === 0) {
+      rmSync(parent, { recursive: true, force: true })
+    }
   } catch {
     // best-effort prune
   }

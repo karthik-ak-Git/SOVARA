@@ -10,3 +10,12 @@ rapidocr_onnxruntime>=1.4.0
 pillow>=10.0.0
 huggingface_hub>=0.25.0
 onnxruntime>=1.18.0
+# Laya decision sidecar — calibrated System-1 classification for the smart router
+# (convaiinnovations/laya, Apache-2.0, ~421M params, text-classification).
+# Pinned to the latest stable LTS line; transformers drags torch + tokenizers,
+# numpy + onnxruntime already cover the rest of the runtime.
+transformers>=4.45,<5
+torch>=2.2,<2.5
+tokenizers>=0.19
+safetensors>=0.4
+

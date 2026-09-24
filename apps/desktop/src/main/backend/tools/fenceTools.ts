@@ -85,8 +85,8 @@ export function parseLenientJson(raw: string, toolName?: string): Record<string,
     if (!res || typeof res !== 'object') return defaultArgsFor(toolName)
     const out = { ...res }
     if (toolName === 'read_skill') {
-      if (!out['skill_name'] && (out['skill'] || out['name'])) {
-        out['skill_name'] = out['skill'] || out['name']
+      if (!out['skill_name'] && (out['skillName'] || out['skill'] || out['name'])) {
+        out['skill_name'] = out['skillName'] || out['skill'] || out['name']
       }
     } else if (toolName === 'search_skills') {
       if (!out['query'] && (out['q'] || out['keyword'] || out['term'])) {
@@ -160,8 +160,18 @@ export function extractToolFences(text: string): ToolFence[] {
   // Open: 3+ ticks, optional "tool:" prefix, then a known tool name on the
   // same line OR as the first body line; non-greedy body; close: 3+ ticks
   // (may differ from opener count). Built dynamically from TOOL_NAME_PATTERN.
+  //
+  // Case A (name + args on opener line, then body, then close):
+  //   ```read_skill query:"pptx presentation"\n{...}\n```
+  //   → group1 = toolName, group2 = args-on-line, group3 = rest of body.
+  // Case B (name only on opener line):
+  //   ```fs_list\n{...}```
+  //   → group1 = toolName, group2 = '', group3 = body.
+  // Case C (name on first BODY line, no name on opener):
+  //   ```\nfs_list\n{...}```
+  //   → group1 = undefined, handled by firstLineRe below.
   const re = new RegExp(
-    '`{3,}[ \\t]*(?:tool:)?[ \\t]*(' + TOOL_NAME_PATTERN + ')?[ \\t]*\\r?\\n([\\s\\S]*?)`{3,}',
+    '`{3,}[ \\t]*(?:tool:)?[ \\t]*(' + TOOL_NAME_PATTERN + ')?([^`\\r\\n]*)\\r?\\n?([\\s\\S]*?)`{3,}',
     'gi'
   )
   const firstLineRe = new RegExp('^\\s*(' + TOOL_NAME_PATTERN + ')\\s*\\r?\\n', 'i')
@@ -172,10 +182,12 @@ export function extractToolFences(text: string): ToolFence[] {
     re.lastIndex = scanFrom
     m = re.exec(text)
     if (m === null) break
-    // Name on its own first body line (```\nfs_list\n{...}\n```)
     let nameStr = m[1]?.toLowerCase() ?? ''
-    let body = m[2] ?? ''
+    // Args glued onto the opener line after the tool name (no braces required).
+    const inlineArgs = (m[2] ?? '').trim()
+    let body = m[3] ?? ''
     if (!nameStr) {
+      // Name on its own first body line (```\nfs_list\n{...}\n```)
       const first = body.match(firstLineRe)
       if (first) {
         nameStr = first[1].toLowerCase()
@@ -185,7 +197,18 @@ export function extractToolFences(text: string): ToolFence[] {
         continue // not a tool fence — skip
       }
     }
-    const args = parseLenientJson(body, nameStr)
+    // Build the args source: prefer JSON body; fall back to inline same-line args.
+    let argsSource = body
+    if (inlineArgs) {
+      // Prefer a real JSON body when present; otherwise parse the opener-line args.
+      const bodyTrim = body.trim()
+      const bodyLooksJson = bodyTrim.startsWith('{') && bodyTrim.endsWith('}')
+      if (!bodyLooksJson) {
+        // Bare key:"value" form → wrap so parseLenientJson can repair/quote keys.
+        argsSource = inlineArgs.startsWith('{') ? inlineArgs : `{${inlineArgs}}`
+      }
+    }
+    const args = parseLenientJson(argsSource, nameStr)
     out.push({ toolName: nameStr, args, raw: m[0], index: m.index })
     scanFrom = m.index + m[0].length
     if (scanFrom >= text.length) break
@@ -285,11 +308,12 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     const attrStr = m[2] || ''
     const innerContent = m[3] || ''
     const args: Record<string, unknown> = {}
-    // Parse key="value" or key='value' or key: "value"
-    const attrRe = /(\w+)\s*(?:=|:)\s*["']?([^"'\\s>]{0,500})["']?/g
+    // Parse key="value" or key='value' or key: "value" or key=value
+    const attrRe = /(\w+)\s*(?:=|:)\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g
     let a: RegExpExecArray | null
     while ((a = attrRe.exec(attrStr)) !== null) {
-      if (a[1] && a[2]) args[a[1]] = a[2].replace(/^["']|["']$/g, '')
+      const val = a[2] ?? a[3] ?? a[4] ?? ''
+      if (a[1]) args[a[1]] = val
     }
     if (innerContent.trim() && !args['content']) {
       args['content'] = innerContent.trim()
@@ -298,36 +322,123 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     out.push({ toolName, args, raw: m[0], index: m.index })
   }
 
-  // Pattern 3: <tool_call><function>name</function><parameter name="key">val</parameter>...</tool_call>
+  // Pattern 3: <tool_call>...</tool_call> (handles function/parameter, arg_key/arg_value, JSON, or bare tool name)
   const toolCallXmlRe = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/gi
   guard = 0
   while (guard++ < 64 && (m = toolCallXmlRe.exec(text)) !== null) {
     const raw = m[0]
-    const content = m[1]
-    const fnMatch = /<function(?:>|\s+name=["']?([^>]+?)["']?>)([\s\S]*?)<\/?function>|<function=([^>]+)>/i.exec(content)
-    if (fnMatch) {
-      // Find the tool name from the name attribute, or from the inner text (stripping child tags)
-      let toolName = fnMatch[1] || fnMatch[3]
-      if (!toolName && fnMatch[2]) {
-        // If no name attribute, it might be <function>fs_write<parameter>...</parameter></function>
-        toolName = fnMatch[2].replace(/<[^>]+>[\s\S]*/, '').trim()
+    const content = m[1].trim()
+    let toolName = ''
+    let args: Record<string, unknown> = {}
+
+    // Variant A: Spark / XHToken syntax:
+    // <tool_call>fs_read<arg_key>path</arg_key><arg_value>D:\path</arg_value></tool_call>
+    const sparkMatch = content.match(/^([a-zA-Z0-9_-]+)\s*(?:<arg_key>[\s\S]*)/i)
+    if (sparkMatch) {
+      toolName = sparkMatch[1].toLowerCase()
+      const argPairRe = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi
+      let ap: RegExpExecArray | null
+      while ((ap = argPairRe.exec(content)) !== null) {
+        const k = ap[1].trim()
+        const v = ap[2].trim()
+        args[k] = v
       }
-      toolName = (toolName || '').toLowerCase()
-      const args: Record<string, unknown> = {}
-      // Match both <parameter=key>val</parameter> AND <parameter name="key">val</parameter>
-      const paramRe = /<parameter(?:=|\s+name=["'])([^>]+?)(?:["']|)?>([\s\S]*?)(?:<\/parameter>|$)/gi
-      let p: RegExpExecArray | null
-      while ((p = paramRe.exec(content)) !== null) {
-        args[p[1].trim()] = p[2].trim()
+    }
+
+    // Variant B: Function / parameter XML tags:
+    // <function name="fs_read"><parameter name="path">...</parameter></function>
+    if (!toolName) {
+      const fnMatch = /<function(?:>|\s+name=["']?([^>]+?)["']?>)([\s\S]*?)<\/?function>|<function=([^>]+)>/i.exec(content)
+      if (fnMatch) {
+        toolName = fnMatch[1] || fnMatch[3]
+        if (!toolName && fnMatch[2]) {
+          toolName = fnMatch[2].replace(/<[^>]+>[\s\S]*/, '').trim()
+        }
+        toolName = (toolName || '').toLowerCase()
+        const paramRe = /<parameter(?:=|\s+name=["'])([^>]+?)(?:["']|)?>([\s\S]*?)(?:<\/parameter>|$)/gi
+        let p: RegExpExecArray | null
+        while ((p = paramRe.exec(content)) !== null) {
+          args[p[1].trim()] = p[2].trim()
+        }
+        if (Object.keys(args).length === 0) {
+          const rawParam = /<parameter>([\s\S]*?)(?:<\/parameter>|$)/i.exec(content)
+          if (rawParam) args['content'] = rawParam[1].trim()
+        }
       }
-      // If it just dumped everything in <parameter>, map to content
-      if (Object.keys(args).length === 0) {
-        const rawParam = /<parameter>([\s\S]*?)(?:<\/parameter>|$)/i.exec(content)
-        if (rawParam) args['content'] = rawParam[1].trim()
+    }
+
+    // Variant C: JSON inside <tool_call>:
+    // <tool_call>\n{"name": "fs_read", "arguments": {"path": "..."}}\n</tool_call>
+    // or <tool_call>{"path": "..."}</tool_call>
+    if (!toolName) {
+      const jsonStart = content.indexOf('{')
+      const jsonEnd = content.lastIndexOf('}')
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        const leading = content.slice(0, jsonStart).trim()
+        const jsonStr = content.slice(jsonStart, jsonEnd + 1)
+        const parsed = tryParse(jsonStr)
+        if (parsed) {
+          if (parsed['name'] && typeof parsed['name'] === 'string') {
+            toolName = (parsed['name'] as string).toLowerCase()
+            const rawArgs = parsed['arguments'] || parsed['args'] || parsed['parameters']
+            if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+              args = rawArgs as Record<string, unknown>
+            } else if (typeof rawArgs === 'string') {
+              args = parseLenientJson(rawArgs, toolName)
+            }
+          } else if (leading && TOOL_NAMES.includes(leading.toLowerCase() as any)) {
+            toolName = leading.toLowerCase()
+            args = parsed
+          }
+        }
       }
+    }
+
+    // Variant D: Bare name followed by key-value or path inside <tool_call>:
+    // <tool_call>fs_read path="D:\..."</tool_call> or <tool_call>fs_list</tool_call>
+    if (!toolName) {
+      const bareMatch = content.match(/^([a-zA-Z0-9_-]+)([\s\S]*)$/)
+      if (bareMatch) {
+        const cand = bareMatch[1].toLowerCase()
+        if (TOOL_NAMES.includes(cand as any)) {
+          toolName = cand
+          const rest = bareMatch[2]?.trim() || ''
+          if (rest) {
+            args = parseLenientJson(rest, toolName)
+          }
+        }
+      }
+    }
+
+    if (toolName) {
       if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
       out.push({ toolName, args, raw, index: m.index })
     }
+  }
+
+  // Pattern 4: <invoke name="tool_name">...</invoke>
+  const invokeXmlRe = /<invoke\s+name=["']?([^"'>]+)["']?>([\s\S]*?)(?:<\/invoke>|$)/gi
+  guard = 0
+  while (guard++ < 64 && (m = invokeXmlRe.exec(text)) !== null) {
+    const raw = m[0]
+    const toolName = m[1].toLowerCase()
+    const content = m[2]
+    const args: Record<string, unknown> = {}
+    const paramRe = /<parameter(?:=|\s+name=["'])([^>]+?)(?:["']|)?>([\s\S]*?)(?:<\/parameter>|$)/gi
+    let p: RegExpExecArray | null
+    while ((p = paramRe.exec(content)) !== null) {
+      args[p[1].trim()] = p[2].trim()
+    }
+    if (Object.keys(args).length === 0) {
+      const jsonStart = content.indexOf('{')
+      const jsonEnd = content.lastIndexOf('}')
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        const parsed = tryParse(content.slice(jsonStart, jsonEnd + 1))
+        if (parsed) Object.assign(args, parsed)
+      }
+    }
+    if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
+    out.push({ toolName, args, raw, index: m.index })
   }
 
   return out
@@ -338,12 +449,19 @@ export function extractBareToolCalls(text: string): ToolFence[] {
  */
 export function stripBareToolCalls(text: string): string {
   const calls = extractBareToolCalls(text)
-  if (calls.length === 0) return text
   let out = text
-  const sorted = [...calls].sort((a, b) => b.index - a.index)
-  for (const f of sorted) {
-    out = out.slice(0, f.index) + out.slice(f.index + f.raw.length)
+  if (calls.length > 0) {
+    const sorted = [...calls].sort((a, b) => b.index - a.index)
+    for (const f of sorted) {
+      out = out.slice(0, f.index) + out.slice(f.index + f.raw.length)
+    }
   }
+  out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+  out = out.replace(/<\/?tool_call>/gi, '')
+  out = out.replace(/<invoke[^>]*>[\s\S]*?<\/invoke>/gi, '')
+  out = out.replace(/<\/?invoke[^>]*>/gi, '')
+  out = out.replace(/<\/?arg_key>[\s\S]*?<\/arg_key>/gi, '')
+  out = out.replace(/<\/?arg_value>[\s\S]*?<\/arg_value>/gi, '')
   return out.replace(/\n{3,}/g, '\n\n').trim()
 }
 

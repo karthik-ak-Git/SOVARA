@@ -21,6 +21,14 @@ const SUMMARIZATION_PATTERNS = [
 const TOOL_PATTERNS = [
   /\b(search|fetch|browse|download|file|filesystem|read|write|execute|run|tool)\b/i,
 ]
+const PATH_PATTERNS = [
+  /^[a-z]:[\\/]/i,
+  /^["'][a-z]:[\\/]/i,
+  /^\/[a-zA-Z0-9_.-]+/,
+  /\b[a-z]:\\[^"'\n\s]+/i,
+  /\b[a-z]:\/[^"'\n\s]+/i,
+  /\b\w+\.(md|txt|json|ts|tsx|js|jsx|py|java|c|cpp|rs|go|html|css|yaml|yml|toml|xml|csv|log)\b/i,
+]
 const REASONING_PATTERNS = [
   /\b(think|reason|step by step|chain of thought|solve|puzzle|math|prove|derive)\b/i,
 ]
@@ -148,6 +156,18 @@ function classifyTaskBase(
       contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
       reasoningRequired: needsReasoning(text, hints?.reasoning),
       reason: 'webSearch hint / tool pattern',
+    }
+  }
+
+  // File or directory path in prompt -> tool-use (needs fs_read, fs_list, etc.)
+  if (PATH_PATTERNS.some((re) => re.test(text))) {
+    return {
+      kind: 'tool-use',
+      confidence: 0.88,
+      requiredCapabilities: ['tool-use'],
+      contextLengthNeeded: estimateContextNeeded(text, attachmentChars),
+      reasoningRequired: false,
+      reason: 'file / path detected in prompt',
     }
   }
 

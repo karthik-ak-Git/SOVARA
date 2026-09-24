@@ -17,6 +17,8 @@ import {
   planPartialFit,
   readGgufModelInfo,
   classifyLoadFailure,
+  extractLoadRootCause,
+  preflightGgufArchitecture,
 } from '../src/main/services/llamaRuntime'
 import { LlamaCppServerAdapter } from '../src/main/backend/ports/LlamaCppServerAdapter'
 import { SystemResourceStub } from '../src/main/backend/ports/SystemResourceStub'
@@ -29,7 +31,7 @@ function mkTmp(): string {
 function writeMiniGguf(
   dir: string,
   name: string,
-  shape: { arch?: string; blocks: number; embd?: number; heads?: number; kvHeads?: number; keyLen?: number },
+  shape: { arch?: string; blocks?: number; embd?: number; heads?: number; kvHeads?: number; keyLen?: number; extraKvs?: Array<{ key: string; type: number; value: Buffer }> },
   bytes = 4096
 ): string {
   const arch = shape.arch ?? 'testarch'
@@ -39,14 +41,16 @@ function writeMiniGguf(
   const str = (s: string): Buffer => Buffer.concat([u64(Buffer.byteLength(s)), Buffer.from(s, 'utf8')])
   const kvStr = (k: string, v: string): Buffer => Buffer.concat([str(k), u32(8), str(v)])
   const kvU32 = (k: string, v: number): Buffer => Buffer.concat([str(k), u32(4), u32(v)])
-  const entries = [
+  const baseEntries = [
     kvStr('general.architecture', arch),
-    kvU32(`${arch}.block_count`, shape.blocks),
-    kvU32(`${arch}.embedding_length`, shape.embd ?? 4096),
-    kvU32(`${arch}.attention.head_count`, shape.heads ?? 32),
-    kvU32(`${arch}.attention.head_count_kv`, shape.kvHeads ?? 8),
+    ...(shape.blocks !== undefined ? [kvU32(`${arch}.block_count`, shape.blocks)] : []),
+    ...(shape.embd !== undefined ? [kvU32(`${arch}.embedding_length`, shape.embd)] : []),
+    ...(shape.heads !== undefined ? [kvU32(`${arch}.attention.head_count`, shape.heads)] : []),
+    ...(shape.kvHeads !== undefined ? [kvU32(`${arch}.attention.head_count_kv`, shape.kvHeads)] : []),
     ...(shape.keyLen ? [kvU32(`${arch}.attention.key_length`, shape.keyLen)] : []),
   ]
+  const extraEntries = (shape.extraKvs ?? []).map((e) => Buffer.concat([str(e.key), u32(e.type), e.value]))
+  const entries = [...baseEntries, ...extraEntries]
   const head = Buffer.concat([Buffer.from('GGUF', 'binary'), u32(3), u64(0), u64(entries.length), ...entries])
   const p = path.join(dir, name)
   const body = Buffer.alloc(Math.max(0, bytes - head.length))
@@ -278,5 +282,71 @@ describe('SystemResourceStub — real readings, switch-aware pressure', () => {
     ])
     const verdict = await stub.checkBeforeLoad({ id: 'a' as never, displayName: 'a', source: 'sovara', format: 'gguf' })
     expect(verdict).toMatchObject({ level: 'ok' })
+  })
+})
+
+describe('llamaRuntime — root-cause extraction and preflight', () => {
+  it('extractLoadRootCause pulls the architecture line from a multi-line tail', () => {
+    const raw = [
+      'I srv      : starting llama server',
+      "E llama_model_load: error loading model: unknown model architecture: 'ggmlc'",
+      'E srv   load_model: failed to load model',
+      'I srv operator(): cleaning up...',
+      'E llama_server: exiting due to model loading error',
+    ].join('\n')
+    const cause = extractLoadRootCause(raw)
+    expect(cause).toContain('unknown model architecture')
+    expect(cause).toContain('ggmlc')
+  })
+
+  it('extractLoadRootCause returns null for unrelated stderr', () => {
+    expect(extractLoadRootCause('just some log noise')).toBeNull()
+    expect(extractLoadRootCause('')).toBeNull()
+  })
+
+  it('classifyLoadFailure maps unknown model architecture to invalid-model', () => {
+    const msg = "llama-server exited before becoming ready (code=1) — E llama_model_load: error loading model: unknown model architecture: 'ggmlc'"
+    const c = classifyLoadFailure(msg)
+    expect(c.kind).toBe('invalid-model')
+    expect(c.recoverable).toBe(false)
+  })
+
+  it('preflight rejects custom architecture without transformer shape', () => {
+    const dir = mkTmp()
+    const p = path.join(dir, 'laya.gguf')
+    const u32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b }
+    const u64 = (v: number): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return b }
+    const str = (s: string): Buffer => Buffer.concat([u64(Buffer.byteLength(s)), Buffer.from(s, 'utf8')])
+    const kvStr = (k: string, v: string): Buffer => Buffer.concat([str(k), u32(8), str(v)])
+    // arch present, NO ggmlc.block_count — matches the real laya GGUF shape
+    const entries = [
+      kvStr('general.architecture', 'ggmlc'),
+      kvStr('general.name', 'laya_english_unsloth_dynamic'),
+      kvStr('ggmlc.version', '1'),
+    ]
+    const head = Buffer.concat([Buffer.from('GGUF', 'binary'), u32(3), u64(0), u64(entries.length), ...entries])
+    fs.writeFileSync(p, Buffer.concat([head, Buffer.alloc(4096 - head.length)]))
+    const r = preflightGgufArchitecture(p)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.reason).toContain('ggmlc')
+      expect(r.reason).toContain('not supported')
+    }
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('preflight passes a normal transformer GGUF and non-gguf files', () => {
+    const dir = mkTmp()
+    const good = writeMiniGguf(dir, 'good.gguf', { arch: 'llama', blocks: 32 })
+    expect(preflightGgufArchitecture(good).ok).toBe(true)
+    // Non-GGUF: preflight stays hands-off (llama-server reports the real error)
+    const notGguf = path.join(dir, 'not.gguf')
+    fs.writeFileSync(notGguf, Buffer.alloc(100))
+    expect(preflightGgufArchitecture(notGguf).ok).toBe(true)
+    // Short file
+    const short = path.join(dir, 'short.gguf')
+    fs.writeFileSync(short, Buffer.alloc(8))
+    expect(preflightGgufArchitecture(short).ok).toBe(true)
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })

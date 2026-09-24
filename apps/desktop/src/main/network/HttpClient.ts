@@ -178,6 +178,7 @@ export async function consumeSseBody(
   let malformed = 0
   let finished = false
   let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+  const streamState: SseStreamState = { inReasoning: false }
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -206,7 +207,7 @@ export async function consumeSseBody(
           malformed += 1
           continue
         }
-        const text = extractDelta(json)
+        const text = extractDelta(json, streamState)
         if (text !== null && text !== '') {
           deltas += 1
           opts.onDelta(text)
@@ -219,6 +220,10 @@ export async function consumeSseBody(
       if (finished) break
     }
   } finally {
+    if (streamState.inReasoning) {
+      streamState.inReasoning = false
+      opts.onDelta('</think>')
+    }
     try {
       await reader.cancel()
     } catch {
@@ -257,6 +262,7 @@ export async function consumeSseBodyFull(
   let malformed = 0
   let finished = false
   let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+  const streamState: SseStreamState = { inReasoning: false }
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -275,7 +281,7 @@ export async function consumeSseBodyFull(
         let json: unknown
         try { json = JSON.parse(payload) } catch { malformed += 1; continue }
 
-        const { content, toolCallDeltas, finishReason: _fr } = extractDeltaFull(json)
+        const { content, toolCallDeltas, finishReason: _fr } = extractDeltaFull(json, streamState)
         // Fire text delta
         if (content !== null && content !== '') {
           deltas += 1
@@ -291,6 +297,10 @@ export async function consumeSseBodyFull(
       if (finished) break
     }
   } finally {
+    if (streamState.inReasoning) {
+      streamState.inReasoning = false
+      opts.onDelta('</think>')
+    }
     try { await reader.cancel() } catch { /* ignore */ }
   }
   return { finished, deltas, malformed, usage }
@@ -300,6 +310,14 @@ export async function consumeSseBodyFull(
 /** Read a bounded text body from a loopback response. */
 export async function readBoundedBody(res: Response, maxBytes?: number): Promise<string> {
   return readBounded(res, maxBytes ?? MAX_RUNTIME_RESPONSE_BYTES)
+}
+
+/**
+ * State tracker for streaming SSE responses to handle reasoning_content
+ * open/close tags across chunk boundaries without token fragmentation.
+ */
+export interface SseStreamState {
+  inReasoning: boolean
 }
 
 /**
@@ -330,7 +348,7 @@ export interface DeltaResult {
  * Parse an OpenAI SSE JSON chunk into content, tool call deltas, and finish reason.
  * Supersedes the old extractDelta() — use this wherever tool calling matters.
  */
-export function extractDeltaFull(json: unknown): DeltaResult {
+export function extractDeltaFull(json: unknown, streamState?: SseStreamState): DeltaResult {
   const empty: DeltaResult = { content: null, toolCallDeltas: [], finishReason: null }
   if (json === null || typeof json !== 'object') return empty
   const choices = (json as Record<string, unknown>)['choices']
@@ -341,16 +359,41 @@ export function extractDeltaFull(json: unknown): DeltaResult {
   const finishReason = typeof first['finish_reason'] === 'string' ? first['finish_reason'] : null
 
   // Content — try delta first (streaming), then message (non-streaming)
-  // DeepSeek Harness alignment: capture both content and reasoning_content
+  // DeepSeek Harness alignment: capture both content and reasoning_content statefully
   let content: string | null = null
   const delta = first['delta']
   if (delta !== null && typeof delta === 'object') {
     const c = (delta as Record<string, unknown>)['content']
     const r = (delta as Record<string, unknown>)['reasoning_content']
-    if (typeof c === 'string') {
-      content = c
+    if (typeof c === 'string' && typeof r === 'string') {
+      if (streamState) {
+        if (!streamState.inReasoning) {
+          content = `<think>${r}</think>${c}`
+        } else {
+          streamState.inReasoning = false
+          content = `${r}</think>${c}`
+        }
+      } else {
+        content = `<think>${r}</think>${c}`
+      }
+    } else if (typeof c === 'string') {
+      if (streamState?.inReasoning) {
+        streamState.inReasoning = false
+        content = `</think>${c}`
+      } else {
+        content = c
+      }
     } else if (typeof r === 'string') {
-      content = `<think>${r}</think>`
+      if (streamState) {
+        if (!streamState.inReasoning) {
+          streamState.inReasoning = true
+          content = `<think>${r}`
+        } else {
+          content = r
+        }
+      } else {
+        content = `<think>${r}</think>`
+      }
     }
   }
   if (content === null) {
@@ -358,7 +401,9 @@ export function extractDeltaFull(json: unknown): DeltaResult {
     if (message !== null && typeof message === 'object') {
       const c = (message as Record<string, unknown>)['content']
       const r = (message as Record<string, unknown>)['reasoning_content']
-      if (typeof c === 'string') {
+      if (typeof c === 'string' && typeof r === 'string') {
+        content = `<think>${r}</think>${c}`
+      } else if (typeof c === 'string') {
         content = c
       } else if (typeof r === 'string') {
         content = `<think>${r}</think>`
@@ -398,8 +443,8 @@ export function extractDeltaFull(json: unknown): DeltaResult {
 /** OpenAI `choices[0].delta.content` (or `message.content`); null if absent.
  *  @deprecated Use extractDeltaFull() for new code — this wrapper exists for
  *  callers that only need content and have no tool-call interest. */
-export function extractDelta(json: unknown): string | null {
-  return extractDeltaFull(json).content
+export function extractDelta(json: unknown, streamState?: SseStreamState): string | null {
+  return extractDeltaFull(json, streamState).content
 }
 
 /**

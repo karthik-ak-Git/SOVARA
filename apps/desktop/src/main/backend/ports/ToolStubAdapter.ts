@@ -409,11 +409,28 @@ export class ToolStubAdapter implements ToolPort {
       {
         name: 'fs_read',
         toolset: 'fs' as const,
-        description: 'Read a text file from the workspace. Input: { path: string } (relative). Returns first 8000 chars.',
+        description: 'Read a text file from the workspace. Input: { path: string, start_line?: number, end_line?: number } (relative). Returns up to 8000 chars.',
         parameters: {
           type: 'object' as const,
-          properties: { path: { type: 'string' as const, description: 'Relative file path' } },
+          properties: {
+            path: { type: 'string' as const, description: 'Relative file path' },
+            start_line: { type: 'number' as const, description: '1-indexed start line' },
+            end_line: { type: 'number' as const, description: '1-indexed end line' },
+          },
           required: ['path'] as const,
+        },
+      },
+      {
+        name: 'fs_search',
+        toolset: 'fs' as const,
+        description: 'Search files for keywords. Input: { path: string, query: string }. Returns matched lines and line numbers.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            path: { type: 'string' as const, description: 'Relative path to search within' },
+            query: { type: 'string' as const, description: 'Keyword to search for' },
+          },
+          required: ['path', 'query'] as const,
         },
       },
       {
@@ -575,7 +592,7 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'web_fetch') out = await this.dispatchFetch(args)
       else if (name === 'ocr') out = await this.dispatchOcr(args)
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
-      else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
+      else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_search' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
       else if (
         name === 'shell_exec' ||
         name === 'bash' ||
@@ -689,7 +706,9 @@ export class ToolStubAdapter implements ToolPort {
       }
 
       if (toolName === 'read_skill') {
-        const skillName = typeof args.skill_name === 'string' ? args.skill_name : ''
+        const rawName = args.skill_name ?? args.skillName ?? args.skill ?? args.name ?? ''
+        const skillName = typeof rawName === 'string' ? rawName.trim() : ''
+        if (!skillName) return JSON.stringify({ error: 'read_skill requires { "skill_name": "<name>" }' })
         const match = allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase() || s.id.toLowerCase() === skillName.toLowerCase())
         if (!match) return JSON.stringify({ error: `Skill "${skillName}" not found. Try using search_skills.` })
         try {

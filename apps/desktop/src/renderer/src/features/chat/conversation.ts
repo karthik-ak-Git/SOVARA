@@ -51,8 +51,18 @@ export function deriveMessages(events: SessionEventLike[]): ChatMessage[] {
     if (e.type === 'assistant/reasoning') {
       const content = extractContent(e.data)
       if (content === null) continue
-      // Store as pending to attach to next assistant message, or as standalone if no following message
-      pendingReasoning = { seq: e.seq, time: e.time, content }
+      let delimiter = '\n\n'
+      if (pendingReasoning) {
+        const prev = pendingReasoning.content.trimEnd()
+        const isSentenceEnd = /[.!?:]$/.test(prev)
+        if (!isSentenceEnd && content.length <= 50 && !content.includes('\n')) {
+          // Token fragment continuation — avoid inserting double newlines between words/subwords
+          delimiter = ''
+        }
+      }
+      pendingReasoning = pendingReasoning
+        ? { seq: pendingReasoning.seq, time: pendingReasoning.time, content: `${pendingReasoning.content}${delimiter}${content}` }
+        : { seq: e.seq, time: e.time, content }
       continue
     }
     const content = extractContent(e.data)

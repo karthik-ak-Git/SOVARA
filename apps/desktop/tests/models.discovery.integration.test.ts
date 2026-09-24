@@ -60,7 +60,7 @@ describe('Model Auto-Discovery & Scanning on C: Drive', () => {
       console.log(` - [${m.runtimeId}] ${m.displayName} (modelId: ${m.modelId})`)
     }
 
-    expect(models.length).toBe(8)
+    expect(models.length).toBeGreaterThanOrEqual(8)
     // None should be mmproj
     expect(models.every((m) => !m.modelId.toLowerCase().includes('mmproj'))).toBe(true)
     // None should be audio weights

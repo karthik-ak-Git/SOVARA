@@ -56,7 +56,7 @@ export function ModelSelector({
       : prettyName(selectedModel.displayName)
     : 'No model'
 
-  const statusLabel = isAuto ? 'Smart' : active.available ? 'Ready' : 'Ready'
+  const statusLabel = isAuto ? 'Smart' : active.available ? 'Ready' : 'Offline'
 
   const filtered = models.filter((m) => {
     if (!filter) return true
@@ -98,7 +98,7 @@ export function ModelSelector({
         onClick={() => setOpen((o) => !o)}
       >
         <span className="model-pill-label">{modelLabel}</span>
-        <span className="model-pill-status badge badge--success">{statusLabel}</span>
+        <span className={`model-pill-status badge ${statusLabel === 'Offline' ? 'badge--warn' : 'badge--success'}`}>{statusLabel}</span>
         <span className="model-pill-icon" aria-hidden>
           <ChevronDown size={14} />
         </span>

@@ -1,8 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  archiveSession,
+import { archiveSession,
   cancelChatMessage,
   createSession,
   deleteSession,
@@ -16,8 +15,9 @@ import {
   renameSession,
   sendChatMessage,
   type SessionEventView,
-  type SessionHeaderView,
 } from '@/lib/client/api'
+import type { SessionHeaderView } from '@/lib/client/api'
+import type { SessionHeaderView as SessionHeaderViewRef } from '@/lib/client/api'
 import type { ActiveModelState } from '@shared/types/models'
 
 /**
@@ -209,6 +209,10 @@ export function useChatSession() {
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'error', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail, error: ev.error })
         setError(ev.error ?? ev.detail ?? 'Model could not be loaded')
         setPhase('idle')
+        // Optimistically mark unavailable — backend getActiveModel won't flip
+        // availability for local file-exists models, but the pill must not show
+        // "Ready" after a confirmed load failure.
+        setModel((prev) => (prev ? { ...prev, available: false } : prev))
         return
       }
       if (ev.kind === 'step:start') {
@@ -425,20 +429,20 @@ export function useChatSession() {
     return n + (typeof c === 'string' ? c.length : 0)
   }, 0)
   const handleCompact = useCallback(async (): Promise<void> => {
-    if (!selectedId || events.length <= 12) {
+    if (!selectedId || events.length <= 6) {
       setError('Nothing to compact — conversation is short.')
       setTimeout(() => setError(null), 2500)
       return
     }
-    // Keep last 10 turns, summarize older into a local system summary (no persistence delete — rely on compactForCtx truncation).
-    // Emit a transient compact marker so right sidebar Progress shows completion.
-    const keep = events.slice(-10)
-    const summary = `[Compressed ${events.length - keep.length} earlier messages — summarized for context. Language: English only. Tokens ~${estimateTokens(getTotalChars())} → ~${estimateTokens(keep.reduce((n,e)=>n+String((e.data as {content?:string})?.content??'').length,0))}. Use English.]`
-    setEvents([...keep.slice(0,0), { seq: -1, time: Date.now(), type: 'system/compact', data: { content: summary } } as unknown as SessionEventView, ...keep])
-    setError(null)
-    // Also persist a compact marker for server-side history pruning
-    try { await sendChatMessage(selectedId, summary, { reasoning: false }) } catch { /* marker persistence best-effort */ }
-  }, [selectedId, events, estimateTokens, getTotalChars])
+    setError('Compressing context…')
+    try {
+      await sendChatMessage(selectedId, '/compact', { reasoning: false })
+      setTimeout(() => setError(null), 2000)
+    } catch {
+      setError('Failed to compress context.')
+      setTimeout(() => setError(null), 2500)
+    }
+  }, [selectedId, events])
 
   const handleSend = useCallback(
     async (content: string, opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: import('@/lib/client/api').ChatAttachmentView[]; projectId?: string | null }): Promise<void> => {
@@ -686,6 +690,34 @@ export function useChatSession() {
     switchSession,
     clearSelection,
     refreshModelStatus,
+    refreshSessions,
     approveTool,
   }
 }
+
+/**
+ * Project-scoped selection: opens the project's newest session so the chat
+ * composer is live in that project's scope, or clears the selection so the
+ * composer starts empty and its first send creates a session in the chosen
+ * project dynamically. Used by the sidebar project rows.
+ */
+export function selectProjectSession(
+  chat: {
+    sessions: SessionHeaderViewRef[]
+    switchSession: (id: string) => Promise<void>
+    clearSelection: () => void
+    refreshSessions: () => Promise<SessionHeaderViewRef[]>
+    selectedId: string | null
+  },
+  projectId: string | null
+): void {
+  const scope = chat.sessions.filter((s) => (s.projectId ?? null) === projectId)
+  const latest = [...scope].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+  if (latest) {
+    void chat.switchSession(latest.id)
+  } else {
+    chat.clearSelection()
+    void chat.refreshSessions()
+  }
+}
+

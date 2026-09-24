@@ -8,6 +8,7 @@ import {
   LocalOpenAIChatAdapter,
   chatCompletionsUrl,
   classifyChatError,
+  sanitizeToolCallMessages,
 } from '../src/main/backend/ports/LocalOpenAIChatAdapter'
 import { ChatService, ChatServiceError, remoteModelId, toRequestMessages } from '../src/main/backend/ChatService'
 import type { LlmChatRequest, LlmChunk, PersistencePort, ProjectHeader, SessionEventView, SessionHeader } from '../src/shared/types/ports'
@@ -343,6 +344,84 @@ function scriptLlm(script: string[], opts?: { throwErr?: unknown; hang?: boolean
     },
   }
 }
+
+describe('sanitizeToolCallMessages — repair tool-call shapes for llama-server', () => {
+  const call = (id: string) => ({
+    id,
+    type: 'function' as const,
+    function: { name: 'fs_read', arguments: '{}' },
+  })
+
+  it('passes through valid history unchanged (idempotent)', () => {
+    const msgs = [
+      { role: 'user' as const, content: 'hi' },
+      { role: 'assistant' as const, content: 'reading...', tool_calls: [call('c1')] },
+      { role: 'tool' as const, content: 'file body', tool_call_id: 'c1' },
+      { role: 'assistant' as const, content: 'done' },
+    ]
+    expect(sanitizeToolCallMessages(msgs)).toEqual(msgs)
+    // idempotent
+    expect(sanitizeToolCallMessages(sanitizeToolCallMessages(msgs))).toEqual(msgs)
+  })
+
+  it('strips tool_calls from a trailing unanswered assistant turn, keeps content', () => {
+    const out = sanitizeToolCallMessages([
+      { role: 'user', content: 'read the readme' },
+      { role: 'assistant', content: 'on it', tool_calls: [call('c1')] },
+    ])
+    expect(out).toEqual([
+      { role: 'user', content: 'read the readme' },
+      { role: 'assistant', content: 'on it' },
+    ])
+  })
+
+  it('drops a trailing unanswered assistant with empty content entirely', () => {
+    const out = sanitizeToolCallMessages([
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: '', tool_calls: [call('c1')] },
+    ])
+    expect(out).toEqual([{ role: 'user', content: 'hi' }])
+  })
+
+  it('keeps only the answered subset when partially answered', () => {
+    const out = sanitizeToolCallMessages([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: null, tool_calls: [call('c1'), call('c2')] } as never,
+      { role: 'tool', content: 'one', tool_call_id: 'c1' },
+      { role: 'assistant', content: 'still working', tool_calls: [call('c2')] },
+      { role: 'tool', content: 'two', tool_call_id: 'c2' },
+      { role: 'assistant', content: '', tool_calls: [call('c3')] },
+    ])
+    expect(out).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: null, tool_calls: [call('c1')] } as never,
+      { role: 'tool', content: 'one', tool_call_id: 'c1' },
+      { role: 'assistant', content: 'still working', tool_calls: [call('c2')] },
+      { role: 'tool', content: 'two', tool_call_id: 'c2' },
+    ])
+  })
+
+  it('drops orphaned tool results with no claiming assistant', () => {
+    const out = sanitizeToolCallMessages([
+      { role: 'user', content: 'hi' },
+      { role: 'tool', content: 'stray', tool_call_id: 'ghost' },
+      { role: 'assistant', content: 'ok' },
+    ])
+    expect(out).toEqual([
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'ok' },
+    ])
+  })
+
+  it('preserves user/system messages and non-tool content verbatim', () => {
+    const msgs = [
+      { role: 'system' as const, content: 'sys' },
+      { role: 'user' as const, content: 'plain' },
+      { role: 'assistant' as const, content: 'plain reply' },
+    ]
+    expect(sanitizeToolCallMessages(msgs)).toEqual(msgs)
+  })
+})
 
 describe('Commit 7 — history mapping', () => {
   it('maps visible messages to OpenAI roles, newest context wins', () => {

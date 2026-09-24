@@ -66,34 +66,54 @@ export async function dispatchFs(
     return JSON.stringify({ error: `workspace not found: ${root}` })
   }
 
+  const sanitizePath = (p: unknown): string => {
+    if (typeof p !== 'string') return ''
+    return p.trim().replace(/^["']|["']$/g, '')
+  }
+
   if (toolName === 'fs_list') {
-    const rel = typeof args['path'] === 'string' ? args['path'] as string : '.'
+    const raw = typeof args['path'] === 'string' ? args['path'] : '.'
+    const rel = sanitizePath(raw) || '.'
+    const isAbs = path.isAbsolute(rel) || /^[a-z]:[\\/]/i.test(rel)
     let abs: string
-    try {
-      abs = resolveWorkspacePath(root, rel)
-    } catch (e) {
-      console.warn(`[SOVARA][FS] fs_list path resolution failed for "${rel}":`, e)
-      return JSON.stringify({ error: `path escapes workspace: ${rel}` })
+    if (isAbs) {
+      abs = path.resolve(rel)
+    } else {
+      try {
+        abs = resolveWorkspacePath(root, rel)
+      } catch (e) {
+        console.warn(`[SOVARA][FS] fs_list path resolution failed for "${rel}":`, e)
+        return JSON.stringify({ error: `path escapes workspace: ${rel}` })
+      }
     }
     if (!fs.existsSync(abs)) {
       console.warn(`[SOVARA][FS] fs_list path not found: rel="${rel}" abs="${abs}"`)
-      return JSON.stringify({ error: `path not found: ${rel}`, workspace: root })
+      return JSON.stringify({ error: `path not found: ${rel}`, workspace: root, external: isAbs })
     }
     const stat = fs.statSync(abs)
-    if (stat.isFile()) return JSON.stringify({ path: rel, type: 'file', size: stat.size, workspace: root })
+    if (stat.isFile()) return JSON.stringify({ path: rel, type: 'file', size: stat.size, workspace: root, external: isAbs })
     const entries = fs.readdirSync(abs, { withFileTypes: true }).slice(0, 200).map(d => {
       const full = path.join(abs, d.name)
       let size = 0
       try { size = d.isFile() ? fs.statSync(full).size : 0 } catch { size = 0 }
-      return { name: d.name, isDirectory: d.isDirectory(), isFile: d.isFile(), size, path: path.relative(root, full).replace(/\\/g, '/') }
+      return {
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        size,
+        path: isAbs ? full.replace(/\\/g, '/') : path.relative(root, full).replace(/\\/g, '/'),
+      }
     })
-    console.log(`[SOVARA][FS] fs_list path="${rel}" found ${entries.length} entries`)
-    return JSON.stringify({ workspace: root, path: rel, entries, count: entries.length }, null, 2)
+    console.log(`[SOVARA][FS] fs_list path="${rel}" found ${entries.length} entries (external=${isAbs})`)
+    return JSON.stringify({ workspace: root, path: rel, external: isAbs, entries, count: entries.length }, null, 2)
   }
 
   if (toolName === 'fs_read') {
-    const rel = args['path'] as string
-    if (!rel || typeof rel !== 'string') {
+    const rel = sanitizePath(args['path'])
+    const startLine = typeof args['start_line'] === 'number' ? Math.max(1, args['start_line']) : undefined
+    const endLine = typeof args['end_line'] === 'number' ? Math.max(1, args['end_line']) : undefined
+    
+    if (!rel) {
       console.warn(`[SOVARA][FS] fs_read called without valid path:`, args)
       return JSON.stringify({ error: 'fs_read requires { path: string }' })
     }
@@ -105,16 +125,37 @@ export async function dispatchFs(
         try {
           const stat = fs.statSync(extAbs)
           if (stat.isDirectory()) return JSON.stringify({ error: `is a directory, use fs_list: ${rel}` })
-          if (stat.size > 2 * 1024 * 1024) return JSON.stringify({ error: `file too large (${stat.size} bytes)` })
-          const text = fs.readFileSync(extAbs, 'utf8').slice(0, 8000)
+          if (stat.size > 10 * 1024 * 1024) return JSON.stringify({ error: `file too large (${stat.size} bytes)` })
+          let text = fs.readFileSync(extAbs, 'utf8')
+          let totalLines = 0
+          if (startLine || endLine) {
+            const lines = text.split('\n')
+            totalLines = lines.length
+            const start = startLine ? startLine - 1 : 0
+            const end = endLine ? endLine : lines.length
+            text = lines.slice(start, end).join('\n')
+          }
+          if (text.length > 8000 && !startLine && !endLine) text = text.slice(0, 8000)
           console.log(`[SOVARA][FS] fs_read external success: rel="${rel}" extAbs="${extAbs}" size=${stat.size}`)
-          return JSON.stringify({ workspace: root, path: rel, external: true, size: stat.size, content: text })
+          return JSON.stringify({ workspace: root, path: rel, external: true, size: stat.size, linesReturned: text.split('\n').length, totalLines, content: text })
         } catch (e) {
           console.error(`[SOVARA][FS] fs_read external error ${extAbs}:`, e)
           return JSON.stringify({ error: `read failed: ${e instanceof Error ? e.message : String(e)}` })
         }
       }
-      // If absolute but not found, fall through to workspace resolution to give hint
+      // Absolute path requested but does not exist — return a clear error.
+      // Do NOT fall through to resolveWorkspacePath: its drive-strip
+      // (/^[a-z]:\/*/i) would rewrite C:\Users\...\README.md into a bogus
+      // workspace-relative path (Users\...\README.md under the workspace root)
+      // and report "file not found" at the wrong location, hiding the real issue.
+      console.warn(`[SOVARA][FS] fs_read absolute path not found: rel="${rel}" extAbs="${extAbs}" workspace="${root}"`)
+      return JSON.stringify({
+        error: `path not found: ${rel}`,
+        requestedPath: rel,
+        resolvedPath: extAbs,
+        workspace: root,
+        hint: `The absolute path does not exist on disk. Ensure the file exists at ${extAbs}.`,
+      })
     }
     let abs: string
     try {
@@ -145,17 +186,77 @@ export async function dispatchFs(
       console.warn(`[SOVARA][FS] fs_read target is directory: ${abs}`)
       return JSON.stringify({ error: `is a directory, use fs_list: ${rel}` })
     }
-    if (stat.size > 2 * 1024 * 1024) {
+    if (stat.size > 10 * 1024 * 1024) {
       console.warn(`[SOVARA][FS] fs_read file too large: ${abs} (${stat.size} bytes)`)
       return JSON.stringify({ error: `file too large (${stat.size} bytes), use a smaller file or fs_list` })
     }
     try {
-      const text = fs.readFileSync(abs, 'utf8').slice(0, 8000)
+      let text = fs.readFileSync(abs, 'utf8')
+      let totalLines = 0
+      if (startLine || endLine) {
+        const lines = text.split('\n')
+        totalLines = lines.length
+        const start = startLine ? startLine - 1 : 0
+        const end = endLine ? endLine : lines.length
+        text = lines.slice(start, end).join('\n')
+      }
+      if (text.length > 8000 && !startLine && !endLine) text = text.slice(0, 8000)
       console.log(`[SOVARA][FS] fs_read success: rel="${rel}" abs="${abs}" size=${stat.size} bytes readChars=${text.length}`)
-      return JSON.stringify({ workspace: root, path: rel, size: stat.size, content: text })
+      return JSON.stringify({ workspace: root, path: rel, size: stat.size, linesReturned: text.split('\n').length, totalLines, content: text })
     } catch (e) {
       console.error(`[SOVARA][FS] fs_read error reading ${abs}:`, e)
       return JSON.stringify({ error: `read failed: ${e instanceof Error ? e.message : String(e)}` })
+    }
+  }
+
+  if (toolName === 'fs_search') {
+    const query = typeof args['query'] === 'string' ? args['query'] : ''
+    const rawDir = typeof args['path'] === 'string' ? args['path'] : '.'
+    const dir = sanitizePath(rawDir) || '.'
+    if (!query) return JSON.stringify({ error: 'fs_search requires { query: string }' })
+    const isAbs = path.isAbsolute(dir) || /^[a-z]:[\\/]/i.test(dir)
+    let abs: string
+    if (isAbs) {
+      abs = path.resolve(dir)
+    } else {
+      try { abs = resolveWorkspacePath(root, dir) } catch (e) {
+        return JSON.stringify({ error: `path escapes workspace: ${e instanceof Error ? e.message : String(e)}` })
+      }
+    }
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+      return JSON.stringify({ error: `directory not found: ${dir}`, external: isAbs })
+    }
+    try {
+      const results: { file: string, line: number, text: string }[] = []
+      const searchDir = (currentPath: string, relativePath: string) => {
+        if (results.length > 50) return
+        const entries = fs.readdirSync(currentPath, { withFileTypes: true })
+        for (const entry of entries) {
+          if (results.length > 50) return
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue
+          const fullPath = path.join(currentPath, entry.name)
+          const relPath = path.join(relativePath, entry.name).replace(/\\/g, '/')
+          if (entry.isDirectory()) {
+            searchDir(fullPath, relPath)
+          } else {
+            try {
+              if (fs.statSync(fullPath).size > 2 * 1024 * 1024) continue
+              const text = fs.readFileSync(fullPath, 'utf8')
+              const lines = text.split('\n')
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(query)) {
+                  results.push({ file: relPath, line: i + 1, text: lines[i].trim() })
+                  if (results.length > 50) break
+                }
+              }
+            } catch { /* skip unreadable files */ }
+          }
+        }
+      }
+      searchDir(abs, dir)
+      return JSON.stringify({ workspace: root, query, path: dir, results, capped: results.length > 50 })
+    } catch (e) {
+      return JSON.stringify({ error: `search failed: ${e instanceof Error ? e.message : String(e)}` })
     }
   }
 
