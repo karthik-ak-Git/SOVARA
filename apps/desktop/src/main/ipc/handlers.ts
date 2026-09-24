@@ -1168,7 +1168,17 @@ export function registerIpcHandlers(): void {
       const ext = path.extname(file).toLowerCase()
       const isMarkdown = ext === '.md' || file.toLowerCase().endsWith('readme.md')
       const isHtml = ext === '.html' || ext === '.htm'
-      return { ok: true, cwd, file, diff, content: content.slice(0, 80000), oldContent: oldContent ? oldContent.slice(0, 80000) : null, isMarkdown, isHtml }
+      const isImage = ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg','.ico'].includes(ext)
+      let imageDataUrl: string | null = null
+      if (isImage) {
+        try {
+          const buf = fs.readFileSync(path.join(cwd, file))
+          const b64 = buf.toString('base64')
+          const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+          imageDataUrl = `data:${mime};base64,${b64.slice(0, 600000)}`
+        } catch {}
+      }
+      return { ok: true, cwd, file, diff, content: content.slice(0, 80000), oldContent: oldContent ? oldContent.slice(0, 80000) : null, isMarkdown, isHtml, isImage, imageDataUrl } as any
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

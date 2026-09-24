@@ -189,7 +189,7 @@ export function AuxiliaryPane({
   const unstagedFiles = useMemo(() => dynamicFiles.filter((f) => !f.staged), [dynamicFiles])
 
   const [selectedReviewFile, setSelectedReviewFile] = useState<ChangedFileItem | null>(null)
-  const [fileRenderMode, setFileRenderMode] = useState<'diff' | 'preview' | 'markdown' | 'code'>('diff')
+  const [fileRenderMode, setFileRenderMode] = useState<'diff' | 'preview' | 'markdown' | 'code' | 'image'>('diff')
   const [fileDiffData, setFileDiffData] = useState<import('@/lib/client/api').GitDiffResult | null>(null)
   const [fileDiffLoading, setFileDiffLoading] = useState(false)
 
@@ -203,7 +203,8 @@ export function AuxiliaryPane({
       setFileDiffData(res as unknown as import('@/lib/client/api').GitDiffResult)
       // Auto-switch render mode based on file type
       if (res.ok) {
-        if (res.isMarkdown) setFileRenderMode('markdown')
+        if ((res as any).isImage && (res as any).imageDataUrl) setFileRenderMode('image')
+        else if (res.isMarkdown) setFileRenderMode('markdown')
         else if (res.isHtml) setFileRenderMode('preview')
         else if (res.diff && res.diff.includes('@@')) setFileRenderMode('diff')
         else setFileRenderMode('code')
@@ -1430,6 +1431,7 @@ export function AuxiliaryPane({
                           {k:'code',l:'Code'},
                           ...(fileDiffData?.isMarkdown ? [{k:'markdown',l:'README'} as const] : []),
                           ...(fileDiffData?.isHtml ? [{k:'preview',l:'Browser'} as const] : []),
+                          ...((fileDiffData as any)?.isImage ? [{k:'image',l:'Image'} as const] : []),
                         ].map(t => (
                           <button key={t.k} onClick={()=>setFileRenderMode(t.k as never)} style={{ padding:'2px 8px', borderRadius:999, border:'1px solid '+(fileRenderMode===t.k?'#0f172a':'#e2e8f0'), background:fileRenderMode===t.k?'#0f172a':'#fff', color:fileRenderMode===t.k?'#fff':'#475569', fontSize:10, fontWeight:600, cursor:'pointer' }}>{t.l}</button>
                         ))}
@@ -1437,6 +1439,11 @@ export function AuxiliaryPane({
                     </div>
                     {fileDiffLoading ? (
                       <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:8, color:'#64748b', fontSize:12 }}><div style={{ width:16, height:16, border:'2px solid #e2e8f0', borderTopColor:'#0284c7', borderRadius:'50%', animation:'spin 0.7s linear infinite' }}/> Loading diff…<style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style></div>
+                    ) : fileRenderMode==='image' && (fileDiffData as any)?.imageDataUrl ? (
+                      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'#f8fafc', padding:16, gap:10 }}>
+                        <img src={(fileDiffData as any).imageDataUrl} alt={selectedReviewFile.path} style={{ maxWidth:'100%', maxHeight:420, borderRadius:10, boxShadow:'0 8px 24px rgba(0,0,0,0.14)', background:'#fff' }} />
+                        <span style={{ fontSize:11, color:'#64748b' }}>{selectedReviewFile.path} — image preview</span>
+                      </div>
                     ) : fileRenderMode==='markdown' && fileDiffData?.content ? (
                       <div style={{ padding:16, overflow:'auto' }} dangerouslySetInnerHTML={{ __html: renderMarkdown(fileDiffData.content) }} />
                     ) : fileRenderMode==='preview' && fileDiffData?.content ? (

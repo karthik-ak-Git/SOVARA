@@ -887,7 +887,7 @@ export async function showSystemNotification(title: string, body: string): Promi
 }
 
 export interface GitStatusResult { ok: boolean; cwd: string; files: Array<{ path: string; code: string; staged: boolean }>; statRaw?: string; error?: string }
-export interface GitDiffResult { ok: boolean; cwd: string; file: string; diff: string; content: string; oldContent: string | null; isMarkdown: boolean; isHtml: boolean; error?: string }
+export interface GitDiffResult { ok: boolean; cwd: string; file: string; diff: string; content: string; oldContent: string | null; isMarkdown: boolean; isHtml: boolean; isImage?: boolean; imageDataUrl?: string | null; error?: string }
 export async function getGitStatus(workspaceRoot?: string): Promise<GitStatusResult> {
   return ipcInvoke('git:status', { workspaceRoot } as unknown as Record<string, unknown>)
 }
