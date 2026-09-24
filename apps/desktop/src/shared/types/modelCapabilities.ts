@@ -43,6 +43,7 @@ export const MODEL_CAPABILITY_REGISTRY: CapabilityProfile[] = [
   { family: 'yi', capabilities: ['chat', 'analysis'], defaultContextLength: 4096, strength: 2, paramsBucket: 'medium' },
   { family: 'mixtral', capabilities: ['chat', 'coding', 'analysis', 'tool-use'], defaultContextLength: 32768, strength: 4, paramsBucket: 'xlarge' },
   { family: 'unlimited-ocr', capabilities: ['chat', 'analysis'], defaultContextLength: 8192, strength: 3, paramsBucket: 'medium' },
+  { family: 'glm', capabilities: ['vision', 'chat', 'reasoning', 'analysis'], defaultContextLength: 8192, strength: 3, paramsBucket: 'medium' },
   { family: 'trocr', capabilities: ['vision', 'chat'], defaultContextLength: 4096, strength: 2, paramsBucket: 'small' },
   { family: 'donut', capabilities: ['vision', 'chat', 'analysis'], defaultContextLength: 4096, strength: 3, paramsBucket: 'medium' },
 ]

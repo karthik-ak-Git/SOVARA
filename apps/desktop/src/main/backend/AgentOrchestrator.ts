@@ -663,12 +663,18 @@ export class AgentOrchestrator {
       if (trimmedContent === '/compact' || trimmedContent.startsWith('/compact ')) {
         const events = await this.deps.persistence.getEvents(sessionId)
         const summary = compressContext(events)
-        const compSeq = await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: summary, compactedAt: Date.now(), originalEventsCount: events.length })
+        const compEv: any = await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: summary, compactedAt: Date.now(), originalEventsCount: events.length })
         const replyText = `✓ Conversation context compressed and summarized:\n\n${summary}`
-        const asstSeq = await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: replyText })
+        const asstEv: any = await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: replyText })
         this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: replyText })
         this.emit(sid, 'step:end', { taskKind: 'chat', stepIndex: 0, detail: 'compacted' })
-        return { userSeq: compSeq, assistantSeq: asstSeq }
+        return {
+          ok: true as const,
+          userSeq: typeof compEv === 'number' ? compEv : (compEv?.seq ?? 0),
+          assistantSeq: typeof asstEv === 'number' ? asstEv : (asstEv?.seq ?? 0),
+          routing: { modelId: null, runtimeId: null, reason: 'compact', task: { kind: 'chat', confidence: 1, requiredCapabilities: ['chat'], contextLengthNeeded: 512, reasoningRequired: false, reason: 'compact' } as any, candidatesConsidered: 0, switched: false } as any,
+          classification: { kind: 'chat', confidence: 1, requiredCapabilities: ['chat'], contextLengthNeeded: 512, reasoningRequired: false, reason: 'compact' } as any,
+        }
       }
 
       // ── PHASE 1: task classification (real, not faked) ──
@@ -2126,9 +2132,10 @@ export class AgentOrchestrator {
       // Handles 3-4 backticks, Windows abs paths like D:\data\rewards, and double-fenced spam.
       // workspaceRoot for path normalization (re-resolve, post-loop not in earlier scope)
       let fallbackWsRoot: string | null = null
+      let pid2: string | null = null
       try {
         const h = await this.deps.persistence.get(sessionId).catch(() => null) as { projectId?: string | null } | null
-        const pid2 = h?.projectId ?? null
+        pid2 = h?.projectId ?? null
         fallbackWsRoot = this.deps.getProjectWorkspace?.(pid2) ?? this.deps.getGlobalWorkspace?.() ?? null
       } catch {}
       // Post-stream recovery — scans BOTH the text channel and the reasoning

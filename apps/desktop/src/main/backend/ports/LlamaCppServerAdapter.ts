@@ -539,18 +539,20 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
       // Honest capacity gate (spec §6) — refusal is ASCII-only, names
       // fitting alternatives from the user's actual library, and suggests
       // Fit mode if partial offload could salvage the request.
-      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpu.totalMB > 0 && estimatedVramMB > gpu.totalMB) {
-        const alternatives = this.fittingAlternatives(path.basename(modelPath), gpu.totalMB)
+      const gpuTotal = gpu?.totalMB ?? 0
+      const gpuName = gpu?.name ?? null
+      if (!forceCpu && gpuMode !== 'fit' && explicitNgl === null && gpuTotal > 0 && estimatedVramMB > gpuTotal) {
+        const alternatives = this.fittingAlternatives(path.basename(modelPath), gpuTotal)
         const altHint = alternatives.length > 0
           ? ` Models in your library that fit this GPU: ${alternatives.join(', ')}.`
           : ' No model in your library fits this GPU -- download a smaller quant (Q4_K_M 0.6B-7B) from Library.'
         let fitHint = ''
         try {
-          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpu.totalMB, nParallel: 1, overheadMB: 64 })
+          const fit = planPartialFit({ modelPath, fileSizeBytes: fileSize, ctxLen, totalMB: gpuTotal, nParallel: 1, overheadMB: 64 })
           if (fit) fitHint = ` Fit mode could offload ${fit.fitLayers}/${fit.totalLayers} layers (~${fit.estimatedMB}MB) -- retry with Fit mode for partial GPU offload.`
         } catch { /* hint is best-effort only */ }
-        const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpu.totalMB}MB total${gpu.name ? ` (${gpu.name})` : ''} -- pick a smaller quant.${altHint}${fitHint}`
-        appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB, vramTotalMB: gpu.totalMB }, 'error')
+        const msg = `resource-pressure: "${path.basename(modelPath)}" needs ~${estimatedVramMB}MB VRAM but the GPU has ${gpuTotal}MB total${gpuName ? ` (${gpuName})` : ''} -- pick a smaller quant.${altHint}${fitHint}`
+        appendLlamaLog(this.baseDir, 'load-refused', { modelId, estimatedVramMB, vramTotalMB: gpuTotal }, 'error')
         throw new Error(msg)
       }
       // Proactive cancellation: if the user requested a new model while another

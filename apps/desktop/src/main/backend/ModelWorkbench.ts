@@ -281,46 +281,34 @@ export class ModelWorkbench {
         })
       }
     }
-    // Deduplicate: same GGUF via LM Studio + Local Library → single entry, prefer bundled local (llama.cpp) so inference does not require LM Studio.
+    // Deduplicate: same GGUF via LM Studio + Local + Registry → single entry
+    // Normalizes by file basename without quant/version noise so GLM-4.6V-Flash-Q4_K_M and unsloth/.../GLM-4.6V-Flash-Q4_K_M.gguf collapse to one.
     if (!runtimeId) {
       const prio = (r: string): number => r === 'local' ? 10 : r === 'lmstudio' ? 1 : r === 'ollama' ? 1 : 0
-      // Primary dedup by normalized file path (registry localPath) — same file on disk = same model
-      const byPath = new Map<string, DiscoveredModel>()
-      const pathFor = (m: DiscoveredModel): string | null => {
-        if (m.runtimeId !== 'local') return `${m.runtimeId}:${m.modelId}`
+      const normalizeKey = (m: DiscoveredModel): string => {
+        // Prefer registry localPath when available — that's the on-disk truth
         try {
           const row = this.config.listRegistryRows().find((r) => r.displayName === m.displayName || r.rfilename === m.displayName || m.modelId.toLowerCase().includes(r.rfilename.toLowerCase().replace(/\.gguf$/i,'')))
-          if (row?.localPath) return row.localPath.toLowerCase()
+          if (row?.localPath) return `path:${row.localPath.toLowerCase().replace(/\\/g,'/')}`
         } catch {}
-        // Fallback: normalized displayName without version/quant noise
-        const norm = m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').replace(/q4.*$/,'').trim()
-        return `display:${norm}`
+        const base = (m.modelId.split('/').pop() || m.modelId).toLowerCase().replace(/\.gguf$/i,'').replace(/\.bin$/i,'')
+        // Strip quant suffix (Q4_K_M, Q8_0, etc.) and version/flash noise for dedup, keep core family token
+        const core = base.replace(/[-_]?q\d.*$/i,'').replace(/[-_\.]/g,'').trim()
+        // For vision families keep the family token distinct: glm46vflash vs glm46v
+        return `core:${core}`
       }
+      const dedup = new Map<string, DiscoveredModel>()
       for (const m of out) {
-        const pkey = pathFor(m) ?? m.modelId.toLowerCase()
-        const existing = byPath.get(pkey)
-        if (!existing) byPath.set(pkey, m)
-        else if (prio(m.runtimeId) > prio(existing.runtimeId)) byPath.set(pkey, m)
+        const key = normalizeKey(m)
+        const existing = dedup.get(key)
+        if (!existing) dedup.set(key, m)
+        else if (prio(m.runtimeId) > prio(existing.runtimeId)) dedup.set(key, m)
+        else if (prio(m.runtimeId) === prio(existing.runtimeId)) {
+          // Prefer the shorter, cleaner modelId (without full HF path) for display
+          if (String(m.modelId).length < String(existing.modelId).length) dedup.set(key, m)
+        }
       }
-      const byKey = new Map<string, DiscoveredModel>()
-      for (const m of byPath.values()) {
-        const key = String(m.modelId).toLowerCase().replace(/\.gguf$/i, '').split('/').pop()?.trim() ?? String(m.modelId).toLowerCase()
-        const displayKey = m.displayName.toLowerCase().trim()
-        const mapKey = `${key}|${displayKey.slice(0, 32)}`
-        const existing = byKey.get(mapKey)
-        if (!existing) byKey.set(mapKey, m)
-        else if (prio(m.runtimeId) > prio(existing.runtimeId)) byKey.set(mapKey, m)
-        else if (prio(m.runtimeId) === prio(existing.runtimeId) && String(m.modelId).length < String(existing.modelId).length) byKey.set(mapKey, m)
-      }
-      // Also dedup by displayName alone for cases where modelId differs slightly (e.g., path prefix)
-      const byDisplay = new Map<string, DiscoveredModel>()
-      for (const m of byKey.values()) {
-        const dKey = `${m.runtimeId}:${m.displayName.toLowerCase().replace(/\.gguf$/i,'').replace(/[-_\s]/g,'').trim()}`
-        const ex = byDisplay.get(dKey)
-        if (!ex) byDisplay.set(dKey, m)
-        else if (prio(m.runtimeId) > prio(ex.runtimeId)) byDisplay.set(dKey, m)
-      }
-      return Array.from(byDisplay.values())
+      return Array.from(dedup.values())
     }
     return out
   }
