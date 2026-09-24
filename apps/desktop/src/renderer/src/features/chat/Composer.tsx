@@ -419,6 +419,54 @@ export function Composer({
     setAttachments((prev) => prev.filter((_, i) => i !== idx))
   }, [])
 
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const items = e.clipboardData?.items
+    if (!items || items.length === 0) return
+    const imageFiles: File[] = []
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) {
+          // Give pasted image a timestamped name if clipboard has no name
+          const ext = file.type.split('/')[1] || 'png'
+          const named = new File([file], file.name || `pasted-image-${Date.now()}.${ext}`, { type: file.type })
+          imageFiles.push(named)
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      ingestFiles(imageFiles)
+      // Visual feedback: focus and hint
+      requestAnimationFrame(() => areaRef.current?.focus())
+    }
+  }, [ingestFiles])
+
+  // Global paste: catch Ctrl+V even when textarea not focused (e.g., after clicking chat)
+  useEffect(() => {
+    const onWindowPaste = (e: ClipboardEvent): void => {
+      if (document.activeElement === areaRef.current) return // textarea already handles
+      const items = e.clipboardData?.items
+      if (!items) return
+      const hasImage = Array.from(items).some((it) => it.type.startsWith('image/'))
+      if (!hasImage) return
+      const files: File[] = []
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const f = item.getAsFile()
+          if (f) files.push(new File([f], f.name || `pasted-image-${Date.now()}.${(f.type.split('/')[1] || 'png')}`, { type: f.type }))
+        }
+      }
+      if (files.length > 0) {
+        e.preventDefault()
+        ingestFiles(files)
+        requestAnimationFrame(() => areaRef.current?.focus())
+      }
+    }
+    window.addEventListener('paste', onWindowPaste as unknown as EventListener)
+    return () => window.removeEventListener('paste', onWindowPaste as unknown as EventListener)
+  }, [ingestFiles])
+
   return (
     <div className="sv-composer" aria-label="Message composer">
       <div
@@ -437,16 +485,19 @@ export function Composer({
         ) : null}
         {attachments.length > 0 ? (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 0 6px' }}>
-            {attachments.map((a, i) => (
-              <div key={`${a.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 8, background: 'var(--stitch-parchment, #F7F5F2)', fontSize: 12, color: 'var(--stitch-ink, #2C2825)' }}>
-                <FileText size={13} aria-hidden />
-                <span>{a.name}</span>
+            {attachments.map((a, i) => {
+              const isImg = a.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(a.name)
+              return (
+              <div key={`${a.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: isImg ? '3px 6px 3px 3px' : '3px 8px', borderRadius: 8, background: 'var(--stitch-parchment, #F7F5F2)', fontSize: 12, color: 'var(--stitch-ink, #2C2825)', border: isImg ? '1px solid #E8E4DE' : 'none' }}>
+                {isImg ? <img src={a.data} alt={a.name} style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover', border: '1px solid #E8E4DE', flexShrink: 0 }} /> : <FileText size={13} aria-hidden />}
+                <span style={{ fontWeight: isImg ? 600 : 400, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
                 <span style={{ opacity: 0.5 }}>{formatFileSize(a.size)}</span>
                 <button type="button" onClick={() => removeAttachment(i)} aria-label={`Remove ${a.name}`} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', display: 'flex' }}>
                   <X size={12} />
                 </button>
               </div>
-            ))}
+              )
+            })}
           </div>
         ) : null}
 
@@ -456,7 +507,7 @@ export function Composer({
           placeholder={
             streaming ? 'Sovora is thinking… (Esc to stop)' :
             disabled ? 'Waiting…' :
-            'Ask anything, @ to mention, / for actions'
+            'Ask anything, @ to mention, / for actions — paste images directly (Ctrl+V)'
           }
           value={value}
           onChange={(e) => {
@@ -478,6 +529,7 @@ export function Composer({
             }
           }}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           maxLength={MAX_LENGTH}
           disabled={disabled}
           aria-label="Message input"
