@@ -850,6 +850,9 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     ? 2048
     : 1024
   const ubatch = Math.min(batch, 512)
+  // Fix: q2_k not supported by b10900 CUDA build (allowed: f32/f16/bf16/q8_0/q4_0/q4_1/iq4_nl/q5_0/q5_1) — was crashing GLM 5.8GB heavy model with code 1
+  const cacheK = 'q4_0'
+  const cacheV = 'q4_0'
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
@@ -860,8 +863,8 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     '--threads-batch', String(threadsBatch),
     '-b', String(batch),
     '--ubatch-size', String(ubatch),
-    '--cache-type-k', isHeavy ? 'q2_k' : 'q4_0',
-    '--cache-type-v', isHeavy ? 'q2_k' : 'q4_0',
+    '--cache-type-k', cacheK,
+    '--cache-type-v', cacheV,
     ...((process.platform !== 'win32' && !isPartialOffload) ? ['--mlock'] : []),
     '--no-warmup',
     '--parallel', '1',
