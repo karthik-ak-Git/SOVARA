@@ -618,7 +618,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
 
     const port = await this.deps.findPort()
     const alias = path.basename(modelPath, '.gguf').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64)
-    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias, reasoningEffort: 'medium', enableTools: true })
+    const args = buildServerArgs({ modelPath, port, ctxLen, nGpuLayers: ngl, alias, reasoningEffort: 'medium', enableTools: true, gpuTotalMB: gpu?.totalMB ?? undefined })
     const endpoint = `http://127.0.0.1:${port}/v1`
     const tracked: TrackedInstance = {
       id, modelId: modelId as ModelId, runtimeId, status: statusFor('LOADING'), state: 'LOADING', ctxLen, port,

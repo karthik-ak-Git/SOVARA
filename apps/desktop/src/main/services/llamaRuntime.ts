@@ -803,6 +803,9 @@ export interface ServerArgsOpts {
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'max'
   enableTools?: boolean
   safeArgs?: boolean
+  cacheTypeK?: 'f32' | 'f16' | 'bf16' | 'q8_0' | 'q4_0' | 'q4_1' | 'iq4_nl' | 'q5_0' | 'q5_1'
+  cacheTypeV?: 'f32' | 'f16' | 'bf16' | 'q8_0' | 'q4_0' | 'q4_1' | 'iq4_nl' | 'q5_0' | 'q5_1'
+  gpuTotalMB?: number
 }
 
 export const CONTEXT_TIERS = [1024, 2048, 4096, 8192, 16384, 32768] as const
@@ -850,9 +853,15 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
     ? 2048
     : 1024
   const ubatch = Math.min(batch, 512)
-  // Fix: q2_k not supported by b10900 CUDA build (allowed: f32/f16/bf16/q8_0/q4_0/q4_1/iq4_nl/q5_0/q5_1) — was crashing GLM 5.8GB heavy model with code 1
-  const cacheK = 'q4_0'
-  const cacheV = 'q4_0'
+  // Adaptive cache type: industry servers (24-48GB) → f16 for quality, 8-16GB → q8_0, consumer 6GB → q4_0
+  // Previous q2_k hardcoded for heavy models crashed b10900 (allowed: f32/f16/bf16/q8_0/q4_0/q4_1/iq4_nl/q5_0/q5_1)
+  let cacheK: ServerArgsOpts['cacheTypeK'] = opts.cacheTypeK ?? 'q4_0'
+  let cacheV: ServerArgsOpts['cacheTypeV'] = opts.cacheTypeV ?? 'q4_0'
+  if (!opts.cacheTypeK && !opts.cacheTypeV && typeof opts.gpuTotalMB === 'number') {
+    if (opts.gpuTotalMB > 16000) { cacheK = 'f16'; cacheV = 'f16' }
+    else if (opts.gpuTotalMB > 8000) { cacheK = 'q8_0'; cacheV = 'q8_0' }
+    else { cacheK = 'q4_0'; cacheV = 'q4_0' }
+  }
   const args: string[] = [
     '-m', opts.modelPath,
     '--host', '127.0.0.1',
