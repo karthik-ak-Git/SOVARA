@@ -238,7 +238,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%', background: '#ffffff' }}>
+    <div style={{ display: 'flex', height: '100%', background: '#ffffff', position: 'relative', overflow: 'hidden' }}>
       {/* Left Knowledge list — dynamic from wiki, not hardcode */}
       <div style={{ width: 220, borderRight: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 10px', flexShrink: 0 }}>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#0f172a' }}>Knowledge</div>

@@ -3222,12 +3222,12 @@ export function SettingsModal({
       ) : null}
 
           {activeTab === 'knowledge-graph' ? (
-            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', overflow: 'hidden' }}>
               <div className="settings-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
-                <h1 className="settings-modal-title">Knowledge Graph 3D</h1>
-                <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • drag to orbit, scroll to zoom</p>
+                <h1 className="settings-modal-title">Knowledge Graph</h1>
+                <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • 2D • drag to pan, scroll to zoom</p>
               </div>
-              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0' }}>
+              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: '#ffffff' }}>
                 <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
               </div>
             </div>
