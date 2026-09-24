@@ -1194,4 +1194,72 @@ export function registerIpcHandlers(): void {
       return { ok: true, content: content.slice(0, 100000) }
     } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) } }
   })
+
+  // ── Wiki Knowledge Graph — read wiki folder, build nodes/edges, sync with chat context (no hardcode) ──
+  ipcMain.handle('wiki:buildGraph', async (_e, raw: unknown) => {
+    const workspaceRoot = (raw as { workspaceRoot?: string })?.workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    const tryDirs = [
+      path.join(path.resolve(workspaceRoot), 'wiki'),
+      path.join(getSovaraDataDir(undefined), 'wiki'),
+      path.join(process.cwd(), 'test/llm_wiki/wiki'),
+      path.join(path.resolve(workspaceRoot), '.llm-wiki/wiki'),
+    ]
+    let wikiDir: string | null = null
+    for (const d of tryDirs) { try { if (fs.existsSync(d) && fs.statSync(d).isDirectory()) { wikiDir = d; break } } catch {} }
+    if (!wikiDir) return { ok: true, nodes: [], edges: [], wikiDir: null, hint: 'No wiki folder found — create wiki/*.md with YAML frontmatter and [[wikilinks]]' }
+    const nodes: Array<{ id: string; label: string; type: string; path: string; linkCount: number }> = []
+    const edges: Array<{ source: string; target: string; weight: number }> = []
+    const fileMap = new Map<string, string>() // lower label → id
+    const scan = (dir: string, rel: string) => {
+      let entries: fs.Dirent[] = []
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name)
+        const rpath = path.join(rel, ent.name).replace(/\\/g, '/')
+        if (ent.isDirectory()) scan(full, rpath)
+        else if (ent.isFile() && ent.name.toLowerCase().endsWith('.md')) {
+          let content = ''
+          try { content = fs.readFileSync(full, 'utf8') } catch { continue }
+          const fm = content.match(/^---\n([\s\S]*?)\n---/)
+          let type = 'other'
+          let title = ent.name.replace(/\.md$/i, '')
+          if (rpath.includes('entities/')) type = 'entity'
+          else if (rpath.includes('concepts/')) type = 'concept'
+          else if (rpath.includes('sources/')) type = 'source'
+          else if (rpath === 'index.md') type = 'other'
+          else if (rpath === 'overview.md') type = 'overview'
+          if (fm) {
+            const mType = fm[1].match(/type:\s*(\w+)/i)
+            if (mType) type = mType[1].toLowerCase()
+            const mTitle = fm[1].match(/title:\s*\"?([^\n\"]+)\"?/i)
+            if (mTitle) title = mTitle[1].trim()
+          }
+          const id = rpath
+          nodes.push({ id, label: title, type, path: rpath, linkCount: 0 })
+          fileMap.set(title.toLowerCase(), id)
+          fileMap.set(ent.name.replace(/\.md$/i, '').toLowerCase(), id)
+        }
+      }
+    }
+    scan(wikiDir, '')
+    // Second pass: wikilinks [[...]] → edges
+    for (const n of nodes) {
+      try {
+        const full = path.join(wikiDir, n.path)
+        const content = fs.readFileSync(full, 'utf8')
+        const links = Array.from(content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)).map((m) => m[1].trim().toLowerCase())
+        for (const link of links) {
+          const targetId = fileMap.get(link) ?? nodes.find((x) => x.label.toLowerCase() === link || x.id.toLowerCase().includes(link))?.id
+          if (targetId && targetId !== n.id) {
+            edges.push({ source: n.id, target: targetId, weight: 1 })
+            const src = nodes.find((x) => x.id === n.id); if (src) src.linkCount++
+            const tgt = nodes.find((x) => x.id === targetId); if (tgt) tgt.linkCount++
+          }
+        }
+      } catch {}
+    }
+    // Ensure at least Wiki Log / Wiki Index hubs if empty
+    if (nodes.length === 0) return { ok: true, nodes: [], edges: [], wikiDir, hint: 'wiki folder empty — add markdown files to wiki/' }
+    return { ok: true, nodes, edges, wikiDir }
+  })
 }

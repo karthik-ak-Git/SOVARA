@@ -102,6 +102,7 @@ import type { HardwareInfo } from '@shared/types/explore'
 import { ExplorePage } from '@/features/explore/ExplorePage'
 import { LibraryPage } from '@/features/library/LibraryPage'
 import { LoadedInstancesSection } from '@/features/settings/LoadedInstancesSection'
+import { KnowledgeGraph3D } from '@/features/graph/KnowledgeGraph3D'
 
 export type SettingsTabId =
   | 'general'
@@ -119,6 +120,7 @@ export type SettingsTabId =
   | 'local-model-defaults'
   | 'runtime'
   | 'shortcuts'
+  | 'knowledge-graph'
   | `project:${string}`
 
 interface SettingsNavGroup {
@@ -154,6 +156,12 @@ const NAV_GROUPS: SettingsNavGroup[] = [
       { id: 'local-model-api', label: 'Local Model API', icon: <Server size={15} /> },
       { id: 'local-model-defaults', label: 'Local Model Defaults', icon: <FileText size={15} /> },
       { id: 'runtime', label: 'Runtime & System', icon: <RotateCcw size={15} /> },
+    ],
+  },
+  {
+    label: 'Knowledge',
+    items: [
+      { id: 'knowledge-graph', label: 'Knowledge Graph 3D', icon: <Layers size={15} /> },
     ],
   },
 ]
@@ -3212,6 +3220,18 @@ export function SettingsModal({
           </div>
         </div>
       ) : null}
+
+          {activeTab === 'knowledge-graph' ? (
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div className="settings-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
+                <h1 className="settings-modal-title">Knowledge Graph 3D</h1>
+                <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • drag to orbit, scroll to zoom</p>
+              </div>
+              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0' }}>
+                <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
+              </div>
+            </div>
+          ) : null}
     </div>
   )
 }

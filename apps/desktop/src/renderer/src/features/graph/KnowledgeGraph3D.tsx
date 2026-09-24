@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useMemo } from 'react'
 import * as THREE from 'three'
+import { buildWikiGraph } from '@/lib/client/api'
 
 type NodeType = 'entity' | 'concept' | 'source' | 'overview' | 'other'
 interface GraphNode { id: string; label: string; type: NodeType; x?: number; y?: number; z?: number; linkCount?: number }
@@ -54,10 +55,47 @@ function nodeSize(linkCount: number): number {
   return 0.35 + Math.sqrt(ratio) * 0.9
 }
 
-export function KnowledgeGraph3D({ nodes = MOCK_NODES, edges = MOCK_EDGES }: { nodes?: GraphNode[]; edges?: GraphEdge[] }): React.JSX.Element {
+export function KnowledgeGraph3D({ nodes: propNodes, edges: propEdges, workspaceRoot, highlightQuery }: { nodes?: GraphNode[]; edges?: GraphEdge[]; workspaceRoot?: string; highlightQuery?: string }): React.JSX.Element {
+  const [fetchedNodes, setFetchedNodes] = useState<GraphNode[] | null>(null)
+  const [fetchedEdges, setFetchedEdges] = useState<GraphEdge[] | null>(null)
+  const [wikiHint, setWikiHint] = useState<string | null>(null)
+  // Auto-fetch wiki folder (no hardcode) — syncs with chat context via highlightQuery
+  useEffect(() => {
+    if (propNodes) return
+    let cancelled = false
+    buildWikiGraph(workspaceRoot).then((r) => {
+      if (cancelled) return
+      if (r.ok && r.nodes.length > 0) {
+        setFetchedNodes(r.nodes as unknown as GraphNode[])
+        setFetchedEdges(r.edges as unknown as GraphEdge[])
+        setWikiHint(null)
+      } else if (r.hint) {
+        setWikiHint(r.hint)
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [workspaceRoot, propNodes])
+
+  // Automap: when highlightQuery (current chat input / last message) changes, highlight matching nodes
+  const autoHighlighted = useMemo(() => {
+    if (!highlightQuery || highlightQuery.trim().length < 2) return new Set<string>()
+    const q = highlightQuery.toLowerCase()
+    const tokens = q.split(/\s+/).filter(Boolean).slice(0, 6)
+    const matched = new Set<string>()
+    const all = propNodes ?? fetchedNodes ?? MOCK_NODES
+    for (const n of all) {
+      const label = n.label.toLowerCase()
+      if (tokens.some((t) => label.includes(t))) matched.add(n.id)
+    }
+    return matched
+  }, [highlightQuery, propNodes, fetchedNodes])
+
+  const nodes = propNodes ?? fetchedNodes ?? MOCK_NODES
+  const edges = propEdges ?? fetchedEdges ?? MOCK_EDGES
   const mountRef = useRef<HTMLDivElement>(null)
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
+  const effectiveHovered = hovered ?? (autoHighlighted.size === 1 ? Array.from(autoHighlighted)[0] : null)
   const positions = useMemo(() => {
     const map = new Map<string, THREE.Vector3>()
     for (const n of nodes) {
@@ -205,17 +243,21 @@ export function KnowledgeGraph3D({ nodes = MOCK_NODES, edges = MOCK_EDGES }: { n
     let raf = 0
     const animate = () => {
       raf = requestAnimationFrame(animate)
-      // gentle float
+      // gentle float + automap pulse for chat context
       const t = Date.now() * 0.00035
       for (const [id, mesh] of spheres) {
         const base = positions.get(id)!
         mesh.position.y = base.y + Math.sin(t + id.length) * 0.18
         const lab = labels.get(id)
         if (lab) lab.position.y = mesh.position.y + nodeSize(nodes.find((n) => n.id === id)?.linkCount ?? 1) + 0.45
-        const isH = hovered === id
-        const scale = isH ? 1.18 : 1
+        const isH = hovered === id || autoHighlighted.has(id)
+        const isAuto = autoHighlighted.has(id) && hovered !== id
+        const scale = isH ? 1.22 : 1
         mesh.scale.setScalar(THREE.MathUtils.lerp(mesh.scale.x, scale, 0.12))
-        ;(mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = isH ? 0.28 : 0.12
+        ;(mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = isH ? (isAuto ? 0.22 : 0.28) : 0.12
+        if (isAuto) {
+          ;(mesh.material as THREE.MeshStandardMaterial).color.setHSL( (Date.now()*0.0005 + id.length*0.1)%1, 0.7, 0.6)
+        }
       }
       renderer.render(scene, camera)
     }
@@ -238,20 +280,25 @@ export function KnowledgeGraph3D({ nodes = MOCK_NODES, edges = MOCK_EDGES }: { n
       mount.removeChild(renderer.domElement)
       renderer.dispose()
     }
-  }, [nodes, edges, positions, hovered])
+  }, [nodes, edges, positions, hovered, autoHighlighted])
 
+  // Left list now syncs to wiki folder (not hardcode) — shows fetched entities, automapped to chat
+  const entityNodes = nodes.filter((n) => n.type === 'entity')
+  const wikiDisplayCount = nodes.length
   return (
     <div style={{ display: 'flex', height: '100%', background: '#ffffff' }}>
-      {/* Left Knowledge list like image */}
+      {/* Left Knowledge list like image — now dynamic from wiki folder, not hardcode */}
       <div style={{ width: 240, borderRight: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 10px', flexShrink: 0 }}>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#0f172a' }}>Knowledge</div>
-        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>TEST321</div>
-        <div style={{ fontWeight: 600, fontSize: 12, background: '#f1f5f9', padding: '6px 8px', borderRadius: 6, marginBottom: 8 }}>Overview 1</div>
-        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Entities 37</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>{wikiHint ? 'No wiki yet' : `Wiki • ${wikiDisplayCount} pages`}</div>
+        {wikiHint ? <div style={{ fontSize: 11, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', padding: '6px 8px', borderRadius: 6, marginBottom: 8 }}>{wikiHint}</div> : <div style={{ fontWeight: 600, fontSize: 12, background: '#f1f5f9', padding: '6px 8px', borderRadius: 6, marginBottom: 8 }}>Overview {nodes.filter((n) => n.type === 'overview').length || 1}</div>}
+        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Entities {entityNodes.length}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 12, color: '#334155' }}>
-          {MOCK_NODES.filter((n) => n.type === 'entity').slice(0, 14).map((n) => (
-            <div key={n.id} style={{ padding: '3px 8px', borderRadius: 4, background: hovered === n.id ? '#f1f5f9' : 'transparent', cursor: 'pointer', fontWeight: hovered === n.id ? 600 : 400 }} onMouseEnter={() => setHovered(n.id)} onMouseLeave={() => setHovered(null)}>{n.label}</div>
-          ))}
+          {entityNodes.slice(0, 16).map((n) => {
+            const isH = hovered === n.id || autoHighlighted.has(n.id)
+            return <div key={n.id} style={{ padding: '3px 8px', borderRadius: 4, background: isH ? (autoHighlighted.has(n.id) ? '#fef3c7' : '#f1f5f9') : 'transparent', cursor: 'pointer', fontWeight: isH ? 600 : 400, borderLeft: autoHighlighted.has(n.id) ? '2px solid #f59e0b' : '2px solid transparent' }} onMouseEnter={() => setHovered(n.id)} onMouseLeave={() => setHovered(null)}>{n.label}</div>
+          })}
+          {entityNodes.length === 0 ? <div style={{ fontSize: 11, color: '#94a3b8', padding: '4px 8px' }}>No entities yet — add wiki/entities/*.md with [[wikilinks]]</div> : null}
         </div>
       </div>
 

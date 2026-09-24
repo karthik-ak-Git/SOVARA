@@ -897,3 +897,8 @@ export async function getGitDiff(filePath: string, workspaceRoot?: string): Prom
 export async function getGitFileContent(filePath: string, workspaceRoot?: string): Promise<{ ok: boolean; content?: string; error?: string }> {
   return ipcInvoke('git:fileContent', { filePath, workspaceRoot } as unknown as Record<string, unknown>)
 }
+
+export interface WikiGraphResult { ok: boolean; nodes: Array<{ id: string; label: string; type: string; path: string; linkCount: number }>; edges: Array<{ source: string; target: string; weight: number }>; wikiDir: string | null; hint?: string }
+export async function buildWikiGraph(workspaceRoot?: string): Promise<WikiGraphResult> {
+  return ipcInvoke('wiki:buildGraph', { workspaceRoot } as unknown as Record<string, unknown>)
+}

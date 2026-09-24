@@ -19,7 +19,6 @@ import { SkillsPage } from './features/skills/SkillsPage'
 import { ConnectionsPage } from './features/connections/ConnectionsPage'
 import { ConversationHistoryPage } from './features/chat/ConversationHistoryPage'
 import { ContextPanel } from './features/chat/ContextPanel'
-import { KnowledgeGraph3D } from './features/graph/KnowledgeGraph3D'
 import {
   createProject,
   listProjects,
@@ -550,8 +549,6 @@ export function App(): React.JSX.Element {
         {activeNav === 'connections' ? <ConnectionsPage onBack={() => setActiveNav('chat')} /> : null}
 
         {activeNav === 'settings' ? <SettingsPage onBack={() => setActiveNav('chat')} /> : null}
-
-        {activeNav === 'graph' ? <KnowledgeGraph3D /> : null}
 
         <CreateProjectModal
           open={projectModalOpen}
