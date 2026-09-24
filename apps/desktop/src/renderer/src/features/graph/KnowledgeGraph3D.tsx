@@ -25,6 +25,9 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
   const [loading, setLoading] = useState(true)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  // View state lives in refs so pan/zoom survives hover re-renders (was resetting every hover)
+  const viewRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 })
+  const fittedKeyRef = useRef<string | null>(null)
 
   // Fetch wiki folder — no hardcode, live from disk
   useEffect(() => {
@@ -36,7 +39,8 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
         // Assign 2D positions via circular layout (properly connected, not 3D floating)
         const positioned = r.nodes.map((n, i) => {
           const angle = (i / r.nodes.length) * Math.PI * 2
-          const radius = 180 + (n.linkCount * 12)
+          // Ring sized by node count — fit-to-view handles final scale, avoids pile-ups
+          const radius = Math.min(460, 130 + r.nodes.length * 9)
           return { ...n, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
         })
         // Center hubs
@@ -44,6 +48,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
           if (n.id.includes('wiki-log') || n.label === 'Wiki Log') { n.x = 0; n.y = 0 }
           if (n.id.includes('wiki-index') || n.label === 'Wiki Index') { n.x = -80; n.y = 80 }
         }
+        fittedKeyRef.current = null // new dataset → re-fit view
         setNodes(positioned as GraphNode[])
         setEdges(r.edges as GraphEdge[])
         setWikiDir(r.wikiDir)
@@ -71,7 +76,8 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
     return set
   }, [highlightQuery, nodes])
 
-  // 2D Canvas render — properly connected edges, not 3D spheres
+  // 2D Canvas render — measured against the canvas wrapper ONLY (not the header column),
+  // auto-fit once per dataset, view state in refs so hover never resets pan/zoom.
   useEffect(() => {
     const canvas = canvasRef.current
     const container = containerRef.current
@@ -79,106 +85,187 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const dpr = Math.min(2, window.devicePixelRatio)
-    const rect = container.getBoundingClientRect()
-    canvas.width = rect.width * dpr
-    canvas.height = rect.height * dpr
-    canvas.style.width = `${rect.width}px`
-    canvas.style.height = `${rect.height}px`
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-    const centerX = rect.width / 2
-    const centerY = rect.height / 2
     const nodeMap = new Map(nodes.map((n) => [n.id, n]))
+    const view = viewRef.current
+    const dpr = Math.min(2, window.devicePixelRatio)
+    let width = 1
+    let height = 1
 
-    let raf = 0
-    let offsetX = 0, offsetY = 0, scale = 1
-    let isDragging = false, startX = 0, startY = 0, lastOffX = 0, lastOffY = 0
+    const resize = () => {
+      const r = container.getBoundingClientRect()
+      width = Math.max(1, Math.round(r.width))
+      height = Math.max(1, Math.round(r.height))
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+    resize()
+
+    // Auto-fit: fit the whole graph inside the visible canvas with padding (once per dataset)
+    const fitKey = nodes.map((n) => n.id).join('|')
+    if (fittedKeyRef.current !== fitKey) {
+      fittedKeyRef.current = fitKey
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const n of nodes) {
+        if (n.x === undefined || n.y === undefined) continue
+        minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x)
+        minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y)
+      }
+      if (Number.isFinite(minX)) {
+        const bw = Math.max(1, maxX - minX)
+        const bh = Math.max(1, maxY - minY)
+        const pad = 64
+        const s = Math.min((width - pad * 2) / bw, (height - pad * 2) / bh, 1.6)
+        view.scale = Math.max(0.2, Math.min(1.6, Number.isFinite(s) && s > 0 ? s : 1))
+        view.offsetX = -((minX + maxX) / 2) * view.scale
+        view.offsetY = -((minY + maxY) / 2) * view.scale
+      }
+    }
+
+    const radiusOf = (n: GraphNode) => 7 + Math.sqrt(Math.max(1, n.linkCount ?? 1)) * 3
+    const toGraph = (clientX: number, clientY: number) => {
+      const r2 = canvas.getBoundingClientRect()
+      return {
+        x: (clientX - r2.left - width / 2 - view.offsetX) / view.scale,
+        y: (clientY - r2.top - height / 2 - view.offsetY) / view.scale,
+      }
+    }
+    const hitTest = (gx: number, gy: number): GraphNode | null => {
+      for (const n of nodes) {
+        if (n.x === undefined || n.y === undefined) continue
+        const r = radiusOf(n)
+        const dx = gx - n.x, dy = gy - n.y
+        if (dx * dx + dy * dy <= (r + 5) * (r + 5)) return n
+      }
+      return null
+    }
+
+    // Screen-space boxes for label overlap culling
+    const boxes: Array<{ x: number; y: number; w: number; h: number }> = []
+    const overlaps = (b: { x: number; y: number; w: number; h: number }) =>
+      boxes.some((o) => !(b.x + b.w < o.x || o.x + o.w < b.x || b.y + b.h < o.y || o.y + o.h < b.y))
 
     const draw = () => {
-      ctx.clearRect(0, 0, rect.width, rect.height)
-      ctx.save()
-      ctx.translate(centerX + offsetX, centerY + offsetY)
-      ctx.scale(scale, scale)
+      ctx.clearRect(0, 0, width, height)
 
-      // Edges — properly connected lines
+      // ── Pass 1: graph-space edges + node circles ──
+      ctx.save()
+      ctx.translate(width / 2 + view.offsetX, height / 2 + view.offsetY)
+      ctx.scale(view.scale, view.scale)
+
       for (const e of edges) {
         const a = nodeMap.get(e.source), b = nodeMap.get(e.target)
-        if (!a || !b || a.x === undefined || b.x === undefined) continue
-        const isHoverEdge = hovered === e.source || hovered === e.target || highlighted.has(e.source) && highlighted.has(e.target)
+        if (!a || !b || a.x === undefined || b.x === undefined || a.y === undefined || b.y === undefined) continue
+        const hot = hovered === e.source || hovered === e.target || (highlighted.has(e.source) && highlighted.has(e.target))
         ctx.beginPath()
-        ctx.moveTo(a.x!, a.y!)
-        ctx.lineTo(b.x!, b.y!)
-        ctx.strokeStyle = isHoverEdge ? '#334155' : 'rgba(148,163,184,0.35)'
-        ctx.lineWidth = isHoverEdge ? 2 : 0.8
+        ctx.moveTo(a.x, a.y)
+        ctx.lineTo(b.x, b.y)
+        ctx.strokeStyle = hot ? '#334155' : 'rgba(148,163,184,0.4)'
+        ctx.lineWidth = (hot ? 2 : 0.9) / view.scale
         ctx.stroke()
       }
 
-      // Nodes — 2D circles with labels
-      for (const n of nodes) {
-        if (n.x === undefined) continue
+      const screenPos = new Map<string, { sx: number; sy: number; r: number }>()
+      const ordered = [...nodes].sort((a, b) => radiusOf(a) - radiusOf(b)) // small first, hubs on top
+      for (const n of ordered) {
+        if (n.x === undefined || n.y === undefined) continue
         const isH = hovered === n.id || highlighted.has(n.id)
-        const r = 8 + Math.sqrt((n.linkCount ?? 1)) * 3
+        const r = radiusOf(n)
         ctx.beginPath()
-        ctx.arc(n.x!, n.y!, isH ? r * 1.25 : r, 0, Math.PI * 2)
+        ctx.arc(n.x, n.y, isH ? r * 1.22 : r, 0, Math.PI * 2)
         ctx.fillStyle = TYPE_COLOR[n.type] ?? TYPE_COLOR.other
-        if (isH) { ctx.shadowColor = TYPE_COLOR[n.type]; ctx.shadowBlur = 12 }
+        if (isH) { ctx.shadowColor = TYPE_COLOR[n.type]; ctx.shadowBlur = 10 / view.scale }
         ctx.fill()
         ctx.shadowBlur = 0
-        ctx.strokeStyle = isH ? '#0f172a' : 'rgba(255,255,255,0.9)'
-        ctx.lineWidth = isH ? 2 : 1
+        ctx.strokeStyle = isH ? '#0f172a' : 'rgba(255,255,255,0.95)'
+        ctx.lineWidth = (isH ? 2 : 1.2) / view.scale
         ctx.stroke()
-
-        // Label
-        ctx.fillStyle = '#0f172a'
-        ctx.font = `${isH ? '700' : '500'} 11px Manrope, system-ui`
-        ctx.textAlign = 'center'
-        const label = n.label.length > 18 ? n.label.slice(0, 18) + '…' : n.label
-        ctx.fillText(label, n.x!, n.y! + r + 12)
+        screenPos.set(n.id, {
+          sx: width / 2 + view.offsetX + n.x * view.scale,
+          sy: height / 2 + view.offsetY + n.y * view.scale,
+          r: r * view.scale,
+        })
       }
       ctx.restore()
+
+      // ── Pass 2: screen-space labels (crisp text, pill bg, overlap-culled) ──
+      boxes.length = 0
+      const labelOrder = [...nodes].sort((a, b) => {
+        const fa = (hovered === a.id || highlighted.has(a.id)) ? 1 : 0
+        const fb = (hovered === b.id || highlighted.has(b.id)) ? 1 : 0
+        if (fa !== fb) return fa - fb
+        return (b.linkCount ?? 0) - (a.linkCount ?? 0)
+      })
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      for (const n of labelOrder) {
+        const p = screenPos.get(n.id)
+        if (!p) continue
+        const isH = hovered === n.id || highlighted.has(n.id)
+        const text = n.label.length > 22 ? n.label.slice(0, 22) + '…' : n.label
+        ctx.font = `${isH ? '700' : '500'} ${isH ? 12 : 11}px Manrope, system-ui, sans-serif`
+        const tw = ctx.measureText(text).width
+        const box = { x: p.sx - tw / 2 - 5, y: p.sy + p.r + 3, w: tw + 10, h: 16 }
+        if (box.x < -box.w || box.y < -box.h || box.x > width || box.y > height) continue // offscreen
+        if (!isH && overlaps(box)) continue // cull overlapping quiet labels
+        boxes.push(box)
+        ctx.fillStyle = 'rgba(255,255,255,0.88)'
+        ctx.beginPath()
+        ctx.roundRect(box.x, box.y, box.w, box.h, 4)
+        ctx.fill()
+        if (isH) {
+          ctx.strokeStyle = highlighted.has(n.id) ? '#f59e0b' : '#0f172a'
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
+        ctx.fillStyle = '#0f172a'
+        ctx.fillText(text, p.sx, box.y + box.h / 2 + 0.5)
+      }
     }
+
+    let isDragging = false
+    let startX = 0, startY = 0, baseX = 0, baseY = 0
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const delta = e.deltaY > 0 ? 0.92 : 1.08
-      scale = Math.max(0.4, Math.min(3, scale * delta))
+      const r2 = canvas.getBoundingClientRect()
+      const sx = e.clientX - r2.left - width / 2
+      const sy = e.clientY - r2.top - height / 2
+      const gx = (sx - view.offsetX) / view.scale
+      const gy = (sy - view.offsetY) / view.scale
+      const factor = e.deltaY > 0 ? 0.9 : 1.111
+      view.scale = Math.max(0.2, Math.min(4, view.scale * factor))
+      // zoom toward cursor
+      view.offsetX = sx - gx * view.scale
+      view.offsetY = sy - gy * view.scale
       draw()
     }
-    const onDown = (e: MouseEvent) => { isDragging = true; startX = e.clientX - lastOffX; startY = e.clientY - lastOffY; canvas.style.cursor = 'grabbing' }
+    const onDown = (e: MouseEvent) => {
+      isDragging = true
+      startX = e.clientX; startY = e.clientY
+      baseX = view.offsetX; baseY = view.offsetY
+      canvas.style.cursor = 'grabbing'
+    }
     const onMove = (e: MouseEvent) => {
-      if (!isDragging) {
-        // hover detection
-        const rect2 = canvas.getBoundingClientRect()
-        const x = (e.clientX - rect2.left - centerX - offsetX) / scale
-        const y = (e.clientY - rect2.top - centerY - offsetY) / scale
-        let hit: string | null = null
-        for (const n of nodes) {
-          if (n.x === undefined) continue
-          const r = 8 + Math.sqrt((n.linkCount ?? 1)) * 3
-          const dx = x - n.x!, dy = y - n.y!
-          if (dx * dx + dy * dy < (r + 4) * (r + 4)) { hit = n.id; break }
-        }
-        setHovered(hit)
-        canvas.style.cursor = hit ? 'pointer' : 'grab'
+      if (isDragging) {
+        view.offsetX = baseX + (e.clientX - startX)
+        view.offsetY = baseY + (e.clientY - startY)
+        draw()
         return
       }
-      offsetX = e.clientX - startX
-      offsetY = e.clientY - startY
-      lastOffX = offsetX; lastOffY = offsetY
-      draw()
+      const g = toGraph(e.clientX, e.clientY)
+      const hit = hitTest(g.x, g.y)
+      if ((hit?.id ?? null) !== hovered) setHovered(hit?.id ?? null)
+      canvas.style.cursor = hit ? 'pointer' : 'grab'
     }
     const onUp = () => { isDragging = false; canvas.style.cursor = 'grab' }
     const onClick = (e: MouseEvent) => {
-      const rect2 = canvas.getBoundingClientRect()
-      const x = (e.clientX - rect2.left - centerX - offsetX) / scale
-      const y = (e.clientY - rect2.top - centerY - offsetY) / scale
-      for (const n of nodes) {
-        if (n.x === undefined) continue
-        const r = 8 + Math.sqrt((n.linkCount ?? 1)) * 3
-        const dx = x - n.x!, dy = y - n.y!
-        if (dx * dx + dy * dy < (r + 4) * (r + 4)) { setSelected(n); return }
-      }
+      if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) return // it was a drag
+      const g = toGraph(e.clientX, e.clientY)
+      const hit = hitTest(g.x, g.y)
+      setSelected(hit)
     }
 
     canvas.addEventListener('wheel', onWheel, { passive: false })
@@ -187,25 +274,17 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
     window.addEventListener('mouseup', onUp)
     canvas.addEventListener('click', onClick)
 
+    const ro = new ResizeObserver(() => { resize(); draw() })
+    ro.observe(container)
+
     draw()
-    const onResize = () => {
-      const r = container.getBoundingClientRect()
-      canvas.width = r.width * dpr
-      canvas.height = r.height * dpr
-      canvas.style.width = `${r.width}px`
-      canvas.style.height = `${r.height}px`
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      draw()
-    }
-    window.addEventListener('resize', onResize)
     return () => {
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('mousedown', onDown)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       canvas.removeEventListener('click', onClick)
-      window.removeEventListener('resize', onResize)
-      cancelAnimationFrame(raf)
+      ro.disconnect()
     }
   }, [nodes, edges, hovered, highlighted])
 
@@ -240,7 +319,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
   return (
     <div style={{ display: 'flex', height: '100%', background: '#ffffff', position: 'relative', overflow: 'hidden' }}>
       {/* Left Knowledge list — dynamic from wiki, not hardcode */}
-      <div style={{ width: 220, borderRight: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 10px', flexShrink: 0 }}>
+      <div style={{ width: 220, borderRight: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 10px', flexShrink: 0, background: '#ffffff', position: 'relative', zIndex: 1 }}>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#0f172a' }}>Knowledge</div>
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>{wikiDir ? wikiDir.split(/[/\\]/).pop() : 'Wiki'} • {nodes.length} pages</div>
         <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Entities {entityNodes.length}</div>
@@ -261,8 +340,8 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
         </div>
       </div>
 
-      {/* Center 2D canvas — properly connected, not 3D floating */}
-      <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, position: 'relative' }}>
+      {/* Center 2D canvas — wrapper measured for canvas sizing (header excluded) */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, position: 'relative' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #e2e8f0', background: '#ffffff', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
             Knowledge Graph
@@ -271,13 +350,13 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8' }}>2D • drag to pan • scroll to zoom • click node</div>
         </div>
-        <div style={{ flex: 1, position: 'relative', background: '#ffffff', overflow: 'hidden' }}>
+        <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: '#ffffff', overflow: 'hidden' }}>
           <canvas ref={canvasRef} style={{ width: '100%', height: '100%', cursor: 'grab', display: 'block' }} />
         </div>
       </div>
 
       {/* Right detail */}
-      <div style={{ width: 280, borderLeft: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 14px', background: '#ffffff', flexShrink: 0 }}>
+      <div style={{ width: 280, borderLeft: '1px solid #e2e8f0', overflowY: 'auto', padding: '12px 14px', background: '#ffffff', flexShrink: 0, position: 'relative', zIndex: 1 }}>
         {selected ? (
           <div>
             <div style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>{selected.label}</div>
