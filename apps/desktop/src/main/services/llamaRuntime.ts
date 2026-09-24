@@ -183,6 +183,20 @@ export function hasZoneIdentifier(filePath: string): boolean {
   }
 }
 
+/** Fire-and-forget auto-unblock when MOTW is detected — makes Windows SmartScreen/Defender compatible without manual clicks. */
+export function autoUnblockIfNeeded(baseDir?: string): void {
+  try {
+    if (process.platform !== 'win32') return
+    const exe = getLlamaServerPath(baseDir)
+    if (!exe || !hasZoneIdentifier(exe)) return
+    const dir = getLlamaRuntimeDir(baseDir)
+    // Don't block startup — background unblock
+    void unblockRuntimeDir(dir).then((r) => {
+      appendLlamaLog(baseDir, 'auto-unblock-motw', { dir, unblocked: r.unblocked, detail: r.detail })
+    })
+  } catch { /* never block */ }
+}
+
 /** Remove MOTW from a runtime dir so Windows stops blocking the exe (spawn UNKNOWN / 4551). */
 export function unblockRuntimeDir(dir: string, timeoutMs = 60_000): Promise<{ unblocked: boolean; detail: string }> {
   return new Promise((resolve) => {

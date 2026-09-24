@@ -10,7 +10,7 @@
  */
 import { isLoopbackUrl } from '../network/HttpClient'
 import { appendRuntimeLog } from '../logging/runtimeLog'
-import { appendLlamaLog } from '../services/llamaRuntime'
+import { appendLlamaLog, autoUnblockIfNeeded } from '../services/llamaRuntime'
 import { RuntimeConfigStore, type ModelRegistryRow, type RegistryInstallStatus } from '../config/RuntimeConfigStore'
 import { CustomOpenAICompatibleAdapter, type HttpGet } from './ports/CustomOpenAICompatibleAdapter'
 import type { ModelRuntimePort, SystemResourceManagerPort } from '@shared/types/ports'
@@ -189,6 +189,8 @@ export class ModelWorkbench {
 
   /** Owned-runtime probe: binary present + GGUF library scan (no network). */
   private async probeLocalRuntime(entry: ModelRuntimeEntry): Promise<RuntimeProbeResult> {
+    // Windows compatibility: auto-unblock MOTW in background so SmartScreen/Defender don't block spawn
+    try { autoUnblockIfNeeded(this.baseDir) } catch {}
     const started = Date.now()
     try {
       if (!this.models) {
@@ -622,15 +624,15 @@ export class ModelWorkbench {
       return { selection: { runtimeId: 'auto', modelId: '__auto__' }, available: true, displayName: 'Auto', runtimeDisplayName: 'Smart routing' }
     }
     let sel = this.config.getActiveSelection()
-    // If active selection is a stale flat LMStudio id (pre-fix: "GLM-4.6V-Flash-Q4_K_M" without nested path), clear it so dropdown is user-driven
-    if (sel && (sel.modelId === 'GLM-4.6V-Flash-Q4_K_M' || sel.modelId === 'GLM-4.6V-Flash-Q4_K_M.gguf')) {
+    // If active selection is a stale flat LMStudio id (pre-fix: repo-less "GLM-4.6V-Flash-Q4_K_M" from lmstudio runtime), clear it only if it came from non-local runtime
+    if (sel && (sel.modelId === 'GLM-4.6V-Flash-Q4_K_M' || sel.modelId === 'GLM-4.6V-Flash-Q4_K_M.gguf') && sel.runtimeId !== 'local') {
       try { this.config.clearActiveSelection() } catch {}
       try { this.config.setAppSetting('root_model', 'no-default') } catch {}
       sel = null
     }
     // Root model must never override an explicit user selection — only used when sel is null
-    // If root was set to the stale flat GLM, reset it
-    try { const root = this.config.getAppSetting('root_model'); if (root && root.includes('GLM-4.6V-Flash')) this.config.setAppSetting('root_model', 'no-default') } catch {}
+    // If root was set to the stale flat GLM from external runtime, reset it
+    try { const root = this.config.getAppSetting('root_model'); if (root && root.includes('GLM-4.6V-Flash') && sel?.runtimeId !== 'local') this.config.setAppSetting('root_model', 'no-default') } catch {}
     // Auto-migrate stale mmproj selection (vision projector shard) to a real LLM
     if (sel && this.isMmprojId(sel.modelId)) {
       const snap0 = this.config.getRuntime(sel.runtimeId)
@@ -689,10 +691,15 @@ export class ModelWorkbench {
       if (found) { try { this.config.setActiveSelection({ runtimeId: sel!.runtimeId, modelId: found.modelId }); sel = found.modelId as unknown as typeof sel; } catch {} }
     }
     // Local runtime: available if file exists, even if snapshot had lastError (probe not re-run after Use)
+    // Also handle case where selection is a live file not yet in snapshot (e.g., GLM-4.6V picked before probe refresh) — treat as available
     const isLocal = snap.entry.id === 'local'
-    const live = found ? this.isModelLive(found.modelId) : false
+    let live = found ? this.isModelLive(found.modelId) : false
+    if (!found && sel && this.isModelLive(sel.modelId)) {
+      live = true
+      found = { modelId: sel.modelId, displayName: sel.modelId } as any
+    }
     if (!found || (!live && snap.lastError !== null) ) return { selection: sel, available: false }
-    if (isLocal && live) { /* force available */ }
+    if (isLocal && live) { /* force available — file exists on disk, snapshot staleness doesn't matter */ }
     else if (snap.lastError !== null) return { selection: sel, available: false }
     return {
       selection: sel,
