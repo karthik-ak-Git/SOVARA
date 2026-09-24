@@ -21,6 +21,7 @@ import {
   Pin,
   Archive,
   Check,
+  Network,
 } from 'lucide-react'
 import { copyToClipboard } from '@/lib/client/api'
 import { SmartNotificationDrawer } from '@/components/ui/SmartNotificationDrawer'
@@ -36,6 +37,7 @@ export type NavId =
   | 'skills'
   | 'connections'
   | 'settings'
+  | 'graph'
 
 interface ProjectItem {
   id: string
@@ -628,6 +630,31 @@ export function Sidebar({
             onOpenSettings={onOpenSettings}
           />
         </div>
+
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'graph' ? 'selected' : ''}`}
+          onClick={() => onNavigate('graph')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '7px 8px',
+            borderRadius: 6,
+            border: 'none',
+            background: activeId === 'graph' ? '#0f172a' : 'transparent',
+            color: activeId === 'graph' ? '#ffffff' : '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+            marginTop: 6,
+            boxShadow: activeId === 'graph' ? '0 2px 8px rgba(15,23,42,0.18)' : 'none',
+          }}
+        >
+          <Network size={16} aria-hidden style={{ color: activeId === 'graph' ? '#38bdf8' : '#64748b' }} />
+          <span>Knowledge Graph 3D</span>
+        </button>
       </div>
 
       {/* Projects Accordion Section */}
