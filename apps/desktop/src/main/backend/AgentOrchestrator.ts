@@ -18,6 +18,7 @@ import type { ModelWorkbench } from './ModelWorkbench'
 import { classifyTask } from './TaskClassifier'
 import { routeModel, pickFittingModel } from './ModelRouter'
 import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
+import { computeContextBudget, truncateFileToBudget } from './contextBudget'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
 import { getArtifactsDir } from '../storage/paths'
@@ -1221,13 +1222,27 @@ export class AgentOrchestrator {
       let historyMsgs: import('@shared/types/ports').LlmChatMessage[]
       // If RAG already fits budget, use it; else hybrid compress the FULL prior (not just RAG) to preserve detail via summary
       const ragTurns = toRequestMessages(ragPrior)
+      // llm_wiki-inspired proportional budgeting: 10% system, 5% index, 50% pages/files, 20% history, 15% response reserve
+      const budget = computeContextBudget(nCtx)
       const estRagTokens = Math.ceil((systemChars + ragTurns.reduce((n, m) => n + m.content.length, 0) + content.length) / 4)
-      const budgetTokens = Math.max(800, nCtx - 1200)
-      if (estRagTokens <= budgetTokens) {
+      // Total prompt budget = maxCtx - responseReserve (leave room for answer)
+      const totalPromptBudget = budget.maxCtx - budget.responseReserve
+      if (estRagTokens <= totalPromptBudget) {
         historyMsgs = ragTurns
       } else {
-        // Hybrid: last 3 turns verbatim, older summarized via importance (code/URLs/decisions/artifacts)
-        historyMsgs = buildBudgetedHistory(prior, systemChars, nCtx, { slidingWindowTurns: 3, reservedCompletionTokens: 1200 })
+        // Hybrid: use llm_wiki-style budgeted history (recent verbatim + older summarized) with proportional historyBudget
+        // Truncate RAG files to per-page cap first (like llm_wiki maxPageSize)
+        const cappedRag = ragTurns.map((m) => ({
+          ...m,
+          content: m.content.length > budget.maxPageSizeChars ? truncateFileToBudget(m.content, budget.maxPageSizeChars) : m.content,
+        }))
+        const cappedTokens = Math.ceil((systemChars + cappedRag.reduce((n, m) => n + m.content.length, 0) + content.length) / 4)
+        if (cappedTokens <= totalPromptBudget) {
+          historyMsgs = cappedRag
+        } else {
+          // Fallback to budgeted history with llm_wiki proportions (historyBudget tokens for history)
+          historyMsgs = buildBudgetedHistory(prior, systemChars, budget.historyBudget + budget.pageBudget, { slidingWindowTurns: 3, reservedCompletionTokens: budget.responseReserve })
+        }
       }
       const sanitizedPromptPath = content.trim().replace(/^["']|["']$/g, '')
       const isPathQuery = /^[a-z]:[\\/]/i.test(sanitizedPromptPath) || /^\/[a-zA-Z0-9_.-]+/.test(sanitizedPromptPath)
