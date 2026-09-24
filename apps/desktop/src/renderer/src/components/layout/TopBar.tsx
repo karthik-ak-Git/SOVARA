@@ -253,13 +253,29 @@ export function TopBar({
           <button
             type="button"
             className="header-action"
-            title="Artifacts"
+            title={artifactsOpen ? 'Hide right sidebar (Artifacts)' : 'Show right sidebar — Files, Artifacts, Terminals'}
             aria-pressed={artifactsOpen}
             onClick={onToggleArtifacts}
-            style={{ background: artifactsOpen ? '#e0f2fe' : '#f8fafc', border: '1px solid #e2e8f0', color: artifactsOpen ? '#0284c7' : '#334155', borderRadius: 6, padding: '4px 8px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+            style={{
+              background: artifactsOpen ? '#e0f2fe' : '#f8fafc',
+              border: `1px solid ${artifactsOpen ? '#7dd3fc' : '#e2e8f0'}`,
+              color: artifactsOpen ? '#0284c7' : '#334155',
+              borderRadius: 6,
+              padding: '4px 10px',
+              fontSize: 12,
+              fontWeight: artifactsOpen ? 600 : 500,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              cursor: 'pointer',
+              transition: 'all 180ms cubic-bezier(0.32,0.72,0,1)',
+              boxShadow: artifactsOpen ? '0 0 0 3px rgba(14,165,233,0.15)' : 'none',
+              transform: artifactsOpen ? 'scale(1.02)' : 'scale(1)',
+            }}
           >
-            <FileCode2 size={14} aria-hidden />
+            <FileCode2 size={14} aria-hidden style={{ transition: 'transform 180ms ease', transform: artifactsOpen ? 'rotate(3deg)' : 'none' }} />
             <span>Artifacts</span>
+            <span style={{ width:6, height:6, borderRadius:'50%', background: artifactsOpen ? '#0284c7' : '#cbd5e1', display:'inline-block', transition:'background 180ms' }} />
           </button>
         ) : null}
       </div>

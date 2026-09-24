@@ -353,6 +353,7 @@ export function App(): React.JSX.Element {
 
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
+  const [chatActiveArtifact, setChatActiveArtifact] = useState<{ title: string; language: string; code: string } | null>(null)
   // Unowned chats → global Sovara workspace (right-rail SOVARA project)
   const displayProjects = useMemo(() => {
     const base = projects.map((p) => ({ id: p.id, name: p.name, sessions: projectChats(p.id) }))
@@ -390,6 +391,10 @@ export function App(): React.JSX.Element {
       console.error('[App] openArtifact failed:', e instanceof Error ? e.message : String(e))
     })
   }, [])
+  const handleOpenArtifactFileInPanel = useCallback((filePath: string): void => {
+    setArtifactsOpen(true)
+    handleOpenArtifact(filePath)
+  }, [handleOpenArtifact])
 
   const handleShareSession = useCallback(() => {
     const transcript = chat.events
@@ -441,6 +446,12 @@ export function App(): React.JSX.Element {
         artifactsOpen={artifactsOpen}
         onToggleArtifacts={() => setArtifactsOpen((v) => !v)}
         events={chat.events}
+        activeArtifact={chatActiveArtifact}
+        onOpenArtifactFile={handleOpenArtifactFileInPanel}
+        execution={chat.execution}
+        busy={chat.busy}
+        streamingReasoning={chat.streamingReasoning}
+        streamingText={chat.streamingText}
         splitOpen={contextOpen}
         onToggleSplit={() => setContextOpen((v) => !v)}
         onShare={handleShareSession}
@@ -506,7 +517,8 @@ export function App(): React.JSX.Element {
             projects={availableProjects}
             selectedProjectId={selectedProjectId}
             onSelectProject={handleSelectProjectWrapped}
-            onOpenArtifactFile={handleOpenArtifact}
+            onOpenArtifactFile={handleOpenArtifactFileInPanel}
+            onActiveArtifactChange={setChatActiveArtifact}
           />
         ) : null}
 

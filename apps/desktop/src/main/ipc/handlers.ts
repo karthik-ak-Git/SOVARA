@@ -1,4 +1,5 @@
 import { ipcMain, BrowserWindow, dialog, shell, clipboard, Notification } from 'electron'
+import { execSync } from 'node:child_process'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
@@ -1122,5 +1123,65 @@ export function registerIpcHandlers(): void {
       // ignore
     }
     return { shown: false }
+  })
+
+  // ── Git status / diff for right-rail Files Changed (full sync, not synthetic) ──
+  ipcMain.handle('git:status', async (_e, raw: unknown) => {
+    const workspaceRoot = (raw as { workspaceRoot?: string })?.workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    const cwd = path.resolve(workspaceRoot)
+    try {
+      const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf8', timeout: 4000 })
+      const files = porcelain.split('\n').filter(Boolean).map((line) => {
+        const staged = line[0] !== ' ' && line[0] !== '?' && line[0] !== '!'
+        const code = line.slice(0, 2)
+        const filePath = line.slice(3).trim()
+        return { path: filePath, code, staged }
+      })
+      let statRaw = ''
+      try { statRaw = execSync('git diff --stat --no-color; echo "---STAGED---"; git diff --cached --stat --no-color', { cwd, encoding: 'utf8', timeout: 4000 }) } catch { statRaw = '' }
+      return { ok: true, cwd, files, statRaw }
+    } catch (e) {
+      return { ok: false, cwd, files: [], error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('git:diff', async (_e, raw: unknown) => {
+    const { workspaceRoot, filePath } = (raw as { workspaceRoot?: string; filePath?: string }) ?? {}
+    const cwd = path.resolve(workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd())
+    const file = String(filePath || '').trim()
+    if (!file) throw new Error('missing filePath')
+    try {
+      // Try unstaged diff first, then staged, then HEAD
+      let diff = ''
+      try { diff = execSync(`git diff --no-color -U3 -- "${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch {}
+      if (!diff) {
+        try { diff = execSync(`git diff --cached --no-color -U3 -- "${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch {}
+      }
+      if (!diff) {
+        try { diff = execSync(`git show HEAD:"${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }); diff = `--- a/${file}\n+++ b/${file}\n@@ -0,0 +1,${diff.split('\n').length} @@\n${diff.split('\n').map((l) => `+${l}`).join('\n')}` } catch {}
+      }
+      // Also get file contents for renderers
+      let content = ''
+      let oldContent: string | null = null
+      try { content = fs.readFileSync(path.join(cwd, file), 'utf8') } catch {}
+      try { oldContent = execSync(`git show HEAD:"${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch { oldContent = null }
+      const ext = path.extname(file).toLowerCase()
+      const isMarkdown = ext === '.md' || file.toLowerCase().endsWith('readme.md')
+      const isHtml = ext === '.html' || ext === '.htm'
+      return { ok: true, cwd, file, diff, content: content.slice(0, 80000), oldContent: oldContent ? oldContent.slice(0, 80000) : null, isMarkdown, isHtml }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('git:fileContent', async (_e, raw: unknown) => {
+    const { workspaceRoot, filePath } = (raw as { workspaceRoot?: string; filePath?: string }) ?? {}
+    const cwd = path.resolve(workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd())
+    const file = String(filePath || '').trim()
+    try {
+      const abs = path.join(cwd, file)
+      const content = fs.readFileSync(abs, 'utf8')
+      return { ok: true, content: content.slice(0, 100000) }
+    } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) } }
   })
 }

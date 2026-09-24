@@ -885,3 +885,15 @@ export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app
 export async function showSystemNotification(title: string, body: string): Promise<{ shown: boolean }> {
   return ipcInvoke('notifications:show', { title, body })
 }
+
+export interface GitStatusResult { ok: boolean; cwd: string; files: Array<{ path: string; code: string; staged: boolean }>; statRaw?: string; error?: string }
+export interface GitDiffResult { ok: boolean; cwd: string; file: string; diff: string; content: string; oldContent: string | null; isMarkdown: boolean; isHtml: boolean; error?: string }
+export async function getGitStatus(workspaceRoot?: string): Promise<GitStatusResult> {
+  return ipcInvoke('git:status', { workspaceRoot } as unknown as Record<string, unknown>)
+}
+export async function getGitDiff(filePath: string, workspaceRoot?: string): Promise<GitDiffResult> {
+  return ipcInvoke('git:diff', { filePath, workspaceRoot } as unknown as Record<string, unknown>)
+}
+export async function getGitFileContent(filePath: string, workspaceRoot?: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+  return ipcInvoke('git:fileContent', { filePath, workspaceRoot } as unknown as Record<string, unknown>)
+}

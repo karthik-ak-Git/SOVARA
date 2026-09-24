@@ -44,6 +44,12 @@ interface Props {
   events?: import('@/lib/client/api').SessionEventView[]
   onOpenSettings?: (section?: string, projectId?: string) => void
   workspaceRoot?: string | null
+  activeArtifact?: { title: string; language: string; code: string } | null
+  onOpenArtifactFile?: (path: string) => void
+  execution?: import('@/features/chat/useChatSession').AgentExecutionState | null
+  busy?: boolean
+  streamingReasoning?: string
+  streamingText?: string
 }
 
 export function AppShell({
@@ -87,6 +93,12 @@ export function AppShell({
   events = [],
   onOpenSettings,
   workspaceRoot,
+  activeArtifact = null,
+  onOpenArtifactFile,
+  execution = null,
+  busy = false,
+  streamingReasoning = '',
+  streamingText = '',
 }: Props): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isAuxExpanded, setIsAuxExpanded] = useState(false)
@@ -161,9 +173,15 @@ export function AppShell({
             onToggleExpand={() => setIsAuxExpanded((v) => !v)}
             artifactContent={artifactContent}
             artifactTitle={artifactTitle}
+            activeArtifact={activeArtifact}
+            onOpenArtifactFile={onOpenArtifactFile}
             events={events}
             sessionId={selectedSessionId || selectedChatId || undefined}
             workspaceRoot={workspaceRoot}
+            execution={execution}
+            busy={busy}
+            streamingReasoning={streamingReasoning}
+            streamingText={streamingText}
           />
         ) : (
           contextPanel ?? null

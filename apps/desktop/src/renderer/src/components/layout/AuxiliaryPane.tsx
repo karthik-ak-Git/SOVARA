@@ -22,9 +22,10 @@ import {
   X,
   RefreshCw,
 } from 'lucide-react'
-import { dispatchTool, openArtifact, type SessionEventView } from '@/lib/client/api'
+import { dispatchTool, openArtifact, getGitStatus, getGitDiff, type SessionEventView } from '@/lib/client/api'
 import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact } from '../../utils/previewBundler'
 import { parseMessageContent } from '../../features/chat/MessageBubble'
+import type { AgentExecutionState } from '../../features/chat/useChatSession'
 
 export type AuxiliaryTab = 'overview' | 'diffs' | 'terminal' | 'artifacts' | 'subagents'
 
@@ -62,6 +63,11 @@ interface Props {
   sessionTitle?: string
   sessionId?: string
   workspaceRoot?: string | null
+  /** Live chat execution — synced to right rail for full intent visibility */
+  execution?: AgentExecutionState | null
+  busy?: boolean
+  streamingReasoning?: string
+  streamingText?: string
 }
 
 export function AuxiliaryPane({
@@ -84,6 +90,10 @@ export function AuxiliaryPane({
   sessionTitle = 'Current Conversation',
   sessionId,
   workspaceRoot,
+  execution = null,
+  busy = false,
+  streamingReasoning = '',
+  streamingText = '',
 }: Props): ReactElement | null {
   const [internalTab, setInternalTab] = useState<AuxiliaryTab>('overview')
   const [internalExpanded, setInternalExpanded] = useState(false)
@@ -117,28 +127,37 @@ export function AuxiliaryPane({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [plusMenuOpen])
 
-  // --- Dynamic data extraction from Session Events ---
+  // --- Dynamic + Git-backed Files Changed (full sync, not synthetic) ---
+  const [gitFilesState, setGitFilesState] = useState<ChangedFileItem[]>([])
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    getGitStatus(workspaceRoot ?? undefined).then((res) => {
+      if (cancelled || !res.ok) return
+      const mapped: ChangedFileItem[] = res.files.map((f) => ({
+        path: f.path,
+        staged: f.staged,
+        additions: 0,
+        deletions: 0,
+        diffChunks: [],
+      }))
+      setGitFilesState(mapped)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen, workspaceRoot, events.length])
+
   const dynamicFiles = useMemo(() => {
     if (changedFiles.length > 0) return changedFiles
+    // Prefer real git files; fall back to event-derived paths
+    if (gitFilesState.length > 0) return gitFilesState
     const map = new Map<string, ChangedFileItem>()
-
     const registerPath = (p: string) => {
       const clean = p.replace(/\\/g, '/').trim()
       if (!clean || clean === '.' || clean === './' || clean.startsWith('http') || clean.length < 2) return
       if (!map.has(clean)) {
-        map.set(clean, {
-          path: clean,
-          staged: false,
-          additions: 12,
-          deletions: 2,
-          diffChunks: [
-            { lineOld: 1, lineNew: 1, type: 'context', content: `// File: ${clean}` },
-            { lineNew: 2, type: 'add', content: '+ // Created or modified by AI assistant' },
-          ],
-        })
+        map.set(clean, { path: clean, staged: false, additions: 0, deletions: 0, diffChunks: [] })
       }
     }
-
     for (const e of events) {
       if (e.type === 'tool/call') {
         const d = (e.data ?? {}) as Record<string, unknown>
@@ -158,22 +177,78 @@ export function AuxiliaryPane({
         }
         const raw = typeof e.data === 'string' ? e.data : (e.data as { content?: string })?.content ?? JSON.stringify(e.data ?? {})
         const matches = raw.matchAll(/"path"\s*:\s*["']([^"'\r\n,]+)["']/gi)
-        for (const m of matches) {
-          if (m[1]) registerPath(m[1])
-        }
+        for (const m of matches) if (m[1]) registerPath(m[1])
         const fileMatches = raw.matchAll(/(?:written to\s+|created\s+)([a-zA-Z0-9_./\\-]+)/gi)
-        for (const m of fileMatches) {
-          if (m[1]) registerPath(m[1])
-        }
+        for (const m of fileMatches) if (m[1]) registerPath(m[1])
       }
     }
     return Array.from(map.values())
-  }, [events, changedFiles])
+  }, [events, changedFiles, gitFilesState])
 
   const stagedFiles = useMemo(() => dynamicFiles.filter((f) => f.staged), [dynamicFiles])
   const unstagedFiles = useMemo(() => dynamicFiles.filter((f) => !f.staged), [dynamicFiles])
 
   const [selectedReviewFile, setSelectedReviewFile] = useState<ChangedFileItem | null>(null)
+  const [fileRenderMode, setFileRenderMode] = useState<'diff' | 'preview' | 'markdown' | 'code'>('diff')
+  const [fileDiffData, setFileDiffData] = useState<import('@/lib/client/api').GitDiffResult | null>(null)
+  const [fileDiffLoading, setFileDiffLoading] = useState(false)
+
+  // Auto-fetch real git diff + file content when a review file is selected
+  useEffect(() => {
+    if (!selectedReviewFile) { setFileDiffData(null); return }
+    let cancelled = false
+    setFileDiffLoading(true)
+    getGitDiff(selectedReviewFile.path, workspaceRoot ?? undefined).then((res) => {
+      if (cancelled) return
+      setFileDiffData(res as unknown as import('@/lib/client/api').GitDiffResult)
+      // Auto-switch render mode based on file type
+      if (res.ok) {
+        if (res.isMarkdown) setFileRenderMode('markdown')
+        else if (res.isHtml) setFileRenderMode('preview')
+        else if (res.diff && res.diff.includes('@@')) setFileRenderMode('diff')
+        else setFileRenderMode('code')
+      }
+      setFileDiffLoading(false)
+    }).catch(() => { if (!cancelled) setFileDiffLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedReviewFile?.path, workspaceRoot])
+
+  // Lightweight markdown → html for README rendering (no extra dep, handles headings/links/code)
+  const renderMarkdown = (src: string): string => {
+    const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    let html = esc(src)
+    html = html.replace(/^###\s+(.*)$/gm, '<h3 style="font-size:15px;font-weight:700;margin:14px 0 6px;color:#0f172a">$1</h3>')
+    html = html.replace(/^##\s+(.*)$/gm, '<h2 style="font-size:17px;font-weight:700;margin:16px 0 8px;color:#0f172a">$1</h2>')
+    html = html.replace(/^#\s+(.*)$/gm, '<h1 style="font-size:20px;font-weight:800;margin:18px 0 10px;color:#0f172a">$1</h1>')
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>')
+    html = html.replace(/`([^`]+)`/g, '<code style="background:#f1f5f9;padding:1px 6px;border-radius:4px;font:12px ui-monospace">$1</code>')
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#0284c7;text-decoration:underline">$1</a>')
+    html = html.replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font:12px ui-monospace;white-space:pre-wrap">$2</pre>')
+    html = html.replace(/\n\n/g, '<br/><br/>').replace(/\n/g, '<br/>')
+    return `<div style="font:13px/1.65 system-ui;color:#334155;max-width:100%;word-break:break-word">${html}</div>`
+  }
+
+  // Parse unified diff into line objects for old/new side-by-side rendering
+  const parsedDiff = useMemo(() => {
+    if (!fileDiffData?.diff) return null
+    const lines = fileDiffData.diff.split('\n')
+    const chunks: Array<{ oldN?: number; newN?: number; type: 'add'|'del'|'context'|'hunk'; text: string }> = []
+    let oldN = 0, newN = 0
+    for (const l of lines) {
+      if (l.startsWith('@@')) {
+        const m = /@@ -(\d+),?\d* \+(\d+),?\d* @@/.exec(l)
+        if (m) { oldN = parseInt(m[1],10); newN = parseInt(m[2],10) }
+        chunks.push({ type:'hunk', text:l })
+        continue
+      }
+      if (l.startsWith('+++')||l.startsWith('---')||l.startsWith('diff')||l.startsWith('index')) { chunks.push({type:'hunk',text:l}); continue }
+      if (l.startsWith('+')) { chunks.push({ oldN: undefined, newN: newN++, type:'add', text:l.slice(1) }) }
+      else if (l.startsWith('-')) { chunks.push({ oldN: oldN++, newN: undefined, type:'del', text:l.slice(1) }) }
+      else { chunks.push({ oldN: oldN++, newN: newN++, type:'context', text: l.slice(1) }) }
+    }
+    return chunks
+  }, [fileDiffData])
 
   // Artifact Viewer tab state — mirrors the artifact opened from chat.
   // viewerOverride lets a sidebar selection render in the viewer; it clears when
@@ -215,25 +290,24 @@ export function AuxiliaryPane({
 
   const dynamicSubagents = useMemo(() => {
     if (activeSubagents.length > 0) return activeSubagents
-    const list: Array<{ id: string; role: string; type: string; state: string; duration?: string }> = []
+    const list: Array<{ id: string; role: string; type: string; state: string; duration?: string; detail?: string }> = []
+    // Live execution sync: what chat will do / is doing (phase, tool, thinking)
+    if (execution && execution.phase !== 'idle' && execution.phase !== 'done') {
+      const phaseLabel = execution.phase === 'thinking' ? 'Thinking — reasoning' : execution.phase === 'planning' ? `Planning (${execution.taskKind ?? 'task'})` : execution.phase === 'tool' ? `Running ${execution.toolName ?? 'tool'}` : execution.phase === 'reading' ? `Reading ${execution.fileName ?? 'files'}` : execution.phase
+      list.push({ id: 'live-exec', role: phaseLabel, type: 'live', state: execution.phase, detail: execution.detail || streamingReasoning?.slice(0,120) || streamingText?.slice(0,120), duration: busy ? 'Running…' : 'Queued' })
+    }
     for (const e of events) {
       if (e.type === 'tool/call') {
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
         if (toolName === 'invoke_subagent' || toolName === 'define_subagent') {
           const role = d.args?.Role || d.args?.name || d.args?.role || 'Subagent Task'
-          list.push({
-            id: String(e.seq || Math.random()),
-            role: String(role),
-            type: String(toolName),
-            state: 'completed',
-            duration: 'Worked for subagent',
-          })
+          list.push({ id: String(e.seq || Math.random()), role: String(role), type: String(toolName), state: 'completed', duration: 'Worked for subagent' })
         }
       }
     }
     return list
-  }, [events, activeSubagents])
+  }, [events, activeSubagents, execution, busy, streamingReasoning, streamingText])
 
   // Sidebar mirrors the chat: code blocks parsed from assistant messages are the source
   // of truth, plus backend artifact/created files. The artifact currently open in the
@@ -678,8 +752,12 @@ export function AuxiliaryPane({
         zIndex: 50,
         boxShadow: isExpanded ? 'none' : 'var(--shadow-panel)',
         userSelect: 'none',
-      }}
+        transition: 'width 220ms cubic-bezier(0.32,0.72,0,1), flex 220ms ease',
+        animation: 'auxSlideIn 220ms cubic-bezier(0.32,0.72,0,1)',
+        overflow: 'hidden',
+      } as React.CSSProperties}
     >
+      <style>{`@keyframes auxSlideIn{from{transform:translateX(12px);opacity:0}to{transform:translateX(0);opacity:1}}`}</style>
       {/* Shared Top Bar Header with 3 Tab Icons */}
       <header
         className="sv-aux-header"
@@ -929,6 +1007,16 @@ export function AuxiliaryPane({
         {tab === 'overview' ? (
           <div style={{ padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Active Subagent Cards (if any) */}
+            {busy || execution?.phase === 'thinking' || execution?.phase === 'tool' ? (
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', borderRadius:8, background:'#fef3c7', border:'1px solid #fde68a', fontSize:12, color:'#92400e' }}>
+                <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', display:'inline-block', animation:'pulse 1s infinite' }} />
+                <span style={{ fontWeight:600 }}>
+                  {execution?.phase === 'thinking' ? 'Thinking — analysing your request…' : execution?.phase === 'tool' ? `Executing: ${execution.toolName ?? 'tool'}…` : execution?.phase === 'planning' ? 'Planning next steps…' : busy ? 'Chat is streaming…' : 'Working…'}
+                </span>
+                <span style={{ marginLeft:'auto', width:14, height:14, border:'2px solid #f59e0b', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />
+                <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.45}}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+              </div>
+            ) : null}
             {dynamicSubagents.length > 0 ? (
               dynamicSubagents.map((sa) => (
                 <div
@@ -939,17 +1027,21 @@ export function AuxiliaryPane({
                     justifyContent: 'space-between',
                     padding: '10px 12px',
                     borderRadius: 8,
-                    background: 'var(--panel, #f8fafc)',
-                    border: '1px solid var(--border-soft, #f1f5f9)',
+                    background: sa.type==='live' ? '#fffbeb' : 'var(--panel, #f8fafc)',
+                    border: `1px solid ${sa.type==='live' ? '#fde68a' : 'var(--border-soft, #f1f5f9)'}`,
+                    animation: sa.type==='live' ? 'pulse 1.2s ease-in-out infinite' : undefined,
                   }}
                 >
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text, #0f172a)' }}>{sa.role}</div>
-                    <div style={{ fontSize: 11, color: 'var(--muted, #64748b)', marginTop: 2 }}>
-                      {sa.duration || 'Worked for subagent'}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text, #0f172a)', display:'flex', alignItems:'center', gap:6 }}>
+                      {sa.type==='live' ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', animation:'pulse 1s infinite', display:'inline-block' }} /> : null}
+                      <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{sa.role}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--muted, #64748b)', marginTop: 2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {sa.detail || sa.duration || 'Worked for subagent'}
                     </div>
                   </div>
-                  <Check size={16} style={{ color: '#10b981' }} aria-hidden />
+                  {sa.type==='live' ? <div style={{ width:14, height:14, border:'2px solid #f59e0b', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.6s linear infinite', flexShrink:0 }} /> : <Check size={16} style={{ color: '#10b981', flexShrink:0 }} aria-hidden />}
                 </div>
               ))
             ) : null}
@@ -1282,31 +1374,48 @@ export function AuxiliaryPane({
             <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
               {/* Main Diff Area */}
               <div style={{ flex: 1, overflowY: 'auto', borderRight: subSidebarOpen ? '1px solid #e2e8f0' : 'none', background: '#ffffff', display: 'flex', flexDirection: 'column' }}>
-                {selectedReviewFile && selectedReviewFile.diffChunks ? (
-                  <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12, lineHeight: 1.6 }}>
-                    <div style={{ padding: '4px 12px', background: '#f1f5f9', color: '#64748b', fontSize: 11, borderBottom: '1px solid #e2e8f0' }}>
-                      <span>{selectedReviewFile.path}</span>
-                    </div>
-                    {selectedReviewFile.diffChunks.map((chunk, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          display: 'flex',
-                          background: chunk.type === 'add' ? '#f0fdf4' : chunk.type === 'del' ? '#fef2f2' : 'transparent',
-                          color: chunk.type === 'add' ? '#166534' : chunk.type === 'del' ? '#991b1b' : '#334155',
-                          borderLeft: chunk.type === 'add' ? '3px solid #22c55e' : chunk.type === 'del' ? '3px solid #ef4444' : '3px solid transparent',
-                          padding: '2px 8px',
-                        }}
-                      >
-                        <span style={{ width: 36, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>{chunk.lineOld ?? ''}</span>
-                        <span style={{ width: 36, color: '#94a3b8', userSelect: 'none', flexShrink: 0 }}>{chunk.lineNew ?? ''}</span>
-                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{chunk.content}</pre>
+                {selectedReviewFile ? (
+                  <>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 12px', background:'#f1f5f9', borderBottom:'1px solid #e2e8f0', gap:8 }}>
+                      <span style={{ fontSize:11, color:'#64748b', fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{selectedReviewFile.path}</span>
+                      <div style={{ display:'flex', gap:4, flexShrink:0 }}>
+                        {[
+                          {k:'diff',l:'Diff'},
+                          {k:'code',l:'Code'},
+                          ...(fileDiffData?.isMarkdown ? [{k:'markdown',l:'README'} as const] : []),
+                          ...(fileDiffData?.isHtml ? [{k:'preview',l:'Browser'} as const] : []),
+                        ].map(t => (
+                          <button key={t.k} onClick={()=>setFileRenderMode(t.k as never)} style={{ padding:'2px 8px', borderRadius:999, border:'1px solid '+(fileRenderMode===t.k?'#0f172a':'#e2e8f0'), background:fileRenderMode===t.k?'#0f172a':'#fff', color:fileRenderMode===t.k?'#fff':'#475569', fontSize:10, fontWeight:600, cursor:'pointer' }}>{t.l}</button>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                    {fileDiffLoading ? (
+                      <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:8, color:'#64748b', fontSize:12 }}><div style={{ width:16, height:16, border:'2px solid #e2e8f0', borderTopColor:'#0284c7', borderRadius:'50%', animation:'spin 0.7s linear infinite' }}/> Loading diff…<style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style></div>
+                    ) : fileRenderMode==='markdown' && fileDiffData?.content ? (
+                      <div style={{ padding:16, overflow:'auto' }} dangerouslySetInnerHTML={{ __html: renderMarkdown(fileDiffData.content) }} />
+                    ) : fileRenderMode==='preview' && fileDiffData?.content ? (
+                      <iframe srcDoc={fileDiffData.content} sandbox="allow-scripts allow-same-origin" style={{ flex:1, width:'100%', minHeight:400, border:'none', background:'#fff' }} title="Browser preview" />
+                    ) : fileRenderMode==='code' && fileDiffData?.content ? (
+                      <pre style={{ margin:0, padding:12, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, lineHeight:1.6, whiteSpace:'pre-wrap', wordBreak:'break-all', color:'#0f172a', background:'#ffffff' }}>{fileDiffData.content.slice(0,12000)}</pre>
+                    ) : parsedDiff && parsedDiff.length > 0 ? (
+                      <div style={{ fontFamily:'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize:12, lineHeight:1.6 }}>
+                        {parsedDiff.map((chunk, i) => (
+                          <div key={i} style={{ display:'flex', background: chunk.type==='add'?'#f0fdf4':chunk.type==='del'?'#fef2f2':chunk.type==='hunk'?'#f8fafc':'transparent', color: chunk.type==='add'?'#166534':chunk.type==='del'?'#991b1b':chunk.type==='hunk'?'#64748b':'#334155', borderLeft: chunk.type==='add'?'3px solid #22c55e':chunk.type==='del'?'3px solid #ef4444':'3px solid transparent', padding:'1px 8px', fontWeight: chunk.type==='hunk'?600:400 }}>
+                            <span style={{ width:36, color:'#94a3b8', userSelect:'none', flexShrink:0 }}>{chunk.oldN ?? ''}</span>
+                            <span style={{ width:36, color:'#94a3b8', userSelect:'none', flexShrink:0 }}>{chunk.newN ?? ''}</span>
+                            <pre style={{ margin:0, whiteSpace:'pre-wrap', wordBreak:'break-all', flex:1 }}>{chunk.type==='hunk'?chunk.text:chunk.text}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    ) : fileDiffData?.diff ? (
+                      <pre style={{ margin:0, padding:12, fontFamily:'ui-monospace', fontSize:12, whiteSpace:'pre-wrap', background:'#fff', color:'#334155' }}>{fileDiffData.diff.slice(0,8000)}</pre>
+                    ) : (
+                      <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'#94a3b8', fontSize:13 }}>No diff available — file may be untracked</div>
+                    )}
+                  </>
                 ) : (
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: 13 }}>
-                    <span>No changes to review</span>
+                    <span>Select a file to see old → new diff, README or browser preview</span>
                   </div>
                 )}
               </div>
