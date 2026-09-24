@@ -359,31 +359,50 @@ export function AuxiliaryPane({
     return list
   }, [events])
 
-  // Skills — honest: only count skills actually read via tool calls (search_skills/read_skill), not injected context
+  // Skills/Tools — fully in sync with what AI actually did (every tool/call/result)
+  // Counts every shell_exec/fs_* call so the count matches the runtime logs the user compared.
   const dynamicSkills = useMemo(() => {
-    const fromCalls: Array<{ name: string; path?: string; source?: string }> = []
+    const counts = new Map<string, { count: number; sampleArgs: string; isSkill: boolean }>()
+    const skillDetails = new Map<string, string>()
     for (const e of events) {
-      if (e.type === 'tool/call' || e.type === 'tool/result' || e.type === 'tool/call' as any) {
-        const d: any = e.data || {}
-        const toolName = d.name || d.toolName || d.toolCall?.name || d.tool_name
-        const isSkillTool = toolName === 'search_skills' || toolName === 'read_skill'
-        if (isSkillTool) {
-          const name = d.args?.skill_name || d.args?.skillName || d.args?.name || d.args?.query || d.args?.skill || 'skill'
-          if (!fromCalls.some((s) => s.name === name)) {
-            fromCalls.push({ name: String(name), path: d.args?.path, source: 'tool' })
-          }
+      if (e.type !== 'tool/call' && e.type !== 'tool/result') continue
+      const d: any = e.data || {}
+      const toolName: string | undefined = d.name || d.toolName || d.toolCall?.name || d.tool_name
+      if (!toolName) continue
+      const args = (d.args ?? d.toolCall?.args ?? {}) as Record<string, unknown>
+      const isSkill = toolName === 'search_skills' || toolName === 'read_skill' || toolName === 'use_skill'
+      if (e.type === 'tool/call') {
+        const key = String(toolName)
+        const prev = counts.get(key) || { count: 0, sampleArgs: '', isSkill }
+        prev.count += 1
+        // keep first args preview for context (e.g. command:"python --version")
+        if (!prev.sampleArgs && args) {
+          const preview = args['command'] ? `command: ${String(args['command']).slice(0,40)}` : args['path'] ? `path: ${String(args['path']).slice(0,40)}` : JSON.stringify(args).slice(0, 80)
+          prev.sampleArgs = preview
         }
-        // Also capture search_skills/read_skill from native tool_calls if present
-        if (toolName === 'search_skills' || toolName === 'read_skill') {
-          const name2 = d.args?.query || d.args?.skill_name || d.args?.skillName || ''
-          if (name2 && !fromCalls.some((s) => s.name === name2)) {
-            fromCalls.push({ name: String(name2), source: 'tool' })
-          }
+        prev.isSkill = prev.isSkill || isSkill
+        counts.set(key, prev)
+        if (isSkill) {
+          const skillName = String(args['skill_name'] || args['skillName'] || args['query'] || args['name'] || '').trim()
+          if (skillName) skillDetails.set(skillName, String(args['path'] || ''))
         }
       }
     }
-    // Cap for sidebar
-    return fromCalls.slice(0, 10)
+    // Prefer real skill names when present, otherwise list tool names with counts
+    const out: Array<{ name: string; path?: string; source?: string }> = []
+    if (skillDetails.size > 0) {
+      for (const [k, p] of skillDetails.entries()) out.push({ name: k, path: p || undefined, source: 'skill' })
+    }
+    // Always append tool usage so shell_exec ×4 etc is visible and matches the logs
+    const sorted = Array.from(counts.entries()).sort((a, b) => b[1].count - a[1].count)
+    for (const [tool, info] of sorted) {
+      const label = info.count > 1 ? `${tool} ×${info.count}` : tool
+      // avoid duplicating a skill name already listed
+      if (!out.some((o) => o.name === tool || o.name === label)) {
+        out.push({ name: label, path: info.sampleArgs || undefined, source: info.isSkill ? 'skill' : 'tool' })
+      }
+    }
+    return out.slice(0, 12)
   }, [events])
 
   // --- Dynamic Terminal Sessions & Command Execution with Full Persistence ---
@@ -531,70 +550,84 @@ export function AuxiliaryPane({
     return `PS ${ws}>`
   }, [activeTerminal?.shellType, workspaceRoot, workspaceLabel])
 
-  // Track which events we have already processed into the terminal logs
+  // Track which events we have already processed into the terminal logs — keyed by seq+type so call/result are distinct
   const processedEvents = useRef<Set<string>>(new Set())
 
-  // Stream AI tool execution outputs into the active terminal instance
+  // Stream AI tool execution outputs into the active terminal instance — fully in sync with [SOVARA][TOOL] CALL/RESULT logs
   useEffect(() => {
     let changed = false
     const newLogs: string[] = []
-
     for (const e of events) {
-      const eventId = String(e.seq ?? Math.random())
-      if (processedEvents.current.has(eventId)) continue
+      const eAny: any = e as any
+      const seqKey = `${e.type}:${String(e.seq ?? eAny.id ?? Math.random())}`
+      if (processedEvents.current.has(seqKey)) continue
+      if (e.type !== 'tool/call' && e.type !== 'tool/result') continue
+      const d: any = e.data || {}
+      const toolName: string | undefined = d.name || d.toolName || d.toolCall?.name || d.tool_name
+      if (!toolName) continue
+      // Only shell execution tools go to the Terminals pane; others go to Skills/Background
+      const isShell = toolName === 'shell_exec' || toolName === 'run_command' || toolName === 'exec_shell_command'
+      if (!isShell) continue
 
-      if (e.type === 'tool/call' || (e.type as any) === 'tool/result') {
-        const d: any = e.data || {}
-        const toolName = d.name || d.toolName || d.toolCall?.name
-        
-        if (toolName === 'run_command' || toolName === 'exec_shell_command' || toolName === 'shell_exec') {
-          if (e.type === 'tool/call') {
-            const cmd = d.args?.CommandLine || d.args?.cmd || d.args?.command || ''
-            if (cmd) {
-              newLogs.push(`${promptPrefix} ${cmd}`)
-              newLogs.push('Running command via AI assistant...')
-              processedEvents.current.add(eventId)
-              changed = true
-            }
-          } else if ((e.type as any) === 'tool/result') {
-            let outText = ''
-            const res = d.content || d.result || d
-            if (typeof res === 'string') {
-              try {
-                const parsed = JSON.parse(res)
-                if (parsed && typeof parsed === 'object') {
-                  outText = parsed.stdout || parsed.stderr || parsed.message || parsed.error || res
-                } else {
-                  outText = res
-                }
-              } catch {
-                outText = res
-              }
-            } else if (res && typeof res === 'object') {
-              outText = res.stdout || res.stderr || res.message || res.error || JSON.stringify(res)
-            } else {
-              outText = 'Done.'
-            }
-            if (outText.trim()) {
-              newLogs.push(outText.trim())
-            }
-            processedEvents.current.add(eventId)
-            changed = true
-          }
+      if (e.type === 'tool/call') {
+        const cmd: string = d.args?.CommandLine || d.args?.cmd || d.args?.command || String(d.args?.command || '')
+        if (cmd.trim()) {
+          const cwd: string = d.args?.cwd ? String(d.args.cwd) : (workspaceRoot || 'D:\\sovaratest')
+          newLogs.push(`${promptPrefix} ${cmd.trim()}  [cwd: ${cwd}]`)
+          newLogs.push('↳ dispatched → awaiting tool result…')
+          processedEvents.current.add(seqKey)
+          changed = true
+        } else {
+          processedEvents.current.add(seqKey)
         }
+      } else {
+        // tool/result — parse the preview JSON the tools port returns (matches [SOVARA][TOOL] RESULT preview)
+        const raw: unknown = d.content ?? d.result ?? d.preview ?? d.data ?? d
+        let preview: any = raw
+        if (typeof raw === 'string') {
+          try { preview = JSON.parse(raw) } catch { preview = { stdout: String(raw) } }
+        }
+        if (preview && typeof preview === 'object') {
+          const exitCode: number | null = typeof preview.exitCode === 'number' ? preview.exitCode : null
+          const stdout: string = typeof preview.stdout === 'string' ? preview.stdout : ''
+          const stderr: string = typeof preview.stderr === 'string' ? preview.stderr : ''
+          const error: string = typeof preview.error === 'string' ? preview.error : ''
+          const hint: string = typeof preview.hint === 'string' ? preview.hint : ''
+          const truncated: boolean = !!preview.truncated
+          const workdir: string = typeof preview.workdir === 'string' ? preview.workdir : typeof preview.cwd === 'string' ? preview.cwd : ''
+          // Outcome line — mirrors [SOVARA][RUNTIME] OK/ERR
+          if (error) {
+            newLogs.push(`✖ ERROR: ${error}`)
+            if (hint) newLogs.push(`  hint: ${hint}`)
+            // Special help for bare python — surface the exact hint from the tool so user understands the failure mode
+            if (/bare python repl would hang/i.test(error)) {
+              newLogs.push('  → The shell blocked "python" without args to avoid a hang. Use "python --version" or "python script.py".')
+            }
+            if (stderr) newLogs.push(stderr.trim())
+            if (preview.latencyMs) newLogs.push(`  latency=${preview.latencyMs}ms`)
+          } else {
+            const out = (stdout || stderr || String(preview.message || preview.output || '')).trim()
+            if (out) {
+              // Preserve line breaks for Python version string which includes \\r\\n
+              for (const line of out.split('\n')) newLogs.push(line.replace('\r','').trimEnd())
+            } else {
+              newLogs.push('(no output)')
+            }
+            if (exitCode !== null) newLogs.push(`  ↳ exitCode=${exitCode}${truncated ? ' (truncated)' : ''}${workdir ? ` workdir=${workdir}` : ''}`)
+          }
+        } else {
+          newLogs.push(String(preview ?? '(empty result)'))
+        }
+        processedEvents.current.add(seqKey)
+        changed = true
       }
     }
-
     if (changed && newLogs.length > 0) {
       setTerminalInstances((prev) =>
-        prev.map((t) =>
-          t.id === activeTerminalId
-            ? { ...t, logs: [...t.logs, ...newLogs] }
-            : t
-        )
+        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, ...newLogs] } : t))
       )
     }
-  }, [events, activeTerminalId, promptPrefix])
+  }, [events, activeTerminalId, promptPrefix, workspaceRoot])
 
   useEffect(() => {
     if (tab === 'terminal' && terminalContainerRef.current) {
@@ -1195,23 +1228,36 @@ export function AuxiliaryPane({
               ) : null}
             </div>
 
-            {/* Section 4: Background Tasks */}
+            {/* Section 4: Background Tasks — now in sync with execution / tool log */}
             <div style={{ borderBottom: '1px solid var(--border-soft, #f1f5f9)', paddingBottom: 10 }}>
               <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  cursor: 'pointer',
-                }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: tasksOpen ? 6 : 0 }}
                 onClick={() => setTasksOpen((v) => !v)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Background Tasks</span>
-                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{activeTasks.length}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{activeTasks.length || (busy ? 1 : 0)}</span>
                   <ChevronRight size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: tasksOpen ? 'rotate(90deg)' : 'none' }} />
                 </div>
+                {busy ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', animation:'pulse 1s infinite' }} /> : null}
               </div>
+              {tasksOpen ? (
+                <div style={{ display:'flex', flexDirection:'column', gap:6, paddingLeft:4 }}>
+                  {busy && execution ? (
+                    <div style={{ fontSize:12, color:'#92400e', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:6, padding:'6px 8px' }}>
+                      <div style={{ fontWeight:600 }}>
+                        {execution.phase==='tool' ? `Tool: ${execution.toolName ?? 'shell_exec'}` : execution.phase==='thinking' ? 'Thinking…' : execution.phase==='planning' ? 'Planning…' : execution.phase}
+                      </div>
+                      {execution.detail ? <div style={{ opacity:0.8, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{String(execution.detail).slice(0,80)}</div> : null}
+                    </div>
+                  ) : null}
+                  {activeTasks.length>0 ? activeTasks.map((t,i)=>(
+                    <div key={i} style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--text, #334155)', background:'var(--panel, #f8fafc)', border:'1px solid var(--border, #e2e8f0)', borderRadius:6, padding:'5px 8px' }}>
+                      <span style={{ fontWeight:600 }}>{t.name}</span><span style={{ color:'var(--muted, #64748b)' }}>{t.status}</span>{t.progress ? <span style={{ marginLeft:'auto', fontSize:10, color:'#94a3b8' }}>{t.progress}</span> : null}
+                    </div>
+                  )) : !busy ? <div style={{ fontSize:12, color:'var(--muted-2, #94a3b8)', padding:'2px 0' }}>No background tasks in this chat.</div> : null}
+                </div>
+              ) : null}
             </div>
 
             {/* Section 5: Terminals */}
@@ -1565,11 +1611,18 @@ export function AuxiliaryPane({
                   }}
                 >
                   {activeTerminal ? (
-                    activeTerminal.logs.map((logLine, idx) => (
+                    activeTerminal.logs.map((logLine, idx) => {
+                      const isPrompt = logLine.startsWith('PS') || logLine.startsWith('D:') || logLine.startsWith('user@') || logLine.startsWith('>')
+                      const isError = logLine.startsWith('✖') || logLine.includes('ERROR') || logLine.startsWith('  hint:')
+                      const isHint = logLine.startsWith('  hint:') || logLine.startsWith('  →')
+                      return (
                       <div
                         key={idx}
                         style={{
-                          color: logLine.startsWith('PS') || logLine.startsWith('D:') || logLine.startsWith('user@') || logLine.startsWith('>') ? '#0284c7' : '#334155',
+                          color: isError ? (isHint ? '#d97706' : '#dc2626') : isPrompt ? '#0284c7' : '#334155',
+                          background: isError && !isHint ? '#fef2f2' : undefined,
+                          borderLeft: isError && !isHint ? '2px solid #fecaca' : undefined,
+                          paddingLeft: isError && !isHint ? 6 : 0,
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-all',
                           overflowWrap: 'anywhere',
@@ -1578,7 +1631,7 @@ export function AuxiliaryPane({
                       >
                         {logLine}
                       </div>
-                    ))
+                    )})
                   ) : (
                     <div style={{ color: '#94a3b8' }}>Terminal console output ready.</div>
                   )}
