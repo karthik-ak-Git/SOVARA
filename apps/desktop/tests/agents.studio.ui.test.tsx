@@ -8,6 +8,7 @@ import { AgentsPage } from '../src/renderer/src/features/agents/AgentsPage'
 import { mockApi } from './helpers/http'
 
 beforeEach(() => {
+  localStorage.clear()
   mockApi({
     'GET /api/connections': [],
     'GET /api/connections/dir': { path: 'C:\\Users\\Test\\mcp', exists: true },
@@ -23,6 +24,16 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('Agent Studio — greenfield command center', () => {
+  async function createFirstAgent(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.click(screen.getByRole('button', { name: /Create new agent/i }))
+    await user.type(screen.getByLabelText(/New agent name/), 'Test Agent')
+    await user.type(screen.getByLabelText(/New agent handle/), 'test-agent')
+    await user.click(screen.getByRole('button', { name: /^Create$/ }))
+    // Wait for SELECTION (workspace tabs), not just the roster row: the
+    // roster can paint one commit before the selection flush lands.
+    await screen.findByRole('tab', { name: /Overview/ }, { timeout: 3000 })
+  }
+
   it('renders left navigator with required groups and Create New Agent', () => {
     render(<AgentsPage />)
     expect(screen.getByTestId('agent-studio')).toBeInTheDocument()
@@ -40,8 +51,8 @@ describe('Agent Studio — greenfield command center', () => {
     render(<AgentsPage />)
     // Metrics (desktop labels: message/activity/sovereignty cards)
     expect(screen.getByText(/Messages · recent sessions/)).toBeInTheDocument()
-    expect(screen.getByText(/Latency p50/)).toBeInTheDocument()
-    expect(screen.getAllByText(/Knowledge/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Activity · 7d/)).toBeInTheDocument()
+    expect(screen.getByText('Add knowledge')).toBeInTheDocument()
     expect(screen.getByText(/Sovereignty/)).toBeInTheDocument()
     // Quick actions
     expect(screen.getByText(/Edit prompt/)).toBeInTheDocument()
@@ -52,8 +63,10 @@ describe('Agent Studio — greenfield command center', () => {
     expect(screen.getByText(/System-aware recommendation/)).toBeInTheDocument()
   })
 
-  it('exposes all lifecycle workspaces in the workspace bar', () => {
+  it('exposes all lifecycle workspaces in the workspace bar', async () => {
+    const user = userEvent.setup()
     render(<AgentsPage />)
+    await createFirstAgent(user)
     for (const label of ['Overview', 'Instructions', 'Knowledge', 'Skills', 'Connected Apps', 'Tools', 'Memory', 'Workflows', 'Testing', 'Analytics', 'Versions', 'Permissions', 'Settings']) {
       expect(screen.getByRole('tab', { name: new RegExp(label) })).toBeInTheDocument()
     }
@@ -63,21 +76,23 @@ describe('Agent Studio — greenfield command center', () => {
   it('switches dynamic workspace: Knowledge file explorer', async () => {
     const user = userEvent.setup()
     render(<AgentsPage />)
+    await createFirstAgent(user)
     await user.click(screen.getByRole('tab', { name: /Knowledge/ }))
     expect(screen.getByText(/Knowledge explorer/)).toBeInTheDocument()
-    expect(screen.getByText(/RAG is project-scoped/)).toBeInTheDocument()
-    expect(screen.getByText(/Drop files here/)).toBeInTheDocument()
+    // Honest empty state — no fake rows
+    expect(screen.getByText(/No knowledge files yet/)).toBeInTheDocument()
   })
 
   it('switches dynamic workspace: prompt editing, skill cards, MCP, memory, workflow builder', async () => {
     const user = userEvent.setup()
     render(<AgentsPage />)
+    await createFirstAgent(user)
     await user.click(screen.getByRole('tab', { name: /Instructions/ }))
     expect(screen.getByText(/Prompt editor/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Agent instructions/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /^Skills/ }))
-    expect(screen.getByText('Deep Research')).toBeInTheDocument()
+    expect(screen.getByText(/No skills discovered yet/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /Connected Apps/ }))
     expect(screen.getAllByText(/MCP only/).length).toBeGreaterThan(0)
@@ -88,12 +103,13 @@ describe('Agent Studio — greenfield command center', () => {
 
     await user.click(screen.getByRole('tab', { name: /Workflows/ }))
     expect(screen.getByText(/Workflow builder/)).toBeInTheDocument()
-    expect(screen.getAllByText(/Weekly research digest/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/No workflows yet/).length).toBeGreaterThan(0)
   })
 
   it('switches dynamic workspace: testing playground, analytics dashboards, versions timeline, visual permissions', async () => {
     const user = userEvent.setup()
     render(<AgentsPage />)
+    await createFirstAgent(user)
     await user.click(screen.getByRole('tab', { name: /^Testing/ }))
     expect(screen.getByText(/Playground/)).toBeInTheDocument()
     expect(screen.getByText(/Evaluation/)).toBeInTheDocument()
@@ -107,27 +123,24 @@ describe('Agent Studio — greenfield command center', () => {
 
     await user.click(screen.getByRole('tab', { name: /Versions/ }))
     expect(screen.getByText(/Versions timeline/)).toBeInTheDocument()
-    expect(screen.getAllByText(/v12/).length).toBeGreaterThan(0)
+    // Creating the agent auto-snapshots v1 — the timeline shows real rows
+    expect(screen.getAllByText(/v1/).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('tab', { name: /Permissions/ }))
     expect(screen.getByText(/Visual permissions/)).toBeInTheDocument()
     expect(screen.getAllByText(/Knowledge/).length).toBeGreaterThan(0)
   })
 
-  it('has collapsible right intelligence panel with live status, active tools, resumable download, recent activity', async () => {
+  it('has collapsible right intelligence panel with live status, active tools, download info, recent activity', async () => {
     const user = userEvent.setup()
     render(<AgentsPage />)
     expect(screen.getByLabelText(/Intelligence panel/)).toBeInTheDocument()
     expect(screen.getByText(/Live status/)).toBeInTheDocument()
     expect(screen.getByText(/Active tools/)).toBeInTheDocument()
     expect(screen.getByText(/Resumable download/)).toBeInTheDocument()
-    expect(screen.getByText(/62%/)).toBeInTheDocument()
+    // No fake progress: without downloads there is no invented percentage
+    expect(screen.queryByText(/62%/)).toBeNull()
     expect(screen.getByText(/Recent activity/)).toBeInTheDocument()
-
-    // Pause/Resume toggle
-    const pause = screen.getByRole('button', { name: /Pause/ })
-    await user.click(pause)
-    expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
 
     // Collapse via header toggle (there are two collapse buttons — pick the header one)
     const collapse = screen.getAllByRole('button', { name: /Collapse intelligence panel/ })[0]
@@ -135,7 +148,7 @@ describe('Agent Studio — greenfield command center', () => {
     expect(screen.getByRole('button', { name: /Show intelligence panel/ })).toBeInTheDocument()
     expect(screen.getByTestId('agent-studio')).toHaveClass('as-shell--collapsed-right')
 
-    // Expand via FAB
+    // Expand via toggle
     await user.click(screen.getByRole('button', { name: /Show intelligence panel/ }))
     expect(screen.getByLabelText(/Intelligence panel/)).toBeVisible()
   })

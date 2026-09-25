@@ -1,20 +1,34 @@
-import { ipcMain, BrowserWindow, dialog, shell, clipboard, Notification } from 'electron'
+import { ipcMain, BrowserWindow, dialog, shell, clipboard } from 'electron'
 import { execSync } from 'node:child_process'
 import { z } from 'zod'
 import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zClipboardWrite, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zClipboardWrite, zModelsAddRuntime, zModelsListModels, zModelsProbe, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zGitStatus, zGitDiff, zGitFileContent, zWikiBuildGraph } from '@shared/ipc/schemas'
 import { getSessionsDir, getSovaraDataDir } from '../storage/paths'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gateDispatch } from '../services/execPermissions'
+import { registerTerminalIpc } from '../services/ptyHost'
+import {
+  StudioStore,
+  zStudioAgentCreate,
+  zStudioAgentUpdate,
+  zStudioId,
+  zStudioKnowledgeAdd,
+  zStudioMemoryAdd,
+  zStudioWorkflowCreate,
+  zStudioWorkflowUpdate,
+  zStudioEvalRecord,
+  zStudioPermissionsSet,
+  zStudioVersionSave,
+} from '../services/agentStudio'
 import { checkForUpdates } from '../services/updateFeed'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
-import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zExploreCompareModels, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zShellShowItemInFolder, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
+import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zShellShowItemInFolder, zModelsEnsureRuntime } from '@shared/ipc/schemas'
 import { listExplorerModelsCached, getExplorerModel, getCachedHardwareProfile } from '../services/explorerCatalog'
 import { fitExplorerFiles, toCompatibility } from '../services/explorerFit'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -121,12 +135,6 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid projects:delete payload: ${parsed.error.message}`)
     await getBackend().ports.persistence.deleteProject(parsed.data.projectId)
     return { ok: true }
-  })
-
-  ipcMain.handle('sessions:get', async (_e, raw: unknown) => {
-    const parsed = zSessionId.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid session id: ${parsed.error.message}`)
-    return getBackend().ports.persistence.get(brand<'SessionId'>(parsed.data))
   })
 
   ipcMain.handle('sessions:getEvents', async (_e, raw: unknown) => {
@@ -372,19 +380,10 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('models:listLocal', async () => getBackend().ports.models.listLocalModels())
-
   ipcMain.handle('models:probeRuntime', async (_e, raw: unknown) => {
     const parsed = zModelsProbe.safeParse(raw)
     if (!parsed.success) throw new Error(`invalid runtimeId: ${parsed.error.message}`)
     return getBackend().ports.models.probeRuntime(parsed.data)
-  })
-
-  ipcMain.handle('models:load', async (_e, raw: unknown) => {
-    const parsed = zModelsLoad.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid load payload: ${parsed.error.message}`)
-    // @ts-expect-error — branded string compat in stub
-    return getBackend().ports.models.load(parsed.data.modelId, parsed.data.fit ? { gpu: 'fit' } : {})
   })
 
   // ── Owned runtime install (one-time pinned llama.cpp CUDA build) ──
@@ -493,33 +492,6 @@ export function registerIpcHandlers(): void {
     return getBackend().workbench.getActiveModel()
   })
 
-  ipcMain.handle('models:listRegistry', async (_e, raw: unknown) => {
-    const parsed = zModelsRegistryList.safeParse(raw ?? {})
-    if (!parsed.success) throw new Error(`invalid list payload: ${parsed.error.message}`)
-    return getBackend().workbench.listRegistryRows(parsed.data.runtimeId)
-  })
-
-  ipcMain.handle('models:updateRegistry', async (_e, raw: unknown) => {
-    const parsed = zModelsRegistryUpdate.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid registry update: ${parsed.error.message}`)
-    getBackend().workbench.updateRegistryRow(parsed.data.id, parsed.data.patch)
-    return { ok: true }
-  })
-
-  ipcMain.handle('models:removeRegistry', async (_e, raw: unknown) => {
-    const parsed = zModelsRegistryRef.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid registry ref: ${parsed.error.message}`)
-    getBackend().workbench.removeRegistryRow(parsed.data.id)
-    return { ok: true }
-  })
-
-  ipcMain.handle('models:removeRegistryByPath', async (_e, raw: unknown) => {
-    const parsed = zModelsRegistryPath.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid registry path: ${parsed.error.message}`)
-    getBackend().workbench.removeRegistryRowsByPath(parsed.data.localPath)
-    return { ok: true }
-  })
-
   ipcMain.handle('settings:get', async () => {
     return { ...getBackend().getAppSettings(), version: getBackend().getAppVersion() }
   })
@@ -610,20 +582,6 @@ export function registerIpcHandlers(): void {
     }
 
     return { ok: true, autoApproved: (verdict.allowed ? verdict.autoApproved : false) || force, result }
-  })
-
-  // ── Dev server management ──
-  ipcMain.handle('devserver:list', async () => {
-    const { getActiveDevServers } = await import('../capabilities/shell/index')
-    return { activeServers: getActiveDevServers() }
-  })
-
-  ipcMain.handle('devserver:stop', async (_e, raw: unknown) => {
-    const { stopDevServer } = await import('../capabilities/shell/index')
-    const port = typeof raw === 'object' && raw && 'port' in raw ? Number((raw as { port: unknown }).port) : Number(raw)
-    if (!port) return { ok: false, error: 'invalid port' }
-    const stopped = stopDevServer(port)
-    return { ok: true, stopped, port }
   })
 
   // ── Usage stats ──
@@ -787,53 +745,8 @@ export function registerIpcHandlers(): void {
     return getCachedHardwareProfile()
   })
 
-  ipcMain.handle('explore:compareModels', async (_e, raw: unknown) => {
-    const parsed = zExploreCompareModels.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid explore:compareModels payload: ${parsed.error.message}`)
-    const hw: HardwareInfo = getCachedHardwareProfile()
-    const results = await Promise.all(
-      parsed.data.modelIds.map(async (id) => {
-        try {
-          const m = await getExplorerModel(id)
-          const fits = fitExplorerFiles(m, hw)
-          const top = fits.find((f) => f.isRecommended) ?? fits[0]
-          return { model: m, bestFit: top, compatibility: top ? toCompatibility(top) : null }
-        } catch {
-          return null
-        }
-      })
-    )
-    return results.filter(Boolean)
-  })
-
   ipcMain.handle('runtime:detectExternal', async () => {
     return detectLocalRuntimes()
-  })
-
-  ipcMain.handle('validation:getFullProfile', async () => {
-    return getBackend().getFullHardwareProfile()
-  })
-
-  ipcMain.handle('validation:start', async (_e, raw: unknown) => {
-    const parsed = zValidationStart.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid validation:start payload: ${parsed.error.message}`)
-    return getBackend().startValidation(parsed.data.modelId, parsed.data.libraryPath, parsed.data.ctxLen)
-  })
-
-  ipcMain.handle('validation:get', async (_e, raw: unknown) => {
-    const parsed = zValidationGet.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid validation:get payload: ${parsed.error.message}`)
-    const job = getBackend().getValidation(parsed.data.jobId)
-    if (!job) throw new Error('unknown job')
-    return job
-  })
-
-  ipcMain.handle('validation:list', async () => {
-    return getBackend().listValidations()
-  })
-
-  ipcMain.handle('validation:storeList', async () => {
-    return getBackend().listValidationCache()
   })
 
   // ── Library (downloaded models) ──
@@ -860,13 +773,6 @@ export function registerIpcHandlers(): void {
     shell.showItemInFolder(p)
     return { ok: true }
   })
-  ipcMain.handle('library:getModelCard', async (_e, raw: unknown) => {
-    const p = typeof raw === 'string' ? raw : (raw as { path?: string })?.path
-    const all = await getBackend().scanLibrary()
-    const found = all.find(m => m.path === p)
-    return found ?? null
-  })
-
   ipcMain.handle('library:detectLocations', async () => {
     const t0 = Date.now()
     const res = getBackend().detectModelLocations()
@@ -1081,25 +987,10 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('notifications:show', async (_e, raw: unknown) => {
-    const p = raw as { title?: string; body?: string } | undefined
-    const title = p?.title ?? 'SOVARA'
-    const body = p?.body ?? ''
-    try {
-      if (Notification.isSupported()) {
-        const notif = new Notification({ title, body, silent: false })
-        notif.show()
-        return { shown: true }
-      }
-    } catch {
-      // ignore
-    }
-    return { shown: false }
-  })
-
   // ── Git status / diff for right-rail Files Changed (full sync, not synthetic) ──
   ipcMain.handle('git:status', async (_e, raw: unknown) => {
-    const workspaceRoot = (raw as { workspaceRoot?: string })?.workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    const parsed = zGitStatus.safeParse(raw ?? {})
+    const workspaceRoot = (parsed.success ? parsed.data.workspaceRoot : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
     const cwd = path.resolve(workspaceRoot)
     try {
       const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf8', timeout: 4000 })
@@ -1118,7 +1009,8 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('git:diff', async (_e, raw: unknown) => {
-    const { workspaceRoot, filePath } = (raw as { workspaceRoot?: string; filePath?: string }) ?? {}
+    const parsed = zGitDiff.safeParse(raw ?? {})
+    const { workspaceRoot, filePath } = parsed.success ? parsed.data : ({} as { workspaceRoot?: string; filePath?: string })
     const cwd = path.resolve(workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd())
     const file = String(filePath || '').trim()
     if (!file) throw new Error('missing filePath')
@@ -1157,7 +1049,8 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('git:fileContent', async (_e, raw: unknown) => {
-    const { workspaceRoot, filePath } = (raw as { workspaceRoot?: string; filePath?: string }) ?? {}
+    const parsed = zGitFileContent.safeParse(raw ?? {})
+    const { workspaceRoot, filePath } = parsed.success ? parsed.data : ({} as { workspaceRoot?: string; filePath?: string })
     const cwd = path.resolve(workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd())
     const file = String(filePath || '').trim()
     try {
@@ -1169,7 +1062,8 @@ export function registerIpcHandlers(): void {
 
   // ── Wiki Knowledge Graph — read wiki folder, build nodes/edges, sync with chat context (no hardcode) ──
   ipcMain.handle('wiki:buildGraph', async (_e, raw: unknown) => {
-    const workspaceRoot = (raw as { workspaceRoot?: string })?.workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    const parsed = zWikiBuildGraph.safeParse(raw ?? {})
+    const workspaceRoot = (parsed.success ? parsed.data.workspaceRoot : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
     const tryDirs = [
       path.join(path.resolve(workspaceRoot), 'wiki'),
       path.join(getSovaraDataDir(undefined), 'wiki'),
@@ -1233,5 +1127,97 @@ export function registerIpcHandlers(): void {
     // Ensure at least Wiki Log / Wiki Index hubs if empty
     if (nodes.length === 0) return { ok: true, nodes: [], edges: [], wikiDir, hint: 'wiki folder empty — add markdown files to wiki/' }
     return { ok: true, nodes, edges, wikiDir }
+  })
+  // Persistent shell terminals (right-rail Terminal) — see services/ptyHost.
+  registerTerminalIpc(ipcMain, (channel, payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      try {
+        win.webContents.send(channel, payload)
+      } catch {
+        // ignore dead renderers
+      }
+    }
+  })
+
+  // ── Agent Studio (real backends for the Agents page) ──
+  // StudioStore opens the shared app database (studio_* tables, created
+  // idempotently) — the same file the persistence adapter uses.
+  let studioStore: StudioStore | null = null
+  const getStudioStore = (): StudioStore => {
+    if (!studioStore) studioStore = new StudioStore()
+    return studioStore
+  }
+  const studioId = (raw: unknown, channel: string): string => {
+    const parsed = zStudioId.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid ${channel} payload: ${parsed.error.message}`)
+    return parsed.data.id
+  }
+  const studioAgentId = (raw: unknown, channel: string): string => {
+    const parsed = z.object({ agentId: z.string().min(1).max(128) }).strict().safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid ${channel} payload: ${parsed.error.message}`)
+    return parsed.data.agentId
+  }
+  ipcMain.handle('agents:list', async () => getStudioStore().listAgents())
+  ipcMain.handle('agents:create', async (_e, raw: unknown) => {
+    const parsed = zStudioAgentCreate.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:create payload: ${parsed.error.message}`)
+    return getStudioStore().createAgent(parsed.data)
+  })
+  ipcMain.handle('agents:update', async (_e, raw: unknown) => {
+    const parsed = z.object({ id: z.string().min(1).max(128), patch: zStudioAgentUpdate }).strict().safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:update payload: ${parsed.error.message}`)
+    return getStudioStore().updateAgent(parsed.data.id, parsed.data.patch)
+  })
+  ipcMain.handle('agents:duplicate', async (_e, raw: unknown) => getStudioStore().duplicateAgent(studioId(raw, 'agents:duplicate')))
+  ipcMain.handle('agents:remove', async (_e, raw: unknown) => ({ ok: getStudioStore().removeAgent(studioId(raw, 'agents:remove')) }))
+  ipcMain.handle('agents:archive', async (_e, raw: unknown) => {
+    const parsed = z.object({ id: z.string().min(1).max(128), archived: z.boolean() }).strict().safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:archive payload: ${parsed.error.message}`)
+    return getStudioStore().archiveAgent(parsed.data.id, parsed.data.archived)
+  })
+  ipcMain.handle('agents:knowledge:list', async (_e, raw: unknown) => getStudioStore().listKnowledge(studioAgentId(raw, 'agents:knowledge:list')))
+  ipcMain.handle('agents:knowledge:add', async (_e, raw: unknown) => {
+    const parsed = zStudioKnowledgeAdd.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:knowledge:add payload: ${parsed.error.message}`)
+    return getStudioStore().addKnowledge(parsed.data.agentId, { name: parsed.data.name, sizeBytes: parsed.data.sizeBytes, mime: parsed.data.mime })
+  })
+  ipcMain.handle('agents:knowledge:remove', async (_e, raw: unknown) => ({ ok: getStudioStore().removeKnowledge(studioId(raw, 'agents:knowledge:remove')) }))
+  ipcMain.handle('agents:memory:list', async (_e, raw: unknown) => getStudioStore().listMemories(studioAgentId(raw, 'agents:memory:list')))
+  ipcMain.handle('agents:memory:add', async (_e, raw: unknown) => {
+    const parsed = zStudioMemoryAdd.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:memory:add payload: ${parsed.error.message}`)
+    return getStudioStore().addMemory(parsed.data.agentId, { content: parsed.data.content, source: parsed.data.source })
+  })
+  ipcMain.handle('agents:memory:remove', async (_e, raw: unknown) => ({ ok: getStudioStore().removeMemory(studioId(raw, 'agents:memory:remove')) }))
+  ipcMain.handle('agents:workflows:list', async (_e, raw: unknown) => getStudioStore().listWorkflows(studioAgentId(raw, 'agents:workflows:list')))
+  ipcMain.handle('agents:workflows:create', async (_e, raw: unknown) => {
+    const parsed = zStudioWorkflowCreate.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:workflows:create payload: ${parsed.error.message}`)
+    return getStudioStore().createWorkflow(parsed.data.agentId, { name: parsed.data.name, trigger: parsed.data.trigger, steps: parsed.data.steps })
+  })
+  ipcMain.handle('agents:workflows:update', async (_e, raw: unknown) => {
+    const parsed = z.object({ id: z.string().min(1).max(128), patch: zStudioWorkflowUpdate }).strict().safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:workflows:update payload: ${parsed.error.message}`)
+    return getStudioStore().updateWorkflow(parsed.data.id, parsed.data.patch)
+  })
+  ipcMain.handle('agents:workflows:remove', async (_e, raw: unknown) => ({ ok: getStudioStore().removeWorkflow(studioId(raw, 'agents:workflows:remove')) }))
+  ipcMain.handle('agents:evals:list', async (_e, raw: unknown) => getStudioStore().listEvals(studioAgentId(raw, 'agents:evals:list')))
+  ipcMain.handle('agents:evals:record', async (_e, raw: unknown) => {
+    const parsed = zStudioEvalRecord.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:evals:record payload: ${parsed.error.message}`)
+    return getStudioStore().recordEval(parsed.data.agentId, { prompt: parsed.data.prompt, status: parsed.data.status, latencyMs: parsed.data.latencyMs })
+  })
+  ipcMain.handle('agents:versions:list', async (_e, raw: unknown) => getStudioStore().listVersions(studioAgentId(raw, 'agents:versions:list')))
+  ipcMain.handle('agents:versions:save', async (_e, raw: unknown) => {
+    const parsed = zStudioVersionSave.safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:versions:save payload: ${parsed.error.message}`)
+    return getStudioStore().saveVersion(parsed.data.agentId, parsed.data.note)
+  })
+  ipcMain.handle('agents:permissions:get', async (_e, raw: unknown) => getStudioStore().getPermissions(studioAgentId(raw, 'agents:permissions:get')))
+  ipcMain.handle('agents:permissions:set', async (_e, raw: unknown) => {
+    const parsed = z.object({ agentId: z.string().min(1).max(128), patch: zStudioPermissionsSet }).strict().safeParse(raw)
+    if (!parsed.success) throw new Error(`invalid agents:permissions:set payload: ${parsed.error.message}`)
+    return getStudioStore().setPermissions(parsed.data.agentId, parsed.data.patch)
   })
 }

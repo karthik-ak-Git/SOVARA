@@ -126,32 +126,6 @@ export const zModelsLoad = z
   .object({ modelId: z.string().min(1).max(128), fit: z.boolean().optional() })
   .strict()
 
-export const zModelsRegistryList = z
-  .object({ runtimeId: zRuntimeId.optional() })
-  .strict()
-  .default({})
-
-export const zModelsRegistryUpdate = z
-  .object({
-    id: z.string().min(1).max(2048),
-    patch: z
-      .object({
-        installStatus: z.enum(['installed', 'missing', 'unregistered']).optional(),
-        runtimeId: z.string().min(1).max(64).nullable().optional(),
-        displayName: z.string().min(1).max(120).optional(),
-      })
-      .strict(),
-  })
-  .strict()
-
-export const zModelsRegistryRef = z
-  .object({ id: z.string().min(1).max(2048) })
-  .strict()
-
-export const zModelsRegistryPath = z
-  .object({ localPath: z.string().min(1).max(1024) })
-  .strict()
-
 export const zSkillsToggle = z
   .object({ sourceName: z.string().min(1).max(128), enabled: z.boolean() })
   .strict()
@@ -204,10 +178,6 @@ export const zExploreGetCompatibility = z
 
 export const zExploreGetRecommendations = z
   .object({ modelId: z.string().min(1).max(128) })
-  .strict()
-
-export const zExploreCompareModels = z
-  .object({ modelIds: z.array(z.string().min(1).max(128)).min(1).max(4) })
   .strict()
 
 export const zLibrarySetDirectory = z
@@ -284,6 +254,13 @@ export const zSettingsSet = z
     explorationAgents: z.boolean().optional(),
     customAutoReview: z.boolean().optional(),
     customInstructions: z.string().max(4000).optional(),
+    reviewPolicy: z.enum(['always-ask', 'auto-approve', 'never-ask']).optional(),
+    queuedMessagesMode: z.enum(['queue', 'send']).optional(),
+    allowedDomains: z.array(z.string().min(1).max(256)).max(50).optional(),
+    reasoningEnabled: z.boolean().optional(),
+    contextLength: z.number().int().min(1024).max(1048576).optional(),
+    gpuLayers: z.number().int().min(0).max(1000).optional(),
+    flashAttention: z.boolean().optional(),
   })
   .strict()
 
@@ -311,11 +288,45 @@ export const zMcpId = z.object({ id: z.string().min(1).max(64) }).strict()
 
 export const zMcpToggle = z.object({ id: z.string().min(1).max(64), enabled: z.boolean() }).strict()
 
-export const zValidationStart = z
-  .object({ modelId: z.string().min(1).max(256), libraryPath: z.string().max(1024).optional(), ctxLen: z.number().int().min(256).max(131072).optional() })
-  .strict()
+export const zGitStatus = z
+  .object({ workspaceRoot: z.string().min(1).max(1024).optional() })
 
-export const zValidationGet = z.object({ jobId: z.string().min(1).max(64) }).strict()
+export const zGitDiff = z
+  .object({
+    workspaceRoot: z.string().min(1).max(1024).optional(),
+    filePath: z.string().min(1).max(1024).optional(),
+  })
+
+export const zGitFileContent = z
+  .object({
+    workspaceRoot: z.string().min(1).max(1024).optional(),
+    filePath: z.string().min(1).max(1024).optional(),
+  })
+
+export const zWikiBuildGraph = z
+  .object({ workspaceRoot: z.string().min(1).max(1024).optional() })
+
+export const zTerminalCreate = z
+  .object({
+    shell: z.enum(['powershell', 'cmd', 'bash', 'python', 'node']).optional(),
+    cwd: z.string().min(1).max(1024).optional(),
+  })
+
+export const zTerminalWrite = z
+  .object({ id: z.string().min(1).max(128), data: z.string().min(1).max(65536) })
+
+export const zTerminalResize = z
+  .object({
+    id: z.string().min(1).max(128),
+    cols: z.number().int().min(1).max(500),
+    rows: z.number().int().min(1).max(200),
+  })
+
+export const zTerminalKill = z
+  .object({ id: z.string().min(1).max(128), signal: z.string().min(1).max(32).optional() })
+
+export const zTerminalTail = z
+  .object({ id: z.string().min(1).max(128), limit: z.number().int().min(1).max(1000).optional() })
 
 export const zInstanceId = z.object({ instanceId: z.string().min(1).max(128) }).strict()
 

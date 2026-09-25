@@ -72,11 +72,11 @@ export function SkillsPage({ onBack: _onBack }: SkillsPageProps): ReactElement {
   const handleToggle = useCallback(async (name: string, current: boolean): Promise<void> => {
     try {
       await toggleSkillsSource(name, !current)
-      setSources((prev) => prev.map((s) => (s.name === name ? { ...s, enabled: !current } : s)))
+      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [reload])
 
   const handleAddCustom = useCallback(async (): Promise<void> => {
     if (!newSkillName.trim() || !newSkillContent.trim()) return
@@ -117,11 +117,11 @@ export function SkillsPage({ onBack: _onBack }: SkillsPageProps): ReactElement {
   const handleDeleteBionic = useCallback(async (id: string): Promise<void> => {
     try {
       await removeBionicSkill(id)
-      setBionic((prev) => prev.filter((b) => b.id !== id))
+      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [reload])
 
   const filteredSources = sources.filter((s) =>
     s.name.toLowerCase().includes(search.toLowerCase()) || s.path.toLowerCase().includes(search.toLowerCase())

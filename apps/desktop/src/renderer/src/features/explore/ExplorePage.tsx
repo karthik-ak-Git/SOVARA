@@ -8,7 +8,7 @@ import {
   listExploreModelsPage, getExploreModel, getModelCompatibility, getFileRecommendations,
   downloadModelFile, cancelModelDownload, pauseModelDownload, resumeModelDownload,
   onDownloadEvents, getModelFileStatus, reconcileLibrary, openModelFolder,
-  getActiveDownloads, getHardwareProfile, openExternal, compareModels,
+  getActiveDownloads, getHardwareProfile, openExternal,
   type ExploreListOpts, type ExploreModel, type CompatibilityResult, type DownloadEventView,
   type FileRecommendationView, type ModelFileStatus, type ExploreFormatFilter,
   type HardwareInfo,

@@ -228,7 +228,7 @@ export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECT
 2. Professional UI & Frontend Standards (Cloud AI Quality):
    - When asked for React, Tailwind CSS, dashboards, timers, games, or web applications:
      * Write fully functional, single-file interactive components using React hooks (\`useState\`, \`useEffect\`, \`useMemo\`, etc.).
-     * Style with modern Tailwind CSS: dark-mode aesthetics (\`bg-slate-900\`/\`bg-slate-950\`, \`text-slate-100\`, \`border-slate-800\`, subtle backdrop-blur/glows), polished card layouts, responsive grid/flexbox, clean typography, and purposeful accent colors.
+     * Style with modern Tailwind CSS: light-mode aesthetics (\`bg-slate-900\`/\`bg-slate-950\`, \`text-slate-100\`, \`border-slate-800\`, subtle backdrop-blur/glows), polished card layouts, responsive grid/flexbox, clean typography, and purposeful accent colors.
      * Ensure all interactive features work out of the box (e.g. countdown timers count down, start/pause/reset buttons update state, charts render with SVG/CSS bars with data labels, game logic detects wins/draws with play-again reset).
      * Avoid generic, plain HTML or unstyled markup. Craft distinctive, high-end interfaces.
 
@@ -243,7 +243,7 @@ export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECT
    - When building apps, write files directly using \`fs_write\` relative to the workspace root.
 
 5. Final Delivery with Files & Running Port:
-   - For ANY app, service, or project you build, scaffold, or update (React, Vite, Next.js, Node, HTML, etc.):
+   - For ANY app, service, or project you build, scaffold, or update (React, Vite, Electron, Node, HTML, etc.):
      * Summary of Files: At the end of your response, provide a clear, formatted summary of all files created or modified, including their relative workspace paths and purpose.
      * Running Port & Live URL: If a local server or dev server was launched (or configured to run), explicitly report the final port and running URL (e.g. \`http://localhost:5173\`, \`http://localhost:3000\`, \`http://127.0.0.1:8080\`). If running, state that the app is live on that port. If not running, give the exact command to start it (e.g. \`npm run dev\`).
      * Live Artifact & Code View: Always provide the complete component or application code inside markdown code blocks (e.g. \`\`\`tsx or \`\`\`html). This allows the user to see the code AND immediately interact with the live app inside the Artifact Canvas / Preview tab. If a dev server is active on a port, also provide the URL link \`http://localhost:<port>\` so the user can interact with the running server directly in the Artifact viewer.`;

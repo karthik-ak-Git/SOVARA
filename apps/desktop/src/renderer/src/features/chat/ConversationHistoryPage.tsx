@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, type ReactElement } from 'react'
+import { useState, useEffect, useMemo, useCallback, type ReactElement } from 'react'
 import {
   Search,
   Filter,
@@ -16,6 +16,7 @@ import {
   listSessions,
   listArchivedSessions,
   listProjects,
+  onSessionEvents,
   type SessionHeaderView,
   type ProjectView,
 } from '@/lib/client/api'
@@ -58,31 +59,47 @@ export function ConversationHistoryPage({
   const [filterMode, setFilterMode] = useState<'all' | 'active' | 'archived'>('all')
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
 
-  useEffect(() => {
-    let mounted = true
-    async function loadData() {
-      try {
-        const [active, archived, projs] = await Promise.all([
-          listSessions().catch(() => []),
-          listArchivedSessions().catch(() => []),
-          listProjects().catch(() => []),
-        ])
-        if (mounted) {
-          setActiveSessions(active)
-          setArchivedSessions(archived)
-          setProjects(projs)
-        }
-      } catch {
-        // ignore
-      } finally {
-        if (mounted) setLoading(false)
-      }
-    }
-    void loadData()
-    return () => {
-      mounted = false
+  const loadData = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoading(true)
+    try {
+      const [active, archived, projs] = await Promise.all([
+        listSessions().catch(() => []),
+        listArchivedSessions().catch(() => []),
+        listProjects().catch(() => []),
+      ])
+      setActiveSessions(active)
+      setArchivedSessions(archived)
+      setProjects(projs)
+    } catch {
+      // ignore
+    } finally {
+      if (showSpinner) setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    void loadData(true)
+  }, [loadData])
+
+  // Stay in sync without remount: structural session events (a reply landed,
+  // a task finished, a run was cancelled) plus window focus (renames and
+  // archives made in other views emit no event). Deltas are ignored so
+  // streaming never triggers a reload storm.
+  useEffect(() => {
+    const off = onSessionEvents((ev) => {
+      if (ev.kind === 'assistant-done' || ev.kind === 'task:complete' || ev.kind === 'assistant-cancelled') {
+        void loadData(false)
+      }
+    })
+    const onFocus = (): void => {
+      void loadData(false)
+    }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      off()
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [loadData])
 
   const enrichedSessions: EnrichedSession[] = useMemo(() => {
     const projectMap = new Map<string, string>()

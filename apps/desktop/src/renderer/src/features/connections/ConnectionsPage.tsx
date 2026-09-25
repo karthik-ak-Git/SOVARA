@@ -66,33 +66,33 @@ export function ConnectionsPage({ onBack: _onBack }: ConnectionsPageProps): Reac
 
   const handleToggle = useCallback(async (id: string, current: boolean): Promise<void> => {
     try {
-      const updated = await toggleMcpServer(id, !current)
-      setServers((prev) => prev.map((s) => (s.id === id ? updated : s)))
+      await toggleMcpServer(id, !current)
+      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [reload])
 
   const handleProbe = useCallback(async (id: string): Promise<void> => {
     setProbingId(id)
     try {
-      const updated = await probeMcpServer(id)
-      setServers((prev) => prev.map((s) => (s.id === id ? updated : s)))
+      await probeMcpServer(id)
+      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setProbingId(null)
     }
-  }, [])
+  }, [reload])
 
   const handleDelete = useCallback(async (id: string): Promise<void> => {
     try {
       await removeMcpServer(id)
-      setServers((prev) => prev.filter((s) => s.id !== id))
+      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [reload])
 
   const handleOpenFolder = useCallback(async (): Promise<void> => {
     try {

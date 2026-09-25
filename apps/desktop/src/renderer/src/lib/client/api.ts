@@ -287,25 +287,6 @@ export interface ModelRegistryView {
   extraJson: string | null
 }
 
-export async function listRegistryRows(runtimeId?: string): Promise<ModelRegistryView[]> {
-  return ipcInvoke('models:listRegistry', runtimeId ? { runtimeId } : {})
-}
-
-export async function updateRegistryRow(
-  id: string,
-  patch: { installStatus?: RegistryInstallStatus; runtimeId?: string | null; displayName?: string }
-): Promise<{ ok: boolean }> {
-  return ipcInvoke('models:updateRegistry', { id, patch })
-}
-
-export async function removeRegistryRow(id: string): Promise<{ ok: boolean }> {
-  return ipcInvoke('models:removeRegistry', { id })
-}
-
-export async function removeRegistryRowsByPath(localPath: string): Promise<{ ok: boolean }> {
-  return ipcInvoke('models:removeRegistryByPath', { localPath })
-}
-
 export interface SystemResourcesView {
   cpu: { logicalCores: number; loadAvg1: number }
   ram: { totalMB: number; freeMB: number; usedByAppMB: number }
@@ -386,6 +367,13 @@ export interface AppSettingsState {
   explorationAgents: boolean
   customAutoReview: boolean
   customInstructions: string
+  reviewPolicy: 'always-ask' | 'auto-approve' | 'never-ask'
+  queuedMessagesMode: 'queue' | 'send'
+  allowedDomains: string[]
+  reasoningEnabled: boolean
+  contextLength: number
+  gpuLayers: number
+  flashAttention: boolean
   version: string
 }
 
@@ -405,6 +393,13 @@ export interface AppSettingsPatch {
   explorationAgents?: boolean
   customAutoReview?: boolean
   customInstructions?: string
+  reviewPolicy?: 'always-ask' | 'auto-approve' | 'never-ask'
+  queuedMessagesMode?: 'queue' | 'send'
+  allowedDomains?: string[]
+  reasoningEnabled?: boolean
+  contextLength?: number
+  gpuLayers?: number
+  flashAttention?: boolean
 }
 
 export interface UpdateCheckView {
@@ -578,10 +573,6 @@ export async function getFileRecommendations(modelId: string): Promise<FileRecom
 
 export async function getHardwareProfile(): Promise<import('@shared/types/explore').HardwareInfo> {
   return ipcInvoke('explore:getHardwareProfile')
-}
-
-export async function compareModels(modelIds: string[]): Promise<any[]> {
-  return ipcInvoke('explore:compareModels', { modelIds })
 }
 
 export async function detectExternalRuntimes(): Promise<any> {
@@ -799,22 +790,6 @@ export async function probeMcpServer(id: string): Promise<McpServerView> {
 import type { ValidationJob, HardwareProfileFull, ValidationStoreEntry } from '@shared/types/validation'
 export type { ValidationJob, HardwareProfileFull, ValidationStoreEntry } from '@shared/types/validation'
 
-export async function getFullHardwareProfile(): Promise<HardwareProfileFull> {
-  return ipcInvoke('validation:getFullProfile')
-}
-export async function startValidation(modelId: string, libraryPath?: string, ctxLen?: number): Promise<ValidationJob> {
-  return ipcInvoke('validation:start', { modelId, libraryPath, ctxLen })
-}
-export async function getValidation(jobId: string): Promise<ValidationJob> {
-  return ipcInvoke('validation:get', { jobId })
-}
-export async function listValidations(): Promise<ValidationJob[]> {
-  return ipcInvoke('validation:list')
-}
-export async function listValidationCache(): Promise<ValidationStoreEntry[]> {
-  return ipcInvoke('validation:storeList')
-}
-
 import type { ModelInstance, InstanceMetrics } from '@shared/types/ports'
 export type { ModelInstance, InstanceMetrics, InstanceStatus } from '@shared/types/ports'
 
@@ -843,10 +818,6 @@ export function onInstanceEvents(callback: (event: InstanceEvent) => void): () =
 
 export async function getRecentLogs(kind: 'all' | 'detection' | 'runtime' | 'app' | 'chat' = 'all'): Promise<Record<string, string[]>> {
   return ipcInvoke('logs:getRecent', { kind })
-}
-
-export async function showSystemNotification(title: string, body: string): Promise<{ shown: boolean }> {
-  return ipcInvoke('notifications:show', { title, body })
 }
 
 export interface GitStatusResult { ok: boolean; cwd: string; files: Array<{ path: string; code: string; staged: boolean }>; statRaw?: string; error?: string }

@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useState, useMemo, useRef } from 'react'
-import { buildWikiGraph } from '@/lib/client/api'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { buildWikiGraph, onSessionEvents } from '@/lib/client/api'
+import { useChatStore } from '@/stores/chatStore'
 
 type NodeType = 'entity' | 'concept' | 'source' | 'overview' | 'other'
 interface GraphNode { id: string; label: string; type: NodeType; path: string; linkCount: number; x?: number; y?: number }
@@ -23,11 +24,33 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [loading, setLoading] = useState(true)
+  const [reloadKey, setReloadKey] = useState(0)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   // View state lives in refs so pan/zoom survives hover re-renders (was resetting every hover)
   const viewRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 })
   const fittedKeyRef = useRef<string | null>(null)
+  // Debounce live refetches so a burst of tool/artifact events triggers one rebuild
+  const reloadTimer = useRef<number | null>(null)
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current) window.clearTimeout(reloadTimer.current)
+    reloadTimer.current = window.setTimeout(() => setReloadKey((k) => k + 1), 800)
+  }, [])
+  // Highlight: explicit prop wins; otherwise derive trivially from the current
+  // chat store (last user message) so open chat context highlights matching nodes.
+  const storeEvents = useChatStore((s) => s.events)
+  const storeStreamingText = useChatStore((s) => s.streamingText)
+  const derivedQuery = useMemo(() => {
+    void storeStreamingText
+    for (let i = storeEvents.length - 1; i >= 0; i--) {
+      const e = storeEvents[i]
+      if (!e || e.type !== 'user/message') continue
+      const content = (e.data as { content?: unknown } | null)?.content
+      if (typeof content === 'string' && content.trim().length >= 2) return content.slice(0, 200)
+    }
+    return undefined
+  }, [storeEvents, storeStreamingText])
+  const effectiveHighlight = highlightQuery && highlightQuery.trim().length >= 2 ? highlightQuery : derivedQuery
 
   // Fetch wiki folder — no hardcode, live from disk
   useEffect(() => {
@@ -62,19 +85,39 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
       setLoading(false)
     }).catch(() => { if (!cancelled) { setLoading(false); setHint('Failed to read wiki folder') } })
     return () => { cancelled = true }
-  }, [workspaceRoot])
+  }, [workspaceRoot, reloadKey])
+
+  // Live refetch: fs_write tool completions and generated artifacts mutate
+  // wiki files — rebuild on those `events:session` pushes (existing channel,
+  // no new IPC) instead of only on workspaceRoot change.
+  useEffect(() => {
+    const dispose = onSessionEvents((ev) => {
+      if (!ev) return
+      if (ev.kind === 'artifact:ready') {
+        scheduleReload()
+        return
+      }
+      if (ev.kind === 'tool:end' && ev.toolName === 'fs_write') {
+        scheduleReload()
+      }
+    })
+    return () => {
+      dispose()
+      if (reloadTimer.current) window.clearTimeout(reloadTimer.current)
+    }
+  }, [scheduleReload])
 
   // Automap from chat context: highlight matching nodes
   const highlighted = useMemo(() => {
-    if (!highlightQuery || highlightQuery.trim().length < 2) return new Set<string>()
-    const tokens = highlightQuery.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)
+    if (!effectiveHighlight || effectiveHighlight.trim().length < 2) return new Set<string>()
+    const tokens = effectiveHighlight.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)
     const set = new Set<string>()
     for (const n of nodes) {
       const label = n.label.toLowerCase()
       if (tokens.some((t) => label.includes(t))) set.add(n.id)
     }
     return set
-  }, [highlightQuery, nodes])
+  }, [effectiveHighlight, nodes])
 
   // 2D Canvas render — measured against the canvas wrapper ONLY (not the header column),
   // auto-fit once per dataset, view state in refs so hover never resets pan/zoom.

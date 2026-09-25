@@ -190,7 +190,7 @@ export function bundleReactPreview(code: string): string {
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
-      darkMode: 'class',
+      darkMode: false,
       theme: {
         extend: {
           colors: {
@@ -458,7 +458,7 @@ export async function preparePreviewHtml(
   const hasTailwindClasses = /\b(bg-|text-|p-|m-|flex|grid|rounded|shadow|border-)\b/.test(bundled)
   const hasTailwindScript = /tailwindcss|tailwind\.css/i.test(bundled)
   if (hasTailwindClasses && !hasTailwindScript) {
-    const tailwindCdn = `<script src="https://cdn.tailwindcss.com"></script>\n<script>tailwind.config={darkMode:'class'}</script>`
+    const tailwindCdn = `<script src="https://cdn.tailwindcss.com"></script>\n<script>tailwind.config={darkMode:false}</script>`
     if (bundled.includes('<head>')) {
       bundled = bundled.replace('<head>', `<head>\n  ${tailwindCdn}`)
     } else if (bundled.includes('<html>')) {

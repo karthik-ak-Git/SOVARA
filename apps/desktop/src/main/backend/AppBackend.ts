@@ -559,9 +559,36 @@ export class AppBackend {
     explorationAgents: boolean
     customAutoReview: boolean
     customInstructions: string
+    reviewPolicy: 'always-ask' | 'auto-approve' | 'never-ask'
+    queuedMessagesMode: 'queue' | 'send'
+    allowedDomains: string[]
+    reasoningEnabled: boolean
+    contextLength: number
+    gpuLayers: number
+    flashAttention: boolean
   } {
     const get = (k: string): string | null => this.runtimeConfig.getAppSetting(k)
     const lastCheck = get('last_update_check_at')
+    const reviewStored = get('review_policy')
+    const parseCount = (raw: string | null, fallback: number): number => {
+      const n = raw !== null ? parseInt(raw, 10) : NaN
+      return Number.isFinite(n) ? n : fallback
+    }
+    const parseDomains = (raw: string | null): string[] => {
+      if (raw) {
+        try {
+          const parsed: unknown = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            const cleaned = [...new Set(parsed.map((d) => String(d).trim()).filter(Boolean))].slice(0, 50)
+            if (cleaned.length > 0) return cleaned
+          }
+        } catch {
+          // fall through to default
+        }
+      }
+      // Mirrors DEFAULT_ALLOWED_DOMAINS in SettingsModal (first-run default).
+      return ['*.github.com', '*.hf.co', '*.npmjs.com', 'developer.mozilla.org', 'raw.githubusercontent.com']
+    }
     return {
       sidebarBackground: get('sidebar_background') ?? 'solid',
       inlineDiffLayout: get('inline_diff_layout') ?? 'unified',
@@ -580,6 +607,18 @@ export class AppBackend {
       explorationAgents: (get('exploration_agents') ?? '1') === '1',
       customAutoReview: get('custom_auto_review') === '1',
       customInstructions: get('custom_instructions') ?? '',
+      reviewPolicy:
+        reviewStored === 'auto-approve' || reviewStored === 'never-ask'
+          ? reviewStored
+          : get('custom_auto_review') === '1'
+            ? 'auto-approve'
+            : 'always-ask',
+      queuedMessagesMode: get('queued_messages_mode') === 'queue' ? 'queue' : 'send',
+      allowedDomains: parseDomains(get('allowed_domains')),
+      reasoningEnabled: (get('reasoning_enabled') ?? '1') === '1',
+      contextLength: parseCount(get('context_length'), 8192),
+      gpuLayers: parseCount(get('gpu_layers'), 99),
+      flashAttention: (get('flash_attention') ?? '1') === '1',
     }
   }
 
@@ -599,6 +638,13 @@ export class AppBackend {
     explorationAgents?: boolean
     customAutoReview?: boolean
     customInstructions?: string
+    reviewPolicy?: 'always-ask' | 'auto-approve' | 'never-ask'
+    queuedMessagesMode?: 'queue' | 'send'
+    allowedDomains?: string[]
+    reasoningEnabled?: boolean
+    contextLength?: number
+    gpuLayers?: number
+    flashAttention?: boolean
   }): ReturnType<AppBackend['getAppSettings']> {
     const set = (k: string, v: string): void => this.runtimeConfig.setAppSetting(k, v)
     if (patch.sidebarBackground !== undefined) {
@@ -644,6 +690,34 @@ export class AppBackend {
     if (patch.explorationAgents !== undefined) set('exploration_agents', patch.explorationAgents ? '1' : '0')
     if (patch.customAutoReview !== undefined) set('custom_auto_review', patch.customAutoReview ? '1' : '0')
     if (patch.customInstructions !== undefined) set('custom_instructions', patch.customInstructions.slice(0, 4000))
+    if (patch.reviewPolicy !== undefined) {
+      if (patch.reviewPolicy !== 'always-ask' && patch.reviewPolicy !== 'auto-approve' && patch.reviewPolicy !== 'never-ask') {
+        throw new Error('invalid reviewPolicy')
+      }
+      set('review_policy', patch.reviewPolicy)
+      // Keep the legacy boolean mirror in sync for older readers.
+      set('custom_auto_review', patch.reviewPolicy === 'auto-approve' ? '1' : '0')
+    }
+    if (patch.queuedMessagesMode !== undefined) {
+      if (patch.queuedMessagesMode !== 'queue' && patch.queuedMessagesMode !== 'send') throw new Error('invalid queuedMessagesMode')
+      set('queued_messages_mode', patch.queuedMessagesMode)
+    }
+    if (patch.allowedDomains !== undefined) {
+      const cleaned = [...new Set(patch.allowedDomains.map((d) => String(d).trim()).filter(Boolean))].slice(0, 50)
+      set('allowed_domains', JSON.stringify(cleaned))
+    }
+    if (patch.reasoningEnabled !== undefined) set('reasoning_enabled', patch.reasoningEnabled ? '1' : '0')
+    if (patch.contextLength !== undefined) {
+      if (!Number.isInteger(patch.contextLength) || patch.contextLength < 1024 || patch.contextLength > 1048576) {
+        throw new Error('invalid contextLength')
+      }
+      set('context_length', String(patch.contextLength))
+    }
+    if (patch.gpuLayers !== undefined) {
+      if (!Number.isInteger(patch.gpuLayers) || patch.gpuLayers < 0 || patch.gpuLayers > 1000) throw new Error('invalid gpuLayers')
+      set('gpu_layers', String(patch.gpuLayers))
+    }
+    if (patch.flashAttention !== undefined) set('flash_attention', patch.flashAttention ? '1' : '0')
     return this.getAppSettings()
   }
 

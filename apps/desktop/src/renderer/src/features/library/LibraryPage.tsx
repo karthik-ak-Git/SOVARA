@@ -28,6 +28,8 @@ import {
   deleteLibraryModel,
   revealInFolder,
   onDownloadEvents,
+  getActiveDownloads,
+  cancelModelDownload,
   listRuntimes,
   getActiveModel,
   selectModel,
@@ -35,6 +37,7 @@ import {
   openExternal,
   type LibraryModel,
   type DetectedModelLocation,
+  type DownloadEventView,
 } from '@/lib/client/api'
 import type { ModelRuntimeEntry, ActiveModelState } from '@shared/types/models'
 
@@ -118,6 +121,19 @@ export function LibraryPage({ onBack: _onBack }: LibraryPageProps): ReactElement
   const [activeModel, setActiveModel] = useState<ActiveModelState>({ selection: null, available: false })
   const [selectingModelPath, setSelectingModelPath] = useState<string | null>(null)
 
+  // Live download rows — same `events:download` channel ExplorePage consumes.
+  // Seeded from getActiveDownloads so rows survive remount mid-transfer;
+  // terminal done/cancelled entries are removed and trigger a rescan.
+  const [activeDownloads, setActiveDownloads] = useState<Record<string, DownloadEventView>>({})
+
+  const handleCancelDownload = useCallback(async (modelId: string, rfilename: string): Promise<void> => {
+    try {
+      await cancelModelDownload(modelId, rfilename)
+    } catch {
+      // backend reports failure; the error event updates the row
+    }
+  }, [])
+
   // Deletion confirmation
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null)
 
@@ -178,7 +194,31 @@ export function LibraryPage({ onBack: _onBack }: LibraryPageProps): ReactElement
   useEffect(() => {
     void refresh()
     void refreshConnected()
+    // Seed in-progress rows so a remount mid-transfer still shows bytes/speed.
+    void getActiveDownloads()
+      .then((dls) => {
+        if (!Array.isArray(dls)) return
+        const map: Record<string, DownloadEventView> = {}
+        for (const d of dls) {
+          map[`${d.modelId}\n${d.rfilename}`] = {
+            modelId: d.modelId,
+            rfilename: d.rfilename,
+            state: (d.state as DownloadEventView['state']) ?? 'progress',
+            receivedBytes: d.receivedBytes ?? 0,
+            totalBytes: d.totalBytes ?? null,
+          }
+        }
+        setActiveDownloads(map)
+      })
+      .catch(() => {})
     const dispose = onDownloadEvents((ev) => {
+      setActiveDownloads((prev) => {
+        const next = { ...prev }
+        const k = `${ev.modelId}\n${ev.rfilename}`
+        if (ev.state === 'done' || ev.state === 'cancelled') delete next[k]
+        else next[k] = ev
+        return next
+      })
       if (ev.state === 'done') {
         void refresh()
         void refreshConnected()
@@ -186,6 +226,8 @@ export function LibraryPage({ onBack: _onBack }: LibraryPageProps): ReactElement
     })
     return dispose
   }, [refresh, refreshConnected])
+
+  const downloadList = useMemo(() => Object.values(activeDownloads), [activeDownloads])
 
   // Filter & sort
   const filteredModels = useMemo(() => {
@@ -550,6 +592,60 @@ export function LibraryPage({ onBack: _onBack }: LibraryPageProps): ReactElement
           </div>
         </div>
       </div>
+
+      {/* ── ACTIVE DOWNLOADS (live bytes/speed, same channel as Explore) ── */}
+      {downloadList.length > 0 ? (
+        <div className="settings-modal-group">
+          <div className="settings-modal-group-title">Active Downloads ({downloadList.length})</div>
+          <div className="settings-modal-card" style={{ padding: 0, overflow: 'hidden' }}>
+            {downloadList.map((dl) => {
+              const pct =
+                dl.totalBytes && dl.totalBytes > 0
+                  ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100))
+                  : 0
+              const speedMBps = dl.speedBps ? (dl.speedBps / (1024 * 1024)).toFixed(1) : null
+              const received = formatBytes(dl.receivedBytes)
+              const total = dl.totalBytes ? formatBytes(dl.totalBytes) : 'size unknown'
+              return (
+                <div key={`${dl.modelId}\n${dl.rfilename}`} style={{ padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {dl.rfilename}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {dl.modelId} • {dl.state}
+                        {dl.error ? ` • ${dl.error}` : ''}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#0284c7' }}>{pct}%</span>
+                      <button
+                        type="button"
+                        className="library-btn-action danger"
+                        style={{ padding: '4px 10px', fontSize: 11 }}
+                        onClick={() => void handleCancelDownload(dl.modelId, dl.rfilename)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ height: 6, width: '100%', background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: '#0284c7', transition: 'width 0.2s ease' }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11, color: '#64748b' }}>
+                    <span>
+                      {received} / {total}
+                      {speedMBps ? ` · ${speedMBps} MB/s` : ''}
+                    </span>
+                    <span>{dl.etaSeconds ? `${Math.ceil(dl.etaSeconds)}s remaining` : 'Calculating…'}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {/* ── MODEL CARDS LIST ── */}
       <div className="library-models-container">

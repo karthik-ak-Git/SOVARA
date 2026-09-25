@@ -77,15 +77,9 @@ export async function createMainWindow(): Promise<BrowserWindow> {
     await win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // ── Permission handler — allow mic, deny everything else ──
-  win.webContents.session.setPermissionCheckHandler((_wc, permission, _requestingOrigin, _details) => {
-    if (permission === 'media') return true
-    return false
-  })
-  win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    if (permission === 'media') { callback(true); return }
-    callback(false)
-  })
+  // ── Permission handler — deny all renderer permissions ──
+  win.webContents.session.setPermissionCheckHandler((_wc, _permission, _requestingOrigin, _details) => false)
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
 
   // ── Navigation hijack block ──
   const isAllowedNav = (url: string): boolean =>

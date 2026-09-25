@@ -171,49 +171,12 @@ interface McpPreset {
   description: string
 }
 
-const MCP_PRESETS: McpPreset[] = [
-  {
-    id: 'github',
-    name: 'GitHub MCP',
-    provider: 'GitHub',
-    command: 'npx -y @modelcontextprotocol/server-github',
-    description: 'Inspect repositories, issues, and pull requests',
-  },
-  {
-    id: 'postgres',
-    name: 'PostgreSQL MCP',
-    provider: 'PostgreSQL',
-    command: 'npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb',
-    description: 'Query database schemas and execute read queries',
-  },
-  {
-    id: 'filesystem',
-    name: 'Filesystem MCP',
-    provider: 'Local Files',
-    command: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
-    description: 'Read and write external host directories',
-  },
-  {
-    id: 'memory',
-    name: 'Memory Graph MCP',
-    provider: 'Anthropic',
-    command: 'npx -y @modelcontextprotocol/server-memory',
-    description: 'Persistent knowledge graph across multiple sessions',
-  },
-  {
-    id: 'brave-search',
-    name: 'Brave Search MCP',
-    provider: 'Brave',
-    command: 'npx -y @modelcontextprotocol/server-brave-search',
-    description: 'Live web search via Brave Search API',
-  },
-  {
-    id: 'slack',
-    name: 'Slack MCP',
-    provider: 'Slack',
-    command: 'npx -y @modelcontextprotocol/server-slack',
-    description: 'Workspace channels and thread messages',
-  },
+const DEFAULT_ALLOWED_DOMAINS = [
+  '*.github.com',
+  '*.hf.co',
+  '*.npmjs.com',
+  'developer.mozilla.org',
+  'raw.githubusercontent.com',
 ]
 
 interface SettingsModalProps {
@@ -255,51 +218,22 @@ export function SettingsModal({
   const [runtimeSummary, setRuntimeSummary] = useState<any>(null)
   const [activeDownloads, setActiveDownloads] = useState<Record<string, DownloadEventView>>({})
 
-  // Execution & General controls
+  // Execution & General controls — all backend-synced through
+  // getAppSettings/setAppSettings (single source of truth).
   const [execMode, setLocalExecMode] = useState<ExecMode>(initialExecMode)
   const [queuedMessagesMode, setQueuedMessagesMode] = useState<'queue' | 'send'>('send')
   const [securityPreset, setSecurityPreset] = useState<string>('default')
   const [reviewPolicy, setReviewPolicy] = useState<string>('always-ask')
   const [toolPermissionsOpen, setToolPermissionsOpen] = useState(false)
   const [networkRulesOpen, setNetworkRulesOpen] = useState(false)
-  const [allowedDomains, setAllowedDomains] = useState<string[]>([
-    '*.github.com',
-    '*.hf.co',
-    '*.npmjs.com',
-    'developer.mozilla.org',
-    'raw.githubusercontent.com',
-  ])
+  const [allowedDomains, setAllowedDomains] = useState<string[]>(DEFAULT_ALLOWED_DOMAINS)
   const [newDomainInput, setNewDomainInput] = useState('')
 
-  // Local model defaults & reasoning state
-  const [reasoningEnabled, setReasoningEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('sovara_reasoning') !== 'false'
-    } catch {
-      return true
-    }
-  })
-  const [contextLength, setContextLength] = useState<number>(() => {
-    try {
-      return Number(localStorage.getItem('sovara_context_length') || '8192')
-    } catch {
-      return 8192
-    }
-  })
-  const [gpuLayers, setGpuLayers] = useState<number>(() => {
-    try {
-      return Number(localStorage.getItem('sovara_gpu_layers') || '99')
-    } catch {
-      return 99
-    }
-  })
-  const [flashAttention, setFlashAttention] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('sovara_flash_attention') !== 'false'
-    } catch {
-      return true
-    }
-  })
+  // Local model defaults & reasoning state (backend-synced; defaults match backend)
+  const [reasoningEnabled, setReasoningEnabled] = useState<boolean>(true)
+  const [contextLength, setContextLength] = useState<number>(8192)
+  const [gpuLayers, setGpuLayers] = useState<number>(99)
+  const [flashAttention, setFlashAttention] = useState<boolean>(true)
 
   // Updates & Feeds
   const [checkingUpdate, setCheckingUpdate] = useState(false)
@@ -389,9 +323,14 @@ export function SettingsModal({
       .then((s) => {
         setAppSettingsState(s)
         setInstructionsDraft(s.customInstructions ?? '')
-        if (s.customAutoReview) {
-          setReviewPolicy('auto-approve')
-        }
+        // Backend is the source of truth for every control below.
+        setReviewPolicy(s.reviewPolicy ?? 'always-ask')
+        setQueuedMessagesMode(s.queuedMessagesMode ?? 'send')
+        if (Array.isArray(s.allowedDomains) && s.allowedDomains.length > 0) setAllowedDomains(s.allowedDomains)
+        setReasoningEnabled(s.reasoningEnabled ?? true)
+        if (typeof s.contextLength === 'number') setContextLength(s.contextLength)
+        if (typeof s.gpuLayers === 'number') setGpuLayers(s.gpuLayers)
+        setFlashAttention(s.flashAttention ?? true)
       })
       .catch(() => {})
 
@@ -936,14 +875,20 @@ export function SettingsModal({
                       <button
                         type="button"
                         className={`settings-segmented-btn ${queuedMessagesMode === 'queue' ? 'active' : ''}`}
-                        onClick={() => setQueuedMessagesMode('queue')}
+                        onClick={() => {
+                          setQueuedMessagesMode('queue')
+                          void applyPatch({ queuedMessagesMode: 'queue' })
+                        }}
                       >
                         Queue
                       </button>
                       <button
                         type="button"
                         className={`settings-segmented-btn ${queuedMessagesMode === 'send' ? 'active' : ''}`}
-                        onClick={() => setQueuedMessagesMode('send')}
+                        onClick={() => {
+                          setQueuedMessagesMode('send')
+                          void applyPatch({ queuedMessagesMode: 'send' })
+                        }}
                       >
                         Send Immediately
                       </button>
@@ -1021,6 +966,7 @@ export function SettingsModal({
                       <div className="settings-modal-row-label">Artifact Review Policy</div>
                       <div className="settings-modal-row-desc">
                         Whether the agent requests explicit user review before modifying code and documents.
+                        Synced through backend settings.
                       </div>
                     </div>
                     <div>
@@ -1028,9 +974,9 @@ export function SettingsModal({
                         className="settings-select-pill"
                         value={reviewPolicy}
                         onChange={(e) => {
-                          const val = e.target.value
+                          const val = e.target.value as 'always-ask' | 'auto-approve' | 'never-ask'
                           setReviewPolicy(val)
-                          void applyPatch({ customAutoReview: val === 'auto-approve' })
+                          void applyPatch({ reviewPolicy: val, customAutoReview: val === 'auto-approve' })
                         }}
                       >
                         <option value="always-ask">Always Ask</option>
@@ -1493,9 +1439,7 @@ export function SettingsModal({
                       onClick={() => {
                         setReasoningEnabled((v) => {
                           const next = !v
-                          try {
-                            localStorage.setItem('sovara_reasoning', String(next))
-                          } catch {}
+                          void applyPatch({ reasoningEnabled: next })
                           return next
                         })
                       }}
@@ -1901,13 +1845,18 @@ export function SettingsModal({
                 </div>
               </div>
 
-              {/* Quick Presets */}
+              {/* Live servers — backend-driven (listMcpServers), no static presets */}
               <div className="settings-modal-group">
-                <div className="settings-modal-group-title">Available Quick Presets</div>
+                <div className="settings-modal-group-title">Available Servers (live)</div>
+                {mcpServers.length === 0 ? (
+                  <div style={{ padding: 16, textAlign: 'center', color: '#64748b', fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 10, background: 'var(--bg-soft)' }}>
+                    No MCP servers configured yet. Add one with “Add Server” above.
+                  </div>
+                ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                  {MCP_PRESETS.slice(0, 3).map((p) => (
+                  {mcpServers.slice(0, 6).map((srv) => (
                     <div
-                      key={p.id}
+                      key={srv.id}
                       style={{
                         padding: 12,
                         borderRadius: 10,
@@ -1920,20 +1869,34 @@ export function SettingsModal({
                       }}
                     >
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{p.name}</div>
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{p.description}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{srv.name}</div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {srv.transport === 'stdio' ? srv.command : srv.endpoint}
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                          <span
+                            className="settings-info-badge"
+                            style={{
+                              background: srv.status === 'connected' ? '#ecfdf5' : '#f1f5f9',
+                              color: srv.status === 'connected' ? '#059669' : '#64748b',
+                            }}
+                          >
+                            {srv.status ?? (srv.enabled ? 'configured' : 'disabled')}
+                          </span>
+                        </div>
                       </div>
                       <button
                         type="button"
                         className="settings-btn-action"
                         style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 11 }}
-                        onClick={() => openAddMcpDialog(p)}
+                        onClick={() => void handleProbeMcp(srv.id)}
                       >
-                        Install Preset
+                        Probe Status
                       </button>
                     </div>
                   ))}
                 </div>
+                )}
               </div>
 
               {/* Installed MCP Servers */}
@@ -2274,9 +2237,7 @@ export function SettingsModal({
                       onChange={(e) => {
                         const val = Number(e.target.value)
                         setContextLength(val)
-                        try {
-                          localStorage.setItem('sovara_context_length', String(val))
-                        } catch {}
+                        void applyPatch({ contextLength: val })
                       }}
                     >
                       <option value={4096}>4,096 tokens</option>
@@ -2299,9 +2260,7 @@ export function SettingsModal({
                       onChange={(e) => {
                         const val = Number(e.target.value)
                         setGpuLayers(val)
-                        try {
-                          localStorage.setItem('sovara_gpu_layers', String(val))
-                        } catch {}
+                        void applyPatch({ gpuLayers: val })
                       }}
                     >
                       <option value={99}>Full Offload (All Layers)</option>
@@ -2323,9 +2282,7 @@ export function SettingsModal({
                       onClick={() => {
                         setFlashAttention((v) => {
                           const next = !v
-                          try {
-                            localStorage.setItem('sovara_flash_attention', String(next))
-                          } catch {}
+                          void applyPatch({ flashAttention: next })
                           return next
                         })
                       }}
@@ -2903,7 +2860,9 @@ export function SettingsModal({
                   onClick={() => {
                     const trimmed = newDomainInput.trim()
                     if (trimmed && !allowedDomains.includes(trimmed)) {
-                      setAllowedDomains((prev) => [...prev, trimmed])
+                      const next = [...allowedDomains, trimmed]
+                      setAllowedDomains(next)
+                      void applyPatch({ allowedDomains: next })
                       setNewDomainInput('')
                     }
                   }}
@@ -2920,7 +2879,11 @@ export function SettingsModal({
                       <button
                         type="button"
                         style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8' }}
-                        onClick={() => setAllowedDomains((prev) => prev.filter((item) => item !== d))}
+                        onClick={() => {
+                          const next = allowedDomains.filter((item) => item !== d)
+                          setAllowedDomains(next)
+                          void applyPatch({ allowedDomains: next })
+                        }}
                         title="Remove rule"
                       >
                         <Trash2 size={13} />

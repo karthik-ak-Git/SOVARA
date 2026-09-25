@@ -233,7 +233,7 @@ function ChatRow({
             <MoreHorizontal size={15} aria-hidden />
           </button>
           {menuOpen ? (
-            <div className="chat-row-menu" role="menu" style={{ position: 'absolute', right: 0, top: 28, zIndex: 20, minWidth: 150, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 10px 24px rgba(15,23,42,.14)', padding: 4 }}>
+            <div className="chat-row-menu" role="menu" style={{ position: 'absolute', right: 0, top: 28, zIndex: 20, minWidth: 150, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: 'var(--shadow-composer)', padding: 4 }}>
               {confirmDelete ? (
                 <>
                   <button type="button" onClick={() => { onDelete?.(); closeMenu() }} style={{ display: 'block', width: '100%', border: 0, background: '#fef2f2', color: '#b91c1c', borderRadius: 5, padding: '7px 9px', textAlign: 'left', cursor: 'pointer' }}>Delete</button>

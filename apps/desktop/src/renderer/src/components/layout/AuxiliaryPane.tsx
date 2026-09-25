@@ -83,8 +83,6 @@ export function AuxiliaryPane({
   activeArtifact = null,
   onOpenArtifactFile,
   activeSubagents = [],
-  activeTasks = [],
-  terminalLogs = [],
   changedFiles = [],
   events = [],
   sessionTitle = 'Current Conversation',
@@ -406,77 +404,129 @@ export function AuxiliaryPane({
     return out.slice(0, 12)
   }, [events])
 
-  // --- Dynamic Terminal Sessions & Command Execution with Full Persistence ---
+  // --- Real persistent terminal sessions (backend-backed, pipes-based) ---
+  // Instances come ONLY from the main-process shell host via terminal:* IPC:
+  // id, shell, exe name, cwd, pid and status are all live backend values.
+  // Nothing is seeded, synthesized, or read from localStorage. Until the
+  // backend channels are wired the pane honestly reports "backend offline".
+  type RealTerminalShell = 'powershell' | 'cmd' | 'bash' | 'python' | 'node'
+  type RealTerminalStatus = 'alive' | 'exited'
   interface TerminalInstance {
     id: string
     name: string
-    pid: string
-    shellType?: 'powershell' | 'cmd' | 'bash' | 'python' | 'node'
+    shell: RealTerminalShell
+    cwd: string | null
+    pid: number | null
+    status: RealTerminalStatus
+    exitCode: number | null
     logs: string[]
   }
-
-  const storageKey = useMemo(
-    () => `sovara_terminals_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-    [sessionTitle]
-  )
-  const activeKey = useMemo(
-    () => `sovara_active_term_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
-    [sessionTitle]
-  )
-
-  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(() => {
+  interface TerminalCreateResult {
+    id: string
+    shell: RealTerminalShell
+    name: string
+    pid: number | null
+    cwd: string
+    status: RealTerminalStatus
+    exitCode: number | null
+  }
+  interface SovaraBridge {
+    invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+    on: (channel: string, callback: (...args: unknown[]) => void) => () => void
+  }
+  const getSovaraBridge = (): SovaraBridge | null => {
     try {
-      const saved = localStorage.getItem(storageKey)
-      if (saved) {
-        const parsed = JSON.parse(saved)
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed
-      }
-    } catch {}
-    return [
-      {
-        id: 'term-1',
-        name: 'powershell.exe',
-        pid: 'PID 15680',
+      const w = window as unknown as { sovara?: SovaraBridge }
+      if (!w.sovara || typeof w.sovara.invoke !== 'function') return null
+      return w.sovara
+    } catch {
+      return null
+    }
+  }
+
+  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>([])
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
+  const [terminalBackend, setTerminalBackend] = useState<'live' | 'offline' | 'unknown'>('unknown')
+  const [terminalError, setTerminalError] = useState<string | null>(null)
+  /** AI one-shot shell output that arrived with no live shell to attach to. */
+  const [orphanShellLogs, setOrphanShellLogs] = useState<string[]>([])
+  const terminalBootAttempted = useRef(false)
+
+  const createRealTerminal = async (shell: RealTerminalShell): Promise<TerminalInstance | null> => {
+    const bridge = getSovaraBridge()
+    if (!bridge) {
+      setTerminalBackend('offline')
+      setTerminalError('IPC bridge unavailable (window.sovara missing)')
+      return null
+    }
+    try {
+      const res = (await bridge.invoke('terminal:create', {
+        shell,
+        ...(workspaceRoot ? { cwd: workspaceRoot } : {}),
+      })) as TerminalCreateResult
+      if (!res || typeof res.id !== 'string') throw new Error('malformed terminal:create response')
+      setTerminalBackend('live')
+      setTerminalError(null)
+      const inst: TerminalInstance = {
+        id: res.id,
+        name: typeof res.name === 'string' && res.name ? res.name : res.shell,
+        shell: res.shell,
+        cwd: typeof res.cwd === 'string' ? res.cwd : null,
+        pid: typeof res.pid === 'number' ? res.pid : null,
+        status: res.status === 'exited' ? 'exited' : 'alive',
+        exitCode: typeof res.exitCode === 'number' ? res.exitCode : null,
         logs: [
-          'Windows PowerShell',
-          'Copyright (C) Microsoft Corporation. All rights reserved.',
-          '',
+          `connected: ${typeof res.name === 'string' && res.name ? res.name : res.shell} · pid ${typeof res.pid === 'number' ? res.pid : 'unknown'} · ${typeof res.cwd === 'string' ? res.cwd : 'cwd unknown'} · persistent shell (pipes, not a full PTY)`,
         ],
-      },
-    ]
-  })
-
-  const [activeTerminalId, setActiveTerminalId] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem(activeKey)
-      if (saved) return saved
-    } catch {}
-    return 'term-1'
-  })
-
-  // Sync state when sessionTitle changes (switching chats)
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(storageKey)
-      if (saved) {
-        const parsed = JSON.parse(saved)
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setTerminalInstances(parsed)
-        }
       }
-      const savedActive = localStorage.getItem(activeKey)
-      if (savedActive) {
-        setActiveTerminalId(savedActive)
-      }
-    } catch {}
-  }, [storageKey, activeKey])
+      setTerminalInstances((prev) => (prev.some((t) => t.id === inst.id) ? prev : [...prev, inst]))
+      setActiveTerminalId(inst.id)
+      return inst
+    } catch (err: unknown) {
+      setTerminalBackend('offline')
+      setTerminalError(err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
 
-  // Automatically save terminal instances and active terminal ID on updates
+  // Boot one real shell when the pane first opens. Never fabricates one.
   useEffect(() => {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(terminalInstances))
-    } catch {}
-  }, [terminalInstances, storageKey])
+    if (!isOpen || terminalBootAttempted.current) return
+    terminalBootAttempted.current = true
+    void createRealTerminal('powershell')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen])
+
+  // Stream backend stdout/stderr + process exit into the matching instance.
+  useEffect(() => {
+    const bridge = getSovaraBridge()
+    if (!bridge || typeof bridge.on !== 'function') return
+    const offOut = bridge.on('terminal:output', (...args: unknown[]) => {
+      const p = args[0] as { id?: unknown; data?: unknown } | undefined
+      if (!p || typeof p.id !== 'string' || typeof p.data !== 'string') return
+      const lines = p.data.split('\n')
+      setTerminalBackend('live')
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === p.id ? { ...t, logs: [...t.logs, ...lines].slice(-2000) } : t))
+      )
+    })
+    const offExit = bridge.on('terminal:exit', (...args: unknown[]) => {
+      const p = args[0] as { id?: unknown; exitCode?: unknown } | undefined
+      if (!p || typeof p.id !== 'string') return
+      const code = typeof p.exitCode === 'number' ? p.exitCode : null
+      setTerminalInstances((prev) =>
+        prev.map((t) =>
+          t.id === p.id
+            ? { ...t, status: 'exited', exitCode: code, logs: [...t.logs, `process exited (code ${code ?? 'unknown'})`] }
+            : t
+        )
+      )
+    })
+    return () => {
+      offOut()
+      offExit()
+    }
+  }, [])
 
   const historyKey = useMemo(
     () => `sovara_cmd_history_${sessionTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
@@ -533,28 +583,26 @@ export function AuxiliaryPane({
 
   const [commandInput, setCommandInput] = useState('')
 
-  const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) || terminalInstances[0]
+  const activeTerminal = terminalInstances.find((t) => t.id === activeTerminalId) ?? null
 
-  const workspaceLabel = useMemo(() => {
-    if (!workspaceRoot) return 'SOVARA'
-    const base = workspaceRoot.replace(/\\/g, '/').split('/').pop() || 'SOVARA'
-    return base
-  }, [workspaceRoot])
-
+  // Prompt path is the live backend cwd when known, else the workspace root
+  // when known, else no path at all. Never a hardcoded fallback path.
   const promptPrefix = useMemo(() => {
-    const st = activeTerminal?.shellType || 'powershell'
-    const ws = workspaceRoot || 'D:\\SOVARA'
-    if (st === 'cmd') return `${ws}>`
-    if (st === 'bash') return `user@sovara:~/${workspaceLabel}$`
+    const st = activeTerminal?.shell || 'powershell'
+    const cwd = activeTerminal?.cwd ?? workspaceRoot ?? null
+    if (st === 'cmd') return cwd ? `${cwd}>` : '>'
+    if (st === 'bash') return cwd ? `user@sovara:${cwd}$` : 'user@sovara:$'
     if (st === 'python') return '>>>'
     if (st === 'node') return '>'
-    return `PS ${ws}>`
-  }, [activeTerminal?.shellType, workspaceRoot, workspaceLabel])
+    return cwd ? `PS ${cwd}>` : 'PS>'
+  }, [activeTerminal?.shell, activeTerminal?.cwd, workspaceRoot])
 
   // Track which events we have already processed into the terminal logs — keyed by seq+type so call/result are distinct
   const processedEvents = useRef<Set<string>>(new Set())
 
-  // Stream AI tool execution outputs into the active terminal instance — fully in sync with [SOVARA][TOOL] CALL/RESULT logs
+  // Stream AI tool execution outputs into the live shell when one exists,
+  // otherwise into the session shell-activity buffer — fully in sync with
+  // [SOVARA][TOOL] CALL/RESULT logs. cwd is shown only when actually known.
   useEffect(() => {
     let changed = false
     const newLogs: string[] = []
@@ -573,8 +621,9 @@ export function AuxiliaryPane({
       if (e.type === 'tool/call') {
         const cmd: string = d.args?.CommandLine || d.args?.cmd || d.args?.command || String(d.args?.command || '')
         if (cmd.trim()) {
-          const cwd: string = d.args?.cwd ? String(d.args.cwd) : (workspaceRoot || 'D:\\sovaratest')
-          newLogs.push(`${promptPrefix} ${cmd.trim()}  [cwd: ${cwd}]`)
+          const rawCwd: unknown = d.args?.cwd
+          const cwd: string | null = typeof rawCwd === 'string' && rawCwd ? rawCwd : (workspaceRoot ?? null)
+          newLogs.push(cwd ? `${promptPrefix} ${cmd.trim()}  [cwd: ${cwd}]` : `${promptPrefix} ${cmd.trim()}`)
           newLogs.push('↳ dispatched → awaiting tool result…')
           processedEvents.current.add(seqKey)
           changed = true
@@ -624,9 +673,14 @@ export function AuxiliaryPane({
       }
     }
     if (changed && newLogs.length > 0) {
-      setTerminalInstances((prev) =>
-        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, ...newLogs] } : t))
-      )
+      if (activeTerminal) {
+        const targetId = activeTerminal.id
+        setTerminalInstances((prev) =>
+          prev.map((t) => (t.id === targetId ? { ...t, logs: [...t.logs, ...newLogs].slice(-2000) } : t))
+        )
+      } else {
+        setOrphanShellLogs((prev) => [...prev, ...newLogs].slice(-2000))
+      }
     }
   }, [events, activeTerminalId, promptPrefix, workspaceRoot])
 
@@ -634,7 +688,19 @@ export function AuxiliaryPane({
     if (tab === 'terminal' && terminalContainerRef.current) {
       terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight
     }
-  }, [tab, terminalInstances, activeTerminalId])
+  }, [tab, terminalInstances, activeTerminalId, orphanShellLogs])
+
+  const appendToActiveShell = (lines: string[]): void => {
+    if (lines.length === 0) return
+    if (activeTerminal) {
+      const targetId = activeTerminal.id
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === targetId ? { ...t, logs: [...t.logs, ...lines].slice(-2000) } : t))
+      )
+    } else {
+      setOrphanShellLogs((prev) => [...prev, ...lines].slice(-2000))
+    }
+  }
 
   const handleRunCommand = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -648,17 +714,36 @@ export function AuxiliaryPane({
 
     // Support native cls and clear commands
     if (cmd.toLowerCase() === 'cls' || cmd.toLowerCase() === 'clear') {
-      setTerminalInstances((prev) =>
-        prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [] } : t))
-      )
+      if (activeTerminal) {
+        const targetId = activeTerminal.id
+        setTerminalInstances((prev) =>
+          prev.map((t) => (t.id === targetId ? { ...t, logs: [] } : t))
+        )
+      } else {
+        setOrphanShellLogs([])
+      }
       setCommandInput('')
       return
     }
 
-    setTerminalInstances((prev) =>
-      prev.map((t) => (t.id === activeTerminalId ? { ...t, logs: [...t.logs, `${promptPrefix} ${cmd}`] } : t))
-    )
+    appendToActiveShell([`${promptPrefix} ${cmd}`])
     setCommandInput('')
+
+    // Prefer the persistent shell: stdin write, output streams back via terminal:output.
+    if (activeTerminal && activeTerminal.status === 'alive') {
+      const bridge = getSovaraBridge()
+      if (bridge) {
+        try {
+          const res = (await bridge.invoke('terminal:write', { id: activeTerminal.id, data: `${cmd}\n` })) as { ok?: boolean; error?: string }
+          if (res && res.ok) return
+          appendToActiveShell([`↳ persistent-shell write failed (${typeof res?.error === 'string' ? res.error : 'unknown error'}) — falling back to one-shot shell_exec`])
+        } catch (err: unknown) {
+          setTerminalBackend('offline')
+          setTerminalError(err instanceof Error ? err.message : String(err))
+          appendToActiveShell(['↳ persistent shell unreachable — falling back to one-shot shell_exec'])
+        }
+      }
+    }
 
     try {
       const effectiveCwd = workspaceRoot || undefined
@@ -702,63 +787,35 @@ export function AuxiliaryPane({
       }
 
       const formatted = String(text).trim()
-      setTerminalInstances((prev) =>
-        prev.map((t) =>
-          t.id === activeTerminalId
-            ? { ...t, logs: formatted ? [...t.logs, formatted] : t.logs }
-            : t
-        )
-      )
+      appendToActiveShell(formatted ? [formatted] : [])
     } catch (err: any) {
-      setTerminalInstances((prev) =>
-        prev.map((t) =>
-          t.id === activeTerminalId
-            ? { ...t, logs: [...t.logs, String(err?.message || err)] }
-            : t
-        )
-      )
+      appendToActiveShell([String(err?.message || err)])
     }
   }
 
   const handleKillTerminal = (id: string): void => {
+    const bridge = getSovaraBridge()
+    if (bridge) {
+      bridge.invoke('terminal:kill', { id }).catch(() => {})
+    }
     setTerminalInstances((prev) => {
       const filtered = prev.filter((t) => t.id !== id)
-      if (filtered.length === 0) {
-        const newId = `term-${Date.now()}`
-        const newTerm: TerminalInstance = {
-          id: newId,
-          name: 'powershell.exe',
-          pid: `PID ${Math.floor(10000 + Math.random() * 90000)}`,
-          logs: [
-            'Windows PowerShell',
-            'Copyright (C) Microsoft Corporation. All rights reserved.',
-            '',
-          ],
-        }
-        setActiveTerminalId(newId)
-        return [newTerm]
-      }
       if (activeTerminalId === id) {
-        setActiveTerminalId(filtered[0].id)
+        setActiveTerminalId(filtered[0]?.id ?? null)
       }
       return filtered
     })
   }
 
   const handleAddNewTerminal = (): void => {
-    const newId = `term-${Date.now()}`
-    const newTerm: TerminalInstance = {
-      id: newId,
-      name: 'powershell.exe',
-      pid: `PID ${Math.floor(10000 + Math.random() * 90000)}`,
-      logs: [
-        'Windows PowerShell',
-        'Copyright (C) Microsoft Corporation. All rights reserved.',
-        '',
-      ],
-    }
-    setTerminalInstances((prev) => [...prev, newTerm])
-    setActiveTerminalId(newId)
+    const shell = activeTerminal?.shell ?? 'powershell'
+    void createRealTerminal(shell).then((inst) => {
+      if (!inst) {
+        setOrphanShellLogs((prev) =>
+          [...prev, `✖ cannot create ${shell} shell: terminal backend offline${terminalError ? ` (${terminalError})` : ''}`].slice(-2000)
+        )
+      }
+    })
   }
 
   // Section Collapse states for Overview
@@ -768,6 +825,40 @@ export function AuxiliaryPane({
   const [tasksOpen, setTasksOpen] = useState(false)
   const [terminalsOpen, setTerminalsOpen] = useState(true)
   const [skillsOpen, setSkillsOpen] = useState(true)
+
+  // Background Tasks — derived from persisted/live session events the same way
+  // ContextPanel derives daemon bgTasks: daemon run_command/exec_shell_command
+  // tool calls. Never from props (the shell never passes activeTasks).
+  const dynamicBgTasks = useMemo(() => {
+    const calls: Array<{ seq: number; command: string; cwd: string | null }> = []
+    for (const e of events) {
+      if (e.type !== 'tool/call') continue
+      const d: any = e.data || {}
+      const toolName: string | undefined = d.name || d.toolName || d.toolCall?.name || d.tool_name
+      if (toolName !== 'run_command' && toolName !== 'exec_shell_command') continue
+      const args = (d.args ?? d.toolCall?.args ?? {}) as Record<string, unknown>
+      let daemon = false
+      try {
+        const argsStr = JSON.stringify(args)
+        daemon = argsStr.includes('"IsDaemon":true') || argsStr.includes('"isDaemon":true')
+      } catch {
+        daemon = args['IsDaemon'] === true || args['isDaemon'] === true
+      }
+      if (!daemon) continue
+      const command = String(args['CommandLine'] ?? args['command'] ?? args['cmd'] ?? toolName)
+      const cwd = typeof args['cwd'] === 'string' && args['cwd'] ? (args['cwd'] as string) : null
+      calls.push({ seq: e.seq, command, cwd })
+    }
+    return calls.map((c, i) => {
+      const done = events.some((e) => e.type === 'tool/result' && e.seq > c.seq)
+      return {
+        id: `bg-${c.seq}-${i}`,
+        name: c.command.slice(0, 80) || 'background command',
+        status: done ? 'done' : 'running',
+        progress: c.cwd,
+      }
+    })
+  }, [events])
 
   if (!isOpen) return null
 
@@ -1237,7 +1328,7 @@ export function AuxiliaryPane({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, color: 'var(--text, #475569)' }}>
                   <span>Background Tasks</span>
-                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{activeTasks.length || (busy ? 1 : 0)}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)' }}>{dynamicBgTasks.length || (busy ? 1 : 0)}</span>
                   <ChevronRight size={14} style={{ color: 'var(--muted-2, #94a3b8)', transform: tasksOpen ? 'rotate(90deg)' : 'none' }} />
                 </div>
                 {busy ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', animation:'pulse 1s infinite' }} /> : null}
@@ -1252,9 +1343,10 @@ export function AuxiliaryPane({
                       {execution.detail ? <div style={{ opacity:0.8, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{String(execution.detail).slice(0,80)}</div> : null}
                     </div>
                   ) : null}
-                  {activeTasks.length>0 ? activeTasks.map((t,i)=>(
-                    <div key={i} style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--text, #334155)', background:'var(--panel, #f8fafc)', border:'1px solid var(--border, #e2e8f0)', borderRadius:6, padding:'5px 8px' }}>
-                      <span style={{ fontWeight:600 }}>{t.name}</span><span style={{ color:'var(--muted, #64748b)' }}>{t.status}</span>{t.progress ? <span style={{ marginLeft:'auto', fontSize:10, color:'#94a3b8' }}>{t.progress}</span> : null}
+                  {dynamicBgTasks.length>0 ? dynamicBgTasks.map((t)=>(
+                    <div key={t.id} style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--text, #334155)', background:'var(--panel, #f8fafc)', border:'1px solid var(--border, #e2e8f0)', borderRadius:6, padding:'5px 8px' }}>
+                      <span style={{ width:7, height:7, borderRadius:'50%', background: t.status==='running' ? '#f59e0b' : '#10b981', flexShrink:0 }} />
+                      <span style={{ fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.name}</span><span style={{ color:'var(--muted, #64748b)', flexShrink:0 }}>{t.status}</span>{t.progress ? <span style={{ marginLeft:'auto', fontSize:10, color:'#94a3b8', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.progress}</span> : null}
                     </div>
                   )) : !busy ? <div style={{ fontSize:12, color:'var(--muted-2, #94a3b8)', padding:'2px 0' }}>No background tasks in this chat.</div> : null}
                 </div>
@@ -1282,6 +1374,11 @@ export function AuxiliaryPane({
 
               {terminalsOpen ? (
                 <div style={{ paddingLeft: 4 }}>
+                  {terminalInstances.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'var(--muted-2, #94a3b8)', padding: '2px 0' }}>
+                      {terminalBackend === 'offline' ? 'Shell backend offline — no live terminals.' : 'No live terminals.'}
+                    </div>
+                  ) : null}
                   {terminalInstances.map((t) => (
                     <button
                       key={t.id}
@@ -1304,11 +1401,14 @@ export function AuxiliaryPane({
                         padding: '4px 0',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <TerminalIcon size={14} style={{ color: 'var(--muted, #64748b)' }} />
-                        <span>{t.name}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ width:7, height:7, borderRadius:'50%', background: t.status==='alive' ? '#10b981' : '#94a3b8', flexShrink:0 }} />
+                        <TerminalIcon size={14} style={{ color: 'var(--muted, #64748b)', flexShrink: 0 }} />
+                        <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.name}</span>
                       </div>
-                      <span style={{ fontSize: 10, color: 'var(--muted-2, #94a3b8)' }}>{t.pid}</span>
+                      <span style={{ fontSize: 10, color: 'var(--muted-2, #94a3b8)', flexShrink: 0 }}>
+                        {t.pid !== null ? `pid ${t.pid} · ` : ''}{t.status}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1523,25 +1623,26 @@ export function AuxiliaryPane({
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, color: '#0f172a' }}>Terminals</span>
+                <span
+                  title={terminalBackend === 'live' ? 'Persistent shell backend connected' : terminalBackend === 'offline' ? `Persistent shell backend offline${terminalError ? `: ${terminalError}` : ''}` : 'Connecting to persistent shell backend…'}
+                  style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:10, color:'#64748b', fontWeight:500 }}
+                >
+                  <span style={{ width:7, height:7, borderRadius:'50%', background: terminalBackend==='live' ? '#10b981' : terminalBackend==='offline' ? '#ef4444' : '#f59e0b' }} />
+                  {terminalBackend === 'live' ? 'persistent shell · pipes (no full PTY)' : terminalBackend === 'offline' ? 'backend offline · one-shot mode' : 'connecting…'}
+                </span>
                 <select
-                  aria-label="Select Terminal Shell"
-                  value={activeTerminal?.shellType || 'powershell'}
+                  aria-label="New Persistent Shell"
+                  title="Spawn a new persistent shell"
+                  value={activeTerminal?.shell || 'powershell'}
                   onChange={(e) => {
-                    const val = e.target.value as any
-                    const names: Record<string, string> = {
-                      powershell: 'powershell.exe',
-                      cmd: 'cmd.exe',
-                      bash: 'bash.exe',
-                      python: 'python.exe',
-                      node: 'node.exe',
-                    }
-                    setTerminalInstances((prev) =>
-                      prev.map((t) =>
-                        t.id === activeTerminalId
-                          ? { ...t, shellType: val, name: names[val] || `${val}.exe` }
-                          : t
-                      )
-                    )
+                    const val = e.target.value as 'powershell' | 'cmd' | 'bash' | 'python' | 'node'
+                    void createRealTerminal(val).then((inst) => {
+                      if (!inst) {
+                        setOrphanShellLogs((prev) =>
+                          [...prev, `✖ cannot spawn ${val} shell: terminal backend offline${terminalError ? ` (${terminalError})` : ''}`].slice(-2000)
+                        )
+                      }
+                    })
                   }}
                   style={{
                     fontSize: 11,
@@ -1640,7 +1741,34 @@ export function AuxiliaryPane({
                       </div>
                     )})
                   ) : (
-                    <div style={{ color: '#94a3b8' }}>Terminal console output ready.</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                      {orphanShellLogs.length > 0 ? (
+                        orphanShellLogs.map((logLine, idx) => (
+                          <div key={idx} style={{ color:'#334155', whiteSpace:'pre-wrap', wordBreak:'break-all', overflowWrap:'anywhere', userSelect:'text' }}>
+                            {logLine}
+                          </div>
+                        ))
+                      ) : null}
+                      <div style={{ fontSize:12, color:'#94a3b8', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:8, padding:'10px 12px' }}>
+                        <div style={{ fontWeight:700, color:'#475569', marginBottom:4 }}>
+                          {terminalBackend === 'offline' ? 'Persistent shell backend offline' : 'No live shell'}
+                        </div>
+                        <div>
+                          {terminalBackend === 'offline'
+                            ? `Typed commands still run as one-shot shell_exec below. AI shell activity streams here. To enable persistent shells, wire the terminal:* IPC channels${terminalError ? ` (last error: ${terminalError})` : ''}.`
+                            : 'Spawning the persistent shell… typed commands run as one-shot shell_exec until it connects.'}
+                        </div>
+                        {terminalBackend === 'offline' ? (
+                          <button
+                            type="button"
+                            onClick={() => { void createRealTerminal('powershell') }}
+                            style={{ marginTop:8, padding:'4px 12px', borderRadius:6, border:'1px solid #cbd5e1', background:'#ffffff', color:'#0f172a', fontSize:12, fontWeight:600, cursor:'pointer' }}
+                          >
+                            Retry shell connection
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
                   )}
 
                   {/* Terminal Shell Input Prompt - Integrated directly inside console stream */}
