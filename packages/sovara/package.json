@@ -3,16 +3,15 @@
   "version": "0.1.5",
   "description": "Installer CLI for Sovara, the local-first autonomous AI desktop agent",
   "bin": {
-    "sovara": "bin/sovara.js"
+    "sovara": "bin/install.js"
   },
   "files": [
     "bin",
-    "lib",
     "README.md"
   ],
   "scripts": {
-    "start": "node ./bin/sovara.js status",
-    "prepublishOnly": "node --check bin/sovara.js && node --check bin/install.js && node --check bin/install-impl.js && node --check lib/hardware.js && node --check lib/fit.js && node --check lib/runtimes.js && node --check lib/chat.js && node --check lib/store.js && node --check lib/tools.js"
+    "start": "node ./bin/install.js",
+    "prepublishOnly": "node --check bin/install.js"
   },
   "repository": {
     "type": "git",
