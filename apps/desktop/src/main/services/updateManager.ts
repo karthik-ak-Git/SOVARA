@@ -1,6 +1,11 @@
 import { app } from 'electron'
-import { autoUpdater, type AppUpdater, type UpdateInfo } from 'electron-updater'
+// electron-updater ships as CommonJS. The desktop main bundle is ESM, so use
+// its default CommonJS namespace instead of a named ESM import.
+import electronUpdater from 'electron-updater'
+import type { AppUpdater, UpdateInfo } from 'electron-updater'
 import { compareVersions, DEFAULT_UPDATE_FEED_URL, type UpdateCheckResult } from './updateFeed'
+
+const { autoUpdater } = electronUpdater
 
 export const UPDATE_REPO_OWNER = 'karthik-ak-Git'
 export const UPDATE_REPO_NAME = 'SOVARA'

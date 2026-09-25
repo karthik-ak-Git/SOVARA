@@ -16,10 +16,10 @@ const { fakeUpdater } = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { getVersion: () => '1.1.1', isPackaged: false },
+  app: { getVersion: () => '1.1.2', isPackaged: false },
 }))
 
-vi.mock('electron-updater', () => ({ autoUpdater: fakeUpdater }))
+vi.mock('electron-updater', () => ({ default: { autoUpdater: fakeUpdater } }))
 
 import {
   checkForUpdatesWithManager,
