@@ -161,7 +161,7 @@ const NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Knowledge',
     items: [
-      { id: 'knowledge-graph', label: 'Knowledge Graph 3D', icon: <Layers size={15} /> },
+      { id: 'knowledge-graph', label: 'Knowledge Graph', icon: <Layers size={15} /> },
     ],
   },
 ]
@@ -2731,6 +2731,19 @@ export function SettingsModal({
             </div>
           ) : null}
 
+          {/* KNOWLEDGE GRAPH TAB — must live inside <main> so it renders
+              within .settings-modal-window, not beside it on the overlay */}
+          {activeTab === 'knowledge-graph' ? (
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', overflow: 'hidden' }}>
+              <div className="settings-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
+                <h1 className="settings-modal-title">Knowledge Graph</h1>
+                <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • 2D • drag to pan, scroll to zoom</p>
+              </div>
+              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: 'var(--bg-elevated)' }}>
+                <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
+              </div>
+            </div>
+          ) : null}
 
         </main>
       </div>
@@ -3125,17 +3138,6 @@ export function SettingsModal({
         </div>
       ) : null}
 
-          {activeTab === 'knowledge-graph' ? (
-            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', overflow: 'hidden' }}>
-              <div className="settings-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
-                <h1 className="settings-modal-title">Knowledge Graph</h1>
-                <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • 2D • drag to pan, scroll to zoom</p>
-              </div>
-              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: 'var(--bg-elevated)' }}>
-                <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
-              </div>
-            </div>
-          ) : null}
     </div>
   )
 }

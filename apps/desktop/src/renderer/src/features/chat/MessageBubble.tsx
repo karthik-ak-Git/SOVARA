@@ -127,6 +127,7 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
     return [{ type: 'text', text: raw }]
   }
   const parts: ParsedPart[] = []
+  let suppressedJsonEnvelope = false
   const fenceRegex = /```([a-zA-Z0-9_:-]*)\n([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
@@ -144,13 +145,33 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
       continue
     }
 
-    // Structured JSON response check (json:response or json with summary/files)
-    if (lang === 'json:response' || (lang.startsWith('json') && code.includes('"summary"'))) {
+    // JSON is a response envelope, not automatically a file artifact. Internal
+    // thought/action envelopes are hidden; real server/tool responses render as
+    // a structured result card instead of data.json/json-output/json-snippet.
+    if (lang.startsWith('json') || lang === 'data.json') {
       try {
         const parsed = JSON.parse(code)
         if (parsed && typeof parsed === 'object') {
-          const summary = typeof parsed.summary === 'string' ? parsed.summary : undefined
-          const details = typeof parsed.details === 'string' ? parsed.details : typeof parsed.text === 'string' ? parsed.text : undefined
+          const hasInternalEnvelope = ('thought' in parsed || 'todos' in parsed || 'action' in parsed || 'tool_call' in parsed) && !('port' in parsed || 'url' in parsed || 'summary' in parsed || 'files' in parsed)
+          if (hasInternalEnvelope) {
+            suppressedJsonEnvelope = true
+            lastIndex = match.index + match[0].length
+            continue
+          }
+          const summary = typeof parsed.summary === 'string'
+            ? parsed.summary
+            : (typeof parsed.status === 'string' ? `Server response: ${parsed.status}` : undefined)
+          const details = typeof parsed.details === 'string'
+            ? parsed.details
+            : typeof parsed.text === 'string'
+              ? parsed.text
+              : typeof parsed.output === 'string'
+                ? parsed.output
+                : typeof parsed.stdout === 'string'
+                  ? parsed.stdout
+                  : typeof parsed.stderr === 'string'
+                    ? parsed.stderr
+                    : undefined
           const files = Array.isArray(parsed.files)
             ? (parsed.files as Array<Record<string, unknown>>)
                 .filter((f) => f && typeof f['path'] === 'string')
@@ -160,8 +181,8 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
                   description: typeof f['description'] === 'string' ? f['description'] : undefined,
                 }))
             : undefined
-          const port = typeof parsed.port === 'number' ? parsed.port : undefined
-          const url = typeof parsed.url === 'string' ? parsed.url : undefined
+          const port = typeof parsed.port === 'number' ? parsed.port : typeof parsed.server_port === 'number' ? parsed.server_port : undefined
+          const url = typeof parsed.url === 'string' ? parsed.url : typeof parsed.server_url === 'string' ? parsed.server_url : undefined
           if (summary || files || details || port || url) {
             parts.push({
               type: 'structured',
@@ -233,6 +254,13 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
         const lang = header.slice(0, nl).trim() || 'code'
         const code = normalizeCode(header.slice(nl + 1))
         const title = lang.toLowerCase().includes('html') ? 'index.html' : `${lang}-output`
+        if (lang.toLowerCase().startsWith('json') || lang.toLowerCase() === 'data.json') {
+          // Do not flash a half-written JSON protocol envelope as data.json
+          // while the model is still streaming; the closed block is parsed as
+          // either a hidden internal envelope or a structured response below.
+          if (tail.slice(0, openIdx).trim()) parts.push({ type: 'text', text: tail.slice(0, openIdx) })
+          return parts.length > 0 ? parts : [{ type: 'text', text: '' }]
+        }
         if (tail.slice(0, openIdx).trim()) parts.push({ type: 'text', text: tail.slice(0, openIdx) })
         parts.push({ type: 'code', language: lang || 'html', code, title })
         return parts
@@ -246,7 +274,7 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
   if (lastIndex < raw.length) {
     parts.push({ type: 'text', text: raw.slice(lastIndex) })
   }
-  return parts.length > 0 ? parts : [{ type: 'text', text: raw }]
+  return parts.length > 0 ? parts : [{ type: 'text', text: suppressedJsonEnvelope ? '' : raw }]
 }
 
 function formatTime(ts?: number): string {

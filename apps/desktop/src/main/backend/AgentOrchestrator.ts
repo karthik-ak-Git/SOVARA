@@ -34,7 +34,7 @@ import { DEFAULT_TUNING } from '../config/tuning'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
-import { extractToolFences, stripToolFences, looksLikeToolFence, looksLikeBareToolCall, extractBareToolCalls, stripBareToolCalls } from './tools/fenceTools'
+import { extractToolFences, stripToolFences, looksLikeToolFence, looksLikeBareToolCall, extractBareToolCalls, stripBareToolCalls, extractJsonToolCalls, stripJsonToolCallEnvelopes } from './tools/fenceTools'
 import type {
   ToolExecutionContext,
   ToolHook,
@@ -71,13 +71,61 @@ export interface SovaraExecutionTrace {
   skillsNeeded: string[]
   skillsRead: string[]
   toolCalls: Array<{ name: string; args: Record<string, unknown>; step: number }>
-  toolResults: Array<{ toolName: string; success: boolean }>
+  toolResults: Array<{ toolName: string; success: boolean; effect?: 'file' | 'shell' | 'other'; path?: string }>
   gateChecks: Array<{ gate: string; passed: boolean; message: string }>
   networkCalls: Array<{ url: string; blocked: boolean }>
   artifactPath?: string
   startTime: number
   endTime?: number
   success: boolean
+}
+
+type ToolEffect = 'file' | 'shell' | 'other'
+
+function parseToolPayload(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+function toolResultSucceeded(value: unknown): boolean {
+  const payload = parseToolPayload(value)
+  if (!payload) {
+    return typeof value === 'string' ? !/^\s*(?:error|failed|failure)\s*[:\-\s]/i.test(value) : value !== false
+  }
+  if (payload['status'] === 'error' || payload['ok'] === false || payload['success'] === false) return false
+  return payload['error'] === undefined || payload['error'] === null || payload['error'] === ''
+}
+
+function describeToolResult(toolName: string, value: unknown): { success: boolean; effect?: ToolEffect; path?: string } {
+  const success = toolResultSucceeded(value)
+  const payload = parseToolPayload(value)
+  if (!success) return { success }
+
+  if (toolName === 'fs_write' || toolName === 'fs_patch') {
+    const bytes = typeof payload?.['bytes'] === 'number' ? payload['bytes'] : undefined
+    const verified = payload?.['verified'] !== false
+    // An explicit empty write is a real filesystem effect, but it is not a
+    // completed code artifact and must not satisfy a requested file mutation.
+    if (!verified || (toolName === 'fs_write' && bytes === 0)) return { success: true, path: typeof payload?.['path'] === 'string' ? payload['path'] : undefined }
+    return {
+      success: true,
+      effect: 'file',
+      path: typeof payload?.['path'] === 'string' ? payload['path'] : undefined,
+    }
+  }
+
+  if (['shell_exec', 'run_command', 'exec_shell_command', 'bash', 'cmd', 'powershell', 'terminal_exec'].includes(toolName)) {
+    return { success: true, effect: 'shell' }
+  }
+
+  if (toolName === 'run_code') return { success: true }
+  return { success: true, effect: 'other' }
 }
 
 function buildGateMessage(missing: string[]): string {
@@ -473,15 +521,16 @@ export class AgentOrchestrator {
   private readonly inFlight = new Map<string, AbortController>()
   private readonly pendingApprovals = new Map<string, { resolve: (val: { approved: boolean, modifiedArgs?: any }) => void, toolName: string, toolArgs: Record<string, unknown>, sessionId: string, projectId: string | null }>()
   /** clarify tool: toolCallId → resolve fn for the guided question card (answered by chat:approve). */
-  private readonly pendingClarifies = new Map<string, (answers: Record<string, string> | null) => void>()
+  private readonly pendingClarifies = new Map<string, { resolve: (answers: Record<string, string> | null) => void; timeout: ReturnType<typeof setTimeout> }>()
 
   public resolveToolApproval(toolCallId: string, approved: boolean, modifiedArgs?: any) {
     // clarify answers ride the same chat:approve channel — route them first
-    const clarifyResolve = this.pendingClarifies.get(toolCallId)
-    if (clarifyResolve) {
+    const clarify = this.pendingClarifies.get(toolCallId)
+    if (clarify) {
+      clearTimeout(clarify.timeout)
       this.pendingClarifies.delete(toolCallId)
       const answers = approved ? ((modifiedArgs as Record<string, unknown> | undefined)?.['answers'] as Record<string, string> | undefined) ?? {} : null
-      clarifyResolve(answers)
+      clarify.resolve(answers)
       return
     }
     const pending = this.pendingApprovals.get(toolCallId)
@@ -532,14 +581,15 @@ export class AgentOrchestrator {
     console.log(`[SOVARA][ORCH] clarify: asking ${questions.length} question(s) (toolCallId=${toolCallId})`)
     this.deps.emit({ sessionId, kind: 'agent:clarify', toolCallId, questions, projectId } as never)
     const answers = await new Promise<Record<string, string> | null>((resolve) => {
-      this.pendingClarifies.set(toolCallId, resolve)
-      // Safety: never hang the tool loop forever if the card is never answered
-      setTimeout(() => {
+      // Safety: never hang the tool loop forever if the card is never answered.
+      // Keep the timer so a real UI answer can cancel it immediately.
+      const timeout = setTimeout(() => {
         if (this.pendingClarifies.delete(toolCallId)) {
           console.warn(`[SOVARA][ORCH] clarify: timed out waiting for answers (${toolCallId})`)
           resolve(null)
         }
       }, 600_000)
+      this.pendingClarifies.set(toolCallId, { resolve, timeout })
     })
     return JSON.stringify({ answers, skipped: answers === null })
   }
@@ -575,8 +625,12 @@ export class AgentOrchestrator {
     const startTime = Date.now()
     const infra = this.getToolInfra()
 
-    // 1. If tool is registered in the enhanced infrastructure with a registered handler, run it there
-    if (infra && infra.getRegistry().has(toolName)) {
+    // 1. If tool is registered in the enhanced infrastructure with a registered handler, run it there.
+    // run_code is intentionally routed through the ToolPort adapter unless the
+    // adapter owns the same registry; AppBackend initializes the global PTC
+    // registry independently, and using it before the adapter registers fs/shell
+    // handlers would make `tools.fs_write(...)` fail with "not registered".
+    if (toolName !== 'run_code' && infra && infra.getRegistry().has(toolName)) {
       try {
         const policy: ExecutionPolicy = {
           mode: context.parallelStrategy === 'exclusive' ? 'exclusive' : 'parallel',
@@ -1723,8 +1777,17 @@ export class AgentOrchestrator {
                 }
               }
               delta = stripToolFences(delta)
-              if (!delta) continue
             }
+            const jsonCalls = extractJsonToolCalls(delta)
+            for (const f of jsonCalls) {
+              const sig = `${f.toolName}:${JSON.stringify(f.args)}`
+              if (!streamFenceSet.has(sig)) {
+                streamFenceSet.add(sig)
+                pendingStreamCalls.push(f)
+              }
+            }
+            if (jsonCalls.length > 0) delta = stripJsonToolCallEnvelopes(delta)
+            if (!delta) continue
             text += delta
             if (orchFirstTokenAt === null) orchFirstTokenAt = Date.now()
             this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
@@ -1781,6 +1844,7 @@ export class AgentOrchestrator {
               const fences = []
               if (looksLikeToolFence(sourceText)) fences.push(...extractToolFences(sourceText))
               if (looksLikeBareToolCall(sourceText)) fences.push(...extractBareToolCalls(sourceText))
+              fences.push(...extractJsonToolCalls(sourceText))
               
               for (const f of fences) {
                 if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
@@ -1804,6 +1868,8 @@ export class AgentOrchestrator {
             if (injectedCalls || pendingStreamCalls.length > 0) {
               if (looksLikeToolFence(text)) text = stripToolFences(text)
               if (looksLikeBareToolCall(text)) text = stripBareToolCalls(text)
+              if (extractJsonToolCalls(text).length > 0) text = stripJsonToolCallEnvelopes(text)
+              if (extractJsonToolCalls(allReasoning).length > 0) allReasoning = stripJsonToolCallEnvelopes(allReasoning)
             }
           }
 
@@ -1839,10 +1905,13 @@ export class AgentOrchestrator {
                 toolArgs['path'] = normalizeToolPath(toolName, toolArgs['path'] as string, sessionWsRoot)
               }
 
-              this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `executing ${toolName}` })
-              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: `[${toolName}] ...`, toolName } as never)
+              this.emit(sid, 'tool:start', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolCallId: tc.id, toolName, args: toolArgs, detail: `executing ${toolName}` })
+              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: `[${toolName}] ...`, toolCallId: tc.id, toolName, args: toolArgs } as never)
               console.log(`[SOVARA][TOOL_DISPATCH] Starting tool="${toolName}" step=${loopSteps} args=${JSON.stringify(toolArgs)}`)
 
+              // Persist the start before execution so terminal/sidebar views can
+              // render a correlated live command even while it is running.
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: tc.id as never, name: toolName, args: toolArgs } as never) } catch {}
               let toolResult: string
               // ── clarify: guided question card — ask the user instead of hallucinating/looping ──
               if (toolName === 'clarify') {
@@ -1895,9 +1964,51 @@ export class AgentOrchestrator {
               } // end non-clarify branch
 
               console.log(`[SOVARA][TOOL_DISPATCH] Completed tool="${toolName}" resultLen=${toolResult.length} preview="${toolResult.slice(0, 150).replace(/\s+/g, ' ')}"`)
+
+              // run_code can execute tools programmatically. Promote those nested
+              // calls into the same audit/UI stream as top-level calls so terminal
+              // output, file changes, and the recap reflect what actually ran.
+              if (toolName === 'run_code') {
+                try {
+                  const parsedRun = JSON.parse(toolResult) as { toolCalls?: unknown }
+                  const nestedCalls = Array.isArray(parsedRun.toolCalls) ? parsedRun.toolCalls : []
+                  for (let ni = 0; ni < nestedCalls.length; ni++) {
+                    const nested = (nestedCalls[ni] ?? {}) as Record<string, unknown>
+                    const nestedName = String(nested['toolName'] ?? nested['name'] ?? '').trim()
+                    if (!nestedName) continue
+                    const nestedArgs = (nested['arguments'] ?? nested['args'] ?? {}) as Record<string, unknown>
+                    const nestedRawResult = nested['result']
+                    const nestedError = nested['error']
+                    const nestedOutcomeValue = nestedRawResult ?? (nestedError ? { error: String(nestedError) } : undefined)
+                    const nestedDetails = describeToolResult(nestedName, nestedOutcomeValue)
+                    const nestedContent = typeof nestedRawResult === 'string'
+                      ? nestedRawResult
+                      : JSON.stringify(nestedOutcomeValue ?? {})
+                    const nestedId = `${nestedName}-run-code-${Date.now()}-${ni}`
+                    trace.toolCalls.push({ name: nestedName, args: nestedArgs, step: loopSteps - 1 })
+                    trace.toolResults.push({ toolName: nestedName, ...nestedDetails })
+                    toolHistoryForGate.push({ name: nestedName, args: nestedArgs })
+                    if (nestedName === 'fs_write' || nestedName === 'fs_patch') {
+                      trace.gateChecks.push({ gate: 'fs_write', passed: nestedDetails.success && nestedDetails.effect === 'file', message: `wrote ${String(nestedArgs.path ?? '')}` })
+                    }
+                    if (nestedName === 'read_skill') {
+                      const readName = String(nestedArgs.skill_name ?? nestedArgs.skillName ?? '').toLowerCase()
+                      if (readName) {
+                        skillsReadSet.add(readName)
+                        trace.skillsRead.push(readName)
+                      }
+                    }
+                    try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: nestedId as never, name: nestedName, args: nestedArgs, parentToolCallId: tc.id, source: 'run_code' } as never) } catch {}
+                    try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: nestedId as never, name: nestedName, content: nestedContent, parentToolCallId: tc.id, source: 'run_code' } as never) } catch {}
+                    this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolCallId: nestedId, toolName: nestedName, args: nestedArgs, detail: `run_code → ${nestedContent.slice(0, 120)}` })
+                  }
+                } catch { /* run_code result is allowed to be non-JSON */ }
+              }
+
               // Trace for audit + gate history
               trace.toolCalls.push({ name: toolName, args: toolArgs, step: loopSteps - 1 })
-              trace.toolResults.push({ toolName, success: !toolResult.includes('"error"'), })
+              const parentToolResult = describeToolResult(toolName, toolResult)
+              trace.toolResults.push({ toolName, ...parentToolResult })
               toolHistoryForGate.push({ name: toolName, args: toolArgs })
               if (toolName === 'read_skill') {
                 const readName = String((toolArgs as any).skill_name ?? (toolArgs as any).skillName ?? '').toLowerCase()
@@ -1907,13 +2018,12 @@ export class AgentOrchestrator {
                 }
               }
               if (toolName === 'fs_write' || toolName === 'fs_patch') {
-                trace.gateChecks.push({ gate: 'fs_write', passed: true, message: `wrote ${String((toolArgs as any).path ?? '')}` })
+                trace.gateChecks.push({ gate: 'fs_write', passed: parentToolResult.success && parentToolResult.effect === 'file', message: `wrote ${String((toolArgs as any).path ?? '')}` })
               }
 
-              try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: tc.id as never, name: toolName, args: toolArgs } as never) } catch {}
-              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, name: toolName, content: toolResult } as never) } catch {}
-              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolName, detail: `${toolName} → ${toolResult.slice(0, 120)}` })
-              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolResult.slice(0, 400), toolName } as never)
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: tc.id as never, name: toolName, args: toolArgs, content: toolResult } as never) } catch {}
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps - 1, toolCallId: tc.id, toolName, args: toolArgs, detail: `${toolName} → ${toolResult.slice(0, 120)}` })
+              this.deps.emit({ sessionId: sid, kind: 'tool:delta', text: toolResult.slice(0, 400), toolCallId: tc.id, toolName, args: toolArgs } as never)
 
               // Append as a tool-result message so the model sees it on the next turn
               messages.push({
@@ -2179,9 +2289,9 @@ export class AgentOrchestrator {
       const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review|read|inspect|show|view|find|explain|analyze|describe)\b/i.test(content)
       const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"') || m.content.includes('"matches"'))) || /todo_write|list_files|fs_list|search_skills|explore/i.test(text)
       const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|tsx|jsx|react|mermaid|css|svg|python|py|json|sh|bash|powershell)\b[\s\S]{80,}```/i.test(text)
-      const hasArtifactTool = trace.toolResults.some((r) => r.success && ['fs_write', 'fs_patch', 'shell_exec', 'run_code'].includes(r.toolName))
+      const hasArtifactTool = trace.toolResults.some((r) => r.success && r.effect === 'file')
       const hasWrittenCode = hasArtifactTool || messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
-      const hasActionfulToolEvidence = trace.toolResults.some((r) => r.success && !['search_skills', 'read_skill', 'todo_write'].includes(r.toolName))
+      const hasActionfulToolEvidence = trace.toolResults.some((r) => r.success && !['search_skills', 'read_skill', 'todo_write', 'run_code'].includes(r.toolName))
       const isFileMutationIntent = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
       const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
       const hasImageAttachment = attached.files.some((f) => f.kind === 'image')
@@ -2189,7 +2299,7 @@ export class AgentOrchestrator {
       const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
       const isActionableTask = isFileMutationIntent || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent'
       const isPlanOnly = Boolean(toolCatalog) && isActionableTask && !hasActionfulToolEvidence && isPlanOnlyResponse(text)
-      const hasShellTool = trace.toolResults.some((r) => r.success && ['shell_exec', 'run_code', 'bash', 'cmd', 'powershell', 'terminal_exec'].includes(r.toolName))
+      const hasShellTool = trace.toolResults.some((r) => r.success && r.effect === 'shell')
       const actionGateFailures: string[] = []
       if (isFileMutationIntent && !hasArtifactTool) actionGateFailures.push('fs_write or fs_patch must create the requested file')
       if (needsShellAction && !hasShellTool) actionGateFailures.push('shell_exec or run_code must install/run the requested command')
@@ -2250,16 +2360,18 @@ export class AgentOrchestrator {
       // allowing final synthesis or task:complete. This prevents a local model
       // that only narrates a plan from being reported as a successful agent.
       const successfulTools = new Set(trace.toolResults.filter((r) => r.success).map((r) => r.toolName))
+      const successfulFileTools = new Set(trace.toolResults.filter((r) => r.success && r.effect === 'file').map((r) => r.toolName))
+      const successfulShellTools = new Set(trace.toolResults.filter((r) => r.success && r.effect === 'shell').map((r) => r.toolName))
       const hasImageAttachment = attached.files.some((f) => f.kind === 'image')
       const needsFileMutation = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
       const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
       const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
       const needsInspectionAction = !hasImageAttachment && (/\b(?:read|inspect|list|find|show|view|open)\b/i.test(content) || (classification.kind === 'tool-use' && !needsWebAction))
       const requiredActionFailures: string[] = []
-      if (needsFileMutation && !['fs_write', 'fs_patch', 'shell_exec', 'run_code'].some((name) => successfulTools.has(name))) {
+      if (needsFileMutation && successfulFileTools.size === 0) {
         requiredActionFailures.push('no successful file-writing tool was executed')
       }
-      if (needsShellAction && !['shell_exec', 'run_code', 'bash', 'cmd', 'powershell', 'terminal_exec'].some((name) => successfulTools.has(name))) {
+      if (needsShellAction && successfulShellTools.size === 0) {
         requiredActionFailures.push('no successful install/run command was executed')
       }
       if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search'].some((name) => successfulTools.has(name))) {
@@ -2271,8 +2383,13 @@ export class AgentOrchestrator {
       if (classification.kind === 'agent' && successfulTools.size === 0) {
         requiredActionFailures.push('the agent task dispatched no successful tool')
       }
+      if (classification.kind === 'agent' && trace.toolResults.some((r) => r.toolName === 'run_code' && r.success) && !trace.toolResults.some((r) => r.success && r.effect)) {
+        requiredActionFailures.push('run_code completed without a verified nested tool effect')
+      }
       const requiresExecution = needsFileMutation || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent' || (classification.kind === 'tool-use' && Boolean(opts?.webSearch))
       if (requiresExecution && requiredActionFailures.length > 0) {
+        trace.success = false
+        trace.endTime = Date.now()
         const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. The model returned text without an observed successful action. No task completion was recorded.`
         this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
         try {
@@ -2290,6 +2407,8 @@ export class AgentOrchestrator {
             durationMs: Date.now() - startedAll,
             routingReason: routing.reason,
             outcome: 'incomplete',
+            success: false,
+            toolResults: trace.toolResults,
             error: message,
           })
         } catch { /* best-effort */ }
@@ -2435,11 +2554,20 @@ export class AgentOrchestrator {
         }
         if (missed > 0) text = stripBareToolCalls(text)
       }
+      for (const f of extractJsonToolCalls(text)) {
+        const args = normBareArgs(f.toolName, { ...f.args })
+        if (await dispatchMissedFence(f.toolName, args)) missed++
+      }
+      if (extractJsonToolCalls(text).length > 0) text = stripJsonToolCallEnvelopes(text)
       if (looksLikeBareToolCall(allReasoning)) {
         for (const f of extractBareToolCalls(allReasoning)) {
           const args = normBareArgs(f.toolName, { ...f.args })
           if (await dispatchMissedFence(f.toolName, args)) missed++
         }
+      }
+      for (const f of extractJsonToolCalls(allReasoning)) {
+        const args = normBareArgs(f.toolName, { ...f.args })
+        if (await dispatchMissedFence(f.toolName, args)) missed++
       }
       // Inline fs/shell leak follow-up: Qwen at 7/32 layers often emits <fs_list path="."> as text instead of tool_call.
       // We already executed it via tryInlineTools and have inlineToolOutputs — now synthesize a final answer with those results
@@ -2581,6 +2709,7 @@ export class AgentOrchestrator {
       const detected = detectOutputFormat(content)
       if (detected) {
         const alreadyHasArtifact = (() => {
+          if (trace.toolResults.some((r) => r.success && r.effect === 'file')) return true
           const needle = `.${detected.kind}`.toLowerCase()
           const hay = inlineToolOutputs.join(' ').toLowerCase()
           if (hay.includes(needle) && hay.includes('"ok":true')) return true
@@ -2653,15 +2782,23 @@ export class AgentOrchestrator {
 
       // JSON-first protocol: strip leaked reasoning/protocol tags, then
       // guarantee the answer ends with a ## Recap built from real tool calls.
-      const recapFiles = [...new Set(trace.toolCalls
-        .filter((t) => t.name === 'fs_write' || t.name === 'fs_patch')
-        .map((t) => String((t.args as unknown as Record<string, unknown>)?.path ?? ''))
+      const verifiedToolNames = new Set(trace.toolResults
+        .filter((r) => r.success && r.toolName !== 'run_code' && (!['fs_write', 'fs_patch'].includes(r.toolName) || r.effect === 'file'))
+        .map((r) => r.toolName))
+      const recapTools = trace.toolCalls
+        .filter((t) => verifiedToolNames.has(t.name))
+        .map((t) => ({ name: t.name, args: t.args as unknown as Record<string, unknown> }))
+      const recapFiles = [...new Set(trace.toolResults
+        .filter((r) => r.success && r.effect === 'file' && r.path)
+        .map((r) => String(r.path))
         .filter(Boolean))].slice(0, 12)
       text = ensureRecap(sanitizeAssistantText(text), {
-        tools: trace.toolCalls.map((t) => ({ name: t.name, args: t.args as unknown as Record<string, unknown> })),
+        tools: recapTools,
         files: recapFiles,
         model,
       })
+      trace.success = true
+      trace.endTime = Date.now()
       const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
       if (ownedInstanceForMetrics) {
         const elapsedS = Math.max(0.1, (Date.now() - startedAll) / 1000)
@@ -2697,6 +2834,8 @@ export class AgentOrchestrator {
           durationMs: Date.now() - startedAll,
           streamed,
           routingReason: routing.reason,
+          success: trace.success,
+          toolResults: trace.toolResults,
         })
       } catch { /* best-effort */ }
 
@@ -3091,17 +3230,19 @@ export class AgentOrchestrator {
             try { clarifyPid = ((await this.deps.persistence.get(sessionId).catch(() => null)) as { projectId?: string | null } | null)?.projectId ?? null } catch {}
             const out = await this.handleClarifyCall(sid, tid, args, clarifyPid)
             inlineToolOutputs.push(`[clarify]\n${out}`)
-            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, content: out } as never) } catch {}
+            try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, name: tName, args, content: out } as never) } catch {}
             regenTools.push({ name: tName, args })
             return true
           } catch { return false }
         }
         try {
-          this.deps.emit({ sessionId: sid, kind: 'tool:start', toolName: tName, detail: `post-stream ${tName} — dispatching` } as never)
+          const recoveredId = `${tName}-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+          try { await this.deps.persistence.appendEvent(sessionId, 'tool/call' as never, { toolCallId: recoveredId as never, name: tName, args, source: 'post-stream-recovery' } as never) } catch {}
+          this.deps.emit({ sessionId: sid, kind: 'tool:start', toolCallId: recoveredId, toolName: tName, args, detail: `post-stream ${tName} — dispatching` } as never)
           const r = await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch(tName, args)
           inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\n${r.slice(0, 4000)}`)
-          try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${tName}-${Date.now()}` as never, content: r.slice(0, 8000) } as never) } catch {}
-          this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName: tName, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
+          try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: recoveredId as never, name: tName, args, content: r.slice(0, 8000) } as never) } catch {}
+          this.deps.emit({ sessionId: sid, kind: 'tool:end', toolCallId: recoveredId, toolName: tName, args, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
           regenTools.push({ name: tName, args })
           return true
         } catch { return false }
@@ -3134,6 +3275,9 @@ export class AgentOrchestrator {
       if (looksLikeBareToolCall(allReasoning)) {
         for (const f of extractBareToolCalls(allReasoning)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
       }
+      for (const f of extractJsonToolCalls(text)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
+      if (extractJsonToolCalls(text).length > 0) text = stripJsonToolCallEnvelopes(text)
+      for (const f of extractJsonToolCalls(allReasoning)) { normalizeAbsPath(f); if (await dispatchMissedFence(f.toolName, { ...f.args })) missed++ }
       // Strip bare tool calls from text before checking if it's empty (regenerate path)
       if (text.trim() !== '' && looksLikeBareToolCall(text)) {
         const stripped = stripBareToolCalls(text)

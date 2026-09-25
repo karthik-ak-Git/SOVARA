@@ -227,6 +227,20 @@ export class ToolRegistry implements IToolRegistry {
     };
 
     try {
+      this.validateArguments(toolName, arguments_);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        toolCallId,
+        toolName,
+        success: false,
+        error: errorMessage,
+        errorCode: 'INVALID_ARGUMENTS',
+        executionTime: Date.now() - startTime,
+      };
+    }
+
+    try {
       // Pre-execute hooks
       await this.runPreExecuteHooks(toolName, hookContext);
 

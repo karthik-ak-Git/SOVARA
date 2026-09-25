@@ -263,6 +263,7 @@ export class ToolInfrastructure {
         properties: {
           code: {
             type: 'string',
+            minLength: 1,
             description: 'JavaScript code to execute',
           },
           language: {

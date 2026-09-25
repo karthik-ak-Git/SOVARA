@@ -255,31 +255,10 @@ export function ChatView({
     return () => window.removeEventListener('keydown', onKey)
   }, [streaming, onCancel])
 
-  useEffect(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]
-      if (e && e.type === 'assistant/message' && e.data) {
-        const c = typeof e.data === 'string' ? e.data : (e.data as { content?: string }).content
-        if (c && typeof c === 'string' && c.includes('```')) {
-          const match = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/.exec(c)
-          if (match) {
-            const lang = match[1]?.trim() || 'code'
-            const code = match[2]?.trimEnd() ?? ''
-            const portMatch = code.match(/:\d+/)
-            const title = lang.toLowerCase() === 'url' || lang.toLowerCase() === 'server' || /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(code.trim())
-              ? `Live Server (${portMatch ? portMatch[0].slice(1) : 'App'})`
-              : lang.toLowerCase().includes('tsx') ? 'Component.tsx'
-              : lang.toLowerCase().includes('ts') ? 'script.ts'
-              : lang.toLowerCase().includes('py') ? 'script.py'
-              : lang.toLowerCase().includes('html') ? 'index.html'
-              : `${lang}-snippet`
-            setActiveArtifact({ title, language: lang, code })
-            return
-          }
-        }
-      }
-    }
-  }, [events])
+  // Assistant code fences are content, not proof that a file was materialized.
+  // Do not auto-open the first fence as an artifact; only explicit artifact/file
+  // actions and verified structured responses should open the viewer.
+
 
   const handleOpenArtifactInPanel = useCallback((art: ArtifactInfo) => {
     setActiveArtifact(art)

@@ -59,23 +59,58 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
     buildWikiGraph(workspaceRoot).then((r) => {
       if (cancelled) return
       if (r.ok && r.nodes.length > 0) {
-        // Assign 2D positions via circular layout (properly connected, not 3D floating)
-        const positioned = r.nodes.map((n, i) => {
+        // Seed 2D positions on a ring (instant paint), then refine off-thread
+        // via the ForceAtlas2 worker — dots spread, connected dots pull together.
+        const seed = r.nodes.map((n, i) => {
           const angle = (i / r.nodes.length) * Math.PI * 2
           // Ring sized by node count — fit-to-view handles final scale, avoids pile-ups
           const radius = Math.min(460, 130 + r.nodes.length * 9)
           return { ...n, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
         })
         // Center hubs
-        for (const n of positioned) {
+        for (const n of seed) {
           if (n.id.includes('wiki-log') || n.label === 'Wiki Log') { n.x = 0; n.y = 0 }
           if (n.id.includes('wiki-index') || n.label === 'Wiki Index') { n.x = -80; n.y = 80 }
         }
         fittedKeyRef.current = null // new dataset → re-fit view
-        setNodes(positioned as GraphNode[])
+        setNodes(seed as GraphNode[])
         setEdges(r.edges as GraphEdge[])
         setWikiDir(r.wikiDir)
         setHint(null)
+        if (!cancelled && seed.length > 2 && seed.length <= 3000) {
+          try {
+            const worker = new Worker(new URL('./graph-layout-worker.ts', import.meta.url), { type: 'module' })
+            const kill = window.setTimeout(() => worker.terminate(), 20000)
+            worker.onmessage = (ev: MessageEvent<{ positions: Array<{ id: string; x: number; y: number }> }>) => {
+              window.clearTimeout(kill)
+              const pos = new Map(ev.data.positions.map((p) => [p.id, p]))
+              if (!cancelled) {
+                setNodes((prev) =>
+                  prev.length === seed.length
+                    ? (prev.map((n) => {
+                        const p = pos.get(n.id)
+                        return p ? { ...n, x: p.x, y: p.y } : n
+                      }) as GraphNode[])
+                    : prev,
+                )
+              }
+              worker.terminate()
+            }
+            worker.onerror = () => {
+              window.clearTimeout(kill)
+              worker.terminate()
+            }
+            worker.postMessage({
+              key: seed.map((n) => n.id).join('|'),
+              nodes: seed.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+              edges: r.edges,
+              iterations: Math.min(400, 80 + seed.length * 2),
+              scalingRatio: 10,
+            })
+          } catch {
+            // ring seed stands — graph still renders as 2D dots + lines
+          }
+        }
       } else {
         setNodes([])
         setEdges([])
@@ -97,7 +132,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
         scheduleReload()
         return
       }
-      if (ev.kind === 'tool:end' && ev.toolName === 'fs_write') {
+      if (ev.kind === 'tool:end' && (ev.toolName === 'fs_write' || ev.toolName === 'memory')) {
         scheduleReload()
       }
     })

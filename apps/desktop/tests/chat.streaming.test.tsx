@@ -5,7 +5,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor, act, renderHook } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageList } from '../src/renderer/src/features/chat/MessageList'
-import { MessageBubble } from '../src/renderer/src/features/chat/MessageBubble'
+import { MessageBubble, parseMessageContent } from '../src/renderer/src/features/chat/MessageBubble'
 import { ChatView } from '../src/renderer/src/features/chat/ChatView'
 import { deriveMessages } from '../src/renderer/src/features/chat/conversation'
 import { useChatSession } from '../src/renderer/src/features/chat/useChatSession'
@@ -44,6 +44,21 @@ describe('Commit 7 — streaming timeline', () => {
     ])
     expect(msgs).toHaveLength(2)
     expect(msgs[1]).toMatchObject({ role: 'assistant', cancelled: true })
+  })
+
+  it('hides model thought/action JSON envelopes instead of rendering data.json artifacts', () => {
+    const parts = parseMessageContent('```json-output\n{"thought":"I will run it","action":"shell_exec","tool_call":{"command":"python ode_solver.py"}}\n```')
+    expect(parts).toEqual([{ type: 'text', text: '' }])
+  })
+
+  it('renders a real server JSON response as a structured result, not a file artifact', () => {
+    const parts = parseMessageContent('```json\n{"status":"ok","port":5173,"url":"http://localhost:5173","output":"server ready"}\n```')
+    expect(parts[0]).toMatchObject({ type: 'structured', port: 5173, url: 'http://localhost:5173', details: 'server ready' })
+  })
+
+  it('does not flash an incomplete JSON protocol envelope while streaming', () => {
+    const parts = parseMessageContent('```json-output\n{"thought":"working","action":"shell_exec"', true)
+    expect(parts).toEqual([{ type: 'text', text: '' }])
   })
 })
 
@@ -172,6 +187,35 @@ describe('Commit 7 — delta subscription flow', () => {
     expect(result.current.phase).toBe('idle')
     await waitFor(() => expect(result.current.busy).toBe(false))
     expect(bridge.sentBody('chat:send')).toMatchObject({ sessionId: 's1', content: 'hello' })
+  })
+
+  it('projects live tool start/end events into the terminal event stream', async () => {
+    const bridge = mockBridge(baseHandlers())
+    const { result } = renderHook(() => useChatSession())
+    await waitFor(() => expect(result.current.selectedId).toBe('s1'))
+
+    await act(async () => {
+      bridge.emitSessionEvent({
+        sessionId: 's1',
+        kind: 'tool:start',
+        toolCallId: 'call-live-1',
+        toolName: 'shell_exec',
+        args: { command: 'node --version' },
+        detail: 'executing shell_exec',
+      })
+      bridge.emitSessionEvent({
+        sessionId: 's1',
+        kind: 'tool:end',
+        toolCallId: 'call-live-1',
+        toolName: 'shell_exec',
+        detail: 'v22.0.0',
+      })
+    })
+
+    const live = result.current.events.filter((e) => e.type === 'tool/call' || e.type === 'tool/result')
+    expect(live.map((e) => e.type)).toEqual(['tool/call', 'tool/result'])
+    expect((live[0].data as { toolCallId?: string }).toolCallId).toBe('call-live-1')
+    expect((live[1].data as { content?: string }).content).toBe('v22.0.0')
   })
 
   it('routes cancel to chat:cancel for the selected session', async () => {

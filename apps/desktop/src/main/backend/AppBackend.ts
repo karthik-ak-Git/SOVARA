@@ -203,7 +203,7 @@ export class AppBackend {
       getTodoContext: () => {
         try {
           // Last todo/write in current session is already in history via buildBudgetedHistory, but also surface a hint
-          return 'Tools available: todo_write (whole-list, pending/in_progress/completed, last-write-wins, shown in Session context TODO), fs_list {path}, fs_read {path}, shell_exec {command} — all relative to current workspace. Use todo_write first for multi-step tasks.'
+          return 'Tools available: todo_write (whole-list, pending/in_progress/completed, last-write-wins, shown in Session context TODO), fs_list {path}, fs_read {path}, shell_exec {command} — all relative to current workspace. Use todo_write first for multi-step tasks. Persist durable facts via memory store {title, type, body, links[]} as wiki/<type>s/*.md with frontmatter + [[wikilinks]] so the Knowledge Graph catches them. For long tasks (15+ tool calls or 5+ files), write docs/plans/<slug>.md first and wait for user approval before executing.'
         } catch { return null }
       },
       // Tool infrastructure - comprehensive tool system based on DeepSeek Harness

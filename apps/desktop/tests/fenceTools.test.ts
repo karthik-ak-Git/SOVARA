@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractToolFences, stripToolFences, looksLikeToolFence, parseLenientJson, extractBareToolCalls, stripBareToolCalls, looksLikeBareToolCall } from '../src/main/backend/tools/fenceTools'
+import { extractToolFences, stripToolFences, looksLikeToolFence, parseLenientJson, extractBareToolCalls, stripBareToolCalls, looksLikeBareToolCall, extractJsonToolCalls, stripJsonToolCallEnvelopes } from '../src/main/backend/tools/fenceTools'
 
 describe('extractToolFences', () => {
   it('parses a standard 3-tick fence', () => {
@@ -103,6 +103,23 @@ describe('parseLenientJson', () => {
     expect(parseLenientJson('', 'fs_list')).toEqual({ path: '.' })
     expect(parseLenientJson('%%%')).toEqual({})
     expect(parseLenientJson('%%%', 'fs_list')).toEqual({ path: '.' })
+  })
+})
+
+describe('JSON tool envelopes', () => {
+  it('parses a legacy thought/action/tool_call envelope as an executable call', () => {
+    const text = '```json-output\n{"thought":"Run the solver","action":"shell_exec","tool_call":{"command":"python ode_solver.py"}}\n```'
+    const calls = extractJsonToolCalls(text)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ toolName: 'shell_exec', args: { command: 'python ode_solver.py' } })
+    expect(stripJsonToolCallEnvelopes(text)).toBe('')
+  })
+
+  it('parses run_code fences whose JavaScript contains quoted arguments', () => {
+    const text = '```tool:run_code\n{"code":"return await tools.fs_write({ path: \'nested.txt\', content: \'hello\' })"}\n```'
+    const calls = extractToolFences(text)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ toolName: 'run_code', args: { code: "return await tools.fs_write({ path: 'nested.txt', content: 'hello' })" } })
   })
 })
 

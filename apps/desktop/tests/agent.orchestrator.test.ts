@@ -446,6 +446,117 @@ describe('AgentOrchestrator — action-first autonomy', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  it('executes a legacy JSON tool envelope and keeps the envelope out of the answer', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const emitted: ChatStreamEvent[] = []
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = []
+    const workbench = makeWorkbench([{ modelId: 'local:code-phi', displayName: 'code-phi', runtimeId: 'local', available: true }], { runtimeId: 'local', modelId: 'local:code-phi' })
+    const loaded: Array<{ id: string; modelId: string }> = []
+    const mockModels = {
+      load: async (modelId: string) => {
+        const inst = { id: `inst_${String(modelId).replace(/[^a-z0-9]/gi, '_')}`, modelId }
+        loaded.push(inst)
+        return inst
+      },
+      baseUrl: () => 'http://127.0.0.1:9/v1',
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => loaded.map((i) => ({ id: i.id, modelId: i.modelId, runtimeId: 'local', status: 'loaded' as const, ctxLen: 4096 })),
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([
+        ['```json-output\n{"thought":"Run the command","action":"shell_exec","tool_call":{"command":"node --version"}}\n```'],
+        ['The command ran successfully.'],
+      ]),
+      tools: {
+        list: () => [{ name: 'shell_exec', description: 'Run a command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
+        dispatch: async (name: string, args: Record<string, unknown>) => {
+          calls.push({ name, args })
+          return JSON.stringify({ ok: true, output: 'v22.0.0' })
+        },
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: (e) => emitted.push(e),
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: () => false }) } as never,
+    })
+
+    const result = await orchestrator.execute('sess-1' as SessionId, 'Run node --version now and report the output.', {})
+    expect(result.ok).toBe(true)
+    expect(calls).toEqual([{ name: 'shell_exec', args: { command: 'node --version' } }])
+    const events = await persistence.getEvents('sess-1' as SessionId)
+    const answer = events.find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).not.toContain('json-output')
+    expect(events.some((e) => e.type === 'tool/call' && (e.data as { name?: string }).name === 'shell_exec')).toBe(true)
+    expect(emitted.some((e) => e.kind === 'tool:start' && e.toolName === 'shell_exec')).toBe(true)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('promotes nested run_code tools into the persisted trace and recap', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'local:code-phi', displayName: 'code-phi', runtimeId: 'local', available: true }], { runtimeId: 'local', modelId: 'local:code-phi' })
+    const loaded: Array<{ id: string; modelId: string }> = []
+    const mockModels = {
+      load: async (modelId: string) => {
+        const inst = { id: `inst_${String(modelId).replace(/[^a-z0-9]/gi, '_')}`, modelId }
+        loaded.push(inst)
+        return inst
+      },
+      baseUrl: () => 'http://127.0.0.1:9/v1',
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => loaded.map((i) => ({ id: i.id, modelId: i.modelId, runtimeId: 'local', status: 'loaded' as const, ctxLen: 4096 })),
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([
+        ['```tool:run_code\n{"code":"return await tools.fs_write({ path: \'nested.txt\', content: \'hello\' })"}\n```'],
+        ['Created nested.txt.'],
+      ]),
+      tools: {
+        list: () => [{ name: 'run_code', description: 'Run JavaScript with tools', parameters: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } }],
+        dispatch: async (name: string) => {
+          if (name === 'run_code') {
+            return JSON.stringify({
+              output: 'ok',
+              toolCalls: [
+                { toolName: 'fs_list', arguments: { path: '.' }, result: { entries: [] }, timestamp: 1 },
+                { toolName: 'fs_write', arguments: { path: 'nested.txt', content: 'hello' }, result: { ok: true, path: 'nested.txt' }, timestamp: 2 },
+              ],
+            })
+          }
+          return JSON.stringify({ error: `unexpected tool ${name}` })
+        },
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: (name: string) => name === 'run_code' }) } as never,
+    })
+
+    const result = await orchestrator.execute('sess-1' as SessionId, 'Inspect a workspace and create a file.', {})
+    expect(result.ok).toBe(true)
+    const events = await persistence.getEvents('sess-1' as SessionId)
+    const calls = events.filter((e) => e.type === 'tool/call').map((e) => (e.data as { name?: string }).name)
+    expect(calls).toEqual(expect.arrayContaining(['run_code', 'fs_write']))
+    const answer = events.find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).toContain('nested.txt')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
   it('does not report success when a required command is never dispatched', async () => {
     const dir = mkTmp()
     const persistence = makePersistence()
@@ -471,6 +582,27 @@ describe('AgentOrchestrator — action-first autonomy', () => {
     const answer = (await persistence.getEvents('sess-1' as SessionId)).find((e) => e.type === 'assistant/message')?.data as { content: string }
     expect(answer.content).toContain('Autonomous execution did not complete')
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+  it('clarify emits a real question card and returns the user answer', async () => {
+    const emitted: ChatStreamEvent[] = []
+    const orchestrator = new AgentOrchestrator({
+      persistence: makePersistence(),
+      emit: (event) => emitted.push(event),
+    } as never)
+    const pending = (orchestrator as unknown as {
+      handleClarifyCall: (sessionId: string, toolCallId: string, args: Record<string, unknown>, projectId: string | null) => Promise<string>
+    }).handleClarifyCall('sess-1', 'clarify-test', {
+      questions: [{ question: 'Which runtime?', options: ['Node.js', 'Python'] }],
+    }, null)
+
+    expect(emitted.find((e) => e.kind === 'agent:clarify')).toMatchObject({
+      toolCallId: 'clarify-test',
+      questions: [{ id: 'q1', question: 'Which runtime?', options: ['Node.js', 'Python'] }],
+    })
+    orchestrator.resolveToolApproval('clarify-test', true, { answers: { q1: 'Node.js' } })
+    await expect(pending).resolves.toBe(JSON.stringify({ answers: { q1: 'Node.js' }, skipped: false }))
   })
 })
 

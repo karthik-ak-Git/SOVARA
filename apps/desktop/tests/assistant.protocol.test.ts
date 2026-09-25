@@ -127,9 +127,10 @@ describe('sanitizeAssistantText', () => {
 })
 
 describe('ensureRecap', () => {
-  it('leaves text with a Recap section untouched', () => {
-    const t = 'Answer.\n\n## Recap\n- Did: x'
-    expect(ensureRecap(t, { tools: [{ name: 'fs_list' }] })).toBe(t)
+  it('replaces an unverified model recap with runtime facts', () => {
+    const out = ensureRecap('Answer.\n\n## Recap\n- Did: x', { tools: [{ name: 'fs_list' }] })
+    expect(out).not.toContain('- Did: x')
+    expect(out).toContain('- Did: fs_list')
   })
 
   it('appends an honest trace-based recap', () => {

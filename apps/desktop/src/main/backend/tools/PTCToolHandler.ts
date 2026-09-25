@@ -126,6 +126,7 @@ export class PTCToolHandler {
 
         const timestamp = Date.now();
         
+        let recorded = false;
         try {
           // Execute tool
           const result = await self.registry.execute(toolName, args, {
@@ -140,29 +141,30 @@ export class PTCToolHandler {
             toolName,
             arguments: args,
             result: result.output,
+            error: result.success ? undefined : result.error,
             timestamp,
           };
 
           self.contextManager.addResult(context.toolCallId, ptcResult);
+          recorded = true;
 
           if (!result.success) {
-            ptcResult.error = result.error;
             throw new Error(result.error || 'Tool execution failed');
           }
 
           return result.output as T;
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          
-          const ptcResult: PTCToolResult = {
-            toolName,
-            arguments: args,
-            result: undefined,
-            error: errorMessage,
-            timestamp,
-          };
-
-          self.contextManager.addResult(context.toolCallId, ptcResult);
+          if (!recorded) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const ptcResult: PTCToolResult = {
+              toolName,
+              arguments: args,
+              result: undefined,
+              error: errorMessage,
+              timestamp,
+            };
+            self.contextManager.addResult(context.toolCallId, ptcResult);
+          }
           throw error;
         }
       },
@@ -233,6 +235,9 @@ export class PTCToolHandler {
     if (typeof code === 'function') {
       result = await code(caller);
     } else {
+      if (typeof code !== 'string' || code.trim() === '') {
+        throw new Error('run_code requires a non-empty JavaScript code string');
+      }
       // Create a function that has access to tools
       const toolNames = this.registry.list().map((t) => t.name);
       const toolsObject: Record<string, Function> = {};
@@ -297,8 +302,12 @@ export function createRunCodeToolHandler(
   ptcHandler: PTCToolHandler
 ): import('./types').ToolHandler {
   return async (rawArgs, context) => {
-    const args = rawArgs as { code?: string; language?: string };
-    const { code = '', language = 'javascript' } = args;
+    const args = rawArgs as { code?: unknown; language?: string };
+    const language = args.language ?? 'javascript';
+    if (typeof args.code !== 'string' || args.code.trim() === '') {
+      throw new Error('run_code requires a non-empty JavaScript code string');
+    }
+    const code = args.code;
 
     if (language !== 'javascript' && language !== 'js') {
       throw new Error(`Unsupported language: ${language}. Only JavaScript is supported.`);

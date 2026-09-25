@@ -1091,18 +1091,23 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('wiki:buildGraph', async (_e, raw: unknown) => {
     const parsed = zWikiBuildGraph.safeParse(raw ?? {})
     const workspaceRoot = (parsed.success ? parsed.data.workspaceRoot : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    // Reference repo doubles as a read-only wiki fallback (code conventions mirror target).
+    const llmWikiRef = path.resolve(process.cwd(), 'test/llm_wiki')
     const tryDirs = [
       path.join(path.resolve(workspaceRoot), 'wiki'),
       path.join(getSovaraDataDir(undefined), 'wiki'),
+      path.join(llmWikiRef, 'wiki'),
+      path.join(llmWikiRef, '.llm-wiki/wiki'),
       path.join(process.cwd(), 'test/llm_wiki/wiki'),
       path.join(path.resolve(workspaceRoot), '.llm-wiki/wiki'),
     ]
     let wikiDir: string | null = null
     for (const d of tryDirs) { try { if (fs.existsSync(d) && fs.statSync(d).isDirectory()) { wikiDir = d; break } } catch {} }
-    if (!wikiDir) return { ok: true, nodes: [], edges: [], wikiDir: null, hint: 'No wiki folder found — create wiki/*.md with YAML frontmatter and [[wikilinks]]' }
+    if (!wikiDir) return { ok: true, nodes: [], edges: [], wikiDir: null, searched: tryDirs, hint: `No wiki folder found (looked in ${tryDirs.length} places incl. test/llm_wiki) — create wiki/*.md with YAML frontmatter and [[wikilinks]]` }
     const nodes: Array<{ id: string; label: string; type: string; path: string; linkCount: number }> = []
     const edges: Array<{ source: string; target: string; weight: number }> = []
     const fileMap = new Map<string, string>() // lower label → id
+    const exactIds = new Set<string>() // case-sensitive ids win over aliases
     const scan = (dir: string, rel: string) => {
       let entries: fs.Dirent[] = []
       try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
@@ -1127,23 +1132,38 @@ export function registerIpcHandlers(): void {
             const mTitle = fm[1].match(/title:\s*\"?([^\n\"]+)\"?/i)
             if (mTitle) title = mTitle[1].trim()
           }
+          if (title === ent.name.replace(/\.md$/i, '')) {
+            const h1 = content.replace(/^---\n[\s\S]*?\n---\n?/, '').match(/^#\s+(.+)$/m)
+            if (h1) title = h1[1].trim()
+          }
+          if (type === 'query') continue // research artifacts are not knowledge structure
           const id = rpath
           nodes.push({ id, label: title, type, path: rpath, linkCount: 0 })
+          exactIds.add(id)
           fileMap.set(title.toLowerCase(), id)
-          fileMap.set(ent.name.replace(/\.md$/i, '').toLowerCase(), id)
+          const stem = ent.name.replace(/\.md$/i, '').toLowerCase()
+          if (!fileMap.has(stem)) fileMap.set(stem, id)
+          const hyphen = title.toLowerCase().replace(/\s+/g, '-')
+          if (!fileMap.has(hyphen)) fileMap.set(hyphen, id)
         }
       }
     }
     scan(wikiDir, '')
-    // Second pass: wikilinks [[...]] → edges
+    // Second pass: wikilinks [[target]] / [[target|alias]] → edges (deduped both directions)
+    const seenEdges = new Set<string>()
     for (const n of nodes) {
       try {
         const full = path.join(wikiDir, n.path)
         const content = fs.readFileSync(full, 'utf8')
-        const links = Array.from(content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)).map((m) => m[1].trim().toLowerCase())
-        for (const link of links) {
-          const targetId = fileMap.get(link) ?? nodes.find((x) => x.label.toLowerCase() === link || x.id.toLowerCase().includes(link))?.id
+        const links = Array.from(content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)).map((m) => m[1].trim())
+        for (const raw of links) {
+          // Exact id match wins (case-sensitive files stay distinct), then aliases.
+          const targetId = exactIds.has(raw) ? raw : (fileMap.get(raw.toLowerCase()) ?? nodes.find((x) => x.id.toLowerCase().includes(raw.toLowerCase()))?.id)
           if (targetId && targetId !== n.id) {
+            const k = `${n.id}:::${targetId}`
+            const rk = `${targetId}:::${n.id}`
+            if (seenEdges.has(k) || seenEdges.has(rk)) continue
+            seenEdges.add(k)
             edges.push({ source: n.id, target: targetId, weight: 1 })
             const src = nodes.find((x) => x.id === n.id); if (src) src.linkCount++
             const tgt = nodes.find((x) => x.id === targetId); if (tgt) tgt.linkCount++
@@ -1152,8 +1172,8 @@ export function registerIpcHandlers(): void {
       } catch {}
     }
     // Ensure at least Wiki Log / Wiki Index hubs if empty
-    if (nodes.length === 0) return { ok: true, nodes: [], edges: [], wikiDir, hint: 'wiki folder empty — add markdown files to wiki/' }
-    return { ok: true, nodes, edges, wikiDir }
+    if (nodes.length === 0) return { ok: true, nodes: [], edges: [], wikiDir, searched: tryDirs, hint: 'wiki folder empty — add markdown files to wiki/' }
+    return { ok: true, nodes, edges, wikiDir, searched: tryDirs }
   })
   // Persistent shell terminals (right-rail Terminal) — see services/ptyHost.
   registerTerminalIpc(ipcMain, (channel, payload) => {

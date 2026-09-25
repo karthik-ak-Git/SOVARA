@@ -223,7 +223,8 @@ export const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECTIVE:
 0. ACTION-FIRST AUTONOMY:
    - For any request that changes files, installs packages, runs code, launches a process, or has multiple concrete steps, the first response MUST be a tool-call fence, not a plan, promise, todo list, or JSON wrapper.
-   - Do not stop after saying "I will", "I'll now", "Let me", "Here's my plan", or "I need to". Those are progress messages, not completion.
+   - Emit executable calls only as \`\`\`tool:<name>\\n<JSON args>\\n\`\`\`. Do not wrap tool calls in \`json\`, \`json-output\`, or \`json-snippet\` fences; those are protocol/response envelopes, not files.
+   - A server response may use a JSON response envelope with \`port\`, \`url\`, \`status\`, or \`output\` so the UI can render it, but never claim a file or command succeeded without a matching tool result.
    - After each tool result, emit the next required tool call immediately. Do not describe the next step in prose first.
    - A final answer is allowed only after the requested work is observed in tool output or the user explicitly asked for explanation only.
 

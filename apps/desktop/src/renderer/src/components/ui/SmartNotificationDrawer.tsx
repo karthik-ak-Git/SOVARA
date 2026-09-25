@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Bell, Bot, Cpu, Download, Activity, Sparkles, X, Zap, HardDrive, ArrowRight } from 'lucide-react'
 import { detectExternalRuntimes, getActiveDownloads, onDownloadEvents, getHardwareProfile, type DownloadEventView } from '@/lib/client/api'
 import type { HardwareInfo } from '@shared/types/explore'
@@ -21,6 +22,8 @@ export function SmartNotificationDrawer({
   const [runtimeSummary, setRuntimeSummary] = useState<any>(null)
   const [hw, setHw] = useState<HardwareInfo | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null)
 
   useEffect(() => {
     void detectExternalRuntimes().then(setRuntimeSummary).catch(() => {})
@@ -54,9 +57,10 @@ export function SmartNotificationDrawer({
   useEffect(() => {
     if (!open) return
     const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+      const t = e.target as Node
+      if (containerRef.current?.contains(t)) return
+      if (popoverRef.current?.contains(t)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
@@ -144,68 +148,51 @@ export function SmartNotificationDrawer({
         overflow: 'hidden',
       }
 
+  // Sidebar placement is portaled to document.body (position:fixed) so the
+  // .sidebar overflow-x:hidden container cannot clip it, and it stacks above
+  // main content like the top-bell popover.
+  useEffect(() => {
+    if (!open || placement !== 'right-start') return
+    const update = () => {
+      const r = containerRef.current?.getBoundingClientRect()
+      if (!r) return
+      setAnchor({
+        top: Math.max(8, Math.min(window.innerHeight - 540, r.top)),
+        left: Math.max(8, Math.min(window.innerWidth - 400, r.right + 8)),
+      })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open, placement])
+
+  const portalPopoverStyle: CSSProperties = {
+    position: 'fixed',
+    top: anchor?.top ?? 8,
+    left: anchor?.left ?? 8,
+    width: 380,
+    maxHeight: 520,
+    background: '#FFFFFF',
+    border: '1px solid #E8E4DE',
+    borderRadius: 12,
+    boxShadow: '0 12px 36px rgba(0,0,0,0.14)',
+    zIndex: 2000,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  }
+
   const handleClick = () => {
     // Always toggle the drawer (popover) — the settings link lives inside the panel
     setOpen((p) => !p)
   }
 
-  return (
-    <div ref={containerRef} style={{ position: 'relative', display: variant === 'sidebar-item' ? 'block' : 'inline-block', width: variant === 'sidebar-item' ? '100%' : 'auto' }}>
-      {variant === 'sidebar-item' ? (
-        <button
-          type="button"
-          className={`nav-item ${open ? 'selected' : ''}`}
-          onClick={handleClick}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            width: '100%',
-            padding: '7px 8px',
-            borderRadius: 6,
-            border: 'none',
-            background: open ? '#f1f5f9' : 'transparent',
-            color: open ? '#0f172a' : '#475569',
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: 'pointer',
-            transition: 'background 120ms ease, color 120ms ease',
-          }}
-          aria-label="Smart Notifications"
-          title="Hardware profile & local notifications"
-        >
-          <Bell size={16} aria-hidden style={{ color: '#64748b', flexShrink: 0 }} />
-          <span style={{ flex: 1, textAlign: 'left' }}>Notifications</span>
-          {activeDlCount > 0 ? (
-            <span style={{ background: 'var(--accent, #D97757)', color: '#FFF', borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
-              {activeDlCount}
-            </span>
-          ) : hw ? (
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} title="Hardware detected & ready" />
-          ) : null}
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="sv-btn sv-btn-ghost"
-          onClick={handleClick}
-          style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 8px' }}
-          aria-label="Smart notification center"
-          title="Hardware Profile & Local Notifications"
-        >
-          <Bell size={15} />
-          {activeDlCount > 0 ? (
-            <span style={{ background: 'var(--accent, #D97757)', color: '#FFF', borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
-              {activeDlCount}
-            </span>
-          ) : hw ? (
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
-          ) : null}
-        </button>
-      )}
-
-      {open ? (
-        <div style={popoverStyle}>
+  const popoverContent: ReactNode = (
+    <>
           <div
             style={{
               padding: '12px 16px',
@@ -396,7 +383,75 @@ export function SmartNotificationDrawer({
               Total local models indexed: <strong>{totalLocal}</strong>
             </div>
           </div>
-        </div>
+    </>
+  )
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', display: variant === 'sidebar-item' ? 'block' : 'inline-block', width: variant === 'sidebar-item' ? '100%' : 'auto' }}>
+      {variant === 'sidebar-item' ? (
+        <button
+          type="button"
+          className={`nav-item ${open ? 'selected' : ''}`}
+          onClick={handleClick}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '7px 8px',
+            borderRadius: 6,
+            border: 'none',
+            background: open ? '#f1f5f9' : 'transparent',
+            color: open ? '#0f172a' : '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+            transition: 'background 120ms ease, color 120ms ease',
+          }}
+          aria-label="Smart Notifications"
+          title="Hardware profile & local notifications"
+        >
+          <Bell size={16} aria-hidden style={{ color: '#64748b', flexShrink: 0 }} />
+          <span style={{ flex: 1, textAlign: 'left' }}>Notifications</span>
+          {activeDlCount > 0 ? (
+            <span style={{ background: 'var(--accent, #D97757)', color: '#FFF', borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
+              {activeDlCount}
+            </span>
+          ) : hw ? (
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} title="Hardware detected & ready" />
+          ) : null}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="sv-btn sv-btn-ghost"
+          onClick={handleClick}
+          style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 8px' }}
+          aria-label="Smart notification center"
+          title="Hardware Profile & Local Notifications"
+        >
+          <Bell size={15} />
+          {activeDlCount > 0 ? (
+            <span style={{ background: 'var(--accent, #D97757)', color: '#FFF', borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
+              {activeDlCount}
+            </span>
+          ) : hw ? (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+          ) : null}
+        </button>
+      )}
+
+      {open ? (
+        placement === 'right-start' && typeof document !== 'undefined' ? (
+          createPortal(
+            <div ref={popoverRef} style={portalPopoverStyle}>
+              {popoverContent}
+            </div>,
+            document.body,
+          )
+        ) : (
+          <div style={popoverStyle}>{popoverContent}</div>
+        )
       ) : null}
     </div>
   )

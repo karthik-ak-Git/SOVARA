@@ -33,6 +33,7 @@ const TOOL_NAMES = [
   'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec',
   'list_dev_servers', 'stop_dev_server',
   'todo_write',
+  'memory',
   'search_skills', 'read_skill', 'clarify',
   'web_search', 'web_fetch',
   'run_code',
@@ -442,6 +443,55 @@ export function extractBareToolCalls(text: string): ToolFence[] {
   }
 
   return out
+}
+
+/**
+ * Parse the legacy JSON tool envelope emitted by some local models:
+ * `{ "thought": "...", "action": "shell_exec", "tool_call": { ... } }`.
+ * It is an execution instruction, not a user-facing JSON artifact.
+ */
+export function extractJsonToolCalls(text: string): ToolFence[] {
+  if (!text) return []
+  const out: ToolFence[] = []
+  const re = /```(?:json(?::[a-z0-9_-]+|[-_][a-z0-9_-]+)?|data\.json)[ \t]*\r?\n([\s\S]*?)```/gi
+  let match: RegExpExecArray | null
+  let guard = 0
+  while (guard++ < 32 && (match = re.exec(text)) !== null) {
+    const parsed = tryParse(match[1]?.trim() ?? '')
+    if (!parsed) continue
+
+    const actionValue = parsed['action'] ?? parsed['tool'] ?? parsed['tool_name'] ?? parsed['name']
+    const callValue = parsed['tool_call'] ?? parsed['call'] ?? parsed['arguments'] ?? parsed['args']
+    let toolName = typeof actionValue === 'string' ? actionValue.trim().toLowerCase() : ''
+    let args: Record<string, unknown> = {}
+
+    if (callValue && typeof callValue === 'object' && !Array.isArray(callValue)) {
+      const call = callValue as Record<string, unknown>
+      if (!toolName && typeof call['name'] === 'string') toolName = String(call['name']).trim().toLowerCase()
+      const rawArgs = call['arguments'] ?? call['args'] ?? call['input'] ?? call
+      if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) args = parseLenientJson(JSON.stringify(rawArgs), toolName)
+      else if (typeof rawArgs === 'string') args = parseLenientJson(rawArgs, toolName)
+    } else if (typeof callValue === 'string') {
+      args = parseLenientJson(callValue, toolName)
+    }
+
+    if (!toolName) continue
+    if (!TOOL_NAMES.includes(toolName as (typeof TOOL_NAMES)[number]) && !toolName.startsWith('mcp_')) continue
+    if (Object.keys(args).length === 0) args = defaultArgsFor(toolName)
+    out.push({ toolName, args, raw: match[0], index: match.index })
+  }
+  return out
+}
+
+/** Remove only JSON envelopes that contain an executable tool call. */
+export function stripJsonToolCallEnvelopes(text: string): string {
+  const calls = extractJsonToolCalls(text)
+  if (calls.length === 0) return text
+  let out = text
+  for (const call of [...calls].sort((a, b) => b.index - a.index)) {
+    out = out.slice(0, call.index) + out.slice(call.index + call.raw.length)
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim()
 }
 
 /**

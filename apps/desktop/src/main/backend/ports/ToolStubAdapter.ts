@@ -54,6 +54,19 @@ function disabledRuntime(): WebRuntime {
  * - PTC (Programmatic Tool Calls) support
  * - MCP server management
  */
+function toolOutputIndicatesError(output: string): boolean {
+  try {
+    const parsed = JSON.parse(output) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const value = parsed as Record<string, unknown>
+      return value.status === 'error' || value.ok === false || value.success === false || (value.error !== undefined && value.error !== null && value.error !== '')
+    }
+  } catch {
+    // Plain-text shell output is not JSON; only treat explicit error prefixes as failures.
+  }
+  return /^\s*(?:error|failed|failure)\s*[:\-\s]/i.test(output)
+}
+
 export class ToolStubAdapter implements ToolPort {
   private toolInfrastructure: ToolInfrastructure | null = null
   private hooksEnabled = false
@@ -425,6 +438,31 @@ export class ToolStubAdapter implements ToolPort {
           required: ['todos'] as const,
         },
       },
+      // Memory → wiki markdown seam: durable facts become wiki/*.md pages with
+      // YAML frontmatter + [[wikilinks]] so wiki:buildGraph (Knowledge Graph)
+      // picks them up. Mirrors test/llm_wiki page conventions.
+      {
+        name: 'memory',
+        toolset: 'memory' as const,
+        description:
+          'Persist durable facts as wiki markdown so the Knowledge Graph catches them. ' +
+          'Actions: store {title, type?, body?, links?[], tags?[]} writes wiki/<type>s/<Slug>.md with frontmatter + [[wikilinks]] (types: entity|concept|source|query|overview|other); ' +
+          'recall {query} searches wiki/ for relevant pages; list {} lists wiki pages. ' +
+          'Prefer memory store over loose notes for anything worth remembering across sessions.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            action: { type: 'string' as const, description: 'store | recall | list', enum: ['store', 'recall', 'list'] as const },
+            title: { type: 'string' as const, description: 'Page title for store (becomes the filename slug)' },
+            type: { type: 'string' as const, description: 'Page type: entity|concept|source|query|overview|other (default entity)', enum: ['entity', 'concept', 'source', 'query', 'overview', 'other'] as const },
+            body: { type: 'string' as const, description: 'Markdown body for store; may contain [[wikilinks]]' },
+            links: { type: 'array' as const, description: 'Wikilink targets, e.g. ["Wiki Log", "Some Concept"]', items: { type: 'string' as const } },
+            tags: { type: 'array' as const, description: 'Frontmatter tags', items: { type: 'string' as const } },
+            query: { type: 'string' as const, description: 'Search text for recall' },
+          },
+          required: ['action'] as const,
+        },
+      },
       {
         name: 'fs_list',
         toolset: 'fs' as const,
@@ -539,7 +577,7 @@ export class ToolStubAdapter implements ToolPort {
         parameters: {
           type: 'object' as const,
           properties: {
-            code: { type: 'string' as const, description: 'JavaScript code to execute. Tools available as: await tools.web_search({ queries: ["query"] })' },
+            code: { type: 'string' as const, minLength: 1, description: 'JavaScript code to execute. Tools available as: await tools.web_search({ queries: ["query"] })' },
             language: { type: 'string' as const, description: 'Programming language', enum: ['javascript', 'js'], default: 'javascript' },
           },
           required: ['code'] as const,
@@ -620,6 +658,7 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'web_search') out = await this.dispatchSearch(args)
       else if (name === 'web_fetch') out = await this.dispatchFetch(args)
       else if (name === 'todo_write') out = await this.dispatchTodoWrite(args)
+      else if (name === 'memory') out = await this.dispatchMemory(args)
       else if (name === 'fs_list' || name === 'fs_read' || name === 'fs_search' || name === 'fs_write' || name === 'fs_patch') out = await this.dispatchFs(name, args)
       else if (
         name === 'shell_exec' ||
@@ -635,7 +674,7 @@ export class ToolStubAdapter implements ToolPort {
       else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
       else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
-      const hasError = out.includes('"error"')
+      const hasError = toolOutputIndicatesError(out)
       this.noteResult(name, !hasError)
       console.log(`[SOVARA][TOOL] RESULT name="${name}" outcome=${hasError ? 'ERROR' : 'OK'} latency=${Date.now()-t0}ms preview=${out.slice(0, 300)}`)
       try{ const { appendRuntimeLog } = await import('../../logging/runtimeLog'); appendRuntimeLog('',{ time:Date.now(), runtimeId:'tools', method:'tools/call', target:name, latencyMs:Date.now()-t0, outcome: hasError ? 'error':'ok', modelId:name, streamed:false } as never)}catch{}
@@ -653,7 +692,7 @@ export class ToolStubAdapter implements ToolPort {
 
   private async dispatchRunCode(args: Record<string, unknown>): Promise<string> {
     const code = typeof args['code'] === 'string' ? args['code'] : ''
-    if (!code) return JSON.stringify({ error: 'run_code requires { code: string }' })
+    if (!code.trim()) return JSON.stringify({ error: 'run_code requires { code: string }' })
 
     // 1. Primary execution path via ToolInfrastructure (PTC Handler)
     if (this.toolInfrastructure) {
@@ -661,6 +700,7 @@ export class ToolStubAdapter implements ToolPort {
         const result = await this.toolInfrastructure.runWithTools(code)
         return JSON.stringify({
           output: result.result !== undefined ? result.result : 'code executed cleanly',
+           status: result.toolCalls.some((call) => Boolean(call.error)) ? 'error' : 'ok',
           toolCalls: result.toolCalls,
           executionTime: result.executionTime,
           summary: `Executed ${result.toolCalls.length} tool call(s) in ${result.executionTime}ms`,
@@ -670,14 +710,50 @@ export class ToolStubAdapter implements ToolPort {
       }
     }
 
-    // 2. Direct JavaScript execution sandbox fallback
+    // 2. Direct JavaScript execution sandbox fallback. Keep the documented
+    // `tools.toolName({...})` API available even when the optional async
+    // ToolInfrastructure has not finished initializing (the normal app path).
     try {
       const dispatch = this.dispatch.bind(this)
-      const fn = new Function('dispatch', `return (async () => { ${code} })()`)
-      const res = await fn(dispatch)
+      const toolCalls: Array<{
+        toolName: string
+        arguments: Record<string, unknown>
+        result: unknown
+        error?: string
+        timestamp: number
+      }> = []
+      const instrumentedDispatch = async (toolName: string, toolArgs: Record<string, unknown> = {}): Promise<string> => {
+        try {
+          const result = await dispatch(toolName, toolArgs)
+          let normalizedResult: unknown = result
+          let toolError: string | undefined
+          try {
+            const parsed = JSON.parse(result) as unknown
+            normalizedResult = parsed
+            if (parsed && typeof parsed === 'object' && typeof (parsed as { error?: unknown }).error === 'string') {
+              toolError = String((parsed as { error: string }).error)
+            }
+          } catch { /* keep plain-text tool output */ }
+          toolCalls.push({ toolName, arguments: toolArgs, result: normalizedResult, error: toolError, timestamp: Date.now() })
+          return result
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          toolCalls.push({ toolName, arguments: toolArgs, result: null, error: message, timestamp: Date.now() })
+          throw error
+        }
+      }
+      const tools = new Proxy({}, {
+        get: (_target, property: string | symbol) => {
+          if (typeof property !== 'string') return undefined
+          return (toolArgs: Record<string, unknown> = {}) => instrumentedDispatch(property, toolArgs)
+        },
+      })
+      const fn = new Function('dispatch', 'tools', `return (async () => { ${code} })()`)
+      const res = await fn(instrumentedDispatch, tools)
       return JSON.stringify({
         output: res !== undefined ? res : 'code executed cleanly',
-        status: 'ok',
+        status: toolCalls.some((call) => call.error) ? 'error' : 'ok',
+        toolCalls,
         executionTime: Date.now()
       })
     } catch (error) {
@@ -805,6 +881,60 @@ export class ToolStubAdapter implements ToolPort {
     try { this.appendEvent?.('todo/write', { todos }) } catch {}
     const counts = { pending: todos.filter(t=>t.status==='pending').length, inProgress: todos.filter(t=>t.status==='in_progress').length, completed: todos.filter(t=>t.status==='completed').length }
     return JSON.stringify({ todos, counts })
+  }
+
+  private async dispatchMemory(args: Record<string, unknown>): Promise<string> {
+    const action = typeof args['action'] === 'string' ? args['action'].toLowerCase() : ''
+    if (action === 'list') {
+      return this.dispatchFs('fs_list', { path: 'wiki' })
+    }
+    if (action === 'recall') {
+      const query = typeof args['query'] === 'string' ? args['query'].trim() : ''
+      if (!query) return JSON.stringify({ error: 'memory recall requires { query: string }' })
+      return this.dispatchFs('fs_search', { path: 'wiki', query })
+    }
+    if (action === 'store') {
+      const title = typeof args['title'] === 'string' ? args['title'].trim() : ''
+      if (!title) return JSON.stringify({ error: 'memory store requires { title: string, ... }' })
+      const rawType = typeof args['type'] === 'string' ? args['type'] : 'entity'
+      const type = ['entity', 'concept', 'source', 'query', 'overview', 'other'].includes(rawType) ? rawType : 'entity'
+      const body = typeof args['body'] === 'string' ? args['body'] : ''
+      const strArr = (v: unknown): string[] => Array.isArray(v)
+        ? (v as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => (x as string).trim())
+        : []
+      const links = strArr(args['links'])
+      const tags = strArr(args['tags'])
+      const slug = title.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-_]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'untitled'
+      const dir = type === 'entity' ? 'wiki/entities' : type === 'concept' ? 'wiki/concepts' : type === 'source' ? 'wiki/sources' : type === 'query' ? 'wiki/queries' : 'wiki'
+      const rel = `${dir}/${slug}.md`
+      const today = new Date().toISOString().slice(0, 10)
+      // Merge with an existing page (append dated entry, union [[links]]) so repeat stores accumulate.
+      let prevBody = ''
+      let prevRelated: string[] = []
+      try {
+        const prevRaw = await this.dispatchFs('fs_read', { path: rel })
+        const prev = JSON.parse(prevRaw) as { content?: unknown }
+        if (typeof prev.content === 'string') {
+          const m = prev.content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+          if (m) {
+            prevBody = m[2]
+            const relm = m[1].match(/related:\s*\[([^\]]*)\]/)
+            if (relm) prevRelated = Array.from(relm[1].matchAll(/\[\[([^\]]+)\]\]/g)).map((x) => x[1].trim())
+          } else {
+            prevBody = prev.content
+          }
+        }
+      } catch { /* new page */ }
+      const related = Array.from(new Set([...prevRelated, ...links]))
+      const linkRefs = links.length > 0 ? `\n\n${links.map((l) => `[[${l}]]`).join(' ')}` : ''
+      const entry = body ? `\n\n## ${today}\n\n${body}${linkRefs}\n` : (linkRefs ? `\n${linkRefs}\n` : '\n')
+      const clean = (s: string): string => s.replace(/"/g, '')
+      const content = `---\ntitle: "${clean(title)}"\ntype: ${type}\ntags: [${tags.map((t) => `"${clean(t)}"`).join(', ')}]\nrelated: [${related.map((l) => `"[[${l}]]"`).join(', ')}]\nupdated: ${today}\n---\n\n${prevBody ? prevBody.replace(/\s+$/, '') + '\n' : ''}${entry}`
+      const res = await this.dispatchFs('fs_write', { path: rel, content })
+      try { this.appendEvent?.('memory/store', { path: rel, title, type }) } catch {}
+      return res
+    }
+    return JSON.stringify({ error: 'memory requires { action: "store" | "recall" | "list" }' })
   }
 
   private async dispatchFs(name: string, args: Record<string, unknown>): Promise<string> {

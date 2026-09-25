@@ -265,8 +265,10 @@ export async function dispatchFs(
   // Gated: requires 'review' or 'allow' exec mode (not 'ask').
   if (toolName === 'fs_write') {
     const rel = typeof args['path'] === 'string' ? args['path'] as string : ''
-    const content = typeof args['content'] === 'string' ? args['content'] as string : ''
-    if (!rel) return JSON.stringify({ error: 'fs_write requires { path: string, content: string }' })
+    if (!rel || !Object.prototype.hasOwnProperty.call(args, 'content') || typeof args['content'] !== 'string') {
+      return JSON.stringify({ error: 'fs_write requires { path: string, content: string }', code: 'INVALID_ARGUMENTS' })
+    }
+    const content = args['content'] as string
     let abs: string
     try { abs = resolveWorkspacePath(root, rel) } catch (e) {
       console.warn(`[SOVARA][FS] fs_write path escapes workspace: ${rel}`, e)
@@ -278,8 +280,12 @@ export async function dispatchFs(
       fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(abs, content, 'utf8')
       const written = fs.statSync(abs).size
+      const expectedBytes = Buffer.byteLength(content, 'utf8')
+      if (written !== expectedBytes) {
+        return JSON.stringify({ error: `write verification failed: expected ${expectedBytes} bytes, found ${written}`, code: 'WRITE_VERIFICATION_FAILED', path: rel })
+      }
       console.log(`[SOVARA][FS] fs_write success: rel="${rel}" abs="${abs}" bytes=${written}`)
-      return JSON.stringify({ ok: true, path: rel, bytes: written, workspace: root })
+      return JSON.stringify({ ok: true, verified: true, empty: written === 0, path: rel, bytes: written, workspace: root })
     } catch (e) {
       console.error(`[SOVARA][FS] fs_write error on ${abs}:`, e)
       return JSON.stringify({ error: `write failed: ${e instanceof Error ? e.message : String(e)}` })
@@ -294,7 +300,9 @@ export async function dispatchFs(
     const rel = typeof args['path'] === 'string' ? args['path'] as string : ''
     const search = typeof args['search'] === 'string' ? args['search'] as string : ''
     const replace = typeof args['replace'] === 'string' ? args['replace'] as string : ''
-    if (!rel || !search) return JSON.stringify({ error: 'fs_patch requires { path: string, search: string, replace: string }' })
+    if (!rel || !search || !Object.prototype.hasOwnProperty.call(args, 'replace') || typeof args['replace'] !== 'string') {
+      return JSON.stringify({ error: 'fs_patch requires { path: string, search: string, replace: string }', code: 'INVALID_ARGUMENTS' })
+    }
     let abs: string
     try { abs = resolveWorkspacePath(root, rel) } catch (e) {
       console.warn(`[SOVARA][FS] fs_patch path escapes workspace: ${rel}`, e)
@@ -319,8 +327,13 @@ export async function dispatchFs(
       }
       const patched = original.slice(0, idx) + replace + original.slice(idx + search.length)
       fs.writeFileSync(abs, patched, 'utf8')
+      const written = fs.statSync(abs).size
+      const expectedBytes = Buffer.byteLength(patched, 'utf8')
+      if (written !== expectedBytes) {
+        return JSON.stringify({ error: `patch verification failed: expected ${expectedBytes} bytes, found ${written}`, code: 'WRITE_VERIFICATION_FAILED', path: rel })
+      }
       console.log(`[SOVARA][FS] fs_patch success: rel="${rel}" abs="${abs}" idx=${idx}`)
-      return JSON.stringify({ ok: true, path: rel, patchedAt: idx, removedChars: search.length, insertedChars: replace.length })
+      return JSON.stringify({ ok: true, verified: true, path: rel, patchedAt: idx, removedChars: search.length, insertedChars: replace.length, bytes: written })
     } catch (e) {
       console.error(`[SOVARA][FS] fs_patch error on ${abs}:`, e)
       return JSON.stringify({ error: `patch failed: ${e instanceof Error ? e.message : String(e)}` })

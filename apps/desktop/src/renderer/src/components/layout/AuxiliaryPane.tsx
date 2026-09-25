@@ -24,7 +24,6 @@ import {
 } from 'lucide-react'
 import { dispatchTool, openArtifact, getGitStatus, getGitDiff, type SessionEventView } from '@/lib/client/api'
 import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact } from '../../utils/previewBundler'
-import { parseMessageContent } from '../../features/chat/MessageBubble'
 import type { AgentExecutionState } from '../../features/chat/useChatSession'
 
 export type AuxiliaryTab = 'overview' | 'diffs' | 'terminal' | 'artifacts' | 'subagents'
@@ -329,15 +328,9 @@ export function AuxiliaryPane({
         }
       }
     }
-    for (const e of events) {
-      if (e.type === 'assistant/message' && e.data) {
-        const raw = typeof e.data === 'string' ? e.data : ((e.data as { content?: string }).content ?? '')
-        if (typeof raw !== 'string' || !raw.includes('```')) continue
-        for (const part of parseMessageContent(raw)) {
-          if (part.type === 'code') push(part.title, part.language, part.code, `art-${e.seq}-${list.length}`)
-        }
-      }
-    }
+    // Assistant code fences are not materialized files. Do not mirror them as
+    // artifacts here; the user can explicitly open code from the message, while
+    // generated files arrive through verified artifact/created events above.
     return list
   }, [events, activeArtifact])
 
@@ -614,22 +607,33 @@ export function AuxiliaryPane({
       const d: any = e.data || {}
       const toolName: string | undefined = d.name || d.toolName || d.toolCall?.name || d.tool_name
       if (!toolName) continue
-      // Only shell execution tools go to the Terminals pane; others go to Skills/Background
-      const isShell = toolName === 'shell_exec' || toolName === 'run_command' || toolName === 'exec_shell_command'
-      if (!isShell) continue
+      // Shell aliases and programmatic shell execution belong in the live
+      // terminal stream. Keeping this list aligned with ToolStubAdapter avoids
+      // silent black holes where a tool executed but its output disappeared.
+      const isShell = ['shell_exec', 'run_command', 'exec_shell_command', 'bash', 'cmd', 'powershell', 'terminal_exec'].includes(toolName)
+      const isRunCode = toolName === 'run_code'
+      if (!isShell && !isRunCode) continue
 
       if (e.type === 'tool/call') {
-        const cmd: string = d.args?.CommandLine || d.args?.cmd || d.args?.command || String(d.args?.command || '')
-        if (cmd.trim()) {
-          const rawCwd: unknown = d.args?.cwd
-          const cwd: string | null = typeof rawCwd === 'string' && rawCwd ? rawCwd : (workspaceRoot ?? null)
-          newLogs.push(cwd ? `${promptPrefix} ${cmd.trim()}  [cwd: ${cwd}]` : `${promptPrefix} ${cmd.trim()}`)
-          newLogs.push('↳ dispatched → awaiting tool result…')
-          processedEvents.current.add(seqKey)
-          changed = true
+        if (isRunCode) {
+          const code = String(d.args?.code ?? '').trim()
+          if (code) {
+            const preview = code.length > 180 ? `${code.slice(0, 180)}…` : code
+            newLogs.push(`${promptPrefix} run_code ${preview}`)
+            newLogs.push('↳ dispatched → awaiting tool result…')
+            changed = true
+          }
         } else {
-          processedEvents.current.add(seqKey)
+          const cmd: string = d.args?.CommandLine || d.args?.cmd || d.args?.command || String(d.args?.command || '')
+          if (cmd.trim()) {
+            const rawCwd: unknown = d.args?.cwd
+            const cwd: string | null = typeof rawCwd === 'string' && rawCwd ? rawCwd : (workspaceRoot ?? null)
+            newLogs.push(cwd ? `${promptPrefix} ${cmd.trim()}  [cwd: ${cwd}]` : `${promptPrefix} ${cmd.trim()}`)
+            newLogs.push('↳ dispatched → awaiting tool result…')
+            changed = true
+          }
         }
+        processedEvents.current.add(seqKey)
       } else {
         // tool/result — parse the preview JSON the tools port returns (matches [SOVARA][TOOL] RESULT preview)
         const raw: unknown = d.content ?? d.result ?? d.preview ?? d.data ?? d
@@ -645,6 +649,9 @@ export function AuxiliaryPane({
           const hint: string = typeof preview.hint === 'string' ? preview.hint : ''
           const truncated: boolean = !!preview.truncated
           const workdir: string = typeof preview.workdir === 'string' ? preview.workdir : typeof preview.cwd === 'string' ? preview.cwd : ''
+          const port = typeof preview.port === 'number' ? preview.port : typeof preview.server_port === 'number' ? preview.server_port : null
+          const url = typeof preview.url === 'string' ? preview.url : typeof preview.server_url === 'string' ? preview.server_url : null
+          if (url || port) newLogs.push(`↳ App running at ${url || `http://localhost:${port}`}`)
           // Outcome line — mirrors [SOVARA][RUNTIME] OK/ERR
           if (error) {
             newLogs.push(`✖ ERROR: ${error}`)
@@ -749,7 +756,7 @@ export function AuxiliaryPane({
       const effectiveCwd = workspaceRoot || undefined
       const res: any = await dispatchTool('shell_exec', {
         command: cmd,
-        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+        ...(effectiveCwd ? { workdir: effectiveCwd } : {}),
         _forceApprove: true,
         ...(sessionId ? { sessionId } : {}),
       })

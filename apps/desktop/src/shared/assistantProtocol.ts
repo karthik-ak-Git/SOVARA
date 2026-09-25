@@ -357,17 +357,18 @@ export interface RecapTrace {
 
 /**
  * Guarantee every persisted answer ends with a `## Recap` section: what was
- * done (real tool calls), files touched, model. The model is separately
- * instructed to write its own richer what/why recap; this fallback only adds
- * facts observed by the runtime — it never invents a "why".
+ * done (verified tool effects), files touched, model. Any model-authored recap
+ * is replaced because it is unverified prose and may claim failed work.
  */
 export function ensureRecap(text: string, trace: RecapTrace): string {
-  if (/^##\s*recap\b/im.test(text)) return text
+  // A model-authored recap is unverified prose. Replace it with facts observed
+  // by the runtime so a failed/empty tool call cannot be reported as success.
+  const body = text.replace(/\n?\s*##\s*recap\b[\s\S]*$/i, '').trimEnd()
   const toolNames = [...new Set(trace.tools.map((t) => t.name).filter(Boolean))].slice(0, 12)
   const files = [...new Set(trace.files ?? [])].filter(Boolean).slice(0, 12)
   const lines = ['## Recap']
   lines.push(`- Did: ${toolNames.length > 0 ? toolNames.join(', ') : 'answered directly (no tools used)'}`)
   lines.push(`- Files: ${files.length > 0 ? files.join(', ') : 'none'}`)
   if (trace.model) lines.push(`- Model: ${trace.model}`)
-  return `${text.trimEnd()}\n\n${lines.join('\n')}`
+  return `${body ? `${body}\n\n` : ''}${lines.join('\n')}`
 }

@@ -236,6 +236,23 @@ export function useChatSession() {
         if (!isSelected) return
         setExecution({ taskKind: null, phase: 'tool', toolName: ev.toolName, detail: ev.detail ?? ev.text, stepIndex: ev.stepIndex })
         setPhase('tool')
+        // Keep the terminal/sidebar live while the backend is still running.
+        // These provisional events are replaced by the durable session events
+        // on assistant-done; they are never treated as persisted evidence.
+        if (ev.kind === 'tool:start' || ev.kind === 'tool:end') {
+          const liveId = ev.toolCallId ?? `live-${ev.toolName ?? 'tool'}-${Date.now()}`
+          setEvents((prev) => {
+            const data = { toolCallId: liveId, name: ev.toolName, args: ev.args ?? {}, status: ev.kind === 'tool:start' ? 'started' : 'completed' }
+            const alreadyCall = prev.some((e) => e.type === 'tool/call' && (e.data as { toolCallId?: string } | null)?.toolCallId === liveId)
+            const alreadyResult = prev.some((e) => e.type === 'tool/result' && (e.data as { toolCallId?: string } | null)?.toolCallId === liveId)
+            if (ev.kind === 'tool:start' && alreadyCall) return prev
+            if (ev.kind === 'tool:end' && alreadyResult) return prev
+            const additions: SessionEventView[] = []
+            if (ev.kind === 'tool:end' && !alreadyCall) additions.push({ seq: prev.length > 0 ? prev[prev.length - 1].seq + 1 : 0, time: Date.now(), type: 'tool/call', data })
+            additions.push({ seq: (prev[prev.length - 1]?.seq ?? -1) + 1 + (additions.length ? 1 : 0), time: Date.now(), type: ev.kind === 'tool:start' ? 'tool/call' : 'tool/result', data: ev.kind === 'tool:end' ? { ...data, content: ev.detail ?? ev.text ?? '' } : data })
+            return [...prev, ...additions]
+          })
+        }
         return
       }
       if (ev.kind === 'agent:needs-approval') {
