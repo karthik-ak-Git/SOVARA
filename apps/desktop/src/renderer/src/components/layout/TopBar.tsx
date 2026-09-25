@@ -218,7 +218,7 @@ export function TopBar({
               padding: '6px 8px',
               borderRadius: 4,
               cursor: 'pointer',
-              color: '#64748b',
+              color: 'var(--muted)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -233,13 +233,13 @@ export function TopBar({
 
       <div className="header-status" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div className="status-popover-wrap" ref={modelRef}>
-          <button type="button" className="status-chip" onClick={() => setModelOpen((v) => !v)} aria-expanded={modelOpen} aria-haspopup="dialog" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: '#334155' }}>
+          <button type="button" className="status-chip" onClick={() => setModelOpen((v) => !v)} aria-expanded={modelOpen} aria-haspopup="dialog" style={{ background: 'var(--bg-elevated)', border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12, color: 'var(--text-secondary)' }}>
             <span className="status-dot" aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: (activeModelContext ?? '').includes('Ready') ? '#10b981' : (activeModelName ? '#f59e0b' : '#cbd5e1') }} />
             {activeModelName ?? 'No model selected'}
             <ChevronDown size={12} aria-hidden />
           </button>
           {modelOpen ? (
-            <div className="popover" role="dialog" aria-label="Local model" style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, color: '#0f172a' }}>
+            <div className="popover" role="dialog" aria-label="Local model" style={{ background: 'var(--bg-elevated)', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, color: 'var(--text)' }}>
               <div className="popover-title" style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Active Inference Model</div>
               <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Model</span><strong>{activeModelName ?? 'No model selected'}</strong></div>
               <div className="info-row" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', margin: '4px 0' }}><span>Status</span><strong style={{ color: (activeModelContext ?? '').includes('Ready') ? '#10b981' : '#94a3b8' }}>{(activeModelContext ?? 'Offline')}</strong></div>

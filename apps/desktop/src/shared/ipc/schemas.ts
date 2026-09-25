@@ -269,7 +269,6 @@ export const zShellShowItemInFolder = z
 
 export const zSettingsSet = z
   .object({
-    theme: z.enum(['dark', 'light', 'system']).optional(),
     sidebarBackground: z.enum(['solid', 'translucent']).optional(),
     inlineDiffLayout: z.enum(['unified', 'split']).optional(),
     renameAfterFork: z.boolean().optional(),
@@ -293,23 +292,6 @@ export const zExecMode = z.enum(['off', 'ask', 'review', 'allow'])
 export const zToolDispatch = z
   .object({ name: z.string().min(1).max(128), args: z.record(z.unknown()).default({}) })
   .strict()
-
-export const zVoiceTranscribe = z
-  .object({
-    audio: z.string().min(1), // base64-encoded audio
-    filename: z.string().min(1).max(256),
-  })
-  .strict()
-
-export const zOcrRecognize = z
-  .object({
-    image: z.string().min(1), // base64
-    filename: z.string().min(1).max(256).optional(),
-    model: z.string().min(1).max(256).optional(), // unlimited: any HF id or rapidocr
-  })
-  .strict()
-
-export const zOcrDownload = z.object({ model: z.string().min(1).max(256) }).strict()
 
 export const zMcpAdd = z
   .object({

@@ -35,7 +35,7 @@ const TOOL_NAMES = [
   'todo_write',
   'search_skills', 'read_skill',
   'web_search', 'web_fetch',
-  'run_code', 'ocr',
+  'run_code',
 ] as const
 type ToolName = typeof TOOL_NAMES[number]
 const TOOL_NAME_PATTERN = TOOL_NAMES.join('|')

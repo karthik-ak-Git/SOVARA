@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import {
   Plus,
-  Mic,
   ArrowUp,
   ArrowRight,
   ArrowDown,
@@ -22,7 +21,6 @@ import {
 import { ModelSelector } from './ModelSelector'
 import { PermissionControl, type ExecMode } from '../../components/ui/PermissionControl'
 import { TokenMeter } from '../../components/ui/TokenMeter'
-import { transcribeAudio } from '@/lib/client/api'
 import type { ActiveModelState, DiscoveredModel, ModelRuntimeEntry } from '@shared/types/models'
 import type { ChatPhase } from './useChatSession'
 
@@ -93,14 +91,8 @@ export function Composer({
   const folderInputRef = useRef<HTMLInputElement>(null)
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [webSearch, setWebSearch] = useState(false)
-  const [micActive, setMicActive] = useState(false)
-  const [micLoading, setMicLoading] = useState(false)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const attachWrapRef = useRef<HTMLDivElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
-  const pcmChunksRef = useRef<Float32Array[]>([])
   const canSend = value.trim().length > 0 && !disabled
   const streaming = busy && phase !== 'idle'
   const [dragActive, setDragActive] = useState(false)
@@ -203,112 +195,6 @@ export function Composer({
       window.removeEventListener('keydown', onKey)
     }
   }, [attachMenuOpen])
-
-  useEffect(() => {
-    return () => {
-      processorRef.current?.disconnect()
-      if (audioCtxRef.current?.state !== 'closed') void audioCtxRef.current?.close()
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-    }
-  }, [])
-
-  const handleMicClick = useCallback(async () => {
-    if (micLoading) return
-
-    if (micActive) {
-      setMicActive(false)
-      setMicLoading(true)
-
-      const chunks = pcmChunksRef.current
-      pcmChunksRef.current = []
-      processorRef.current?.disconnect()
-      processorRef.current = null
-      const ctx = audioCtxRef.current
-      const stream = streamRef.current
-      if (ctx) {
-        try { await ctx.close() } catch { /* ignore */ }
-        audioCtxRef.current = null
-      }
-      stream?.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-
-      const totalLen = chunks.reduce((s, c) => s + c.length, 0)
-      if (totalLen < 800) { setMicLoading(false); return }
-
-      const nativePcm = new Float32Array(totalLen)
-      let off = 0
-      for (const c of chunks) { nativePcm.set(c, off); off += c.length }
-
-      const inRate = ctx?.sampleRate ?? 48000
-      let pcm16k: Float32Array
-      if (inRate === 16000) {
-        pcm16k = nativePcm
-      } else {
-        const targetLen = Math.round((nativePcm.length * 16000) / inRate)
-        pcm16k = new Float32Array(targetLen)
-        for (let i = 0; i < targetLen; i++) {
-          const srcIdx = (i * (nativePcm.length - 1)) / (targetLen - 1)
-          const lo = Math.floor(srcIdx)
-          const hi = Math.ceil(srcIdx)
-          const frac = srcIdx - lo
-          pcm16k[i] = nativePcm[lo] * (1 - frac) + nativePcm[hi] * frac
-        }
-      }
-
-      try {
-        const int16 = new Int16Array(pcm16k.length)
-        for (let i = 0; i < pcm16k.length; i++) {
-          const s = Math.max(-1, Math.min(1, pcm16k[i]))
-          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
-        }
-        const bytes = new Uint8Array(int16.buffer)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        const result = await transcribeAudio(base64, 'recording.pcm')
-        if (result.ok && result.text && result.text.trim()) {
-          const prefix = value.trim() ? `${value.trim()} ` : ''
-          const next = (prefix + result.text.trim()).slice(0, MAX_LENGTH)
-          onChange(next)
-          requestAnimationFrame(() => areaRef.current?.focus())
-        } else if (!result.ok) {
-          console.error('[Composer] Transcription error:', result.error)
-        }
-      } catch (err) {
-        console.error('[Composer] Transcription failed:', err)
-      } finally {
-        setMicLoading(false)
-      }
-      return
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      })
-      streamRef.current = stream
-      pcmChunksRef.current = []
-
-      const audioCtx = new AudioContext()
-      audioCtxRef.current = audioCtx
-      const source = audioCtx.createMediaStreamSource(stream)
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-      processorRef.current = processor
-      processor.onaudioprocess = (e) => {
-        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
-      }
-      source.connect(processor)
-      const gain = audioCtx.createGain()
-      gain.gain.value = 0
-      processor.connect(gain)
-      gain.connect(audioCtx.destination)
-
-      setMicActive(true)
-    } catch (err) {
-      console.error('[Composer] Microphone access denied:', err)
-      setMicLoading(false)
-    }
-  }, [micActive, micLoading, value, onChange])
 
   const submit = (): void => {
     if (showStop) { onCancel?.(); return }
@@ -598,16 +484,6 @@ export function Composer({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <button
-              type="button"
-              className="sv-composer-icon-btn"
-              aria-label={micLoading ? 'Transcribing...' : micActive ? 'Stop recording' : 'Start recording'}
-              title={micLoading ? 'Transcribing audio...' : micActive ? 'Click to stop recording' : 'Voice input'}
-              onClick={handleMicClick}
-              disabled={micLoading}
-            >
-              {micLoading ? <Loader2 size={16} aria-hidden className="spin" /> : <Mic size={16} aria-hidden />}
-            </button>
             {showStop ? (
               <button type="button" className="sv-send-btn" style={{ background: '#8A8279' }} onClick={() => onCancel?.()} aria-label="Stop generating" title="Stop generating (Esc)" data-testid="stop-button">
                 <Square size={14} aria-hidden />

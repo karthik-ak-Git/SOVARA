@@ -109,30 +109,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  build-web:
-    name: Build Web (Next.js)
-    needs: quality
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with: { version: ${{ env.PNPM_VERSION }} }
-      - uses: actions/setup-node@v4
-        with: { node-version: ${{ env.NODE_VERSION }}, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-        env: { NODE_LLAMA_CPP_SKIP_DOWNLOAD: 'true' }
-      - run: pnpm --filter @sovara/web typecheck
-      - run: pnpm --filter @sovara/web build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sovara-web-build
-          path: apps/web/.next
-          retention-days: 7
-
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-web]
+    needs: [build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -156,7 +135,6 @@ jobs:
             echo ""
             echo "### Artifacts"
             echo "- \`Sovara-Setup-\${TAG#v}-x64.exe\` — Windows x64 NSIS installer (unsigned, SmartScreen will prompt)."
-            echo "- Web build available as CI artifact \`sovara-web-build\` and runnable via \`pnpm --filter @sovara/web start\`."
             echo ""
             echo "### Known Issue (tracked)"
             echo "> **Cloud .exe build was crashing in CI** — mitigated in this release by hardening the workflow:"

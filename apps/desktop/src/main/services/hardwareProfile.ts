@@ -1,6 +1,6 @@
 import os from 'node:os'
 import fs from 'node:fs'
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import type { HardwareInfo } from '@shared/types/explore'
 
 function tryStorage(): { freeGB?: number; totalGB?: number } {
@@ -14,10 +14,29 @@ function tryStorage(): { freeGB?: number; totalGB?: number } {
   }
 }
 
+function nvidiaSmiOutput(args: string[]): string | null {
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+  const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+  const candidates = [
+    'nvidia-smi.exe',
+    `${systemRoot}\\System32\\nvidia-smi.exe`,
+    `${programFiles}\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe`,
+  ]
+  for (const command of candidates) {
+    try {
+      return String(execFileSync(command, args, { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)).trim()
+    } catch {
+      // Try the next known Windows install location.
+    }
+  }
+  return null
+}
+
 function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: number; gpuUtil?: number } | null {
   try {
     // Include utilization.gpu for live load bar — "42, 8192, 6144, NVIDIA GeForce RTX 4080"
-    const out = execSync('nvidia-smi --query-gpu=utilization.gpu,memory.total,memory.free,name --format=csv,noheader,nounits', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
+    const out = nvidiaSmiOutput(['--query-gpu=utilization.gpu,memory.total,memory.free,name', '--format=csv,noheader,nounits'])
+    if (!out) return null
     const line = out.split('\n').map((s) => s.trim()).filter(Boolean)[0]
     if (!line) return null
     const parts = line.split(',').map((s) => s.trim())
@@ -35,7 +54,8 @@ function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: num
   } catch {
     // Compat fallback without util column (very old drivers)
     try {
-      const out = execSync('nvidia-smi --query-gpu=memory.total,memory.free,name --format=csv,noheader,nounits', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
+      const out = nvidiaSmiOutput(['--query-gpu=memory.total,memory.free,name', '--format=csv,noheader,nounits'])
+      if (!out) return null
       const line = out.split('\n').map((s) => s.trim()).filter(Boolean)[0]
       if (!line) return null
       const parts = line.split(',').map((s) => s.trim())

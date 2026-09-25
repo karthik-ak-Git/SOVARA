@@ -148,13 +148,6 @@ export function processAttachments(
         // Cap vision payload at ~6MB raw so a huge photo can't blow the request.
         base.imageBase64 = decoded.buffer.length <= 6 * 1024 * 1024 ? decoded.buffer.toString('base64') : null
         if (!base.imageBase64) base.note = 'image too large to forward to the model — metadata only'
-        // Try unlimited OCR (baidu/Unlimited-OCR via SGLang, fallback RapidOCR) for text images — best effort sync note
-        else {
-          try {
-            // lazy OCR — store base64, ChatService will run OCR before LLM if non-vision
-            // mark as extractable so manifest shows it
-          } catch {}
-        }
       } else {
         base.note = `type ${mime || 'unknown'} is not readable — attach pdf, office, text or image files`
       }
@@ -197,15 +190,10 @@ export function buildAttachmentContext(files: ProcessedAttachment[], visionCapab
   for (const f of files) {
     if (f.kind === 'image') {
       const dims = f.imageWidth && f.imageHeight ? `, ${f.imageWidth}×${f.imageHeight}px` : ''
-      if (f.text && f.text.trim().length > 0) {
-        // OCR succeeded (Unlimited-OCR/RapidOCR) — deliver text regardless of vision capability
-        out.push(`--- OCR extracted from image "${f.name}" (${f.mime}${dims}) via Unlimited-OCR ---\n${f.text}\n--- end OCR ---`)
-        continue
-      }
       if (visionCapable && f.imageBase64) {
         out.push(`Attached image "${f.name}" (${f.mime}${dims}) is provided as vision input with the user message. Describe or analyze what you actually see in it.`)
       } else {
-        out.push(`Attached image "${f.name}" (${f.mime}${dims}) — this model has NO vision input and no OCR text was extracted from it. Do NOT try fs_read or any file tool on it: image bytes are not text and reading them tells you nothing about the picture. Either call the "ocr" tool to extract its text, or tell the user plainly that this model cannot see images and suggest a vision model (e.g. GLM-4.6V). Never pretend you saw the image.`)
+        out.push(`Attached image "${f.name}" (${f.mime}${dims}) — this model has NO vision input. Do NOT try fs_read or any file tool on it: image bytes are not text and reading them tells you nothing about the picture. Tell the user plainly that this model cannot see images and suggest a vision model (e.g. GLM-4.6V). Never pretend you saw the image.`)
       }
       continue
     }

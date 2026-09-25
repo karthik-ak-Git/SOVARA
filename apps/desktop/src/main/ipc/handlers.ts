@@ -5,15 +5,13 @@ import { getBackend } from '../backendComposition'
 import type { SessionId } from '@shared/types/branded'
 import { brand } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
-import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zClipboardWrite, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent, zVoiceTranscribe } from '@shared/ipc/schemas'
+import { zChatCancel, zChatSend, zChatRegenerate, zChatEditResend, zArtifactOpen, zClipboardWrite, zModelsAddRuntime, zModelsListModels, zModelsLoad, zModelsProbe, zModelsRegistryList, zModelsRegistryPath, zModelsRegistryRef, zModelsRegistryUpdate, zModelsRuntimeRef, zModelsSelect, zProjectCreate, zProjectId, zProjectRename, zSessionArchive, zSessionId, zSessionRename, zSessionsCreate, zExecMode, zSettingsSet, zToolDispatch, zMcpAdd, zMcpInstallFromUrl, zMcpId, zMcpToggle, zSkillImportFromUrl, zInstanceId, zUsageGetRecent } from '@shared/ipc/schemas'
 import { getSessionsDir, getSovaraDataDir } from '../storage/paths'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gateDispatch } from '../services/execPermissions'
 import { checkForUpdates } from '../services/updateFeed'
-import { getPythonStatus, ensurePythonEnv } from '../services/pythonEnv'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
-import { transcribeAudio, isVoiceReady, startVoiceServer } from '../services/voiceServer'
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
 import { zSkillsToggle, zBionicSkillAdd, zBionicSkillId, zExploreListModels, zExploreGetModel, zExploreGetCompatibility, zExploreGetRecommendations, zExploreCompareModels, zLibrarySetDirectory, zLibraryRegisterExternal, zLibraryDownload, zLibraryCancel, zLibraryDelete, zLibraryIsDownloaded, zLibraryFileRef, zShellOpenExternal, zShellShowItemInFolder, zValidationStart, zValidationGet, zModelsEnsureRuntime } from '@shared/ipc/schemas'
@@ -544,15 +542,6 @@ export function registerIpcHandlers(): void {
     return result
   })
 
-  // ── First-run setup — Python env for the sidecars (what the .exe provisions) ──
-  ipcMain.handle('setup:getPythonStatus', async () => {
-    return getPythonStatus()
-  })
-
-  ipcMain.handle('setup:ensurePython', async () => {
-    return ensurePythonEnv()
-  })
-
   // ── Exec permissions — the AI command levels, enforced on every dispatch ──
   ipcMain.handle('exec:getMode', async () => {
     return { mode: getBackend().getExecMode() }
@@ -1049,23 +1038,6 @@ export function registerIpcHandlers(): void {
     const server = await getBackend().probeMcpServer(parsed.data.id)
     if (!server) throw new Error('unknown mcp server')
     return server
-  })
-
-  // ── Voice transcription (local faster-whisper) ──
-  ipcMain.handle('voice:status', async () => {
-    return { ready: isVoiceReady() }
-  })
-
-  ipcMain.handle('voice:transcribe', async (_e, raw: unknown) => {
-    const parsed = zVoiceTranscribe.safeParse(raw)
-    if (!parsed.success) throw new Error(`invalid voice:transcribe payload: ${parsed.error.message}`)
-    try {
-      const buf = Buffer.from(parsed.data.audio, 'base64')
-      const result = await transcribeAudio(buf, parsed.data.filename)
-      return { ok: true, ...result }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
   })
 
   ipcMain.handle('logs:getRecent', async (_e, raw: unknown) => {

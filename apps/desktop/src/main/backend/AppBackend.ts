@@ -28,11 +28,8 @@ import {
   getFileStatus, reconcileLibrary, resolveModelFolder,
   type DownloadEvent, type LibraryEntry,
 } from '../services/modelDownloads'
-import { existsSync } from 'fs'
-import { join } from 'path'
 import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
 import { downloadRowId } from '../config/RuntimeConfigStore'
-import { initLayaDecision, LAYA_MODEL_ID, decideLaya, isLayaReady, getLayaModelDir, LAYA_TIE_THRESHOLD } from '../services/layaDecision'
 
 export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
 
@@ -248,25 +245,11 @@ export class AppBackend {
       models,
       resources
     }
-    // Laya decision sidecar: visible to the user via Library; once the user
-    // downloads convaiinnovations/laya, the manager below spins up the Python
-    // sidecar on 127.0.0.1:51830 and the smart router can call decideLaya()
-    // for tie-breaks. Replaces the old hidden needle3 auto-router hack.
-    const libraryDir = this.getLibraryDir()
-    const layaCandidate = join(libraryDir, ...LAYA_MODEL_ID.split('/'))
-    initLayaDecision({ modelDir: existsSync(layaCandidate) ? layaCandidate : null })
     // Initialize tool infrastructure asynchronously
     void this.toolInfrastructure.initialize().catch((e) => {
       console.error('[AppBackend] ToolInfrastructure initialization failed:', e)
     })
   }
-
-  /** Expose the Laya decision surface so smart router can ask the user-visible
-   *  classifier to break routing ties without a separate dependency injection. */
-  askLayaDecision = decideLaya
-  isLayaDecisionReady = isLayaReady
-  getLayaDecisionModelDir = getLayaModelDir
-  readonly LAYA_TIE_THRESHOLD = LAYA_TIE_THRESHOLD
 
   /**
    * Initialize tool infrastructure - call after construction if not already initialized
@@ -559,7 +542,6 @@ export class AppBackend {
 
   // ── General settings (Settings → General), all persisted in app_meta ──
   getAppSettings(): {
-    theme: string
     sidebarBackground: string
     inlineDiffLayout: string
     renameAfterFork: boolean
@@ -581,7 +563,6 @@ export class AppBackend {
     const get = (k: string): string | null => this.runtimeConfig.getAppSetting(k)
     const lastCheck = get('last_update_check_at')
     return {
-      theme: get('theme') ?? 'dark',
       sidebarBackground: get('sidebar_background') ?? 'solid',
       inlineDiffLayout: get('inline_diff_layout') ?? 'unified',
       renameAfterFork: (get('rename_after_fork') ?? '1') === '1',
@@ -603,7 +584,6 @@ export class AppBackend {
   }
 
   setAppSettings(patch: {
-    theme?: string
     sidebarBackground?: string
     inlineDiffLayout?: string
     renameAfterFork?: boolean
@@ -621,10 +601,6 @@ export class AppBackend {
     customInstructions?: string
   }): ReturnType<AppBackend['getAppSettings']> {
     const set = (k: string, v: string): void => this.runtimeConfig.setAppSetting(k, v)
-    if (patch.theme !== undefined) {
-      if (!['dark', 'light', 'system'].includes(patch.theme)) throw new Error('invalid theme')
-      set('theme', patch.theme)
-    }
     if (patch.sidebarBackground !== undefined) {
       if (!['solid', 'translucent'].includes(patch.sidebarBackground)) throw new Error('invalid sidebarBackground')
       set('sidebar_background', patch.sidebarBackground)

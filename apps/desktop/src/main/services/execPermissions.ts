@@ -30,7 +30,7 @@ const SAFE_PREFIXES = [
 
 /** Explicit read-only safe tools that always auto-run under `review` within workspace. */
 const SAFE_EXPLICIT_TOOLS = new Set([
-  'fs_list', 'fs_read', 'web_search', 'web_fetch', 'ocr'
+  'fs_list', 'fs_read', 'web_search', 'web_fetch'
 ])
 
 export function isSafeTool(toolName: string): boolean {

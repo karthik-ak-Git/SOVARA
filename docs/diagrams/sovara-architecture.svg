@@ -1,138 +1,53 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="sovara-architecture-title sovara-architecture-desc">
-      <title id="sovara-architecture-title">SOVARA Phase-1 Architecture</title>
-      <desc id="sovara-architecture-desc">Architecture diagram showing the Next.js UI calling a validated API into the focal AppBackend, which persists to local SQLite plus JSONL and serves local loopback runtimes, while cloud and telemetry paths are blocked at the loopback trust boundary.</desc>
-      <defs>
-        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#9a9ab0"/></marker>
-        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6ba3e0"/></marker>
-      </defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Sovara desktop architecture</title>
+  <desc id="desc">React renderer through preload and validated IPC to the TypeScript Electron main process and local model runtime.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <style>
+      .box { fill:#f8fafc; stroke:#cbd5e1; stroke-width:2; rx:16; }
+      .main { fill:#e0f2fe; stroke:#0284c7; }
+      .local { fill:#ecfdf5; stroke:#059669; }
+      .text { font: 600 20px Manrope, sans-serif; fill:#0f172a; }
+      .small { font: 14px Manrope, sans-serif; fill:#475569; }
+      .edge { stroke:#475569; stroke-width:2.5; fill:none; marker-end:url(#arrow); }
+    </style>
+  </defs>
+  <rect x="40" y="40" width="1120" height="620" fill="#ffffff" stroke="#e2e8f0" stroke-width="2" rx="24"/>
+  <text x="70" y="85" class="text" font-size="28">Sovara desktop-only architecture</text>
+  <text x="70" y="112" class="small">No hosted web app · no Python sidecars · light-only renderer</text>
 
-      <rect width="100%" height="100%" fill="#1a1a2e"/>
+  <rect x="90" y="180" width="250" height="250" class="box"/>
+  <text x="130" y="225" class="text">React renderer</text>
+  <text x="130" y="260" class="small">Chat</text>
+  <text x="130" y="290" class="small">Models and library</text>
+  <text x="130" y="320" class="small">Settings and context</text>
+  <text x="130" y="350" class="small">Light design tokens</text>
+  <text x="130" y="390" class="small">View models only</text>
 
-      <!-- Zone: loopback trust boundary (painted first) -->
-      <rect x="20" y="96" width="704" height="392" rx="8"
-            fill="#e8e8f0" fill-opacity="0.02" stroke="#e8e8f0" stroke-opacity="0.10" stroke-width="0.8"/>
-      <rect x="36" y="100" width="120" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="96" y="109" fill="#e8e8f0" fill-opacity="0.40" font-size="7"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.14em">LOOPBACK ONLY</text>
+  <rect x="475" y="180" width="250" height="250" class="box main"/>
+  <text x="520" y="225" class="text">Electron main</text>
+  <text x="520" y="260" class="small">Zod-validated IPC</text>
+  <text x="520" y="290" class="small">AppBackend</text>
+  <text x="520" y="320" class="small">SQLite + JSONL</text>
+  <text x="520" y="350" class="small">Tools and permissions</text>
+  <text x="520" y="390" class="small">Settings and hardware</text>
 
-      <!-- Arrows (before nodes) -->
-      <!-- C1 UI -> /api -->
-      <line x1="188" y1="232" x2="228" y2="232" stroke="#9a9ab0" stroke-width="1.2" marker-end="url(#arrow)"/>
-      <rect x="190" y="212" width="36" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="208" y="221" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">INVOKE</text>
-      <!-- C2 /api -> AppBackend -->
-      <line x1="368" y1="232" x2="408" y2="232" stroke="#9a9ab0" stroke-width="1.2" marker-end="url(#arrow)"/>
-      <rect x="370" y="212" width="36" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="388" y="221" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">ROUTE</text>
-      <!-- C3 AppBackend -> Adapters (vertical) -->
-      <line x1="488" y1="272" x2="488" y2="360" stroke="#6ba3e0" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
-      <rect x="496" y="310" width="36" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="514" y="319" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">CALL</text>
-      <!-- C4 Adapters -> Runtimes -->
-      <line x1="568" y1="392" x2="608" y2="392" stroke="#9a9ab0" stroke-width="1.2" marker-end="url(#arrow)"/>
-      <rect x="570" y="372" width="36" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="588" y="381" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">SERVE</text>
-      <!-- C5 /api -> Store (vertical) -->
-      <line x1="298" y1="264" x2="298" y2="360" stroke="#9a9ab0" stroke-width="1.2" marker-end="url(#arrow)"/>
-      <rect x="306" y="302" width="40" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="326" y="311" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">WRITE</text>
-      <!-- C6 forbidden: cloud -> boundary (dashed, stops at zone edge) -->
-      <line x1="768" y1="232" x2="728" y2="232" stroke="#9a9ab0" stroke-width="1" stroke-dasharray="4,3"/>
-      <text x="744" y="236" fill="#9a9ab0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">×</text>
-      <rect x="726" y="212" width="40" height="12" rx="2" fill="#1a1a2e"/>
-      <text x="746" y="221" fill="#6e6e8a" font-size="8"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle" letter-spacing="0.06em">DENIED</text>
+  <rect x="860" y="180" width="250" height="250" class="box local"/>
+  <text x="905" y="225" class="text">Local inference</text>
+  <text x="905" y="260" class="small">llama.cpp runtime</text>
+  <text x="905" y="290" class="small">GPU/CPU placement</text>
+  <text x="905" y="320" class="small">Loopback health check</text>
+  <text x="905" y="350" class="small">GGUF model library</text>
+  <text x="905" y="390" class="small">Verified readiness</text>
 
-      <!-- Nodes -->
-      <!-- UI -->
-      <rect x="48" y="200" width="140" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="48" y="200" width="140" height="64" rx="6" fill="#222240" stroke="#e8e8f0" stroke-width="1"/>
-      <rect x="56" y="206" width="44" height="12" rx="2" fill="none" stroke="#e8e8f0" stroke-opacity="0.40" stroke-width="0.8"/>
-      <text x="78" y="215" fill="#e8e8f0" fill-opacity="0.80" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">CLIENT</text>
-      <text x="118" y="238" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">Next.js UI</text>
-      <text x="118" y="254" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">no fs · no db</text>
-      <!-- /api -->
-      <rect x="228" y="200" width="140" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="228" y="200" width="140" height="64" rx="6" fill="#222240" stroke="#e8e8f0" stroke-width="1"/>
-      <rect x="236" y="206" width="28" height="12" rx="2" fill="none" stroke="#e8e8f0" stroke-opacity="0.40" stroke-width="0.8"/>
-      <text x="250" y="215" fill="#e8e8f0" fill-opacity="0.80" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">API</text>
-      <text x="298" y="238" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">/api</text>
-      <text x="298" y="254" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">Zod-validated</text>
-      <!-- AppBackend (focal) -->
-      <rect x="408" y="192" width="160" height="80" rx="6" fill="#1a1a2e"/>
-      <rect x="408" y="192" width="160" height="80" rx="6" fill="#6ba3e0" fill-opacity="0.10" stroke="#6ba3e0" stroke-width="1"/>
-      <rect x="416" y="198" width="32" height="12" rx="2" fill="none" stroke="#6ba3e0" stroke-opacity="0.60" stroke-width="0.8"/>
-      <text x="432" y="207" fill="#6ba3e0" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">CORE</text>
-      <text x="488" y="234" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">AppBackend</text>
-      <text x="488" y="252" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">composition root</text>
-      <!-- Store -->
-      <rect x="228" y="360" width="140" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="228" y="360" width="140" height="64" rx="6" fill="#e8e8f0" fill-opacity="0.05" stroke="#9a9ab0" stroke-width="1"/>
-      <rect x="236" y="366" width="36" height="12" rx="2" fill="none" stroke="#9a9ab0" stroke-opacity="0.60" stroke-width="0.8"/>
-      <text x="254" y="375" fill="#9a9ab0" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">STORE</text>
-      <text x="298" y="398" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">SQLite + JSONL</text>
-      <text x="298" y="414" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">events.v1.jsonl</text>
-      <!-- Adapters -->
-      <rect x="408" y="360" width="160" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="408" y="360" width="160" height="64" rx="6" fill="#222240" stroke="#e8e8f0" stroke-width="1"/>
-      <rect x="416" y="366" width="52" height="12" rx="2" fill="none" stroke="#e8e8f0" stroke-opacity="0.40" stroke-width="0.8"/>
-      <text x="442" y="375" fill="#e8e8f0" fill-opacity="0.80" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">ADAPTER</text>
-      <text x="488" y="398" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">Ports + Adapters</text>
-      <text x="488" y="414" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">loopback HttpClient</text>
-      <!-- Runtimes -->
-      <rect x="608" y="360" width="160" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="608" y="360" width="160" height="64" rx="6" fill="#222240" stroke="#e8e8f0" stroke-width="1"/>
-      <rect x="616" y="366" width="52" height="12" rx="2" fill="none" stroke="#e8e8f0" stroke-opacity="0.40" stroke-width="0.8"/>
-      <text x="642" y="375" fill="#e8e8f0" fill-opacity="0.80" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">RUNTIME</text>
-      <text x="688" y="398" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">Local runtimes</text>
-      <text x="688" y="414" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">Ollama · llama.cpp</text>
-      <!-- Cloud (external, outside zone) -->
-      <rect x="768" y="200" width="144" height="64" rx="6" fill="#1a1a2e"/>
-      <rect x="768" y="200" width="144" height="64" rx="6" fill="#e8e8f0" fill-opacity="0.03" stroke="#e8e8f0" stroke-opacity="0.30" stroke-width="1"/>
-      <rect x="776" y="206" width="56" height="12" rx="2" fill="none" stroke="#e8e8f0" stroke-opacity="0.40" stroke-width="0.8"/>
-      <text x="804" y="215" fill="#e8e8f0" fill-opacity="0.80" font-size="7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            text-anchor="middle" letter-spacing="0.08em">EXTERNAL</text>
-      <text x="840" y="238" fill="#e8e8f0" font-size="12" font-weight="600"
-            font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">Cloud / telemetry</text>
-      <text x="840" y="254" fill="#9a9ab0" font-size="9"
-            font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">forbidden</text>
+  <path d="M340 305 H475" class="edge"/>
+  <path d="M725 305 H860" class="edge"/>
+  <text x="355" y="290" class="small">invoke</text>
+  <text x="750" y="290" class="small">OpenAI-compatible loopback</text>
 
-      <!-- Legend -->
-      <line x1="30" y1="524" x2="930" y2="524" stroke="#e8e8f0" stroke-opacity="0.12" stroke-width="0.8"/>
-      <text x="30" y="542" fill="#9a9ab0" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-            letter-spacing="0.14em">LEGEND</text>
-      <circle cx="120" cy="556" r="4" fill="#6ba3e0" fill-opacity="0.10" stroke="#6ba3e0" stroke-width="1"/>
-      <text x="130" y="559" fill="#9a9ab0" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">focal: AppBackend</text>
-      <rect x="280" y="551" width="10" height="10" fill="#e8e8f0" fill-opacity="0.05" stroke="#9a9ab0" stroke-width="1"/>
-      <text x="294" y="559" fill="#9a9ab0" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">local store</text>
-      <line x1="420" y1="556" x2="452" y2="556" stroke="#9a9ab0" stroke-width="1.2"/>
-      <text x="456" y="559" fill="#9a9ab0" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">permitted call</text>
-      <line x1="590" y1="556" x2="622" y2="556" stroke="#9a9ab0" stroke-width="1" stroke-dasharray="4,3"/>
-      <text x="626" y="559" fill="#9a9ab0" font-size="8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">blocked path</text>
-
-    </svg>
+  <rect x="190" y="515" width="820" height="90" class="box" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="240" y="555" class="text">Trust boundary</text>
+  <text x="240" y="585" class="small">Preload allowlist · context isolation · no raw ipcRenderer · explicit external web access</text>
+</svg>

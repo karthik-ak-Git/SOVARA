@@ -103,9 +103,6 @@ export const IPC_CHANNELS = {
   'library:delete': { type: 'invoke' as const },
   'shell:openExternal': { type: 'invoke' as const },
   'shell:showItemInFolder': { type: 'invoke' as const },
-  // First-run setup (Python env for sidecars)
-  'setup:getPythonStatus': { type: 'invoke' as const },
-  'setup:ensurePython': { type: 'invoke' as const },
   // Exec permissions (AI command levels)
   'exec:getMode': { type: 'invoke' as const },
   'exec:setMode': { type: 'invoke' as const },
@@ -125,14 +122,6 @@ export const IPC_CHANNELS = {
   'instances:list': { type: 'invoke' as const },
   'instances:unload': { type: 'invoke' as const },
   'instances:getMetrics': { type: 'invoke' as const },
-  // Voice transcription (local faster-whisper)
-  'voice:transcribe': { type: 'invoke' as const },
-  'voice:status': { type: 'invoke' as const },
-  // OCR — unlimited models, best quality
-  'ocr:recognize': { type: 'invoke' as const },
-  'ocr:status': { type: 'invoke' as const },
-  'ocr:listModels': { type: 'invoke' as const },
-  'ocr:downloadModel': { type: 'invoke' as const },
   'notifications:show': { type: 'invoke' as const },
   'logs:getRecent': { type: 'invoke' as const },
   'events:session': { type: 'on' as const },

@@ -6,23 +6,21 @@
   
   ![NPM Version](https://img.shields.io/npm/v/sovara?color=blue&label=npx%20sovara)
   ![License](https://img.shields.io/badge/License-MIT-green.svg)
-  ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20Next.js-black)
+  ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20React%20|%20TypeScript-black)
 </div>
 
 <hr />
 
-## 🚀 Live Demo (Sandbox)
+## Desktop-only release
 
-👉 **[Try the Web Sandbox Demo](https://sovara-eight.vercel.app)**
-
-> **Note:** The web version operates in a restricted browser sandbox. Local shell commands and filesystem edits are disabled. For the true, autonomous local experience, install the Desktop version below.
+SOVARA ships as a Windows desktop application. The browser sandbox has been removed; local filesystem access, model runtimes, and tool execution are available only inside the Electron desktop app.
 
 ## 📌 About
 
 SOVARA is an on-premise, offline-first AI workbench designed for confidential industrial work and agentic coding. It gives you a powerful LLM assistant that can read, write, and execute code directly on your local filesystem—without sending your intellectual property to the cloud.
 
 This platform is built to demonstrate:
-- **100% Privacy:** No telemetry, no cloud dependencies (unless using external APIs in Web Mode).
+- **100% Privacy:** No telemetry and no cloud dependency for the desktop app.
 - **Agentic Capabilities:** Edits files, runs shell commands, and manages workspaces.
 - **Hardware Agnosticism:** Dynamically optimizes local models based on your specific RAM/VRAM availability.
 
@@ -32,17 +30,17 @@ This platform is built to demonstrate:
 | :--- | :--- |
 | 💻 **True Local Execution** | Runs completely offline on your own hardware via Electron & Llama.cpp. |
 | ⚡ **Hardware Optimization** | Auto-detects your GPU/CPU to dynamically load 4-bit (CPU) or 8-bit (GPU) models. |
-| 🛡️ **Web Sandbox** | A beautiful Next.js web UI for cloud-based inference testing. |
+| 🛡️ **Sovereign Runtime** | Local model discovery, execution permissions, and workspace tools stay inside the desktop boundary. |
 | 🛠️ **Agentic Tools** | Full read/write filesystem access and terminal execution. |
 | 📦 **Frictionless Setup** | 1-line PowerShell or NPX installation. |
-| 🎨 **Modern UI** | Seamless, responsive dashboard with dark/light mode and session management. |
+| 🎨 **Modern UI** | A coherent light desktop interface with session management and local tool surfaces. |
 
 ## 🛠️ Tech Stack
 
 | Technology | Role |
 | :--- | :--- |
 | **Electron** | Desktop shell and local filesystem/OS bridge |
-| **Next.js / React** | Frontend UI for both Web Sandbox and Desktop Renderer |
+| **React + TypeScript** | Desktop renderer UI and interaction layer |
 | **Node.js** | Local backend operations and hardware probing |
 | **SQLite** | Durable session and conversation storage |
 | **Llama.cpp** | Local model inference and execution engine |
@@ -52,8 +50,7 @@ This platform is built to demonstrate:
 ```text
 📁 SOVARA
 ├── 📁 apps
-│   ├── 📁 desktop      # Full local Electron app (True Autonomous Mode)
-│   └── 📁 web          # Next.js Vercel deployment (Sandbox Demo Mode)
+│   └── 📁 desktop      # Full local Electron app (True Autonomous Mode)
 ├── 📁 packages
 │   └── 📁 sovara       # NPX 1-line installer package
 └── 📁 docs             # Architecture and phase documentation
@@ -61,11 +58,7 @@ This platform is built to demonstrate:
 
 ## 🚀 How to Use
 
-### Option 1 — Web Sandbox (No Setup Required)
-Perfect for testing the UI and chat capabilities without downloading the app.
-👉 **[Open Web Demo](https://sovara-eight.vercel.app)**
-
-### Option 2 — True Local Execution (Windows Only)
+### True Local Execution (Windows Only)
 Unlocks the full autonomous experience with local file editing and hardware-optimized AI models.
 
 **Method A: Direct Download (Easiest)**

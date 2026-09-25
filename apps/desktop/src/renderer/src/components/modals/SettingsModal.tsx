@@ -3,7 +3,7 @@ import {
   Settings,
   Cpu,
   CreditCard,
-  Palette,
+  SlidersHorizontal,
   MessageSquare,
   Link2,
   Puzzle,
@@ -64,8 +64,6 @@ import {
   scanSkills,
   toggleSkillsSource,
   importSkillFromUrl,
-  getPythonSetupStatus,
-  ensurePythonSetup,
   getTotalUsage,
   getUsageByModel,
   getRecentUsage,
@@ -89,7 +87,6 @@ import {
   type McpServerView,
   type BionicSkillView,
   type SkillsSource,
-  type PythonStatusView,
   type TokenUsage,
   type ModelUsage,
   type RecentUsageRow,
@@ -136,7 +133,7 @@ const NAV_GROUPS: SettingsNavGroup[] = [
       { id: 'notifications', label: 'Notifications & Hardware', icon: <Bell size={15} /> },
       { id: 'agent', label: 'Agent', icon: <Cpu size={15} /> },
       { id: 'billing', label: 'Usage', icon: <CreditCard size={15} /> },
-      { id: 'appearance', label: 'Appearance', icon: <Palette size={15} /> },
+      { id: 'appearance', label: 'Preferences', icon: <SlidersHorizontal size={15} /> },
       { id: 'sessions', label: 'Sessions', icon: <MessageSquare size={15} /> },
     ],
   },
@@ -351,8 +348,6 @@ export function SettingsModal({
   const [agentModels, setAgentModels] = useState<DiscoveredModel[]>([])
   const [agentTools, setAgentTools] = useState<ToolDefinitionView[]>([])
   const [instructionsDraft, setInstructionsDraft] = useState<string>('')
-  const [pythonStatus, setPythonStatus] = useState<PythonStatusView | null>(null)
-  const [retryingEngine, setRetryingEngine] = useState(false)
   const [testingSearch, setTestingSearch] = useState(false)
   const [searchTestResult, setSearchTestResult] = useState<string | null>(null)
 
@@ -418,7 +413,6 @@ export function SettingsModal({
     getRecentUsage().then(setRecentUsage).catch(() => {})
     listDiscoveredModels().then(setAgentModels).catch(() => {})
     listTools().then(setAgentTools).catch(() => {})
-    getPythonSetupStatus().then(setPythonStatus).catch(() => {})
     getRecentLogs('all').then(setApiRecentLogs).catch(() => {})
 
     void getHardwareProfile().then(setHwProfile).catch(() => {})
@@ -526,15 +520,6 @@ export function SettingsModal({
     try {
       const updated = await setAppSettings(patch)
       setAppSettingsState(updated)
-      if (patch.theme) {
-        const resolved =
-          patch.theme === 'system'
-            ? window.matchMedia('(prefers-color-scheme: dark)').matches
-              ? 'dark'
-              : 'light'
-            : patch.theme
-        document.documentElement.setAttribute('data-theme', resolved)
-      }
       if (patch.sidebarBackground) {
         document.documentElement.setAttribute('data-sidebar', patch.sidebarBackground)
       }
@@ -810,18 +795,6 @@ export function SettingsModal({
       setSearchTestResult(`Error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setTestingSearch(false)
-    }
-  }, [])
-
-  const handleVerifyEngine = useCallback(async () => {
-    setRetryingEngine(true)
-    try {
-      const st = await ensurePythonSetup()
-      setPythonStatus(st)
-    } catch (e) {
-      console.error('[SettingsModal] ensurePythonSetup error:', e)
-    } finally {
-      setRetryingEngine(false)
     }
   }, [])
 
@@ -1561,26 +1534,9 @@ export function SettingsModal({
                 <div className="settings-modal-card">
                   <div className="settings-modal-row">
                     <div className="settings-modal-row-info">
-                      <div className="settings-modal-row-label">Python Automation Engine</div>
-                      <div className="settings-modal-row-desc">
-                        Status: {pythonStatus?.phase ?? 'ready'} {pythonStatus?.source ? `(${pythonStatus.source})` : ''}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="settings-btn-action"
-                      onClick={() => void handleVerifyEngine()}
-                      disabled={retryingEngine}
-                    >
-                      {retryingEngine ? 'Verifying…' : 'Verify Engine'}
-                    </button>
-                  </div>
-
-                  <div className="settings-modal-row">
-                    <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Live Web Search Tool</div>
                       <div className="settings-modal-row-desc">
-                        {searchTestResult ?? 'Test the integrated sovereign web search capability.'}
+                        {searchTestResult ?? 'Test the integrated TypeScript-only web search capability.'}
                       </div>
                     </div>
                     <button
@@ -1611,19 +1567,19 @@ export function SettingsModal({
               <div className="settings-modal-group">
                 <div className="settings-modal-group-title">Cumulative Accounting</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                  <div className="usage-stat" style={{ padding: 16, background: '#ffffff', borderRadius: 12, border: '1px solid #e2e8f0' }}>
+                  <div className="usage-stat" style={{ padding: 16, background: 'var(--bg-elevated)', borderRadius: 12, border: '1px solid #e2e8f0' }}>
                     <div className="usage-stat-label" style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>Total Tokens</div>
                     <div className="usage-stat-value" style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginTop: 4 }}>
                       {totalUsage.totalTokens.toLocaleString()}
                     </div>
                   </div>
-                  <div className="usage-stat" style={{ padding: 16, background: '#ffffff', borderRadius: 12, border: '1px solid #e2e8f0' }}>
+                  <div className="usage-stat" style={{ padding: 16, background: 'var(--bg-elevated)', borderRadius: 12, border: '1px solid #e2e8f0' }}>
                     <div className="usage-stat-label" style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>Prompt Tokens</div>
                     <div className="usage-stat-value" style={{ fontSize: 24, fontWeight: 700, color: '#0284c7', marginTop: 4 }}>
                       {totalUsage.promptTokens.toLocaleString()}
                     </div>
                   </div>
-                  <div className="usage-stat" style={{ padding: 16, background: '#ffffff', borderRadius: 12, border: '1px solid #e2e8f0' }}>
+                  <div className="usage-stat" style={{ padding: 16, background: 'var(--bg-elevated)', borderRadius: 12, border: '1px solid #e2e8f0' }}>
                     <div className="usage-stat-label" style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>Completion Tokens</div>
                     <div className="usage-stat-value" style={{ fontSize: 24, fontWeight: 700, color: '#10b981', marginTop: 4 }}>
                       {totalUsage.completionTokens.toLocaleString()}
@@ -1639,7 +1595,7 @@ export function SettingsModal({
                   {modelUsage.length > 0 ? (
                     <table className="settings-table" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
                       <thead>
-                        <tr style={{ textAlign: 'left', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+                        <tr style={{ textAlign: 'left', borderBottom: '1px solid #e2e8f0', background: 'var(--bg-soft)' }}>
                           <th style={{ padding: '10px 14px', color: '#475569' }}>Model Name</th>
                           <th style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>Prompt</th>
                           <th style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>Completion</th>
@@ -1672,7 +1628,7 @@ export function SettingsModal({
                   <div className="settings-modal-card" style={{ padding: 0, overflow: 'hidden' }}>
                     <table className="settings-table" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
                       <thead>
-                        <tr style={{ textAlign: 'left', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+                        <tr style={{ textAlign: 'left', borderBottom: '1px solid #e2e8f0', background: 'var(--bg-soft)' }}>
                           <th style={{ padding: '8px 12px', color: '#475569' }}>Time</th>
                           <th style={{ padding: '8px 12px', color: '#475569' }}>Model</th>
                           <th style={{ padding: '8px 12px', textAlign: 'right', color: '#475569' }}>Prompt</th>
@@ -1698,64 +1654,17 @@ export function SettingsModal({
             </div>
           ) : null}
 
-          {/* APPEARANCE TAB */}
+          {/* PREFERENCES TAB */}
           {activeTab === 'appearance' ? (
             <div className="settings-modal-scroll">
               <div className="settings-modal-header">
-                <h1 className="settings-modal-title">Appearance</h1>
+                <h1 className="settings-modal-title">Preferences</h1>
                 <p className="settings-modal-subtitle">
-                  Customize themes, sidebar material, and code difference layouts.
+                  Adjust sidebar material and code difference layouts. Sovara uses one light visual system.
                 </p>
               </div>
 
               <div className="settings-modal-group">
-                <div className="settings-modal-group-title">Theme</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                  {[
-                    { id: 'light', label: 'Light', desc: 'Clean chat theme', bg: '#ffffff', border: '#e2e8f0' },
-                    { id: 'dark', label: 'Dark', desc: 'Midnight slate', bg: '#18191c', border: '#2e323b' },
-                    { id: 'system', label: 'System', desc: 'Match OS setting', bg: 'linear-gradient(135deg, #fff 50%, #18191c 50%)', border: '#cbd5e1' },
-                  ].map((t) => {
-                    const isSelected = (appSettings?.theme ?? 'light') === t.id
-                    return (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => void applyPatch({ theme: t.id })}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 10,
-                          padding: 14,
-                          borderRadius: 12,
-                          border: `2px solid ${isSelected ? '#0284c7' : '#e2e8f0'}`,
-                          background: '#ffffff',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          transition: 'all 150ms ease',
-                        }}
-                      >
-                        <div
-                          style={{
-                            height: 52,
-                            borderRadius: 8,
-                            background: t.bg,
-                            border: `1px solid ${t.border}`,
-                            boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.06)',
-                          }}
-                        />
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{t.label}</span>
-                          {isSelected ? <Check size={14} color="#0284c7" /> : null}
-                        </div>
-                        <span style={{ fontSize: 11, color: '#64748b' }}>{t.desc}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div className="settings-modal-group" style={{ marginTop: 24 }}>
                 <div className="settings-modal-group-title">Sidebar Material &amp; Layout</div>
                 <div className="settings-modal-card">
                   <div className="settings-modal-row">
@@ -1772,7 +1681,6 @@ export function SettingsModal({
                     >
                       <option value="solid">Solid (Clean)</option>
                       <option value="translucent">Translucent</option>
-                      <option value="frosted">Frosted Blur</option>
                     </select>
                   </div>
 
@@ -2004,7 +1912,7 @@ export function SettingsModal({
                         padding: 12,
                         borderRadius: 10,
                         border: '1px solid #e2e8f0',
-                        background: '#f8fafc',
+                        background: 'var(--bg-soft)',
                         display: 'flex',
                         flexDirection: 'column',
                         justifyContent: 'space-between',
@@ -2296,7 +2204,7 @@ export function SettingsModal({
                         style={{
                           fontSize: 11,
                           fontFamily: 'monospace',
-                          background: '#f8fafc',
+                          background: 'var(--bg-soft)',
                           color: '#0f172a',
                           padding: 10,
                           borderRadius: 8,
@@ -2319,7 +2227,7 @@ export function SettingsModal({
                         style={{
                           fontSize: 11,
                           fontFamily: 'monospace',
-                          background: '#f8fafc',
+                          background: 'var(--bg-soft)',
                           color: '#0f172a',
                           padding: 10,
                           borderRadius: 8,
@@ -2815,7 +2723,7 @@ export function SettingsModal({
                           style={{
                             padding: '3px 8px',
                             borderRadius: 6,
-                            background: '#f1f5f9',
+                            background: 'var(--panel)',
                             border: '1px solid #e2e8f0',
                             fontSize: 11,
                             fontFamily: 'inherit',
@@ -2875,7 +2783,7 @@ export function SettingsModal({
                         padding: '10px 14px',
                         borderRadius: 8,
                         border: '1px solid #e2e8f0',
-                        background: '#f8fafc',
+                        background: 'var(--bg-soft)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -2914,7 +2822,7 @@ export function SettingsModal({
                         padding: '10px 14px',
                         borderRadius: 8,
                         border: '1px solid #e2e8f0',
-                        background: '#f8fafc',
+                        background: 'var(--bg-soft)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -3227,7 +3135,7 @@ export function SettingsModal({
                 <h1 className="settings-modal-title">Knowledge Graph</h1>
                 <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • 2D • drag to pan, scroll to zoom</p>
               </div>
-              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: '#ffffff' }}>
+              <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: 'var(--bg-elevated)' }}>
                 <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
               </div>
             </div>

@@ -315,22 +315,42 @@ export function parseNvidiaSmiCsv(stdout: string): GpuVram | null {
   return null
 }
 
-export function queryGpuVram(timeoutMs = 5000): Promise<GpuVram | null> {
+function nvidiaSmiCandidates(): string[] {
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+  const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+  return [
+    'nvidia-smi.exe',
+    path.join(systemRoot, 'System32', 'nvidia-smi.exe'),
+    path.join(programFiles, 'NVIDIA Corporation', 'NVSMI', 'nvidia-smi.exe'),
+  ]
+}
+
+function queryNvidiaSmiCandidate(candidates: string[], index: number, timeoutMs: number): Promise<GpuVram | null> {
+  const command = candidates[index]
+  if (!command) return Promise.resolve(null)
   return new Promise((resolve) => {
     execFile(
-      'nvidia-smi',
+      command,
       ['--query-gpu=memory.total,memory.free,name', '--format=csv,noheader,nounits'],
       { timeout: timeoutMs, windowsHide: true },
       (err, stdout) => {
-        if (err) return resolve(null)
-        try {
-          resolve(parseNvidiaSmiCsv(String(stdout ?? '')))
-        } catch {
-          resolve(null)
+        if (!err) {
+          try {
+            const parsed = parseNvidiaSmiCsv(String(stdout ?? ''))
+            if (parsed) { resolve(parsed); return }
+          } catch {
+            // Try the next known install location.
+          }
         }
+        resolve(queryNvidiaSmiCandidate(candidates, index + 1, timeoutMs))
       }
     )
   })
+}
+
+/** NVIDIA VRAM probe with PATH-independent Windows install fallbacks. */
+export function queryGpuVram(timeoutMs = 5000): Promise<GpuVram | null> {
+  return queryNvidiaSmiCandidate(nvidiaSmiCandidates(), 0, timeoutMs)
 }
 
 // ── GGUF header probing (architecture-aware memory math) ────────────────

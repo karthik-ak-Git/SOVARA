@@ -19,8 +19,6 @@ extraResources:
       - dist/**/*
   - from: node_modules/node-llama-cpp/bins
     to: bins
-  - from: python
-    to: python
 
 asar: true
 compression: maximum

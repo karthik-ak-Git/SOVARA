@@ -315,17 +315,12 @@ export class ModelWorkbench {
     return out
   }
 
-  /** Hook kept (deprecated) so any out-of-tree callers don't break; returns null.
-   *  The hidden-needle3 model is gone — routing now uses Laya for decisions. */
+  /** The visible candidate list is the only source for deterministic routing. */
   private getHiddenNeedleForRouting(): DiscoveredModel | null {
     return null
   }
 
   listModelsForRouting(): DiscoveredModel[] {
-    // The hidden-needle3 auto-router is gone — routing decisions now go through
-    // the Laya decision sidecar (`services/layaDecision.ts`), which asks a real
-    // user-visible classifier to break ties instead of shoving a hidden model
-    // into the candidate list. Visible candidate list equals discovered list.
     return this.listModels()
   }
 

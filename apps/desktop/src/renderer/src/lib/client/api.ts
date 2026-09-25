@@ -369,7 +369,6 @@ export async function dispatchTool(name: string, args?: Record<string, unknown>)
 }
 
 export interface AppSettingsState {
-  theme: string
   sidebarBackground: string
   inlineDiffLayout: string
   renameAfterFork: boolean
@@ -391,7 +390,6 @@ export interface AppSettingsState {
 }
 
 export interface AppSettingsPatch {
-  theme?: string
   sidebarBackground?: string
   inlineDiffLayout?: string
   renameAfterFork?: boolean
@@ -426,23 +424,6 @@ export async function setAppSettings(patch: AppSettingsPatch): Promise<AppSettin
 
 export async function checkForUpdatesNow(): Promise<UpdateCheckView> {
   return ipcInvoke('updates:checkNow')
-}
-
-export type PythonPhase = 'idle' | 'checking' | 'installing-deps' | 'installing-browsers' | 'ready' | 'no-python' | 'error'
-
-export interface PythonStatusView {
-  phase: PythonPhase
-  message: string
-  pythonExe: string | null
-  source: 'system' | 'venv' | null
-}
-
-export async function getPythonSetupStatus(): Promise<PythonStatusView> {
-  return ipcInvoke('setup:getPythonStatus')
-}
-
-export async function ensurePythonSetup(): Promise<PythonStatusView> {
-  return ipcInvoke('setup:ensurePython')
 }
 
 export async function minimizeWindow(): Promise<void> {
@@ -813,24 +794,6 @@ export async function toggleMcpServer(id: string, enabled: boolean): Promise<Mcp
 
 export async function probeMcpServer(id: string): Promise<McpServerView> {
   return ipcInvoke('mcp:probe', { id })
-}
-
-export interface VoiceTranscribeResult {
-  ok: boolean
-  text?: string
-  raw?: string
-  language?: string
-  duration?: number
-  transcribeTime?: number
-  error?: string
-}
-
-export async function getVoiceStatus(): Promise<{ ready: boolean }> {
-  return ipcInvoke('voice:status')
-}
-
-export async function transcribeAudio(audioBase64: string, filename: string): Promise<VoiceTranscribeResult> {
-  return ipcInvoke('voice:transcribe', { audio: audioBase64, filename })
 }
 
 import type { ValidationJob, HardwareProfileFull, ValidationStoreEntry } from '@shared/types/validation'

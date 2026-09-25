@@ -83,6 +83,8 @@ function ChatRow({
   onSelect,
   onPin,
   onArchive,
+  onRename,
+  onDelete,
 }: {
   chat: ChatItem
   active: boolean
@@ -90,7 +92,35 @@ function ChatRow({
   onSelect: () => void
   onPin?: () => void
   onArchive?: () => void
+  onRename?: (title: string) => void
+  onDelete?: () => void
 }): React.JSX.Element {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [draftTitle, setDraftTitle] = useState(chat.title)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocumentDown = (event: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocumentDown)
+    return () => document.removeEventListener('mousedown', onDocumentDown)
+  }, [menuOpen])
+
+  const closeMenu = (): void => {
+    setMenuOpen(false)
+    setConfirmDelete(false)
+  }
+
+  const commitRename = (): void => {
+    const next = draftTitle.trim()
+    if (next) onRename?.(next)
+    setRenaming(false)
+  }
+
   return (
     <div
       className={`nav-chat-row ${active ? 'active' : ''}`}
@@ -176,7 +206,63 @@ function ChatRow({
         >
           <Archive size={15} aria-hidden />
         </button>
+        <div ref={menuRef} style={{ position: 'relative' }}>
+          <button
+            type="button"
+            className="nav-chat-action-btn"
+            aria-label={`Chat options for ${chat.title}`}
+            title="Chat options"
+            onClick={(e) => {
+              e.stopPropagation()
+              setMenuOpen((value) => !value)
+              setConfirmDelete(false)
+            }}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              width: 24,
+              height: 24,
+              cursor: 'pointer',
+              color: '#64748b',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <MoreHorizontal size={15} aria-hidden />
+          </button>
+          {menuOpen ? (
+            <div className="chat-row-menu" role="menu" style={{ position: 'absolute', right: 0, top: 28, zIndex: 20, minWidth: 150, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 10px 24px rgba(15,23,42,.14)', padding: 4 }}>
+              {confirmDelete ? (
+                <>
+                  <button type="button" onClick={() => { onDelete?.(); closeMenu() }} style={{ display: 'block', width: '100%', border: 0, background: '#fef2f2', color: '#b91c1c', borderRadius: 5, padding: '7px 9px', textAlign: 'left', cursor: 'pointer' }}>Delete</button>
+                  <button type="button" role="menuitem" onClick={() => setConfirmDelete(false)} style={{ display: 'block', width: '100%', border: 0, background: 'transparent', color: '#475569', borderRadius: 5, padding: '7px 9px', textAlign: 'left', cursor: 'pointer' }}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" role="menuitem" onClick={() => { setDraftTitle(chat.title); setRenaming(true); closeMenu() }} style={{ display: 'block', width: '100%', border: 0, background: 'transparent', color: '#334155', borderRadius: 5, padding: '7px 9px', textAlign: 'left', cursor: 'pointer' }}>Rename</button>
+                  <button type="button" role="menuitem" onClick={() => setConfirmDelete(true)} style={{ display: 'block', width: '100%', border: 0, background: 'transparent', color: '#b91c1c', borderRadius: 5, padding: '7px 9px', textAlign: 'left', cursor: 'pointer' }}>Delete</button>
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
+      {renaming ? (
+        <input
+          autoFocus
+          aria-label="Rename chat"
+          value={draftTitle}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); commitRename() }
+            if (event.key === 'Escape') { event.preventDefault(); setRenaming(false) }
+          }}
+          style={{ position: 'relative', left: 8, right: 8, zIndex: 5, border: '1px solid #0284c7', borderRadius: 4, padding: '4px 6px', background: '#fff', color: '#0f172a' }}
+        />
+      ) : null}
     </div>
   )
 }
@@ -722,6 +808,8 @@ export function Sidebar({
                         onSelect={() => onSelectSession?.(session.id)}
                         onPin={() => onPinChat?.(session.id)}
                         onArchive={() => onArchiveChat?.(session.id)}
+                         onRename={(title) => onRenameChat?.(session.id, title)}
+                         onDelete={() => onDeleteChat?.(session.id)}
                       />
                     ))}
                   </div>
@@ -755,6 +843,8 @@ export function Sidebar({
                 onSelect={() => onSelectChat?.(chat.id)}
                 onPin={() => onPinChat?.(chat.id)}
                 onArchive={() => onArchiveChat?.(chat.id)}
+                 onRename={(title) => onRenameChat?.(chat.id, title)}
+                 onDelete={() => onDeleteChat?.(chat.id)}
               />
             ))}
           </div>

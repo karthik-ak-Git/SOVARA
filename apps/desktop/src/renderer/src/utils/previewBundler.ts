@@ -69,13 +69,13 @@ export function bundleLocalhostPreview(url: string): string {
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #090d16; color: #f8fafc;
+      background: #f8fafc; color: #0f172a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       height: 100vh; display: flex; flex-direction: column; overflow: hidden;
     }
     .server-bar {
       display: flex; align-items: center; gap: 10px;
-      padding: 10px 16px; background: #0f172a; border-bottom: 1px solid #1e293b;
+      padding: 10px 16px; background: #ffffff; border-bottom: 1px solid #e2e8f0;
       font-size: 12px; z-index: 10;
     }
     .status-dot {
@@ -89,20 +89,20 @@ export function bundleLocalhostPreview(url: string): string {
       letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
     }
     .url-input {
-      flex: 1; background: #1e293b; border: 1px solid #334155;
+      flex: 1; background: #ffffff; border: 1px solid #cbd5e1;
       border-radius: 6px; padding: 5px 10px; color: #38bdf8;
       font-family: monospace; font-size: 12px; outline: none;
     }
     .btn {
-      background: #1e293b; border: 1px solid #334155; border-radius: 6px;
-      padding: 5px 12px; color: #f8fafc; font-size: 11px; font-weight: 600;
+      background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px;
+      padding: 5px 12px; color: #334155; font-size: 11px; font-weight: 600;
       cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
       transition: all 0.2s; white-space: nowrap;
     }
-    .btn:hover { background: #334155; border-color: #475569; }
+    .btn:hover { background: #f1f5f9; border-color: #94a3b8; }
     .btn-primary { background: #0284c7; border-color: #38bdf8; color: #ffffff; }
     .btn-primary:hover { background: #0369a1; }
-    .frame-container { flex: 1; position: relative; background: #090d16; }
+    .frame-container { flex: 1; position: relative; background: #f8fafc; }
     iframe { width: 100%; height: 100%; border: none; background: #ffffff; }
   </style>
 </head>
@@ -183,7 +183,7 @@ export function bundleReactPreview(code: string): string {
   clean = clean.replace(/export\s+(?:function|const|let|var|class)\s+/g, (m) => m.replace('export ', ''))
 
   return `<!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -194,9 +194,9 @@ export function bundleReactPreview(code: string): string {
       theme: {
         extend: {
           colors: {
-            border: 'rgba(255, 255, 255, 0.1)',
-            background: '#090d16',
-            foreground: '#f8fafc',
+            border: 'rgba(15, 23, 42, 0.12)',
+            background: '#f8fafc',
+            foreground: '#0f172a',
           }
         }
       }
@@ -213,8 +213,8 @@ export function bundleReactPreview(code: string): string {
       padding: 0;
       min-height: 100vh;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: #090d16;
-      color: #f8fafc;
+      background: #f8fafc;
+      color: #0f172a;
       overflow-x: hidden;
     }
     #error-container {
@@ -231,7 +231,7 @@ export function bundleReactPreview(code: string): string {
     }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 antialiased dark min-h-screen">
+<body class="bg-slate-50 text-slate-900 antialiased min-h-screen">
   <div id="error-container"></div>
   <div id="root"></div>
 
@@ -280,7 +280,7 @@ export function bundleReactPreview(code: string): string {
     // Safe fallbacks for common creative canvas/styling undeclared globals
     if (typeof window.color === 'undefined') window.color = '#38bdf8';
     if (typeof window.colors === 'undefined') window.colors = ['#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#34d399', '#fbbf24'];
-    if (typeof window.theme === 'undefined') window.theme = 'dark';
+    if (typeof window.theme === 'undefined') window.theme = 'light';
 
     try {
       ${clean}
@@ -334,8 +334,8 @@ export function bundleMermaidPreview(code: string): string {
     body {
       margin: 0;
       padding: 32px 24px;
-      background: #090d16;
-      color: #f8fafc;
+      background: #f8fafc;
+      color: #0f172a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex;
       flex-direction: column;
@@ -345,8 +345,8 @@ export function bundleMermaidPreview(code: string): string {
       overflow: auto;
     }
     .mermaid-container {
-      background: #0f172a;
-      border: 1px solid #1e293b;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
       border-radius: 16px;
       padding: 36px;
       box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
@@ -379,28 +379,28 @@ ${cleanCode}
     try {
       mermaid.initialize({
         startOnLoad: true,
-        theme: 'dark',
+        theme: 'light',
         themeVariables: {
-          darkMode: true,
+          darkMode: false,
           background: '#0f172a',
           primaryColor: '#2563eb',
-          primaryTextColor: '#f8fafc',
+          primaryTextColor: '#0f172a',
           primaryBorderColor: '#3b82f6',
           lineColor: '#38bdf8',
           secondaryColor: '#7c3aed',
           tertiaryColor: '#059669',
-          actorBkg: '#1e293b',
+          actorBkg: '#f8fafc',
           actorBorder: '#3b82f6',
-          actorTextColor: '#f8fafc',
+          actorTextColor: '#0f172a',
           signalColor: '#38bdf8',
-          signalTextColor: '#f8fafc',
-          labelBoxBkgColor: '#1e293b',
+          signalTextColor: '#0f172a',
+          labelBoxBkgColor: '#f8fafc',
           labelBoxBorderColor: '#38bdf8',
-          labelTextColor: '#f8fafc',
-          loopTextColor: '#f8fafc',
-          noteBkgColor: '#1e293b',
+          labelTextColor: '#0f172a',
+          loopTextColor: '#0f172a',
+          noteBkgColor: '#f8fafc',
           noteBorderColor: '#64748b',
-          noteTextColor: '#f8fafc'
+          noteTextColor: '#0f172a'
         },
         flowchart: { curve: 'basis', htmlLabels: true },
         sequence: { showSequenceNumbers: true, actorMargin: 50 }
@@ -449,7 +449,7 @@ export async function preparePreviewHtml(
 
   // 3. SVG preview
   if ((language === 'svg' || html.trim().startsWith('<svg')) && html.includes('</svg>')) {
-    return `<!DOCTYPE html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#090d16;padding:24px;}svg{max-width:100%;max-height:100%;width:auto;height:auto;filter:drop-shadow(0 10px 15px rgba(0,0,0,0.4));}</style></head><body>${html}</body></html>`
+    return `<!DOCTYPE html><html><head><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f8fafc;padding:24px;}svg{max-width:100%;max-height:100%;width:auto;height:auto;filter:drop-shadow(0 10px 15px rgba(0,0,0,0.4));}</style></head><body>${html}</body></html>`
   }
 
   let bundled = html
@@ -464,7 +464,7 @@ export async function preparePreviewHtml(
     } else if (bundled.includes('<html>')) {
       bundled = bundled.replace('<html>', `<html><head>${tailwindCdn}</head>`)
     } else {
-      bundled = `<!DOCTYPE html><html class="dark"><head>${tailwindCdn}</head><body class="bg-slate-950 text-slate-100 dark p-4">${bundled}</body></html>`
+      bundled = `<!DOCTYPE html><html><head>${tailwindCdn}</head><body class="bg-slate-50 text-slate-900 p-4">${bundled}</body></html>`
     }
   }
 

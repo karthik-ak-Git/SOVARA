@@ -10,12 +10,8 @@
     "dev": "pnpm --filter @sovara/desktop dev",
     "addon:build": "node-gyp rebuild",
     "addon:configure": "node-gyp configure",
-    "dev:web": "pnpm --filter @sovara/web dev",
-    "dev:all": "pnpm --parallel --filter @sovara/desktop --filter @sovara/web dev",
     "build": "pnpm -r build",
     "build:win": "pnpm --filter @sovara/desktop build:win",
-    "build:web": "pnpm --filter @sovara/web build",
-    "start:web": "pnpm --filter @sovara/web start",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

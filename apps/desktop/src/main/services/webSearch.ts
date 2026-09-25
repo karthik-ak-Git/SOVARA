@@ -21,7 +21,7 @@ export interface WebSearchSource {
   url: string
   title?: string
   snippet?: string
-  /** Full extracted page text (crawl4ai sidecar only; link discovery omits it). */
+  /** Full page text when supplied by the TypeScript page reader. */
   content?: string
 }
 
@@ -189,5 +189,47 @@ export async function runWebSearch(
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+export interface WebPage {
+  url: string
+  title: string
+  markdown: string
+}
+
+/**
+ * Small TypeScript-only page reader used by web_fetch. It deliberately avoids a
+ * browser runtime and keeps the result bounded before it reaches the model context.
+ */
+export async function fetchWebPage(url: string, maxChars = 6000, timeoutMs = 15000): Promise<WebPage> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new WebSearchError('url must be a valid http(s) URL', 'WEB_PROVIDER_ERROR')
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new WebSearchError('url must use http or https', 'WEB_PROVIDER_ERROR')
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(parsed, {
+      redirect: 'error',
+      headers: { accept: 'text/html,text/plain;q=0.9', 'user-agent': 'Sovara/1.0' },
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new WebSearchError(`Page request failed (HTTP ${response.status}).`, 'WEB_PROVIDER_ERROR')
+    const html = await response.text()
+    const title = decodeEntities((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? parsed.hostname).trim())
+    const text = stripTags(html).replace(/\s+/g, ' ').trim()
+    return { url: parsed.toString(), title, markdown: text.slice(0, maxChars) }
+  } catch (e) {
+    if (e instanceof WebSearchError) throw e
+    if (controller.signal.aborted) throw new WebSearchError('Page request aborted', 'WEB_ABORTED')
+    throw new WebSearchError(`Page request failed: ${String(e)}`, 'WEB_PROVIDER_ERROR')
+  } finally {
+    clearTimeout(timer)
   }
 }

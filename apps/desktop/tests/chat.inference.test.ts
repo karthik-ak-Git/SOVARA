@@ -668,7 +668,7 @@ describe('Commit 7 — sovereignty proofs', () => {
       if (/\bfetch\s*\(/.test(txt)) {
         // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning), nextServer (loopback health-check of the internal Next.js server), explorerFit (GGUF Range-header probe), hiddenModels (needle probe)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts|main\/services\/explorerFit\.ts|main\/services\/hiddenModels\.ts|main\/services\/localRuntimeDetector\.ts)$/)
+        expect(rel, `fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/services\/webSearch\.ts|main\/nextServer\.ts|main\/services\/explorerFit\.ts|main\/services\/hiddenModels\.ts|main\/services\/localRuntimeDetector\.ts)$/)
       }
     }
   })

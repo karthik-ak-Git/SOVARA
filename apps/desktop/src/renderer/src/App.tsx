@@ -19,6 +19,7 @@ import { SkillsPage } from './features/skills/SkillsPage'
 import { ConnectionsPage } from './features/connections/ConnectionsPage'
 import { ConversationHistoryPage } from './features/chat/ConversationHistoryPage'
 import { ContextPanel } from './features/chat/ContextPanel'
+import { applyThemePreference } from './theme/theme'
 import {
   createProject,
   listProjects,
@@ -126,13 +127,8 @@ export function App(): React.JSX.Element {
     getAppSettings()
       .then((s) => {
         setGlobalWorkspaceRoot(s.globalWorkspaceRoot || null)
-        const resolved =
-          s.theme === 'system'
-            ? window.matchMedia('(prefers-color-scheme: dark)').matches
-              ? 'dark'
-              : 'light'
-            : s.theme
-        document.documentElement.setAttribute('data-theme', resolved)
+        applyThemePreference()
+        document.documentElement.setAttribute('data-theme-preference', 'light')
         document.documentElement.setAttribute('data-sidebar', s.sidebarBackground)
         document.documentElement.setAttribute('data-diff', s.inlineDiffLayout)
       })
