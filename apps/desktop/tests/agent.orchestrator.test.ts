@@ -585,6 +585,7 @@ describe('AgentOrchestrator — action-first autonomy', () => {
   })
 })
 
+describe('AgentOrchestrator — clarify', () => {
   it('clarify emits a real question card and returns the user answer', async () => {
     const emitted: ChatStreamEvent[] = []
     const orchestrator = new AgentOrchestrator({
