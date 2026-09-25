@@ -428,5 +428,6 @@ export async function loadEnabledSkillsContent(
 
   if (parts.length === 0) return null
   const skillNames = selected.map((s) => s.name).join(', ')
-  return `<skills_context>\n[Superpower Orchestrator Active Skills: ${skillNames}]\nExecution Rule: Follow the workflows and guidelines in the active skills below to plan and autonomously build the complete final deliverable.\n\n${parts.join('\n\n---\n\n')}\n</skills_context>`
+  const skillListJson = JSON.stringify(selected.map((s) => s.name))
+  return `--- skills_context (JSON) ---\n{"active_skills": ${skillListJson}, "execution_rule": "Follow the workflows and guidelines in the active skills below to plan and autonomously build the complete final deliverable."}\n[Superpower Orchestrator Active Skills: ${skillNames}]\n\n${parts.join('\n\n---\n\n')}\n--- end skills_context ---`
 }

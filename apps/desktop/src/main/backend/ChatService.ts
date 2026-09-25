@@ -14,6 +14,7 @@
 import { brand, type SessionId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmChatMessage, LlmPort, ModelRuntimePort, PersistencePort, SystemResourceManagerPort } from '@shared/types/ports'
+import { ReasoningSplitter, sanitizeAssistantText } from '@shared/assistantProtocol'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendRuntimeLog, appendChatLog, safeTarget } from '../logging/runtimeLog'
 import type { ModelWorkbench } from './ModelWorkbench'
@@ -371,7 +372,7 @@ export class ChatService {
     try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
     let webContext: string | null = null
     if (opts?.webSearch && this.deps.webSearch) { try { webContext = await this.deps.webSearch(content) } catch { webContext = null } }
-    const reasoningSystem = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+    const reasoningSystem = opts?.reasoning ? 'Think step by step before answering. Put your private reasoning in a fenced JSON block like ```json:reasoning {"thought": "..."} ```, then give the final answer as normal text. Never use XML-style tags.' : null
     const systemBlocks = [
       CHAT_SYSTEM_PROMPT,
       ...(reasoningSystem ? [reasoningSystem] : []),
@@ -398,9 +399,7 @@ export class ChatService {
     let active = this.deps.workbench.getActiveModel()
     const isAutoActive = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
     if (isAutoActive) {
-      // Auto smart-routing via ModelRouter; tie-breaks consult the Laya
-      // decision sidecar (`services/layaDecision.ts`) when both candidates
-      // score within `LAYA_TIE_THRESHOLD`.
+      // Auto smart-routing via deterministic hardware-aware ModelRouter scoring.
       try {
         const wbWithRouting = this.deps.workbench as unknown as { listModelsForRouting?: () => import('@shared/types/models').DiscoveredModel[] }
         const rawForAuto = typeof wbWithRouting.listModelsForRouting === 'function'
@@ -566,8 +565,14 @@ export class ChatService {
     const acc = new AssistantStreamAccumulator()
     if (ownedInstanceId) this.noteStart(ownedInstanceId)
     try {
+      const splitter = new ReasoningSplitter()
       let reasoningBuffer = ''
-      let inReasoning = false
+      const persistReasoning = async (): Promise<void> => {
+        if (reasoningBuffer) {
+          try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+          reasoningBuffer = ''
+        }
+      }
       for await (const chunk of this.deps.llm.streamChat({
         endpoint,
         model,
@@ -578,43 +583,45 @@ export class ChatService {
         maxResponseBytes: CHAT_MAX_RESPONSE_BYTES,
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
-          let delta = chunk.text
-          // Handle <thinking> tags for reasoning models
-          if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
-            if (delta.includes('<thinking>') || delta.includes('<think>')) {
-              inReasoning = true
-              delta = delta.replace(/<thinking>|<think>/g, '')
-            }
-            if (delta.includes('</thinking>') || delta.includes('</think>')) {
-              const parts = delta.split(/<\/thinking>|<\/think>/)
-              reasoningBuffer += parts[0]
-              if (reasoningBuffer) {
-                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: reasoningBuffer })
-                // Persist reasoning for later display
-                try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
-                reasoningBuffer = ''
-              }
-              inReasoning = false
-              delta = parts.slice(1).join('')
-              if (!delta) continue
-            }
-            if (inReasoning) {
-              reasoningBuffer += delta
-              this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta })
+          // JSON-first protocol (shared assistantProtocol): fenced
+          // ```json:reasoning {"thought": "..."} blocks route to the
+          // thinking channel; legacy <thinking> streams still parse.
+          for (const ev of splitter.push(chunk.text)) {
+            if (ev.kind === 'reasoning') {
+              reasoningBuffer += ev.value
+              this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
               continue
             }
+            if (ev.kind === 'reasoning-end') {
+              await persistReasoning()
+              continue
+            }
+            let delta = ev.value
+            // Convert XML leak "<fs_list path=".">" → keep as reasoning, not text, so harness tool stub can still drive fs_list
+            if (/<\/?fs_(list|read|write)/i.test(delta)) { acc.push({ time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: delta } }); continue }
+            text += delta
+            acc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: delta } })
+            if (firstTokenAt === null) firstTokenAt = Date.now()
+            this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
           }
-          // Convert XML leak "<fs_list path=".">" → keep as reasoning, not text, so harness tool stub can still drive fs_list
-          if (/<\/?fs_(list|read|write)/i.test(delta)) { acc.push({ time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: delta } }); continue }
-          text += delta
-           acc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: delta } })
-           if (reasoningBuffer) { acc.push({ time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: reasoningBuffer } }); reasoningBuffer='' }
-           if (firstTokenAt === null) firstTokenAt = Date.now()
-           this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
         }
         if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
         if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
         if (chunk.type === 'done') break
+      }
+      // Flush: emit any held tail, persist an unclosed reasoning block once.
+      for (const ev of splitter.flush()) {
+        if (ev.kind === 'reasoning') {
+          reasoningBuffer += ev.value
+          this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+        } else if (ev.kind === 'reasoning-end') {
+          await persistReasoning()
+        } else if (ev.value) {
+          text += ev.value
+          acc.push({ time: Date.now(), chunk: { type: 'text-delta', index: 0, text: ev.value } })
+          if (firstTokenAt === null) firstTokenAt = Date.now()
+          this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ev.value })
+        }
       }
     } catch (e) {
       if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
@@ -665,7 +672,7 @@ export class ChatService {
       // Non-critical: usage tracking failure should not break chat
     }
 
-    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: sanitizeAssistantText(text) })).seq
     if (ownedInstanceId) {
       const elapsedS = Math.max(0.1, (Date.now() - started) / 1000)
       this.noteEnd(ownedInstanceId, {
@@ -805,7 +812,7 @@ export class ChatService {
      const mcpContext = this.deps.getMcpContext?.() ?? null
      let skillsContext: string | null = null
      try { skillsContext = (await this.deps.getSkillsContext?.()) ?? null } catch { skillsContext = null }
-     const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+     const reasoningSystemReg = opts?.reasoning ? 'Think step by step before answering. Put your private reasoning in a fenced JSON block (open line: triple-backtick json:reasoning, body {"thought": "..."}, close line: triple-backtick), then give the final answer as normal text. Never use XML-style tags.' : null
      let unlimitedSliceReg: string | null = null
      try { unlimitedSliceReg = retrieveSlice(this.deps.baseDir, lastContent, 2200) } catch {}
      const systemBlocksReg = [
@@ -911,7 +918,7 @@ export class ChatService {
       })
     } catch { /* non-critical */ }
 
-    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+    const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: sanitizeAssistantText(text) })).seq
     if (regenInstanceId) {
       const elapsedS = Math.max(0.1, (Date.now() - started) / 1000)
       this.noteEnd(regenInstanceId, {

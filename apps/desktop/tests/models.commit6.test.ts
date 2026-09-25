@@ -325,16 +325,16 @@ describe('Commit 6 — sovereignty proofs', () => {
       if (/\bfetch\s*\(/.test(txt)) {
         // Exceptions: HttpClient (loopback inference), hfCatalog + explorerCatalog (Hub API), modelDownloads (Hub file downloads), skillsScanner (skill import from URL), llamaRuntime (one-time pinned binary provisioning), nextServer (loopback health-check of the internal Next.js server)
         const rel = f.replace(/\\/g, '/')
-        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/explorerFit\.ts|main\/services\/hiddenModels\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/nextServer\.ts|main\/services\/localRuntimeDetector\.ts)$/)
+        expect(rel, `bare fetch outside HttpClient: ${f}`).toMatch(/(main\/network\/HttpClient\.ts|main\/services\/hfCatalog\.ts|main\/services\/explorerCatalog\.ts|main\/services\/explorerFit\.ts|main\/services\/hiddenModels\.ts|main\/services\/modelDownloads\.ts|main\/services\/skillsScanner\.ts|main\/services\/llamaRuntime\.ts|main\/services\/webSearch\.ts|main\/nextServer\.ts|main\/services\/localRuntimeDetector\.ts)$/)
       }
     }
   })
 
-  it('web workbench files have no network/filesystem access outside the API client', () => {
-    // Legacy Vite renderer (src/renderer) is deleted — check the Next.js UI.
+  it('desktop workbench files have no network/filesystem access outside the API client', () => {
+    // Desktop-only: check the Electron renderer UI.
     const files = [
-      '../web/src/features/models/ModelsPage.tsx',
-      '../web/src/features/models/useModelWorkbench.ts',
+      'src/renderer/src/features/models/ModelsPage.tsx',
+      'src/renderer/src/features/models/useModelWorkbench.ts',
     ]
     for (const f of files) {
       const txt = fs.readFileSync(f, 'utf8')

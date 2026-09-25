@@ -26,11 +26,11 @@ import { gateDispatch } from '../services/execPermissions'
 import { resolveMmprojPath } from '../services/llamaRuntime'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
 import { detectOutputFormat, generateArtifactFile, sanitizeFileName } from './artifacts'
+import { ReasoningSplitter, sanitizeAssistantText, ensureRecap } from '@shared/assistantProtocol'
 import type { TaskClassification, ModelRoutingDecision } from '@shared/types/task'
 import type { DiscoveredModel } from '@shared/types/models'
 import { SOVARA_SYSTEM_PROMPT, STRUCTURED_OUTPUT_INSTRUCTION } from './prompts/sovaraSystem'
 import { DEFAULT_TUNING } from '../config/tuning'
-import { decideLaya, isLayaReady, LAYA_TIE_THRESHOLD } from '../services/layaDecision'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
@@ -778,7 +778,7 @@ export class AgentOrchestrator {
 
       // Pinned vs Auto: user selected model is used for entire chat; Auto smart-routes per task.
       // The pill shows which: pinned = local model name, Auto = "Auto" smart.
-      // Auto mode may consult the Laya decision sidecar for tie-breaks.
+      // Auto mode uses deterministic hardware-aware scoring.
       const isAuto = active.selection?.modelId === '__auto__' && active.selection?.runtimeId === 'auto'
       let routing: Awaited<ReturnType<typeof routeModel>>
       if (!isAuto && baseSnapshot) {
@@ -793,29 +793,12 @@ export class AgentOrchestrator {
         } as unknown as Awaited<ReturnType<typeof routeModel>>
       } else {
         // Auto — smart route per task via ModelRouter (capability + VRAM aware).
-        // When the top candidates are within `LAYA_TIE_THRESHOLD` of each other,
-        // the router consults the Laya decision sidecar (user-visible classifier)
-        // to make the call. If Laya is unavailable or downloads aren't done,
-        // the router falls back to the deterministic heuristic winner.
         routing = await routeModel({
           task: classification,
           models,
           active: isAuto ? null : active.selection ?? null,
           resources,
-          // Laya decision sidecar — when the heuristic puts two close-scoring
-          // candidates inside LAYA_TIE_THRESHOLD, let Laya call the question.
-          // Falls back silently to the heuristic when the sidecar is cold.
-          ...(isAuto
-            ? {
-                layaDecide: isLayaReady()
-                  ? async (q, options, ctx) => {
-                      const r = await decideLaya(q, options, ctx ?? '')
-                      return { decision: r.decision }
-                    }
-                  : undefined,
-                layaTieThreshold: LAYA_TIE_THRESHOLD,
-              }
-            : {}),
+          // Auto routing uses deterministic hardware-aware scoring only.
           checkBeforeLoad: async (modelId) => {
             try {
               const m = models.find((x) => x.modelId === modelId)
@@ -1110,7 +1093,7 @@ export class AgentOrchestrator {
             action: 'send',
             modelId: routing.modelId!,
             runtimeId: routing.runtimeId!,
-            detail: 'vision degraded: no mmproj projector beside the model weights — images read via OCR, not vision',
+            detail: 'vision unavailable: no mmproj projector beside the model weights — image payload was not sent',
           })
         }
       }
@@ -1168,19 +1151,6 @@ export class AgentOrchestrator {
         try { webContext = await this.deps.webSearch(content) } catch { webContext = null }
       }
 
-      // ── OCR fallback for images when model has no vision/mmproj (e.g. baidu.Unlimited-OCR GGUF) ──
-      // Unlimited-OCR via sidecar is the best model — run it and inject text so non-vision GGUF still reads the image
-      if (!visionCapable) {
-        for (const f of attached.files) {
-          if (f.kind === 'image' && f.imageBase64 && !f.text) {
-            try {
-              const { ocrImage } = await import('../services/voiceServer')
-              const r = await ocrImage(f.imageBase64, 'rapidocr')
-              if (r?.text) { f.text = r.text; f.note = null }
-            } catch {}
-          }
-        }
-      }
       // ── PHASE 5b: prompt assembly state (honest stage for the send animation) ──
       const attachmentContext = buildAttachmentContext(attached.files, visionCapable)
       this.emit(sid, 'task:prompting', {
@@ -1220,10 +1190,10 @@ export class AgentOrchestrator {
       const reasoningSystem =
         thinkingLevel === 'off' ? null
         : thinkingLevel === 'low'
-          ? 'Think briefly (1-2 sentences) inside <thinking> tags, then give the final answer.'
+          ? 'Think briefly (1-2 sentences) in a fenced JSON reasoning block (open line: triple-backtick json:reasoning, body {"thought": "..."}, close line: triple-backtick), then give the final answer. Never use XML-style tags.'
           : thinkingLevel === 'high'
-            ? 'Think extensively step by step inside <thinking> tags (explore alternatives, verify plan), then give the final comprehensive answer.'
-            : 'Think step by step inside <thinking> tags, then give the final answer.'
+            ? 'Think extensively step by step in a fenced JSON reasoning block (open line: triple-backtick json:reasoning, body {"thought": "..."}, close line: triple-backtick, explore alternatives, verify plan), then give the final comprehensive answer. Never use XML-style tags.'
+            : 'Think step by step in a fenced JSON reasoning block (open line: triple-backtick json:reasoning, body {"thought": "..."}, close line: triple-backtick), then give the final answer. Never use XML-style tags.'
       // Single leading system message — Bonsai/Mistral Jinja aborts if any
       // system turn appears after index 0 ("System message must be at the
       // beginning"). Merge all advisory blocks into one.
@@ -1474,7 +1444,7 @@ export class AgentOrchestrator {
       let text = ''
       let reasoningBuffer = ''
       let allReasoning = ''
-      let inReasoning = false
+      const splitter = new ReasoningSplitter()
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
       let orchFirstTokenAt: number | null = null
       const firstTokenRef = { value: null as number | null }
@@ -1591,7 +1561,7 @@ export class AgentOrchestrator {
       text = ''
       reasoningBuffer = ''
       allReasoning = ''
-      inReasoning = false
+      splitter.reset()
       usage = undefined
       orchFirstTokenAt = null
       // Deduplicated fence set: fences collected during streaming are executed
@@ -1693,35 +1663,29 @@ export class AgentOrchestrator {
               if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
               console.log(`[SOVARA][STREAM] First token received (TTFT: ${orchFirstTokenAt - streamStartTime}ms)`)
             }
-            let delta = chunk.text
-            if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
-              if (delta.includes('<thinking>') || delta.includes('<think>')) {
-                inReasoning = true
-                delta = delta.replace(/<thinking>|<think>/g, '')
+            // JSON-first protocol (shared assistantProtocol): fenced
+            // ```json:reasoning {"thought": "..."} blocks route to the
+            // thinking channel; legacy <thinking> streams still parse.
+            let delta = ''
+            for (const ev of splitter.push(chunk.text)) {
+              if (ev.kind === 'reasoning') {
+                reasoningBuffer += ev.value
+                allReasoning += ev.value
+                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+                continue
               }
-              if (delta.includes('</thinking>') || delta.includes('</think>')) {
-                const parts = delta.split(/<\/thinking>|<\/think>/)
-                const tail = parts[0] ?? ''
-                reasoningBuffer += tail
-                allReasoning += tail
-                if (tail) this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail })
+              if (ev.kind === 'reasoning-end') {
                 if (reasoningBuffer) {
                   try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
                   reasoningBuffer = ''
                 }
-                inReasoning = false
                 // Rate-limit: only log every ~2k chars and not for tiny blocks <500
                 if (allReasoning.length > 500 && allReasoning.length % 2000 < 200) console.log(`[SOVARA][THINKING] block closed (${allReasoning.length} chars)`)
-                delta = parts.slice(1).join('')
-                if (!delta) continue
-              }
-              if (inReasoning) {
-                reasoningBuffer += delta
-                allReasoning += delta
-                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta })
                 continue
               }
+              delta += ev.value
             }
+            if (!delta) continue
 
             // Collect all tool fences encountered during streaming so they can participate
             // in the actual toolLoop on completion. We strip them from the displayed delta
@@ -1922,6 +1886,23 @@ export class AgentOrchestrator {
           }
 
           if (chunk.type === 'done') break
+        }
+        // Flush the reasoning splitter: emit any held tail as answer text,
+        // persist an unclosed reasoning block exactly once.
+        for (const ev of splitter.flush()) {
+          if (ev.kind === 'reasoning') {
+            reasoningBuffer += ev.value
+            allReasoning += ev.value
+            this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+          } else if (ev.kind === 'reasoning-end') {
+            if (reasoningBuffer) {
+              try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+              reasoningBuffer = ''
+            }
+          } else if (ev.value) {
+            text += ev.value
+            this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ev.value })
+          }
         }
       } catch (e) {
         if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
@@ -2169,7 +2150,7 @@ export class AgentOrchestrator {
 
       if (shouldJarvisContinue) {
           const nextDirective = isFakeFileClaim
-            ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your <skills_context> and MCP tools if necessary. Write the real code now.`
+            ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your skills context and MCP tools if necessary. Write the real code now.`
             : isReadInterrupted
             ? `[Autonomous Agent Directive]: Listing/search complete. Do not stop or pause. Immediately read the actual content using fs_read (e.g. fs_read {"path": "filepath"}) or read_skill (e.g. read_skill {"skill_name": "skill_name"}) and explain or present the full content to the user.`
             : `[Autonomous Agent Directive]: Workspace inspection complete. Now proceed immediately to write the complete, functional code and implementation using fs_write (e.g. app.py, main.js) or a full markdown code block. Review the Enterprise Skills and MCP tools in your context before writing. Do not stop or ask for confirmation.`
@@ -2206,7 +2187,7 @@ export class AgentOrchestrator {
           ...messages,
           {
             role: 'user',
-            content: 'Synthesize the tool results above and provide your complete, detailed response addressing the original request with all requested code and files. At the end, provide a summary of created/modified files with their paths. If a dev server or application was run or configured to run on a local port, explicitly report the port and live URL (e.g. http://localhost:5173). Include full code in fenced markdown blocks (e.g. ```tsx or ```html) so the user can inspect the code and preview the application in the artifact viewer.',
+            content: 'Synthesize the tool results above and provide your complete, detailed response addressing the original request with all requested code and files. At the end, provide a summary of created/modified files with their paths. End with a ## Recap section: what you did, why you did it, and the files touched with their paths, so a developer can learn from the trace. If a dev server or application was run or configured to run on a local port, explicitly report the port and live URL (e.g. http://localhost:5173). Include full code in fenced markdown blocks (e.g. ```tsx or ```html) so the user can inspect the code and preview the application in the artifact viewer.',
           },
         ]
         try {
@@ -2253,6 +2234,7 @@ export class AgentOrchestrator {
       // Dedupe per fence signature (tool+args) so text+reasoning duplicates
       // (the model emits the same call twice) dispatch exactly once.
       const executedSignatures = new Set<string>()
+      const regenTools: Array<{ name: string; args: Record<string, unknown> }> = []
       const dispatchMissedFence = async (tName: string, args: Record<string, unknown>): Promise<boolean> => {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
@@ -2264,6 +2246,7 @@ export class AgentOrchestrator {
             const out = await this.handleClarifyCall(sid, tid, args, pid2)
             inlineToolOutputs.push(`[clarify]\n${out}`)
             try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, content: out } as never) } catch {}
+            regenTools.push({ name: tName, args })
             return true
           } catch { return false }
         }
@@ -2286,6 +2269,7 @@ export class AgentOrchestrator {
           inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\n${r.slice(0,4000)}`)
           try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${tName}-${Date.now()}` as never, content: r.slice(0,8000) } as never) } catch {}
           this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName: tName, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
+          regenTools.push({ name: tName, args })
           return true
         } catch { return false }
       }
@@ -2425,7 +2409,7 @@ export class AgentOrchestrator {
       const suffix = text.slice(-900)
       const prefixLen = text.length
       // Persist the partial prefix so history survives compact (append-only)
-      try { await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text + '\n<!-- TRUNCATED — continuation follows (do not re-render as final) -->' }) } catch {}
+      try { await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: sanitizeAssistantText(text) + '\n<!-- TRUNCATED — continuation follows (do not re-render as final) -->' }) } catch {}
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `artifact truncated at ${prefixLen} chars — resuming with continuation prompt` })
       this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `partial artifact ${prefixLen} chars — continuing from suffix, not restarting` })
       // Build continuation prompt: system + history including prefix + explicit resume user turn
@@ -2441,7 +2425,7 @@ export class AgentOrchestrator {
       // Re-arm stall guard and extend token budget for the remainder
       let cont = ''
       reasoningBuffer = ''
-      inReasoning = false
+      splitter.reset()
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
       const contRef = { value: null as number | null }
       armStallGuard(contRef)
@@ -2548,6 +2532,17 @@ export class AgentOrchestrator {
         })
       } catch { /* non-critical */ }
 
+      // JSON-first protocol: strip leaked reasoning/protocol tags, then
+      // guarantee the answer ends with a ## Recap built from real tool calls.
+      const recapFiles = [...new Set(trace.toolCalls
+        .filter((t) => t.name === 'fs_write' || t.name === 'fs_patch')
+        .map((t) => String((t.args as unknown as Record<string, unknown>)?.path ?? ''))
+        .filter(Boolean))].slice(0, 12)
+      text = ensureRecap(sanitizeAssistantText(text), {
+        tools: trace.toolCalls.map((t) => ({ name: t.name, args: t.args as unknown as Record<string, unknown> })),
+        files: recapFiles,
+        model,
+      })
       const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
       if (ownedInstanceForMetrics) {
         const elapsedS = Math.max(0.1, (Date.now() - startedAll) / 1000)
@@ -2682,17 +2677,7 @@ export class AgentOrchestrator {
           models,
           active: active.selection ?? null,
           resources,
-          // Laya tie-break is consulted only when the user is on Auto (we
-          // don't override an explicit pinned selection, even on regenerate).
-          ...(isAutoRegen && isLayaReady()
-            ? {
-                layaDecide: async (q, options, ctx) => {
-                  const r = await decideLaya(q, options, ctx ?? '')
-                  return { decision: r.decision }
-                },
-                layaTieThreshold: LAYA_TIE_THRESHOLD,
-              }
-            : {}),
+          // Regenerate uses the same deterministic hardware-aware router.
           checkBeforeLoad: async (modelId) => {
             try {
               const p = this.resolveModelFilePath(modelId)
@@ -2700,7 +2685,9 @@ export class AgentOrchestrator {
                 { id: modelId as never, displayName: modelId, path: p, source: 'custom', format: 'gguf' } as never,
                 { ctxLen: classification.contextLengthNeeded }
               )
-            } catch { return { level: 'ok' as const } }
+            } catch {
+              return { level: 'ok' as const }
+            }
           },
         })
       }
@@ -2825,7 +2812,7 @@ export class AgentOrchestrator {
       let todoContextReg: string | null = null
       try { todoContextReg = this.deps.getTodoContext?.() ?? null } catch {}
 
-      const reasoningSystem = classification.reasoningRequired || opts?.reasoning ? 'Think step by step before answering. Provide your reasoning wrapped in <thinking> tags, then the final answer.' : null
+      const reasoningSystem = classification.reasoningRequired || opts?.reasoning ? 'Think step by step before answering. Put your private reasoning in a fenced JSON block (open line: triple-backtick json:reasoning, body {"thought": "..."}, close line: triple-backtick), then give the final answer as normal text. Never use XML-style tags.' : null
       const systemBlocksReg = [
         CHAT_SYSTEM_PROMPT,
         ...(reasoningSystem ? [reasoningSystem] : []),
@@ -2871,33 +2858,47 @@ export class AgentOrchestrator {
       let text = ''
       let reasoningBuffer = ''
       let allReasoning = ''
-      let inReasoning = !!(classification.reasoningRequired || opts?.reasoning)
+      const splitter = new ReasoningSplitter({
+        startOpen: !!(classification.reasoningRequired || opts?.reasoning),
+      })
       let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
       let streamed = true
       const inlineToolOutputs: string[] = []
       try {
         for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
           if (chunk.type === 'text-delta' && chunk.text) {
-            let delta = chunk.text
-            if (inReasoning || delta.includes('<thinking>') || delta.includes('<think>')) {
-              if (delta.includes('<thinking>') || delta.includes('<think>')) { inReasoning = true; delta = delta.replace(/<thinking>|<think>/g, '') }
-              if (delta.includes('</thinking>') || delta.includes('</think>')) {
-                const parts = delta.split(/<\/thinking>|<\/think>/)
-                const tail = parts[0] ?? ''
-                reasoningBuffer += tail
-                allReasoning += tail
-                // Exactly-once streaming (see execute()): emit the tail only.
-                if (tail) { this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: tail }) }
-                if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
-                inReasoning = false; delta = parts.slice(1).join(''); if (!delta) continue
+            let delta = ''
+            for (const ev of splitter.push(chunk.text)) {
+              if (ev.kind === 'reasoning') {
+                reasoningBuffer += ev.value
+                allReasoning += ev.value
+                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+                continue
               }
-              if (inReasoning) { reasoningBuffer += delta; allReasoning += delta; this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: delta }); continue }
+              if (ev.kind === 'reasoning-end') {
+                if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
+                continue
+              }
+              delta += ev.value
             }
+            if (!delta) continue
             text += delta; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta, progress: Math.min(95, 10 + Math.floor(text.length / 40)) })
           }
           if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
           if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
           if (chunk.type === 'done') break
+        }
+        for (const ev of splitter.flush()) {
+          if (ev.kind === 'reasoning') {
+            reasoningBuffer += ev.value
+            allReasoning += ev.value
+            this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+          } else if (ev.kind === 'reasoning-end') {
+            if (reasoningBuffer) { try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}; reasoningBuffer = '' }
+          } else if (ev.value) {
+            text += ev.value
+            this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ev.value })
+          }
         }
       } catch (e) {
         if (controller.signal.aborted || (e instanceof ChatInferenceError && e.code === 'cancelled')) {
@@ -2913,7 +2914,7 @@ export class AgentOrchestrator {
           // Auto-retry once after compacting history — prevents sticky invalid-response banner
           this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: 0, detail: `context overflow — compacting and retrying` })
           try { await this.deps.persistence.appendEvent(sessionId, 'system/compact', { content: `Auto-compacted for context overflow (${raw.slice(0,120)})` }) } catch {}
-          messages = compactForRetry(messages); text = ''; reasoningBuffer = ''; inReasoning = false
+          messages = compactForRetry(messages); text = ''; reasoningBuffer = ''; splitter.reset()
           try {
             for await (const chunk of this.deps.llm.streamChat({ endpoint, model, messages, timeoutMs, stream: true, signal: controller.signal, maxResponseBytes: AGENT_MAX_RESPONSE_BYTES })) {
               if (chunk.type === 'text-delta' && chunk.text) { text += chunk.text; this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: chunk.text }) }
@@ -2958,6 +2959,7 @@ export class AgentOrchestrator {
       // "empty reply after Ns — auto-compacted" ack. Scan BOTH channels;
       // dedupe by tool+args so duplicated calls dispatch exactly once.
       const executedSignatures = new Set<string>()
+      const regenTools: Array<{ name: string; args: Record<string, unknown> }> = []
       const dispatchMissedFence = async (tName: string, args: Record<string, unknown>): Promise<boolean> => {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
@@ -2971,6 +2973,7 @@ export class AgentOrchestrator {
             const out = await this.handleClarifyCall(sid, tid, args, clarifyPid)
             inlineToolOutputs.push(`[clarify]\n${out}`)
             try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: tid as never, content: out } as never) } catch {}
+            regenTools.push({ name: tName, args })
             return true
           } catch { return false }
         }
@@ -2980,6 +2983,7 @@ export class AgentOrchestrator {
           inlineToolOutputs.push(`[${tName} ${JSON.stringify(args)}]\n${r.slice(0, 4000)}`)
           try { await this.deps.persistence.appendEvent(sessionId, 'tool/result' as never, { toolCallId: `${tName}-${Date.now()}` as never, content: r.slice(0, 8000) } as never) } catch {}
           this.deps.emit({ sessionId: sid, kind: 'tool:end', toolName: tName, detail: `post-stream ${tName} returned ${r.length} chars` } as never)
+          regenTools.push({ name: tName, args })
           return true
         } catch { return false }
       }
@@ -3024,7 +3028,7 @@ export class AgentOrchestrator {
           const toolCtxForSynth = inlineToolOutputs.join('\n\n---\n\n').slice(0, 6000)
           const synthMsgs2: import('@shared/types/ports').LlmChatMessage[] = [
             ...messages,
-            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List the actual files/folders found. Do not emit tool calls.` },
+            { role: 'user', content: `Tool results:\n${toolCtxForSynth}\n\nUsing the tool results above, provide the complete answer for the original request. List the actual files/folders found. Do not emit tool calls. End with a ## Recap section (what you did, why, files touched).` },
           ]
           try {
             let synthText = ''
@@ -3043,6 +3047,11 @@ export class AgentOrchestrator {
           this.log(routing.runtimeId!, endpoint, model, startedAll, 200, 'ok', streamed)
           appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'send', detail: `tool-result synthesis answer after regenerate (${inlineToolOutputs.length} tool outputs) — empty-reply ack avoided` })
           this.emit(sid, 'task:complete', { taskKind: classification.kind, detail: 'answered from synthesized tool results (regenerate recovery)', stepIndex: 0 })
+          text = ensureRecap(sanitizeAssistantText(text), {
+            tools: regenTools,
+            files: [...new Set(regenTools.filter((t) => t.name === 'fs_write' || t.name === 'fs_patch').map((t) => String(t.args?.path ?? '')).filter(Boolean))],
+            model,
+          })
           const detSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
           this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq: detSeq })
           return { ok: true, assistantSeq: detSeq, routing, classification }
@@ -3072,6 +3081,11 @@ export class AgentOrchestrator {
       const promptText = messages.map((m) => m.content).join(' ')
       const tokenUsage = usage ?? { promptTokens: Math.ceil(promptText.length / 4), completionTokens: Math.ceil(text.length / 4), totalTokens: Math.ceil((promptText.length + text.length) / 4) }
       try { this.deps.persistence.insertTokenUsage({ sessionId: sid, model, promptTokens: tokenUsage.promptTokens, completionTokens: tokenUsage.completionTokens, totalTokens: tokenUsage.totalTokens }) } catch {}
+      text = ensureRecap(sanitizeAssistantText(text), {
+        tools: regenTools,
+        files: [...new Set(regenTools.filter((t) => t.name === 'fs_write' || t.name === 'fs_patch').map((t) => String(t.args?.path ?? '')).filter(Boolean))],
+        model,
+      })
       const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
       this.log(routing.runtimeId!, endpoint, model, startedAll, 200, 'ok', streamed)
       this.emit(sid, 'task:complete', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: `done in ${Date.now() - startedAll}ms`, stepIndex: 0 })

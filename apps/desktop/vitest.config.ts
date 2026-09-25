@@ -5,6 +5,10 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.{ts,tsx}'],
     environment: 'node',
+    // Several integration tests inspect the real Windows model paths and
+    // shared SQLite state; run files serially so those checks are deterministic.
+    maxWorkers: 1,
+    minWorkers: 1,
     passWithNoTests: true,
     setupFiles: ['tests/setup.ts']
   },
@@ -14,11 +18,11 @@ export default defineConfig({
     jsx: 'automatic',
   },
   resolve: {
-    // `@shared` = desktop shared types; `@/*` = Next.js web app source
+    // `@shared` = desktop shared types; `@/*` = desktop Electron renderer source
     // (regex so scoped packages like `@testing-library` still resolve).
     alias: [
       { find: '@shared', replacement: resolve(__dirname, 'src/shared') },
-      { find: /^@\//, replacement: `${resolve(__dirname, '../web/src')}/` },
+      { find: /^@\//, replacement: `${resolve(__dirname, 'src/renderer/src')}/` },
     ],
   }
 })

@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AgentsPage } from '../../web/src/features/agents/AgentsPage'
+import { AgentsPage } from '../src/renderer/src/features/agents/AgentsPage'
 import { mockApi } from './helpers/http'
 
 beforeEach(() => {
@@ -38,11 +38,11 @@ describe('Agent Studio — greenfield command center', () => {
 
   it('renders central overview dashboard with metrics and quick actions', () => {
     render(<AgentsPage />)
-    // Metrics
-    expect(screen.getByText(/Total runs/)).toBeInTheDocument()
-    expect(screen.getByText(/Avg latency/)).toBeInTheDocument()
+    // Metrics (desktop labels: message/activity/sovereignty cards)
+    expect(screen.getByText(/Messages · recent sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Latency p50/)).toBeInTheDocument()
     expect(screen.getAllByText(/Knowledge/).length).toBeGreaterThan(0)
-    expect(screen.getByText(/MCP health/)).toBeInTheDocument()
+    expect(screen.getByText(/Sovereignty/)).toBeInTheDocument()
     // Quick actions
     expect(screen.getByText(/Edit prompt/)).toBeInTheDocument()
     expect(screen.getByText(/Add knowledge/)).toBeInTheDocument()
@@ -99,7 +99,11 @@ describe('Agent Studio — greenfield command center', () => {
     expect(screen.getByText(/Evaluation/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /Analytics/ }))
-    expect(screen.getByText(/Recent runs/)).toBeInTheDocument()
+    // Desktop analytics shows live usage metrics, not a "Recent runs" list
+    // (that lives in the Testing workspace).
+    expect(screen.getByText(/Messages \(7d\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Total messages/)).toBeInTheDocument()
+    expect(screen.getByText(/Usage/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /Versions/ }))
     expect(screen.getByText(/Versions timeline/)).toBeInTheDocument()

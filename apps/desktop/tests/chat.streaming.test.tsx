@@ -1,18 +1,19 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, cleanup, waitFor, act, renderHook } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MessageList } from '../../web/src/features/chat/MessageList'
-import { MessageBubble } from '../../web/src/features/chat/MessageBubble'
-import { ChatView } from '../../web/src/features/chat/ChatView'
-import { deriveMessages } from '../../web/src/features/chat/conversation'
-import type { ChatStreamEvent } from '../src/shared/types/chat'
-import { mockApi, expectFetch } from './helpers/http'
-import { streamFor } from './helpers/sse'
+import { MessageList } from '../src/renderer/src/features/chat/MessageList'
+import { MessageBubble } from '../src/renderer/src/features/chat/MessageBubble'
+import { ChatView } from '../src/renderer/src/features/chat/ChatView'
+import { deriveMessages } from '../src/renderer/src/features/chat/conversation'
+import { useChatSession } from '../src/renderer/src/features/chat/useChatSession'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  delete (window as unknown as Record<string, unknown>).sovara
+})
 
 describe('Commit 7 — streaming timeline', () => {
   it('renders transient streaming text with a caret, hiding the thinking state', () => {
@@ -25,7 +26,7 @@ describe('Commit 7 — streaming timeline', () => {
     )
     const streaming = screen.getByTestId('message-streaming')
     expect(streaming).toHaveTextContent('Hel')
-    expect(streaming.querySelector('.stream-caret')).not.toBeNull()
+    expect(streaming.querySelector('.sv-stream-caret')).not.toBeNull()
     expect(screen.queryByTestId('assistant-thinking')).toBeNull()
   })
 
@@ -100,96 +101,122 @@ describe('Commit 7 — ChatView states', () => {
 
 describe('Commit 7 — delta subscription flow', () => {
   const sessionList = [{ id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 }]
-  const baseRoutes: Record<string, unknown> = {
-    'GET /api/sessions': sessionList,
-    'GET /api/sessions/s1/events': [{ seq: 0, time: 1, type: 'user/message', data: { content: 'q' } }],
-    'GET /api/models/active': {
-      selection: { runtimeId: 'rt-1', modelId: 'rt-1:m' },
-      available: true,
-      displayName: 'm',
-    },
+  const userFixture = [{ seq: 0, time: 1, type: 'user/message', data: { content: 'q' } }]
+
+  // Desktop transport is the Electron preload bridge (window.sovara), not
+  // fetch + EventSource: `invoke` for request/response, `on('events:session')`
+  // for server pushes (assistant-delta / assistant-done / ...).
+  function mockBridge(handlers: Record<string, (arg?: unknown) => unknown | Promise<unknown>>) {
+    const calls: Array<{ channel: string; args: unknown[] }> = []
+    let sessionCb: ((ev: unknown) => void) | null = null
+    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+      calls.push({ channel, args })
+      const h = handlers[channel]
+      if (!h) throw new Error(`unmocked IPC: ${channel}`)
+      return h(args[0])
+    })
+    const on = vi.fn((channel: string, cb: (...a: unknown[]) => void) => {
+      if (channel === 'events:session') sessionCb = cb as (ev: unknown) => void
+      return () => {
+        if (channel === 'events:session') sessionCb = null
+      }
+    })
+    ;(window as unknown as Record<string, unknown>).sovara = { invoke, on }
+    return {
+      calls,
+      emitSessionEvent: (ev: unknown): void => {
+        sessionCb?.(ev)
+      },
+      sentBody: (channel: string): unknown => calls.find((c) => c.channel === channel)?.args[0],
+    }
   }
 
-  beforeEach(() => {
-    mockApi(baseRoutes)
-  })
+  function baseHandlers(extra: Record<string, (arg?: unknown) => unknown | Promise<unknown>> = {}) {
+    return {
+      'sessions:list': () => sessionList,
+      'sessions:getEvents': () => userFixture,
+      'models:getActiveModel': () => ({ selection: null, available: false }),
+      ...extra,
+    }
+  }
 
   it('accumulates deltas transiently and reloads on done', async () => {
-    const fetchMock = mockApi({
-      ...baseRoutes,
-      'POST /api/chat': () => {
-        // Deltas stream over SSE while POST is in flight, exactly as the
-        // internal server behaves (deltas via stream, durable event on done).
-        const stream = streamFor('/api/chat/stream')
-        stream.emit({ sessionId: 's1', kind: 'assistant-delta', text: 'He' })
-        stream.emit({ sessionId: 's1', kind: 'assistant-delta', text: 'llo' })
-        stream.emit({ sessionId: 's1', kind: 'assistant-done', seq: 1 })
-        return { ok: true, userSeq: 0, assistantSeq: 1 }
-      },
-    })
-    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
-    const { renderHook } = await import('@testing-library/react')
+    let resolveSend!: (v: unknown) => void
+    const bridge = mockBridge(
+      baseHandlers({
+        // Deferred send: deltas stream over events:session while chat:send is
+        // in flight, exactly as the backend behaves (deltas via push,
+        // durable event persisted on done).
+        'chat:send': () => new Promise((resolve) => { resolveSend = resolve as (v: unknown) => void }),
+      })
+    )
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
+    act(() => {
+      void result.current.handleSend('hello')
+    })
+    await waitFor(() => expect(result.current.busy).toBe(true))
+    // Server pushes stream in while the request is in flight.
     await act(async () => {
-      await result.current.handleSend('hello')
+      bridge.emitSessionEvent({ sessionId: 's1', kind: 'assistant-delta', text: 'He' })
+      bridge.emitSessionEvent({ sessionId: 's1', kind: 'assistant-delta', text: 'llo' })
+    })
+    expect(result.current.streamingText).toBe('Hello')
+    await act(async () => {
+      bridge.emitSessionEvent({ sessionId: 's1', kind: 'assistant-done', seq: 1 })
+      resolveSend({ ok: true, userSeq: 0, assistantSeq: 1 })
     })
     // Done push triggers a durable reload of the same user event fixture.
     await waitFor(() => expect(result.current.events).toHaveLength(1))
     expect(result.current.streamingText).toBe('')
     expect(result.current.phase).toBe('idle')
-    expectFetch(fetchMock, 'POST', '/api/chat', { sessionId: 's1', content: 'hello' })
+    await waitFor(() => expect(result.current.busy).toBe(false))
+    expect(bridge.sentBody('chat:send')).toMatchObject({ sessionId: 's1', content: 'hello' })
   })
 
   it('routes cancel to chat:cancel for the selected session', async () => {
-    const fetchMock = mockApi({
-      ...baseRoutes,
-      // Hanging send: POST never resolves, mirroring a generation in flight.
-      'POST /api/chat': () => new Promise(() => {}),
-      'POST /api/chat/cancel': { cancelled: true },
-    })
-    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
-    const { renderHook } = await import('@testing-library/react')
+    const bridge = mockBridge(
+      baseHandlers({
+        // Hanging send: chat:send never resolves, mirroring a generation in flight.
+        'chat:send': () => new Promise(() => {}),
+        'chat:cancel': () => ({ cancelled: true }),
+      })
+    )
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
     // Force busy via a hanging send.
-    void act(() => {
+    act(() => {
       void result.current.handleSend('hanging')
     })
     await waitFor(() => expect(result.current.busy).toBe(true))
     await act(async () => {
       await result.current.handleCancel()
     })
-    expectFetch(fetchMock, 'POST', '/api/chat/cancel', { sessionId: 's1' })
+    expect(bridge.sentBody('chat:cancel')).toEqual({ sessionId: 's1' })
   })
 
   it('never renders another session events after switching mid-send', async () => {
     let resolveSend!: (v: unknown) => void
-    mockApi({
-      'GET /api/sessions': [
+    mockBridge({
+      'sessions:list': () => [
         { id: 's1', title: 'S1', createdAt: 1, updatedAt: 1 },
         { id: 's2', title: 'S2', createdAt: 2, updatedAt: 2 },
       ],
-      'GET /api/sessions/s1/events': [
-        { seq: 0, time: 1, type: 'user/message', data: { content: 's1 question' } },
-      ],
-      'GET /api/sessions/s2/events': [
-        { seq: 0, time: 1, type: 'user/message', data: { content: 's2 question' } },
-      ],
-      'GET /api/models/active': { selection: null, available: false },
-      'POST /api/chat': () =>
+      'sessions:getEvents': (sessionId) =>
+        sessionId === 's1'
+          ? [{ seq: 0, time: 1, type: 'user/message', data: { content: 's1 question' } }]
+          : [{ seq: 0, time: 1, type: 'user/message', data: { content: 's2 question' } }],
+      'models:getActiveModel': () => ({ selection: null, available: false }),
+      'chat:send': () =>
         new Promise((resolve) => {
-          resolveSend = resolve
+          resolveSend = resolve as (v: unknown) => void
         }),
     })
-    const { useChatSession } = await import('../../web/src/features/chat/useChatSession')
-    const { renderHook } = await import('@testing-library/react')
     const { result } = renderHook(() => useChatSession())
     await waitFor(() => expect(result.current.selectedId).toBe('s1'))
     // Start a send on s1, then switch to s2 before it resolves.
-    let sendPromise!: Promise<void>
-    await act(async () => {
-      sendPromise = result.current.handleSend('s1 hello')
+    act(() => {
+      void result.current.handleSend('s1 hello')
     })
     await waitFor(() => expect(result.current.busy).toBe(true))
     await act(async () => {
@@ -199,8 +226,8 @@ describe('Commit 7 — delta subscription flow', () => {
     expect((result.current.events[0]?.data as { content: string }).content).toBe('s2 question')
     await act(async () => {
       resolveSend({ ok: true, userSeq: 0, assistantSeq: 1 })
-      await sendPromise
     })
+    await waitFor(() => expect(result.current.busy).toBe(false))
     // s1's post-send refresh must not overwrite the s2 view.
     expect(result.current.selectedId).toBe('s2')
     expect(result.current.events).toHaveLength(1)

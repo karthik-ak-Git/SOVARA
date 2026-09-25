@@ -241,8 +241,11 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     expect(types).toContain('user/message')
     expect(types).toContain('assistant/message')
     expect(types).toContain('agent/execution')
-    // The streamed reply is the LLM's real output, not a canned stub
-    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe('Hello world')
+    // The streamed reply is the LLM's real output, not a canned stub —
+    // plus the enforced ## Recap ending (what was done + files touched).
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe(
+      'Hello world\n\n## Recap\n- Did: answered directly (no tools used)\n- Files: none\n- Model: phi-4'
+    )
     // Model went through ModelRuntimePort.load (the VRAM seam)
     expect(loaded.some((i) => i.modelId === 'local:phi-4')).toBe(true)
     fs.rmSync(dir, { recursive: true, force: true })
@@ -399,7 +402,9 @@ describe('AgentOrchestrator — reasoning streams exactly once', () => {
     const evts = await persistence.getEvents('sess-1' as SessionId)
     const persisted = evts.filter((e) => e.type === 'assistant/reasoning').map((e) => (e.data as { content: string }).content)
     expect(persisted).toEqual(['abcd'])
-    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe('Hi')
+    expect((evts.find((e) => e.type === 'assistant/message')?.data as { content: string }).content).toBe(
+      'Hi\n\n## Recap\n- Did: answered directly (no tools used)\n- Files: none\n- Model: phi-4'
+    )
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

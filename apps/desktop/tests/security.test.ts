@@ -39,11 +39,10 @@ describe('Security invariants — Electron hard shell', () => {
     expect(preloadSrc).not.toMatch(/ipcRenderer\.sendSync/)
   })
 
-  it('web UI has no raw filesystem/electron/database access (Next.js client)', () => {
-    // Legacy Vite renderer (src/renderer) is deleted — the Electron shell
-    // loads the Next.js UI from apps/web. Same-origin fetch to /api is the
-    // designed transport, so only node/electron/db access is banned here.
-    const webFiles = ['../web/src/App.tsx', '../web/app/page.tsx']
+  it('desktop UI has no raw filesystem/electron/database access (Electron renderer)', () => {
+    // Desktop-only: the Electron shell loads src/renderer. Only
+    // node/electron/db access is banned here (IPC is the transport).
+    const webFiles = ['src/renderer/src/App.tsx', 'src/renderer/src/main.tsx']
     for (const f of webFiles) {
       const txt = fs.readFileSync(f, 'utf8')
       expect(txt, `raw fs in ${f}`).not.toMatch(/from 'node:fs'|require\('fs'\)/)

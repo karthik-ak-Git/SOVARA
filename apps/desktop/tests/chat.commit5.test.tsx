@@ -4,11 +4,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { deriveMessages } from '../../web/src/features/chat/conversation'
-import { MessageBubble } from '../../web/src/features/chat/MessageBubble'
-import { MessageList } from '../../web/src/features/chat/MessageList'
-import { Composer } from '../../web/src/features/chat/Composer'
-import { ChatView } from '../../web/src/features/chat/ChatView'
+import { deriveMessages } from '../src/renderer/src/features/chat/conversation'
+import { MessageBubble } from '../src/renderer/src/features/chat/MessageBubble'
+import { MessageList } from '../src/renderer/src/features/chat/MessageList'
+import { Composer } from '../src/renderer/src/features/chat/Composer'
+import { ChatView } from '../src/renderer/src/features/chat/ChatView'
 import { buildMockAssistantText } from '../src/main/backend/ports/LlmStubAdapter'
 
 afterEach(() => cleanup())
@@ -159,7 +159,9 @@ describe('Commit 5 — ChatView states', () => {
 
   it('guides when no conversation is selected', () => {
     render(<ChatView {...base} selectedId={null} sessions={[]} />)
-    expect(screen.getByText(/What can I help with|What will you work on/)).toBeInTheDocument()
+    // Desktop empty state is a status region labelled "Start a conversation"
+    // (centered composer, no greeting headline).
+    expect(screen.getByRole('status', { name: 'Start a conversation' })).toBeInTheDocument()
   })
 
   it('send button has an accessible name and composer is labelled', () => {

@@ -68,8 +68,12 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
   // Hide raw tool/thinking leaks: <thinking>...</thinking> should be ReasoningBlock, not bubble text (your 10:49 PM screenshot).
   // Also <atem:invoke> leaked as "— used tool —" must be card. Strip both so bubble shows only the final answer.
   const stripToolTags = (s: string): string => {
+    // 0) Fenced JSON reasoning blocks — the JSON-first protocol's private
+    // channel. Closed blocks first, then unclosed-to-end (stream cut).
+    let out = s.replace(/```(?:json:)?reasoning[^\n]*\n[\s\S]*?```/gi, '')
+    out = out.replace(/```(?:json:)?reasoning[\s\S]*$/gi, '')
     // 1) Remove <thinking>...</thinking> and <think>...</think> entirely (including content) — that is reasoning, not answer
-    let out = s.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    out = out.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     out = out.replace(/<think>[\s\S]*?<\/think>/gi, '')
     // 2) Remove XML tags from prompt/tool injection leaks (<system_message>, <context_summary>, <user_request>, <implementation_plan>, <walkthrough>)
     out = out.replace(/<system_message>[\s\S]*?<\/system_message>/gi, '')
@@ -132,6 +136,13 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
     }
     let lang = match[1]?.trim() || 'code'
     let code = normalizeCode(match[2]?.trimEnd() ?? '')
+
+    // Private reasoning blocks (json:reasoning / reasoning) are never answer
+    // content and never artifacts — drop them so neither pane renders them.
+    if (lang === 'json:reasoning' || lang === 'reasoning') {
+      lastIndex = match.index + match[0].length
+      continue
+    }
 
     // Structured JSON response check (json:response or json with summary/files)
     if (lang === 'json:response' || (lang.startsWith('json') && code.includes('"summary"'))) {

@@ -4,12 +4,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Sidebar } from '../../web/src/components/layout/Sidebar'
-import { TopBar } from '../../web/src/components/layout/TopBar'
-import { AppShell } from '../../web/src/components/layout/AppShell'
-import { Button } from '../../web/src/components/ui/Button'
-import { Card } from '../../web/src/components/ui/Card'
-import { EmptyState } from '../../web/src/components/ui/EmptyState'
+import { Sidebar } from '../src/renderer/src/components/layout/Sidebar'
+import { TopBar } from '../src/renderer/src/components/layout/TopBar'
+import { AppShell } from '../src/renderer/src/components/layout/AppShell'
+import { Button } from '../src/renderer/src/components/ui/Button'
+import { Card } from '../src/renderer/src/components/ui/Card'
+import { EmptyState } from '../src/renderer/src/components/ui/EmptyState'
 import { mockApi } from './helpers/http'
 
 // Shell components are prop-driven; stub the internal API so any incidental
@@ -30,7 +30,9 @@ describe('Renderer shell — navigation & layout', () => {
       />
     )
     expect(screen.getByText('Projects')).toBeInTheDocument()
-    expect(screen.getByText('Chats')).toBeInTheDocument()
+    // Desktop labels the chat section "Conversation History" (quick nav);
+    // "Recent Conversations" header only renders when recentChats is non-empty.
+    expect(screen.getByText('Conversation History')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
@@ -44,7 +46,8 @@ describe('Renderer shell — navigation & layout', () => {
       />
     )
     expect(screen.getByRole('button', { name: /New Project/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /New Chat/ })).toBeInTheDocument()
+    // Desktop CTA reads "New Conversation", not "New Chat".
+    expect(screen.getByRole('button', { name: /New Conversation/ })).toBeInTheDocument()
   })
 
   it('marks settings as active nav with aria-current=page', () => {
@@ -72,7 +75,7 @@ describe('Renderer shell — navigation & layout', () => {
         onNewChat={onNewChat}
       />
     )
-    await user.click(screen.getByRole('button', { name: /New Chat/ }))
+    await user.click(screen.getByRole('button', { name: /New Conversation/ }))
     expect(onNewChat).toHaveBeenCalledOnce()
   })
 
@@ -105,9 +108,11 @@ describe('Renderer shell — navigation & layout', () => {
         recentChats={[]}
       />
     )
-    const projBtn = screen.getByRole('button', { name: 'Open project My App' })
-    expect(projBtn).toBeInTheDocument()
-    await user.click(projBtn)
+    // Desktop renders the project name as a clickable row (no
+    // "Open project …" button); clicking the row selects the project.
+    const projName = screen.getByText('My App')
+    expect(projName).toBeInTheDocument()
+    await user.click(projName)
     expect(onSelectProject).toHaveBeenCalledWith('p1')
   })
 
@@ -128,45 +133,10 @@ describe('Renderer shell — navigation & layout', () => {
     expect(onNewProjectChat).toHaveBeenCalledWith('p1')
   })
 
-  it('chat rows expose rename/delete menu', async () => {
-    const user = userEvent.setup()
-    const onDeleteChat = vi.fn()
-    render(
-      <Sidebar
-        activeId="chat"
-        onNavigate={() => {}}
-        projects={[]}
-        recentChats={[{ id: 'c1', title: 'Hello World' }]}
-        onDeleteChat={onDeleteChat}
-      />
-    )
-    await user.click(screen.getByRole('button', { name: 'Chat options for Hello World' }))
-    // Two-step inline confirm — no native popup.
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    expect(onDeleteChat).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(onDeleteChat).toHaveBeenCalledWith('c1')
-  })
-
-  it('chat rename commits on Enter', async () => {
-    const user = userEvent.setup()
-    const onRenameChat = vi.fn()
-    render(
-      <Sidebar
-        activeId="chat"
-        onNavigate={() => {}}
-        projects={[]}
-        recentChats={[{ id: 'c1', title: 'Hello World' }]}
-        onRenameChat={onRenameChat}
-      />
-    )
-    await user.click(screen.getByRole('button', { name: 'Chat options for Hello World' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
-    const input = screen.getByRole('textbox', { name: 'Rename chat' })
-    await user.clear(input)
-    await user.type(input, 'New Name{enter}')
-    expect(onRenameChat).toHaveBeenCalledWith('c1', 'New Name')
-  })
+  // NOTE (desktop-only): the desktop ChatRow has no rename/delete options
+  // menu — onRenameChat/onDeleteChat props are accepted but never invoked
+  // (only Pin/Archive exist). The two web-era rename/delete tests were
+  // dropped per product decision instead of faked against Pin/Archive.
 
   it('renders recent chat titles and calls onSelectChat', async () => {
     const user = userEvent.setup()
@@ -190,7 +160,8 @@ describe('Renderer shell — navigation & layout', () => {
   it('TopBar shows tabs and window controls', async () => {
     const user = userEvent.setup()
     const onCloseChat = vi.fn()
-    render(<TopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" onCloseChat={onCloseChat} />)
+    // Desktop only renders the tab close button when >1 chat exists.
+    render(<TopBar chats={[{ id: 'c1', title: 'Hello' }, { id: 'c2', title: 'World' }]} selectedChatId="c1" onCloseChat={onCloseChat} />)
     expect(screen.getByRole('tab', { name: /Hello/ })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /New tab/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /Sovara Session/ })).not.toBeInTheDocument()
@@ -206,7 +177,7 @@ describe('Renderer shell — navigation & layout', () => {
     ;(window as unknown as Record<string, unknown>).sovara = { invoke: vi.fn() }
     try {
       vi.resetModules()
-      const { TopBar: ShellTopBar } = await import('../../web/src/components/layout/TopBar')
+      const { TopBar: ShellTopBar } = await import('../src/renderer/src/components/layout/TopBar')
       render(<ShellTopBar chats={[{ id: 'c1', title: 'Hello' }]} selectedChatId="c1" />)
       expect(screen.getByRole('button', { name: /Minimize/ })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: /Maximize/ })).toBeInTheDocument()

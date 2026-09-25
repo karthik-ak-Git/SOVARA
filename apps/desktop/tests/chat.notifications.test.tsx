@@ -1,11 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, waitFor } from '@testing-library/react'
-import { useChatSession } from '../../web/src/features/chat/useChatSession'
-import { mockApi } from './helpers/http'
-import { installEventSourceMock, streamFor } from './helpers/sse'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, cleanup, waitFor, act } from '@testing-library/react'
+import { useChatSession } from '../src/renderer/src/features/chat/useChatSession'
 
 const seen: Array<{ title: string; body?: string }> = []
 
@@ -33,71 +31,76 @@ function Probe(): React.JSX.Element {
   return <div data-testid="sel">{chat.selectedId ?? 'none'}</div>
 }
 
-async function renderWithSession(selected: string): Promise<void> {
-  // New transport: REST (/api/sessions, /api/settings) + SSE
-  // (/api/chat/stream) instead of the Electron `window.sovara` bridge.
-  mockApi({
-    'GET /api/sessions': SESSIONS,
-    'GET /api/sessions/s1/events': [],
-    'GET /api/sessions/s2/events': [],
-    'GET /api/models/active': { selection: null, available: false },
-    'GET /api/settings': {
-      theme: 'dark',
-      sidebarBackground: 'dark',
-      inlineDiffLayout: 'side-by-side',
-      renameAfterFork: false,
-      globalWorkspaceRoot: '',
-      allowModelDownload: false,
-      autoUpdates: true,
-      sessionNotifications: notificationsEnabled,
-      updateFeedUrl: '',
-      updateChannel: 'stable',
-      lastUpdateCheckAt: null,
-      lastUpdateStatus: null,
-      rootModel: '',
-      visionModel: '',
-      webSearch: false,
-      explorationAgents: false,
-      customAutoReview: false,
-      customInstructions: '',
-      version: '0.1.0',
+async function renderWithSession(selected: string): Promise<(ev: unknown) => void> {
+  // Desktop transport: Electron preload bridge (window.sovara) — `invoke`
+  // for request/response, `on('events:session')` for server pushes —
+  // instead of the old web REST (/api/sessions, /api/settings) + SSE
+  // (/api/chat/stream) transport.
+  let sessionCb: ((ev: unknown) => void) | null = null
+  ;(window as unknown as Record<string, unknown>).sovara = {
+    invoke: async (channel: string, ...args: unknown[]) => {
+      switch (channel) {
+        case 'sessions:list':
+          return SESSIONS
+        case 'sessions:getEvents':
+          return []
+        case 'models:getActiveModel':
+          return { selection: null, available: false }
+        case 'settings:get':
+          return { sessionNotifications: notificationsEnabled }
+        default:
+          throw new Error(`unmocked IPC: ${channel} ${JSON.stringify(args[0])}`)
+      }
     },
-  })
+    on: (channel: string, cb: (...a: unknown[]) => void) => {
+      if (channel === 'events:session') sessionCb = cb as (ev: unknown) => void
+      return () => {
+        if (channel === 'events:session') sessionCb = null
+      }
+    },
+  }
   render(<Probe />)
   await waitFor(() => {
     expect(document.querySelector('[data-testid="sel"]')?.textContent).toBe(selected)
   })
+  return (ev: unknown): void => {
+    sessionCb?.(ev)
+  }
 }
 
-beforeEach(() => {
+function installBridge(): void {
   seen.length = 0
   notificationsEnabled = true
-  // afterEach unstubs all globals (incl. the setup-file EventSource mock),
-  // so reinstall the SSE mock for every test.
-  installEventSourceMock()
   MockNotification.permission = 'granted'
   vi.stubGlobal('Notification', MockNotification)
   setHidden(true)
-})
+}
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  delete (window as unknown as Record<string, unknown>).sovara
   setHidden(false)
 })
 
 describe('session completion notifications', () => {
   it('notifies when a background session finishes while hidden', async () => {
-    await renderWithSession('s1')
-    streamFor('/api/chat/stream').emit({ sessionId: 's2', kind: 'assistant-done' })
+    installBridge()
+    const emit = await renderWithSession('s1')
+    await act(async () => {
+      emit({ sessionId: 's2', kind: 'assistant-done' })
+    })
     await waitFor(() => expect(seen).toHaveLength(1))
     expect(seen[0]).toMatchObject({ title: 'Sovara — reply ready', body: 'Session 2' })
   })
 
   it('stays silent when the viewed session finishes and the window is visible', async () => {
+    installBridge()
     setHidden(false)
-    await renderWithSession('s1')
-    streamFor('/api/chat/stream').emit({ sessionId: 's1', kind: 'assistant-done' })
+    const emit = await renderWithSession('s1')
+    await act(async () => {
+      emit({ sessionId: 's1', kind: 'assistant-done' })
+    })
     // allow the async notify path to settle, then assert nothing fired
     await waitFor(() => expect(document.querySelector('[data-testid="sel"]')?.textContent).toBe('s1'))
     await new Promise((r) => setTimeout(r, 50))
@@ -105,16 +108,22 @@ describe('session completion notifications', () => {
   })
 
   it('stays silent when the setting is off, even when hidden', async () => {
+    installBridge()
     notificationsEnabled = false
-    await renderWithSession('s1')
-    streamFor('/api/chat/stream').emit({ sessionId: 's2', kind: 'assistant-done' })
+    const emit = await renderWithSession('s1')
+    await act(async () => {
+      emit({ sessionId: 's2', kind: 'assistant-done' })
+    })
     await new Promise((r) => setTimeout(r, 50))
     expect(seen).toHaveLength(0)
   })
 
   it('notifies for the viewed session when the window is hidden', async () => {
-    await renderWithSession('s1')
-    streamFor('/api/chat/stream').emit({ sessionId: 's1', kind: 'assistant-done' })
+    installBridge()
+    const emit = await renderWithSession('s1')
+    await act(async () => {
+      emit({ sessionId: 's1', kind: 'assistant-done' })
+    })
     await waitFor(() => expect(seen).toHaveLength(1))
     expect(seen[0]?.body).toBe('Session 1')
   })
