@@ -74,7 +74,7 @@ export function Footer() {
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} SOVARA. Version 1.1.4.
+            &copy; {new Date().getFullYear()} SOVARA. Version 1.1.5.
           </p>
           <p className="text-xs text-muted-foreground">
             Offline by default &middot; No telemetry &middot; Local inference

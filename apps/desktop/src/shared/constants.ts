@@ -1,6 +1,6 @@
 export const APP_NAME = 'Sovara' as const
 // Ensure this perfectly mirrors desktop/package.json
-export const APP_VERSION = '1.1.4' as const
+export const APP_VERSION = '1.1.5' as const
 // Central configuration registry
 export const PROTOCOL_VERSION = 1 as const
 

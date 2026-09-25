@@ -60,8 +60,8 @@ Sovara uses `electron-updater` with a GitHub Releases provider. The app checks a
 For a release, upload these files together to the `Sovara-versions` GitHub release:
 
 ```text
-Sovara-Setup-1.1.4-x64.exe
-Sovara-Setup-1.1.4-x64.exe.blockmap
+Sovara-Setup-1.1.5-x64.exe
+Sovara-Setup-1.1.5-x64.exe.blockmap
 latest.yml
 ```
 

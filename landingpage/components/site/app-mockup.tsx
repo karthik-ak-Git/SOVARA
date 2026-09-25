@@ -36,7 +36,7 @@ export function AppMockup({ className }: { className?: string }) {
           <span className="size-2.5 rounded-full bg-secure/70" />
         </div>
         <span className="font-mono-tech text-[11px] tracking-wide text-muted-foreground">
-          SOVARA · v1.1.4
+          SOVARA · v1.1.5
         </span>
         <div className="flex items-center gap-1.5 rounded-full border border-border/60 bg-background/60 px-2.5 py-1">
           <CircleDot className="size-3 text-secure" />

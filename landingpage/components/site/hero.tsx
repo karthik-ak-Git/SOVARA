@@ -5,7 +5,7 @@ import { AppMockup } from "@/components/site/app-mockup"
 
 const statusRow = [
   "Windows 10/11 x64",
-  "Version 1.1.4",
+  "Version 1.1.5",
   "Offline by default",
   "Local inference",
 ]

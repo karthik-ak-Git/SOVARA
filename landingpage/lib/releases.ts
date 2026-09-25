@@ -17,7 +17,7 @@ const RELEASES_API = "https://api.github.com/repos/karthik-ak-Git/SOVARA/release
 export const RELEASES_REVALIDATE_SECONDS = 3600;
 
 export const FALLBACK_DOWNLOAD_URL = "https://github.com/karthik-ak-Git/SOVARA/releases/latest";
-export const FALLBACK_FILE_NAME = "Sovara-Setup-1.1.4-x64.exe";
+export const FALLBACK_FILE_NAME = "Sovara-Setup-1.1.5-x64.exe";
 
 export interface SovaraAsset {
   name: string;
