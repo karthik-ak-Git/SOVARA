@@ -1019,6 +1019,7 @@ export class ToolStubAdapter implements ToolPort {
   private async dispatchSubagent(name: string, args: Record<string, unknown>): Promise<string> {
     if (!this.subagents) {
       return JSON.stringify({
+        ok: false,
         error: 'invoke_subagent is unavailable: no subagent runner is configured for this build',
         code: 'SUBAGENT_UNAVAILABLE',
       })
@@ -1026,6 +1027,7 @@ export class ToolStubAdapter implements ToolPort {
     const description = typeof args['description'] === 'string' ? args['description'].trim() : ''
     if (!description) {
       return JSON.stringify({
+        ok: false,
         error: 'invoke_subagent requires { description: string }',
         code: 'INVALID_ARGUMENTS',
       })
@@ -1046,6 +1048,7 @@ export class ToolStubAdapter implements ToolPort {
       })
     } catch (error) {
       return JSON.stringify({
+        ok: false,
         error: error instanceof Error ? error.message : String(error),
         code: 'SUBAGENT_DISPATCH_FAILED',
       })

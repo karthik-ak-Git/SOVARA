@@ -1143,27 +1143,43 @@ export function SettingsModal({
 
                   {(() => {
                     const phase = updateEvent?.status
-                      ?? (updateResult?.status === 'available' ? 'available' : null)
+                      ?? (updateResult?.status === 'available'
+                        ? 'available'
+                        : updateResult?.status === 'error'
+                          ? 'error'
+                          : null)
                     const showUpdateRow =
                       phase === 'available' || phase === 'downloading' || phase === 'downloaded'
 
                     if (!showUpdateRow) {
-                      return updateActionError ? (
-                        <div className="settings-modal-row">
-                          <div className="settings-modal-row-info">
-                            <div className="settings-modal-row-label">Update Error</div>
-                            <div className="settings-modal-row-desc">{updateActionError}</div>
+                      // A failed check is a real dead end unless we offer a way
+                      // back, so surface the reason and a Retry action. This
+                      // covers both a rejected invoke and a resolved error
+                      // status from the update feed.
+                      if (phase === 'error' || updateActionError) {
+                        return (
+                          <div className="settings-modal-row">
+                            <div className="settings-modal-row-info">
+                              <div className="settings-modal-row-label">Update Error</div>
+                              <div className="settings-modal-row-desc">
+                                {updateActionError
+                                  ?? updateEvent?.message
+                                  ?? updateResult?.message
+                                  ?? 'Update check failed.'}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="settings-btn-action"
+                              onClick={() => void handleCheckUpdates()}
+                              disabled={checkingUpdate}
+                            >
+                              Retry
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            className="settings-btn-action"
-                            onClick={() => void handleCheckUpdates()}
-                            disabled={checkingUpdate}
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      ) : null
+                        )
+                      }
+                      return null
                     }
 
                     const isDownloading = phase === 'downloading' || downloadingUpdate
