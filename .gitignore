@@ -55,6 +55,8 @@ screenshots/
 *.gif
 *.webp
 *.ico
+# Exception: the README header logo is a tracked source asset.
+!apps/desktop/src/renderer/public/logo.png
 
 # Test folder traces (keep orchestration prompt lab)
 test/*
