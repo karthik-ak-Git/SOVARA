@@ -1,13 +1,40 @@
 {
-  "name": "sovara",
+  "name": "@karthik-ak-git/sovara",
   "version": "0.1.5",
-  "description": "Installer for Sovara Autonomous Local-First Agent",
+  "description": "Installer CLI for Sovara, the local-first autonomous AI desktop agent",
   "bin": {
     "sovara": "bin/install.js"
   },
+  "files": [
+    "bin",
+    "README.md"
+  ],
   "scripts": {
-    "start": "node ./bin/install.js"
+    "start": "node ./bin/install.js",
+    "prepublishOnly": "node --check bin/install.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karthik-ak-Git/SOVARA.git",
+    "directory": "packages/sovara"
+  },
+  "homepage": "https://sovara-official.vercel.app",
+  "bugs": {
+    "url": "https://github.com/karthik-ak-Git/SOVARA/issues"
+  },
+  "keywords": [
+    "sovara",
+    "ai-agent",
+    "local-first",
+    "windows-installer"
+  ],
   "author": "Karthik AK",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
 }

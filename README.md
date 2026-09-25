@@ -4,7 +4,7 @@
   
   [![Download .exe](https://img.shields.io/badge/Download-Windows_.exe-0078D6?style=for-the-badge&logo=windows)](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)
   
-  ![NPM Version](https://img.shields.io/npm/v/sovara?color=blue&label=npx%20sovara)
+  [![GitHub Package](https://img.shields.io/badge/GitHub%20Package-%40karthik-ak-git%2Fsovara-24292f?style=for-the-badge&logo=github)](https://github.com/karthik-ak-Git/SOVARA/pkgs/npm/%40karthik-ak-git%2Fsovara)
   ![License](https://img.shields.io/badge/License-MIT-green.svg)
   ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20React%20|%20TypeScript-black)
 </div>
@@ -32,7 +32,7 @@ This platform is built to demonstrate:
 | ⚡ **Hardware Optimization** | Auto-detects your GPU/CPU to dynamically load 4-bit (CPU) or 8-bit (GPU) models. |
 | 🛡️ **Sovereign Runtime** | Local model discovery, execution permissions, and workspace tools stay inside the desktop boundary. |
 | 🛠️ **Agentic Tools** | Full read/write filesystem access and terminal execution. |
-| 📦 **Frictionless Setup** | 1-line PowerShell or NPX installation. |
+| 📦 **Frictionless Setup** | Download the Windows installer or install through the GitHub Package CLI. |
 | 🎨 **Modern UI** | A coherent light desktop interface with session management and local tool surfaces. |
 
 ## 🛠️ Tech Stack
@@ -53,7 +53,7 @@ This platform is built to demonstrate:
 │   └── 📁 desktop      # Full local Electron app (True Autonomous Mode)
 ├── 📁 landingpage      # Public website and release download page
 ├── 📁 packages
-│   └── 📁 sovara       # NPX 1-line installer package
+│   └── 📁 sovara       # GitHub Packages installer CLI
 └── 📁 docs             # Architecture and phase documentation
 ```
 
@@ -67,15 +67,18 @@ Sovara is a desktop-only application. The installer packages the Electron app, t
 
 👉 **[Download the .exe from our Release Page](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)**
 
-**Method B: Node.js / npx Installer**
+**Method B: GitHub Packages Installer**
 
-If Node.js is installed on your Windows x64 machine, run:
+The installer CLI is published as [`@karthik-ak-git/sovara`](https://github.com/karthik-ak-Git/SOVARA/pkgs/npm/%40karthik-ak-git%2Fsovara). If Node.js is installed on your Windows x64 machine, authenticate to GitHub Packages with a token that can read packages, then run:
 
 ```powershell
-npx --yes sovara@latest
+$env:NODE_AUTH_TOKEN = "<GitHub PAT with read:packages>"
+npx --yes --package=@karthik-ak-git/sovara@latest sovara
 ```
 
 The command downloads the latest Sovara Windows installer, verifies its SHA-256 digest when GitHub provides one, and launches setup. Node.js is required only for this installation method; it is not required by the installed desktop application.
+
+The package lives in [`packages/sovara`](https://github.com/karthik-ak-Git/SOVARA/tree/main/packages/sovara) and is published automatically by the GitHub Packages workflow when a `package-v*` tag is pushed.
 
 **Method C: PowerShell Install**
 
