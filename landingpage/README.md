@@ -7,13 +7,13 @@ This folder is the marketing and documentation site for the desktop application.
 ## Current desktop release
 
 ```text
-Sovara 1.1.3
+Sovara 1.1.4
 ```
 
 The desktop application is distributed as:
 
 ```text
-Sovara-Setup-1.1.3-x64.exe
+Sovara-Setup-1.1.4-x64.exe
 ```
 
 ## User installation
