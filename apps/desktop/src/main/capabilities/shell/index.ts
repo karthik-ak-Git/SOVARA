@@ -1,7 +1,7 @@
 // @sovara/capability-shell — local shell seam, like harness shell/local + subprocess
 // Executes in the Sovara workspace, gated by execPermissions (ask/allow).
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 
@@ -67,20 +67,35 @@ export function getActiveDevServers(): Array<{ port: number; url: string; comman
 
 export function stopDevServer(port: number): boolean {
   const rec = activeDevServers.get(port)
-  if (rec) {
-    try {
-      if (process.platform === 'win32' && rec.pid) {
-        import('node:child_process').then(({ exec }) => exec(`taskkill /pid ${rec.pid} /T /F`))
-      } else {
-        rec.process.kill('SIGTERM')
-      }
-    } catch {
-      // ignore
+  if (!rec) return false
+
+  let stopped = false
+  try {
+    if (process.platform === 'win32' && rec.pid) {
+      // Wait for the process tree to exit before reporting success. Returning
+      // before taskkill completes leaves the child holding the workspace open.
+      execFileSync('taskkill.exe', ['/pid', String(rec.pid), '/T', '/F'], { stdio: 'ignore' })
+      stopped = true
+    } else if (rec.process.exitCode !== null || rec.process.signalCode !== null) {
+      stopped = true
+    } else {
+      stopped = rec.process.kill('SIGTERM')
     }
-    activeDevServers.delete(port)
-    return true
+  } catch {
+    // taskkill can report that the process already exited. Do not report a
+    // successful stop if a process with the same pid is still alive.
+    if (!rec.pid) stopped = false
+    else {
+      try {
+        process.kill(rec.pid, 0)
+        stopped = false
+      } catch (error) {
+        stopped = (error as NodeJS.ErrnoException).code !== 'ESRCH'
+      }
+    }
   }
-  return false
+  activeDevServers.delete(port)
+  return stopped
 }
 
 export function isServerCommand(command: string): boolean {

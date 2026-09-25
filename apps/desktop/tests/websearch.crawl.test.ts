@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ToolStubAdapter, type WebRuntime } from '../src/main/backend/ports/ToolStubAdapter'
+import { ToolStubAdapter, createWebRuntime, type WebRuntime } from '../src/main/backend/ports/ToolStubAdapter'
 import {
   formatSearchOutcome,
   parseDuckHtml,
@@ -104,6 +104,11 @@ describe('ToolStubAdapter web tools', () => {
     const bad = JSON.parse(await new ToolStubAdapter(rt).dispatch('web_fetch', { urls: [] }))
     expect(bad.error).toMatch(/1-5/)
     expect(called).toBe(false)
+  })
+
+  it('performs a real live web_search request', async () => {
+    const raw = await new ToolStubAdapter(createWebRuntime(() => true)).dispatch('web_search', { queries: ['OpenAI'] })
+    expect(raw).not.toContain('"error"')
   })
 
   it('surfaces runtime failures as error JSON, never throwing', async () => {

@@ -6,7 +6,7 @@ import { createServer } from 'node:http'
 import { SystemResourceStub } from '../src/main/backend/ports/SystemResourceStub'
 import { ModelRuntimeStub } from '../src/main/backend/ports/ModelRuntimeStub'
 import { LlmStubAdapter } from '../src/main/backend/ports/LlmStubAdapter'
-import { ToolStubAdapter } from '../src/main/backend/ports/ToolStubAdapter'
+import { ToolStubAdapter, createWebRuntime } from '../src/main/backend/ports/ToolStubAdapter'
 import { SqlitePersistenceAdapter } from '../src/main/backend/ports/SqlitePersistenceAdapter'
 
 function mkTmp(): string {
@@ -122,6 +122,13 @@ describe('Commit 1 — stub ports satisfy contracts', () => {
       expect(shell.stdout).toContain('shell-ok')
     }
     expect(JSON.parse(await tools.dispatch('list_dev_servers', {}))).toHaveProperty('activeServers')
+    const serverCommand = `node -e "const http=require('http');const s=http.createServer((q,r)=>r.end('ok'));s.listen(0,()=>console.log('http://localhost:'+s.address().port))"`
+    const started = JSON.parse(await tools.dispatch('shell_exec', { command: serverCommand, background: true }))
+    expect(started).toMatchObject({ status: 'running' })
+    expect(started.port).toEqual(expect.any(Number))
+    const active = JSON.parse(await tools.dispatch('list_dev_servers', {}))
+    expect(active.activeServers).toEqual(expect.arrayContaining([expect.objectContaining({ port: started.port })]))
+    expect(JSON.parse(await tools.dispatch('stop_dev_server', { port: started.port }))).toMatchObject({ stopped: true, port: started.port })
     expect(JSON.parse(await tools.dispatch('stop_dev_server', { port: 65535 }))).toMatchObject({ port: 65535 })
     expect(todoEvents.some((e) => e.type === 'todo/write')).toBe(true)
     fs.rmSync(dir, { recursive: true, force: true })
@@ -155,6 +162,24 @@ describe('Commit 1 — stub ports satisfy contracts', () => {
     const recalled = JSON.parse(await tools.dispatch('memory', { action: 'recall', query: 'matrix' }))
     expect(recalled.results.length).toBeGreaterThan(0)
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('fetches a real loopback web page through web_fetch', async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end('<html><head><title>Tool Matrix Page</title></head><body><h1>Fetched for real</h1></body></html>')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('web test server did not bind')
+    try {
+      const tools = new ToolStubAdapter(createWebRuntime(() => true), () => [], () => mkTmp())
+      const page = await tools.dispatch('web_fetch', { urls: [`http://127.0.0.1:${address.port}/tool-matrix`] })
+      expect(page).toContain('Tool Matrix Page')
+      expect(page).toContain('Fetched for real')
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
   })
 
   it('dispatches an HTTP MCP tool against a real loopback JSON-RPC server', async () => {

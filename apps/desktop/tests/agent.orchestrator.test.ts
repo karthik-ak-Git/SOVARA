@@ -590,7 +590,7 @@ describe('AgentOrchestrator — clarify', () => {
     const emitted: ChatStreamEvent[] = []
     const orchestrator = new AgentOrchestrator({
       persistence: makePersistence(),
-      emit: (event) => emitted.push(event),
+      emit: (event: ChatStreamEvent) => emitted.push(event),
     } as never)
     const pending = (orchestrator as unknown as {
       handleClarifyCall: (sessionId: string, toolCallId: string, args: Record<string, unknown>, projectId: string | null) => Promise<string>

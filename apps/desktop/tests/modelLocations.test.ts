@@ -22,13 +22,13 @@ describe('detectModelLocations', () => {
     expect(locs[1]?.path).toBe(path.resolve('ollama'))
   })
 
-  it.runIf(process.platform === 'win32')('dedupes by case-insensitive path on win32', () => {
+  it('dedupes by case-insensitive path on win32', () => {
     const locs = detectModelLocations({ homeDir: 'C:\\Users\\u', platform: 'win32', env: { OLLAMA_MODELS: 'c:\\users\\u\\.lmstudio\\models' } })
     expect(locs).toHaveLength(1)
     expect(locs[0]?.kind).toBe('lmstudio')
   })
 
-  it.runIf(process.platform === 'linux')('dedupes by exact-case path on linux', () => {
+  it('dedupes by exact-case path on linux', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'detect-linux-'))
     try {
       const home = path.join(root, 'home')
@@ -201,7 +201,7 @@ describe('detectModelLocations', () => {
     }
   })
 
-  it.runIf(process.platform === 'win32')('reads LM Studio settings from %APPDATA% on win32', () => {
+  it('reads LM Studio settings from %APPDATA% on win32', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lmstudio-appdata-test-'))
     try {
       const appData = path.join(root, 'AppData', 'Roaming')
