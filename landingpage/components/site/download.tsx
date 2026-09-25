@@ -9,7 +9,7 @@ import { Separator } from "@/components/ui/separator"
 const DOCUMENTATION_URL = "/docs"
 const RELEASES_API = "https://api.github.com/repos/karthik-ak-Git/SOVARA/releases?per_page=10"
 const FALLBACK_DOWNLOAD_URL = "https://github.com/karthik-ak-Git/SOVARA/releases/latest"
-const FALLBACK_FILE_NAME = "Sovara-Setup-1.1.2-x64.exe"
+const FALLBACK_FILE_NAME = "Sovara-Setup-1.1.3-x64.exe"
 
 interface GitHubAsset {
   name: string

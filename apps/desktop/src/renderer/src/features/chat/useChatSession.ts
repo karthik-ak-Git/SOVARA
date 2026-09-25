@@ -78,6 +78,10 @@ export interface AgentExecutionState {
   clarifyQuestions?: Array<{ id: string; question: string; options: string[]; allowOther?: boolean }>
 }
 
+export function isSessionAvailable(sessions: SessionHeaderView[], id: string | null): boolean {
+  return !!id && sessions.some((session) => session.id === id)
+}
+
 export function useChatSession() {
   const [sessions, setSessions] = useState<SessionHeaderView[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -511,7 +515,17 @@ export function useChatSession() {
         // Fire compact before send to keep prompt in English and within budget
         await handleCompact()
       }
-      let targetId = selectedId
+      const selectedSessionId = isSessionAvailable(sessions, selectedId) ? selectedId : null
+      if (selectedId && !selectedSessionId) {
+        // A tab can outlive its database row after an app update, a deleted
+        // session, or a user-data directory switch. Never send to that stale
+        // id: create a fresh session and preserve the user's message instead.
+        console.warn(`[ChatSession] stale session ${selectedId}; starting a new conversation`)
+        setSelectedId(null)
+        selectedRef.current = null
+        setEvents([])
+      }
+      let targetId = selectedSessionId
       if (!targetId) {
         setBusy(true)
         setPhase('planning')
@@ -575,7 +589,7 @@ export function useChatSession() {
         })
       // SSE subscription drives all reactive UI updates (streamingText, streamingReasoning).
     },
-    [selectedId, busy, sessions.length, refreshEvents, refreshSessions, handleCompact]
+    [selectedId, busy, sessions, refreshEvents, refreshSessions, handleCompact]
   )
 
   const handleCancel = useCallback(async (): Promise<void> => {

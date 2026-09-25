@@ -712,6 +712,12 @@ export class AgentOrchestrator {
     let userSeq = -1
 
     try {
+      // Validate before attachment intake or any other best-effort file work.
+      // A stale renderer tab must not create orphan attachment directories.
+      if (!(await this.deps.persistence.get(sessionId))) {
+        throw new AgentOrchestratorError('persistence-failed', `session not found: ${sid}`)
+      }
+
       // ── HEURISTIC COMPACTION INTERCEPTION (/compact) ──
       const trimmedContent = content.trim()
       if (trimmedContent === '/compact' || trimmedContent.startsWith('/compact ')) {

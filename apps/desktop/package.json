@@ -1,6 +1,6 @@
 {
   "name": "@sovara/desktop",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "private": true,
   "description": "Sovara — Sovereign AI Desktop Workbench (Phase 1 foundation)",
   "type": "module",

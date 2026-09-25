@@ -27,7 +27,7 @@ export default function DocsPage() {
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
             Reference material for the architecture, data models, security posture and
-            operational behavior of SOVARA 1.1.2.
+            operational behavior of SOVARA 1.1.3.
           </p>
         </div>
 
@@ -58,7 +58,7 @@ export default function DocsPage() {
           <div className="min-w-0 border-t border-border/60 lg:border-t-0">
             <DocSection id="overview" title="Overview">
               <p>
-                SOVARA is a Windows desktop workbench (version 1.1.2)
+                SOVARA is a Windows desktop workbench (version 1.1.3)
                 that runs GGUF models locally, offline by default, with no cloud inference
                 dependency and no telemetry.
               </p>
@@ -138,7 +138,7 @@ export default function DocsPage() {
 
             <DocSection id="deployment" title="Deployment">
               <p>
-                SOVARA is packaged as a Windows .exe (Sovara-Setup-1.1.2-x64.exe). Building locally
+                SOVARA is packaged as a Windows .exe (Sovara-Setup-1.1.3-x64.exe). Building locally
                 uses <code className="font-mono-tech text-xs text-foreground/85">pnpm build:win</code>.
                 No admin privileges are required for normal use beyond filesystem write access to
                 the SOVARA data directory.

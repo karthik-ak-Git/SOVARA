@@ -503,7 +503,7 @@ export function SettingsModal({
     } catch {
       setUpdateResult({
         status: 'error',
-        current: appSettings?.version ?? appInfo?.version ?? '1.1.2',
+        current: appSettings?.version ?? appInfo?.version ?? '1.1.3',
         latest: null,
         message: 'Failed to connect to update feed.',
       })
@@ -1040,7 +1040,7 @@ export function SettingsModal({
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span className="settings-info-chip">{appInfo?.version ?? appSettings?.version ?? '1.1.2'}</span>
+                      <span className="settings-info-chip">{appInfo?.version ?? appSettings?.version ?? '1.1.3'}</span>
                       <span className="settings-info-badge">
                         {appSettings?.updateChannel === 'beta' ? 'Beta' : 'Stable'}
                       </span>
@@ -2393,7 +2393,7 @@ export function SettingsModal({
                     <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Application Version</div>
                     </div>
-                    <span className="settings-info-chip">{appInfo?.version ?? '1.1.2'}</span>
+                    <span className="settings-info-chip">{appInfo?.version ?? '1.1.3'}</span>
                   </div>
                   <div className="settings-modal-row">
                     <div className="settings-modal-row-info">
