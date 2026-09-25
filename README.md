@@ -51,6 +51,7 @@ This platform is built to demonstrate:
 📁 SOVARA
 ├── 📁 apps
 │   └── 📁 desktop      # Full local Electron app (True Autonomous Mode)
+├── 📁 landingpage      # Public website and release download page
 ├── 📁 packages
 │   └── 📁 sovara       # NPX 1-line installer package
 └── 📁 docs             # Architecture and phase documentation
