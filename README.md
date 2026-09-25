@@ -1,10 +1,10 @@
 <div align="center">
-  <h1>🌌 SOVARA: Autonomous Local-First Agent</h1>
+  <h1><img src="apps/desktop/src/renderer/public/logo.png" alt="Sovara logo" width="72" style="vertical-align: middle;" /> SOVARA: Autonomous Local-First Agent</h1>
   <p>A sovereign, privacy-first AI coding companion optimized for consumer hardware.</p>
   
   [![Download .exe](https://img.shields.io/badge/Download-Windows_.exe-0078D6?style=for-the-badge&logo=windows)](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)
   
-  [![GitHub Package](https://img.shields.io/badge/GitHub%20Package-%40karthik-ak-git%2Fsovara-24292f?style=for-the-badge&logo=github)](https://github.com/karthik-ak-Git/SOVARA/pkgs/npm/%40karthik-ak-git%2Fsovara)
+  [![GitHub Package](https://img.shields.io/badge/GitHub%20Package-Published-24292f?style=for-the-badge&logo=github)](https://github.com/karthik-ak-Git/SOVARA/pkgs/npm/%40karthik-ak-git%2Fsovara)
   ![License](https://img.shields.io/badge/License-MIT-green.svg)
   ![Tech](https://img.shields.io/badge/Tech-Electron%20|%20React%20|%20TypeScript-black)
 </div>
