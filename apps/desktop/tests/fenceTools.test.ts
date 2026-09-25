@@ -54,6 +54,11 @@ describe('extractToolFences', () => {
     expect(fences[0].args).toEqual({ path: 'src/main.ts' })
   })
 
+  it('parses the skill and clarification tools exposed by the runtime', () => {
+    expect(extractToolFences('```tool:search_skills\n{"query":"python"}\n```')[0]?.toolName).toBe('search_skills')
+    expect(extractToolFences('```tool:clarify\n{"questions":[]}\n```')[0]?.toolName).toBe('clarify')
+  })
+
   it('defaults empty fs_list args to path "."', () => {
     const fences = extractToolFences('```tool:fs_list\n\n```')
     expect(fences).toHaveLength(1)

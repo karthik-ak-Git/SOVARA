@@ -106,6 +106,22 @@ function checkTaskCompletionGate(classification: TaskClassification & { requires
   return { passed: true, message: `Artifact generated: ${classification.artifactType}` }
 }
 
+/**
+ * A local model can produce a convincing plan without ever emitting a tool
+ * fence. That is a failed action, not a completed turn. Keep this detector
+ * deliberately narrow: it only runs for actionable task intents and only
+ * treats future-tense/action language as a plan when no action-producing tool
+ * has run.
+ */
+function isPlanOnlyResponse(text: string): boolean {
+  const body = text.replace(/```[\s\S]*?```/g, '').trim()
+  if (body.length < 32) return false
+  const futureAction = /\b(?:i(?:'ll| will| am going to|'m going to| need to| should| can| would)|let me|we(?:'ll| will))\b/i
+  const plannedWork = /\b(?:plan|step|first|next|then|proceed|create|write|install|run|execute|extract|read|inspect|generate|implement|add|build|setup|use)\b/i
+  const completedAction = /\b(?:created|wrote|installed|executed|ran|completed|success|saved|exit code|output)\b/i
+  return futureAction.test(body) && plannedWork.test(body) && !completedAction.test(body)
+}
+
 /** 64 MB buffer headroom for local agent code generation & reasoning traces. */
 const AGENT_MAX_RESPONSE_BYTES = 64_000_000
 
@@ -1225,7 +1241,8 @@ export class AgentOrchestrator {
           toolCatalog =
             `TOOLS — call with a fenced block, NOT XML. Format exactly:\n\`\`\`tool:fs_list\n{"path": "."}\n\`\`\`\n` +
             `Available tools:\n${lines}\n` +
-            `Rules: 1) For exploration or inspections, you may call fs_list or fs_read directly. If the user provides a file or folder path (e.g. D:\\path or C:\\path or any file name), immediately call fs_read {"path": "..."} (for a file) or fs_list {"path": "..."} (for a folder). SOVARA will request user approval for files outside workspace. Never refuse to read a file or path! ` +
+            `Rules: 0) ACTION-FIRST: for a requested file write, package install, command, or multi-step task, your next non-reasoning output MUST be a tool fence. Never return only a plan, promise, todo list, or JSON thought wrapper. ` +
+            `1) For exploration or inspections, you may call fs_list or fs_read directly. If the user provides a file or folder path (e.g. D:\\path or C:\\path or any file name), immediately call fs_read {"path": "..."} (for a file) or fs_list {"path": "..."} (for a folder). SOVARA will request user approval for files outside workspace. Never refuse to read a file or path! ` +
             `2) Emit ONE fenced tool block per step, then wait for its [Tool result] before the next. ` +
             `3) Use shell_exec for running python, bash, powershell, or npm scripts. Use run_code ONLY for JavaScript snippets executing programmatic tool calls (PTC). ` +
             `4) When asked to build, write, or generate code/apps/files, generate the complete functioning implementation immediately.`
@@ -1712,6 +1729,27 @@ export class AgentOrchestrator {
             if (orchFirstTokenAt === null) orchFirstTokenAt = Date.now()
             this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: delta })
           }
+          if (chunk.type === 'done' && !splitter.open) {
+            // ReasoningSplitter intentionally holds a trailing ``` in case the
+            // next chunk starts ```json:reasoning. A tool fence is also closed
+            // by ```, so release that held tail before the done-chunk tool
+            // parser runs; otherwise a one-chunk local tool call is invisible.
+            for (const ev of splitter.push('\n')) {
+              if (ev.kind === 'text' && ev.value) {
+                text += ev.value
+                this.deps.emit({ sessionId: sid, kind: 'assistant-delta', text: ev.value })
+              } else if (ev.kind === 'reasoning') {
+                reasoningBuffer += ev.value
+                allReasoning += ev.value
+                this.deps.emit({ sessionId: sid, kind: 'reasoning-delta', text: ev.value })
+              } else if (ev.kind === 'reasoning-end') {
+                if (reasoningBuffer) {
+                  try { await this.deps.persistence.appendEvent(sessionId, 'assistant/reasoning', { content: reasoningBuffer }) } catch {}
+                  reasoningBuffer = ''
+                }
+              }
+            }
+          }
           if (chunk.type === 'done' && chunk.note === 'non-stream-fallback') streamed = false
           if (chunk.type === 'done' && chunk.usage) usage = chunk.usage
 
@@ -2141,21 +2179,43 @@ export class AgentOrchestrator {
       const isTaskOrBuildIntent = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review|read|inspect|show|view|find|explain|analyze|describe)\b/i.test(content)
       const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"') || m.content.includes('"matches"'))) || /todo_write|list_files|fs_list|search_skills|explore/i.test(text)
       const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|tsx|jsx|react|mermaid|css|svg|python|py|json|sh|bash|powershell)\b[\s\S]{80,}```/i.test(text)
-      const hasWrittenCode = messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
+      const hasArtifactTool = trace.toolResults.some((r) => r.success && ['fs_write', 'fs_patch', 'shell_exec', 'run_code'].includes(r.toolName))
+      const hasWrittenCode = hasArtifactTool || messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
+      const hasActionfulToolEvidence = trace.toolResults.some((r) => r.success && !['search_skills', 'read_skill', 'todo_write'].includes(r.toolName))
+      const isFileMutationIntent = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
+      const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
+      const hasImageAttachment = attached.files.some((f) => f.kind === 'image')
+      const needsInspectionAction = !hasImageAttachment && (/\b(?:read|inspect|list|find|show|view|open)\b/i.test(content) || (classification.kind === 'tool-use' && !/\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content)))
+      const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
+      const isActionableTask = isFileMutationIntent || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent'
+      const isPlanOnly = Boolean(toolCatalog) && isActionableTask && !hasActionfulToolEvidence && isPlanOnlyResponse(text)
+      const hasShellTool = trace.toolResults.some((r) => r.success && ['shell_exec', 'run_code', 'bash', 'cmd', 'powershell', 'terminal_exec'].includes(r.toolName))
+      const actionGateFailures: string[] = []
+      if (isFileMutationIntent && !hasArtifactTool) actionGateFailures.push('fs_write or fs_patch must create the requested file')
+      if (needsShellAction && !hasShellTool) actionGateFailures.push('shell_exec or run_code must install/run the requested command')
+      const actionGatePassed = actionGateFailures.length === 0
+      const taskCompletionGate = checkTaskCompletionGate(
+        { ...classification, requiresArtifact: isFileMutationIntent, artifactType: isFileMutationIntent ? 'code' : classification.artifactType },
+        hasArtifactTool,
+      )
       const isReadOrExplainIntent = /\b(read|inspect|show|view|find|explain|analyze|describe|skill|content)\b/i.test(content)
       const hasReadActualContent = messages.some((m) => m.role === 'tool' && (m.content.includes('"content"') || m.content.includes('"linesReturned"') || m.content.includes('"results"')))
       const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
       const isReadInterrupted = isReadOrExplainIntent && didExploration && !hasReadActualContent
 
       // Continue autonomously if:
-      // 1. Model emitted a fake JSON claim instead of writing code, OR
-      // 2. Model did exploration (fs_list or search_skills) but user wanted to read/inspect and actual content hasn't been read yet, OR
-      // 3. Model did exploration (fs_list) but hasn't written code yet for a build task
+      // 1. Model returned a plan without executing anything, OR
+      // 2. Model emitted a fake JSON claim instead of writing code, OR
+      // 3. Model did exploration but did not reach the requested artifact/action.
       const continuationCount = messages.filter((m) => m.role === 'user' && m.content.includes('[Autonomous Agent Directive]')).length
-      const shouldJarvisContinue = isTaskOrBuildIntent && (isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode)) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
+      const shouldJarvisContinue = isTaskOrBuildIntent && Boolean(toolCatalog) && (isPlanOnly || isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode) || !taskCompletionGate.passed || !actionGatePassed) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
-          const nextDirective = isFakeFileClaim
+          const nextDirective = !actionGatePassed
+            ? `[Autonomous Agent Directive]: Required work is still not observed. Do not stop with a plan. Execute the missing action now: ${actionGateFailures.join('; ')}. Emit exactly the required tool fence, wait for its result, then continue with the remaining steps.`
+            : isPlanOnly
+            ? `[Autonomous Agent Directive]: You returned a plan instead of taking action. Do not narrate or repeat the plan. Emit the next tool fence now. For this request, first inspect/read the supplied attachment, then use fs_write for the requested file and shell_exec to install dependencies and run the sample input. Wait for each tool result before continuing.`
+            : isFakeFileClaim
             ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your skills context and MCP tools if necessary. Write the real code now.`
             : isReadInterrupted
             ? `[Autonomous Agent Directive]: Listing/search complete. Do not stop or pause. Immediately read the actual content using fs_read (e.g. fs_read {"path": "filepath"}) or read_skill (e.g. read_skill {"skill_name": "skill_name"}) and explain or present the full content to the user.`
@@ -2164,7 +2224,7 @@ export class AgentOrchestrator {
         this.deps.emit({
           sessionId: sid,
           kind: 'assistant-delta',
-          text: `\n\n*[Jarvis Agent: Autonomously proceeding to write code...]*\n\n`,
+          text: `\n\n*[Jarvis Agent: Executing the next required action...]*\n\n`,
         })
         messages.push({ role: 'assistant', content: text.trim() || 'Workspace inspected.' })
         messages.push({
@@ -2182,6 +2242,59 @@ export class AgentOrchestrator {
       if (controller.signal.aborted) {
         this.noteEndQuiet(ownedInstanceForMetrics)
         return await this.finishCancelled(sessionId, sid, startedAll, routing.runtimeId!, endpoint, model, streamed, userSeq)
+      }
+
+      // ── Hard execution completion gate ──────────────────────────────────────
+      // A non-empty assistant message is not proof that an action ran. For an
+      // actionable request, require the relevant successful tool results before
+      // allowing final synthesis or task:complete. This prevents a local model
+      // that only narrates a plan from being reported as a successful agent.
+      const successfulTools = new Set(trace.toolResults.filter((r) => r.success).map((r) => r.toolName))
+      const hasImageAttachment = attached.files.some((f) => f.kind === 'image')
+      const needsFileMutation = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
+      const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
+      const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
+      const needsInspectionAction = !hasImageAttachment && (/\b(?:read|inspect|list|find|show|view|open)\b/i.test(content) || (classification.kind === 'tool-use' && !needsWebAction))
+      const requiredActionFailures: string[] = []
+      if (needsFileMutation && !['fs_write', 'fs_patch', 'shell_exec', 'run_code'].some((name) => successfulTools.has(name))) {
+        requiredActionFailures.push('no successful file-writing tool was executed')
+      }
+      if (needsShellAction && !['shell_exec', 'run_code', 'bash', 'cmd', 'powershell', 'terminal_exec'].some((name) => successfulTools.has(name))) {
+        requiredActionFailures.push('no successful install/run command was executed')
+      }
+      if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search'].some((name) => successfulTools.has(name))) {
+        requiredActionFailures.push('no successful workspace inspection was executed')
+      }
+      if (needsWebAction && !['web_search', 'web_fetch'].some((name) => successfulTools.has(name))) {
+        requiredActionFailures.push('no successful web tool was executed')
+      }
+      if (classification.kind === 'agent' && successfulTools.size === 0) {
+        requiredActionFailures.push('the agent task dispatched no successful tool')
+      }
+      const requiresExecution = needsFileMutation || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent' || (classification.kind === 'tool-use' && Boolean(opts?.webSearch))
+      if (requiresExecution && requiredActionFailures.length > 0) {
+        const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. The model returned text without an observed successful action. No task completion was recorded.`
+        this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
+        try {
+          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${message}` })).seq
+          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+        } catch {
+          this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: message })
+        }
+        try {
+          await this.deps.persistence.appendEvent(sessionId, 'agent/trace', {
+            kind: classification.kind,
+            modelId: model,
+            runtimeId: routing.runtimeId!,
+            steps: loopSteps,
+            durationMs: Date.now() - startedAll,
+            routingReason: routing.reason,
+            outcome: 'incomplete',
+            error: message,
+          })
+        } catch { /* best-effort */ }
+        this.noteEndQuiet(ownedInstanceForMetrics)
+        throw new AgentOrchestratorError('llm-failed', message)
       }
 
       // Synthesis pass: if toolLoop exited without final text (e.g. model called tools or hit loop cap),

@@ -29,11 +29,11 @@ export interface ToolFence {
 }
 
 const TOOL_NAMES = [
-  'fs_list', 'fs_read', 'fs_write', 'fs_patch',
+  'fs_list', 'fs_read', 'fs_search', 'fs_write', 'fs_patch',
   'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec',
   'list_dev_servers', 'stop_dev_server',
   'todo_write',
-  'search_skills', 'read_skill',
+  'search_skills', 'read_skill', 'clarify',
   'web_search', 'web_fetch',
   'run_code',
 ] as const

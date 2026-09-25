@@ -221,6 +221,12 @@ export const SOVARA_SYSTEM_PROMPT = buildSovaraSystemPrompt({ model_name: '{mode
 export const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
 
 export const STRUCTURED_OUTPUT_INSTRUCTION = `EXECUTION & CODE GENERATION DIRECTIVE:
+0. ACTION-FIRST AUTONOMY:
+   - For any request that changes files, installs packages, runs code, launches a process, or has multiple concrete steps, the first response MUST be a tool-call fence, not a plan, promise, todo list, or JSON wrapper.
+   - Do not stop after saying "I will", "I'll now", "Let me", "Here's my plan", or "I need to". Those are progress messages, not completion.
+   - After each tool result, emit the next required tool call immediately. Do not describe the next step in prose first.
+   - A final answer is allowed only after the requested work is observed in tool output or the user explicitly asked for explanation only.
+
 1. Production Code & Artifacts:
    - You MUST write the actual, complete, fully working code. NEVER output placeholder/buffer dummy code, truncated sketches, or fake JSON summaries claiming files were created.
    - When asked to create files or artifacts in the workspace, use \`fs_write\` with full content, and ALWAYS output the full code inside a named markdown code block (\`\`\`tsx, \`\`\`jsx, \`\`\`html, \`\`\`mermaid, \`\`\`typescript, \`\`\`javascript) so the live artifact viewer renders it.

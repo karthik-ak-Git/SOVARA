@@ -71,6 +71,18 @@ function scriptLlm(script: string[], opts?: { throwErr?: unknown; hang?: boolean
   }
 }
 
+function sequenceLlm(responses: string[][]) {
+  let call = 0
+  return {
+    async *stream(): AsyncIterable<LlmChunk> { throw new Error('unused') },
+    async *streamChat(_request: LlmChatRequest): AsyncIterable<LlmChunk> {
+      const response = responses[Math.min(call++, responses.length - 1)] ?? ['done']
+      for (const text of response) yield { type: 'text-delta' as const, text }
+      yield { type: 'done' as const }
+    },
+  }
+}
+
 const okResources: SystemResourceManagerPort = {
   async getSnapshot() {
     return {
@@ -356,6 +368,108 @@ describe('AgentOrchestrator — Chat → Agent execution → ModelRuntime → Se
     const ready = emitted.find((e) => e.kind === 'model:ready')
     expect(ready).toBeDefined()
     expect(ready?.modelId).toBe('rt-1:phi-4')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('AgentOrchestrator — action-first autonomy', () => {
+  it('continues past a plan-only response and dispatches the requested file tool', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const emitted: ChatStreamEvent[] = []
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = []
+    const toolDefs = [
+      { name: 'search_skills', description: 'Search skills', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+      { name: 'read_skill', description: 'Read skill', parameters: { type: 'object', properties: { skill_name: { type: 'string' } }, required: ['skill_name'] } },
+      { name: 'fs_write', description: 'Write a file', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
+      { name: 'shell_exec', description: 'Run a command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+    ]
+    const workbench = makeWorkbench([{ modelId: 'local:code-phi', displayName: 'code-phi', runtimeId: 'local', available: true }], { runtimeId: 'local', modelId: 'local:code-phi' })
+    const loaded: Array<{ id: string; modelId: string }> = []
+    const mockModels = {
+      load: async (modelId: string) => {
+        const inst = { id: `inst_${String(modelId).replace(/[^a-z0-9]/gi, '_')}`, modelId }
+        loaded.push(inst)
+        return inst
+      },
+      baseUrl: () => 'http://127.0.0.1:9/v1',
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => loaded.map((i) => ({ id: i.id, modelId: i.modelId, runtimeId: 'local', status: 'loaded' as const, ctxLen: 4096 })),
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([
+        ['```tool:search_skills\n{"query":"python"}\n```'],
+        ['```tool:read_skill\n{"skill_name":"python"}\n```'],
+        ["I'll extract the code, create the Python file, install the packages, and run the sample input. Here's my plan: first inspect the image, then write and execute everything."],
+        ['```tool:fs_write\n{"path":"solution.py","content":"print(\'done\')"}\n```'],
+        ['```tool:shell_exec\n{"command":"python solution.py"}\n```'],
+        ['Created solution.py and ran the sample input successfully.'],
+      ]),
+      tools: {
+        list: () => toolDefs,
+        dispatch: async (name: string, args: Record<string, unknown>) => {
+          calls.push({ name, args })
+          if (name === 'search_skills') return JSON.stringify({ skills: ['python'] })
+          if (name === 'read_skill') return JSON.stringify({ content: 'Use fs_write for files.' })
+          if (name === 'fs_write') return JSON.stringify({ success: true, path: args.path, bytes: String(args.content).length })
+          if (name === 'shell_exec') return JSON.stringify({ ok: true, output: 'done' })
+          return JSON.stringify({ error: `unexpected tool ${name}` })
+        },
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: (e) => emitted.push(e),
+      // Keep the test on the real dispatch seam without a global infrastructure
+      // implementation from another test changing the behavior.
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: () => false }) } as never,
+    })
+
+    const res = await orchestrator.execute(
+      'sess-1' as SessionId,
+      'Create a Python file from the image, install its packages, and run the sample input.',
+      {},
+    )
+
+    expect(res.ok).toBe(true)
+    expect(calls.map((c) => c.name)).toEqual(['search_skills', 'read_skill', 'fs_write', 'shell_exec'])
+    expect(calls.find((c) => c.name === 'fs_write')?.args).toMatchObject({ path: 'solution.py' })
+    expect(emitted.some((e) => e.kind === 'tool:start' && e.toolName === 'fs_write')).toBe(true)
+    const answer = (await persistence.getEvents('sess-1' as SessionId)).find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).toContain('Created solution.py')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not report success when a required command is never dispatched', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const emitted: ChatStreamEvent[] = []
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: scriptLlm(["I'll run that command now."]),
+      tools: {
+        list: () => [{ name: 'shell_exec', description: 'Run a command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
+        dispatch: async () => JSON.stringify({ error: 'must not be called' }),
+      } as never,
+      workbench,
+      resources: okResources,
+      models: new (await import('../src/main/backend/ports/ModelRuntimeStub')).ModelRuntimeStub(),
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: (e) => emitted.push(e),
+    })
+
+    await expect(orchestrator.execute('sess-1' as SessionId, 'Run `python --version` now and report the output.', {})).rejects.toMatchObject({ code: 'llm-failed' })
+    expect(emitted.some((e) => e.kind === 'task:complete')).toBe(false)
+    const answer = (await persistence.getEvents('sess-1' as SessionId)).find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).toContain('Autonomous execution did not complete')
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })
