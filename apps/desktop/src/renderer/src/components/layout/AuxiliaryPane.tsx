@@ -407,8 +407,7 @@ export function AuxiliaryPane({
   // --- Real persistent terminal sessions (backend-backed, pipes-based) ---
   // Instances come ONLY from the main-process shell host via terminal:* IPC:
   // id, shell, exe name, cwd, pid and status are all live backend values.
-  // Nothing is seeded, synthesized, or read from localStorage. Until the
-  // backend channels are wired the pane honestly reports "backend offline".
+  // Nothing is seeded, synthesized, or read from localStorage.
   type RealTerminalShell = 'powershell' | 'cmd' | 'bash' | 'python' | 'node'
   type RealTerminalStatus = 'alive' | 'exited'
   interface TerminalInstance {
@@ -429,6 +428,7 @@ export function AuxiliaryPane({
     cwd: string
     status: RealTerminalStatus
     exitCode: number | null
+    pty?: boolean
   }
   interface SovaraBridge {
     invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
@@ -476,7 +476,7 @@ export function AuxiliaryPane({
         status: res.status === 'exited' ? 'exited' : 'alive',
         exitCode: typeof res.exitCode === 'number' ? res.exitCode : null,
         logs: [
-          `connected: ${typeof res.name === 'string' && res.name ? res.name : res.shell} · pid ${typeof res.pid === 'number' ? res.pid : 'unknown'} · ${typeof res.cwd === 'string' ? res.cwd : 'cwd unknown'} · persistent shell (pipes, not a full PTY)`,
+          `connected: ${typeof res.name === 'string' && res.name ? res.name : res.shell} · pid ${typeof res.pid === 'number' ? res.pid : 'unknown'} · ${typeof res.cwd === 'string' ? res.cwd : 'cwd unknown'} · ${res.pty === false ? 'one-shot pipes shell (no PTY available)' : 'real PTY (ConPTY) — fully interactive'}`,
         ],
       }
       setTerminalInstances((prev) => (prev.some((t) => t.id === inst.id) ? prev : [...prev, inst]))
@@ -1628,7 +1628,7 @@ export function AuxiliaryPane({
                   style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:10, color:'#64748b', fontWeight:500 }}
                 >
                   <span style={{ width:7, height:7, borderRadius:'50%', background: terminalBackend==='live' ? '#10b981' : terminalBackend==='offline' ? '#ef4444' : '#f59e0b' }} />
-                  {terminalBackend === 'live' ? 'persistent shell · pipes (no full PTY)' : terminalBackend === 'offline' ? 'backend offline · one-shot mode' : 'connecting…'}
+                  {terminalBackend === 'live' ? 'persistent shell · real PTY (ConPTY)' : terminalBackend === 'offline' ? 'backend offline · one-shot mode' : 'connecting…'}
                 </span>
                 <select
                   aria-label="New Persistent Shell"
@@ -1755,7 +1755,7 @@ export function AuxiliaryPane({
                         </div>
                         <div>
                           {terminalBackend === 'offline'
-                            ? `Typed commands still run as one-shot shell_exec below. AI shell activity streams here. To enable persistent shells, wire the terminal:* IPC channels${terminalError ? ` (last error: ${terminalError})` : ''}.`
+                            ? `Typed commands still run as one-shot shell_exec below. AI shell activity streams here. Persistent shell backend reported: ${terminalError ?? 'unknown error'} — check the main-process log.`
                             : 'Spawning the persistent shell… typed commands run as one-shot shell_exec until it connects.'}
                         </div>
                         {terminalBackend === 'offline' ? (

@@ -32,6 +32,9 @@ importers:
       node-llama-cpp:
         specifier: ^3.20.0
         version: 3.20.0(supports-color@7.2.0)(typescript@5.9.3)
+      node-pty:
+        specifier: ^1.1.0
+        version: 1.1.0
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -2246,6 +2249,9 @@ packages:
   node-addon-api@1.7.2:
     resolution: {integrity: sha512-ibPK3iA+vaY1eEjESkQkM0BbCqFOaZMiXRTtdB0u7b4djtY6JnsjvPdUHVMg6xQt3B8fpTTWHI9A+ADjM9frzg==}
 
+  node-addon-api@7.1.1:
+    resolution: {integrity: sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==}
+
   node-addon-api@8.9.2:
     resolution: {integrity: sha512-VijLXbi3UACN69I0JVXJsX4tjACjNoQDgv2gTF6sx2wWEi8tkSg2eX8p5gSIFi8z2+DL3oHmY6OyKce38SDolg==}
     engines: {node: ^18 || ^20 || >= 21}
@@ -2275,6 +2281,9 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  node-pty@1.1.0:
+    resolution: {integrity: sha512-20JqtutY6JPXTUnL0ij1uad7Qe1baT46lyolh2sSENDd4sTzKZ4nmAFkeAARDKwmlLjPx6XKRlwRUxwjOy+lUg==}
 
   node-releases@2.0.54:
     resolution: {integrity: sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ==}
@@ -5421,6 +5430,8 @@ snapshots:
   node-addon-api@1.7.2:
     optional: true
 
+  node-addon-api@7.1.1: {}
+
   node-addon-api@8.9.2: {}
 
   node-api-headers@1.9.0: {}
@@ -5509,6 +5520,10 @@ snapshots:
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
+
+  node-pty@1.1.0:
+    dependencies:
+      node-addon-api: 7.1.1
 
   node-releases@2.0.54: {}
 

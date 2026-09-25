@@ -19,6 +19,11 @@ extraResources:
       - dist/**/*
   - from: node_modules/node-llama-cpp/bins
     to: bins
+  # node-pty Electron-ABI binaries (ConPTY) — vendored: upstream publishes no
+  # Electron prebuilds for v35, so build/Release holds locally built binaries.
+  # ptyHost loads these from <resources>/pty when node_modules is unavailable.
+  - from: resources/pty
+    to: pty
 
 asar: true
 compression: maximum

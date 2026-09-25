@@ -1,26 +1,21 @@
 /**
- * Persistent interactive shell host — pipes-based, NOT a full PTY.
+ * Persistent interactive shell host — ConPTY-backed via node-pty when
+ * available, pipes fallback otherwise.
  *
- * Spawns one long-lived interactive shell process per terminal instance.
- * The process survives across commands (stdin stays open, stdout/stderr
- * stream back), each instance keeps its own cwd, and output/exit are
- * emitted as events the main process can forward to renderers.
+ * Primary path (Windows): node-pty drives the real console (ConPTY), so
+ * powershell/cmd run FULLY interactive — prompts, repeat commands,
+ * line editing, colors. Verified multi-command under Electron 35.
+ * The Electron-ABI binaries are vendored at resources/pty/node-pty
+ * (node-pty publishes no Electron prebuilds and stock Build Tools lack
+ * the Spectre libs its stock build demands).
  *
- * Deliberately implemented with `node:child_process` + piped stdio because
- * `node-pty` is not a dependency of this project. Honest limits:
- * - No PTY emulation: no cursor addressing, no ANSI cursor control, no
- *   window-size semantics. Full-screen / interactive-TUI apps (vim, less,
- *   htop, interactive fzf, `python` bare REPL is fine but line-oriented)
- *   will not render correctly and may appear to hang waiting on input.
- * - `resize()` is accepted for forward-compatibility but is a no-op
- *   (`applied: false`) until a real PTY backend lands.
- * - In-shell `cd` / `Set-Location` changes the *process* cwd, but the host
- *   only tracks the spawn cwd. `info.cwd` is the real spawn cwd, refreshed
- *   only when reported via `refreshCwd()` (best-effort `pwd` probe).
- * - Instances live as long as the app process. They do NOT survive app
- *   restart — PIDs from a previous run are never reused or displayed.
- * - All PIDs/cwds/statuses come from the live OS child process object.
- *   Nothing here is synthesized.
+ * Fallback path: `node:child_process` + piped stdio. Powershell/cmd in
+ * this mode consume stdin as ONE script (`-Command -`), so only the
+ * FIRST command executes — the pane reports `pty: false` honestly and
+ * the UI labels it one-shot. python/node REPLs still work on pipes.
+ *
+ * Nothing here is synthesized: pid/cwd/status come from the live
+ * process object. Instances live as long as the app process.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -29,6 +24,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import {
   zTerminalCreate,
   zTerminalWrite,
@@ -53,6 +49,8 @@ export interface TerminalInfo {
   cwd: string
   status: TerminalStatus
   exitCode: number | null
+  /** True when backed by a real ConPTY (node-pty); false = pipes fallback. */
+  pty: boolean
 }
 
 export interface TerminalCreateOptions {
@@ -76,6 +74,70 @@ interface ShellSpec {
   exe: string
   args: string[]
   name: string
+}
+
+/** Minimal node-pty surface (no @types/node-pty dependency). */
+interface PtyInstance {
+  readonly pid: number
+  onData(cb: (data: string) => void): void
+  onExit(cb: (e: { exitCode: number; signal?: number }) => void): void
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  kill(signal?: string): void
+}
+
+interface PtyModule {
+  spawn(
+    file: string,
+    args: string[],
+    opts: { name?: string; cols?: number; rows?: number; cwd?: string; env?: NodeJS.ProcessEnv }
+  ): PtyInstance
+}
+
+let cachedPty: PtyModule | null | undefined
+/** Resolve node-pty (dev node_modules, then packaged resources). Null = pipes fallback. */
+function loadNodePty(): PtyModule | null {
+  if (cachedPty !== undefined) return cachedPty
+  cachedPty = null
+  try {
+    const mainRequire = createRequire(__filename)
+    const mod = mainRequire('node-pty') as PtyModule
+    if (mod && typeof mod.spawn === 'function') cachedPty = mod
+  } catch {
+    // ignore — try packaged resources next
+  }
+  if (!cachedPty) {
+    try {
+      const resourcesPath = (process as unknown as { resourcesPath?: string }).resourcesPath
+      if (resourcesPath) {
+        const mainRequire = createRequire(__filename)
+        const mod = mainRequire(path.join(resourcesPath, 'pty', 'node-pty')) as PtyModule
+        if (mod && typeof mod.spawn === 'function') cachedPty = mod
+      }
+    } catch {
+      // ignore — pipes fallback
+    }
+  }
+  return cachedPty
+}
+
+/** Interactive args for a real console (ConPTY). No `-Command -`: stdin is a REPL. */
+function ptyShellSpec(shell: TerminalShell): ShellSpec {
+  const win = process.platform === 'win32'
+  switch (shell) {
+    case 'powershell':
+      return win
+        ? { exe: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-NoExit'], name: 'powershell.exe' }
+        : { exe: 'pwsh', args: ['-NoLogo', '-NoProfile', '-NoExit'], name: 'pwsh' }
+    case 'cmd':
+      return { exe: 'cmd.exe', args: [], name: 'cmd.exe' }
+    case 'bash':
+      return { exe: 'bash', args: ['--noprofile', '--norc'], name: 'bash' }
+    case 'python':
+      return { exe: win ? 'python' : 'python3', args: ['-i', '-u'], name: win ? 'python.exe' : 'python3' }
+    case 'node':
+      return { exe: 'node', args: ['-i'], name: 'node.exe' }
+  }
 }
 
 function shellSpec(shell: TerminalShell): ShellSpec {
@@ -122,8 +184,9 @@ const MAX_TAIL_LINES = 1000
 
 interface LiveInstance {
   info: TerminalInfo
-  proc: ChildProcess
   tail: string[]
+  pty?: PtyInstance
+  proc?: ChildProcess
 }
 
 export class PersistentTerminalHost extends EventEmitter {
@@ -159,9 +222,46 @@ export class PersistentTerminalHost extends EventEmitter {
     const shell: TerminalShell = TERMINAL_SHELLS.includes(opts.shell as TerminalShell)
       ? (opts.shell as TerminalShell)
       : defaultShell()
-    const spec = shellSpec(shell)
     const cwd = resolveCwd(opts.cwd)
     const id = `term-${randomUUID().slice(0, 8)}`
+    const ptyMod = loadNodePty()
+
+    // ── Primary: real ConPTY ──
+    if (ptyMod) {
+      try {
+        const spec = ptyShellSpec(shell)
+        const inst: LiveInstance = {
+          info: { id, shell, name: spec.name, pid: -1, cwd, status: 'alive', exitCode: null, pty: true },
+          tail: [],
+        }
+        const p = ptyMod.spawn(spec.exe, spec.args, {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+          cwd,
+          env: { ...process.env } as NodeJS.ProcessEnv,
+        })
+        inst.pty = p
+        inst.info.pid = typeof p.pid === 'number' ? p.pid : null
+        this.instances.set(id, inst)
+        p.onData((data: string) => {
+          const live = this.instances.get(id)
+          if (!live || !data) return
+          for (const line of data.split('\n')) live.tail.push(line)
+          if (live.tail.length > MAX_TAIL_LINES) live.tail.splice(0, live.tail.length - MAX_TAIL_LINES)
+          this.emit('output', { id, data, stream: 'stdout' } satisfies TerminalOutputEvent)
+        })
+        p.onExit(({ exitCode, signal }) => {
+          this.markExited(id, typeof exitCode === 'number' ? exitCode : null, typeof signal === 'number' ? String(signal) : null)
+        })
+        return { ...inst.info }
+      } catch {
+        // fall through to pipes
+      }
+    }
+
+    // ── Fallback: piped stdio (see module doc for limits) ──
+    const spec = shellSpec(shell)
 
     const proc = spawn(spec.exe, spec.args, {
       cwd,
@@ -178,6 +278,7 @@ export class PersistentTerminalHost extends EventEmitter {
       cwd,
       status: 'alive',
       exitCode: null,
+      pty: false,
     }
     const inst: LiveInstance = { info, proc, tail: [] }
     this.instances.set(id, inst)
@@ -216,12 +317,32 @@ export class PersistentTerminalHost extends EventEmitter {
     return { ...info }
   }
 
-  /** Write keystrokes/a full command line to the live shell's stdin. Appends '\n' when missing. */
+  /** Shared exit bookkeeping for both backends. */
+  private markExited(id: string, code: number | null, signal: string | null): void {
+    const live = this.instances.get(id)
+    if (!live || live.info.status === 'exited') return
+    live.info.status = 'exited'
+    live.info.exitCode = code
+    this.emit('exit', { id, exitCode: code, signal } satisfies TerminalExitEvent)
+  }
+
+  /** Write keystrokes/a full command line to the live shell. Appends newline when missing. */
   write(id: string, data: string): { ok: boolean; error?: string } {
     const inst = this.instances.get(id)
     if (!inst) return { ok: false, error: `unknown terminal: ${id}` }
     if (inst.info.status !== 'alive') return { ok: false, error: `terminal ${id} has exited (code ${inst.info.exitCode ?? 'unknown'})` }
-    if (!inst.proc.stdin || inst.proc.stdin.destroyed) return { ok: false, error: `terminal ${id} stdin is closed` }
+    // ── ConPTY: Enter key is CR ──
+    if (inst.pty) {
+      const payload = data.replace(/\r?\n$/, '\r')
+      try {
+        inst.pty.write(payload.endsWith('\r') ? payload : `${payload}\r`)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+    // ── Pipes fallback ──
+    if (!inst.proc?.stdin || inst.proc.stdin.destroyed) return { ok: false, error: `terminal ${id} stdin is closed` }
     const payload = data.endsWith('\n') ? data : `${data}\n`
     try {
       inst.proc.stdin.write(payload, 'utf8')
@@ -232,11 +353,20 @@ export class PersistentTerminalHost extends EventEmitter {
   }
 
   /**
-   * No-op on the pipes backend: without a PTY there are no dimensions to set.
-   * Accepted so renderers can call it unconditionally; `applied` is honestly false.
+   * Resize the console. Real on ConPTY (`applied: true`); accepted no-op on
+   * the pipes backend (`applied: false`).
    */
   resize(id: string, _cols: number, _rows: number): { ok: boolean; applied: boolean; reason: string } {
-    if (!this.instances.get(id)) return { ok: false, applied: false, reason: `unknown terminal: ${id}` }
+    const inst = this.instances.get(id)
+    if (!inst) return { ok: false, applied: false, reason: `unknown terminal: ${id}` }
+    if (inst.pty) {
+      try {
+        inst.pty.resize(_cols, _rows)
+        return { ok: true, applied: true, reason: '' }
+      } catch (err) {
+        return { ok: false, applied: false, reason: err instanceof Error ? err.message : String(err) }
+      }
+    }
     return { ok: true, applied: false, reason: 'pipes backend has no PTY dimensions; reserved for a node-pty upgrade' }
   }
 
@@ -247,8 +377,16 @@ export class PersistentTerminalHost extends EventEmitter {
       this.instances.delete(id)
       return { ok: true }
     }
+    if (inst.pty) {
+      try {
+        inst.pty.kill(signal)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
     try {
-      const killed = inst.proc.kill((signal as NodeJS.Signals | undefined) ?? undefined)
+      const killed = inst.proc?.kill((signal as NodeJS.Signals | undefined) ?? undefined) ?? false
       if (!killed) return { ok: false, error: `OS refused to signal pid ${inst.info.pid ?? 'unknown'}` }
       return { ok: true }
     } catch (err) {
@@ -268,7 +406,10 @@ export class PersistentTerminalHost extends EventEmitter {
   dispose(): void {
     for (const [, inst] of this.instances) {
       try {
-        if (inst.info.status === 'alive') inst.proc.kill()
+        if (inst.info.status === 'alive') {
+          if (inst.pty) inst.pty.kill()
+          else inst.proc?.kill()
+        }
       } catch { /* best effort */ }
     }
     this.instances.clear()
