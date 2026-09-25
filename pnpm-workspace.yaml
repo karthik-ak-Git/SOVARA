@@ -11,4 +11,5 @@ allowBuilds:
   protobufjs: true
   sharp: true
 patchedDependencies:
+  app-builder-lib@25.1.8: patches/app-builder-lib@25.1.8.patch
   zod@3.24.3: patches/zod@3.24.3.patch

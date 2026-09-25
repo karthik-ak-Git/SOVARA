@@ -58,33 +58,49 @@ This platform is built to demonstrate:
 
 ## 🚀 How to Use
 
-### True Local Execution (Windows Only)
-Unlocks the full autonomous experience with local file editing and hardware-optimized AI models.
+### True Local Execution (Windows x64)
+
+Sovara is a desktop-only application. The installer packages the Electron app, the ConPTY terminal resources, and the pinned llama.cpp CUDA runtime. The app does not require Python, LM Studio, Ollama, or a separate Node.js runtime after installation.
 
 **Method A: Direct Download (Easiest)**
+
 👉 **[Download the .exe from our Release Page](https://github.com/karthik-ak-Git/SOVARA/releases/tag/Sovara-versions)**
 
-**Method B: 1-Line PowerShell Install**
-Open PowerShell and run:
+**Method B: Node.js / npx Installer**
+
+If Node.js is installed on your Windows x64 machine, run:
+
+```powershell
+npx --yes sovara@latest
+```
+
+The command downloads the latest Sovara Windows installer, verifies its SHA-256 digest when GitHub provides one, and launches setup. Node.js is required only for this installation method; it is not required by the installed desktop application.
+
+**Method C: PowerShell Install**
+
 ```powershell
 iwr -useb https://raw.githubusercontent.com/karthik-ak-Git/SOVARA/main/install.ps1 | iex
 ```
 
-**Method C: Node.js / NPM Install**
-If you have Node.js installed, simply run:
-```bash
-npx --yes sovara@latest
-```
+## Automatic updates
 
-*(Both methods will automatically fetch the latest optimized `.exe` from GitHub and launch the installer).*
+Sovara checks the configured stable or beta GitHub release at startup and every six hours when **Automatic Updates** is enabled. It downloads the verified Windows installer in the background and exposes **Restart & Install** in Settings → General when the update is ready.
+
+A local build is not available to existing installations until the installer, blockmap, and `latest.yml` are uploaded to the same `Sovara-versions` GitHub release. Stable releases use `latest.yml`; beta releases use `latest-beta.yml` and can be built with `pnpm build:win:beta`. Windows code signing is still required for a warning-free SmartScreen experience.
 
 ## 🧠 How Hardware Optimization Works
 
-| Hardware Detected | Model Quantization | Status |
-| :--- | :--- | :--- |
-| **> 8GB VRAM (NVIDIA)** | 8-bit (Q8_0) | 🟢 Maximum Quality |
-| **< 8GB VRAM / CPU** | 4-bit (Q4_K_M) | 🟡 Optimized for Speed |
-| **Apple Silicon (Mac)** | Metal Accelerated | *(Coming Soon)* |
+Sovara detects the GPU independently of the CPU vendor. An AMD Ryzen CPU with an NVIDIA GPU uses the bundled CUDA runtime.
+
+| Hardware detected | Runtime decision |
+| :--- | :--- |
+| **NVIDIA GPU detected** | CUDA `llama-server`; full offload when the model fits |
+| **NVIDIA GPU, model larger than VRAM** | Partial CUDA offload when useful, otherwise CPU/RAM |
+| **AMD/Intel GPU** | CPU/RAM until a matching Vulkan or ROCm runtime is packaged |
+| **No supported GPU** | CPU/RAM mode |
+| **Server-sized NVIDIA GPU** | CUDA with the measured VRAM budget |
+
+The application reports the actual placement after model load. GPU presence alone is never treated as proof of GPU acceleration.
 
 ## 👨‍💻 Author
 

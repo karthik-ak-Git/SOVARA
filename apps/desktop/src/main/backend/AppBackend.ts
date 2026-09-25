@@ -30,8 +30,9 @@ import {
 } from '../services/modelDownloads'
 import { detectModelLocations as detectLocations, type DetectedModelLocation } from '../services/modelLocations'
 import { downloadRowId } from '../config/RuntimeConfigStore'
+import { DEFAULT_UPDATE_FEED_URL } from '../services/updateFeed'
 
-export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
+export { DEFAULT_UPDATE_FEED_URL }
 
 export interface AppBackendPorts {
   persistence: PersistencePort

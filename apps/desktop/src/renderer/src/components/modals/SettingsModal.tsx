@@ -43,6 +43,8 @@ import {
   getAppSettings,
   setAppSettings,
   checkForUpdatesNow,
+  installDownloadedUpdate,
+  onUpdateEvent,
   getExecMode,
   setExecMode,
   listSessions,
@@ -82,6 +84,7 @@ import {
   type DownloadEventView,
   type AppSettingsState,
   type UpdateCheckView,
+  type UpdateEventView,
   type ExecMode,
   type SessionHeaderView,
   type McpServerView,
@@ -238,6 +241,7 @@ export function SettingsModal({
   // Updates & Feeds
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateResult, setUpdateResult] = useState<UpdateCheckView | null>(null)
+  const [updateEvent, setUpdateEvent] = useState<UpdateEventView | null>(null)
   const [feedDraft, setFeedDraft] = useState<string | null>(null)
 
   // Sessions: Both Active & Archived
@@ -384,6 +388,18 @@ export function SettingsModal({
     }
   }, [open, refreshSessionsData])
 
+  useEffect(() => onUpdateEvent((event) => {
+    setUpdateEvent(event)
+    if (event.status === 'current' || event.status === 'available' || event.status === 'error') {
+      setUpdateResult({
+        status: event.status === 'error' ? 'error' : event.status === 'current' ? 'current' : 'available',
+        current: event.current,
+        latest: event.latest,
+        message: event.message,
+      })
+    }
+  }), [])
+
   const hwRamGB = hwProfile ? Math.round(hwProfile.totalRamMB / 1024) : 16
   const hwFreeRamGB = hwProfile ? (hwProfile.freeRamMB / 1024).toFixed(1) : '8.0'
   const hwVramGB = hwProfile?.totalVramMB ? (hwProfile.totalVramMB / 1024).toFixed(1) : undefined
@@ -487,7 +503,7 @@ export function SettingsModal({
     } catch {
       setUpdateResult({
         status: 'error',
-        current: appSettings?.version ?? appInfo?.version ?? '1.1.0',
+        current: appSettings?.version ?? appInfo?.version ?? '1.1.1',
         latest: null,
         message: 'Failed to connect to update feed.',
       })
@@ -1024,7 +1040,7 @@ export function SettingsModal({
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span className="settings-info-chip">{appInfo?.version ?? appSettings?.version ?? '1.1.0'}</span>
+                      <span className="settings-info-chip">{appInfo?.version ?? appSettings?.version ?? '1.1.1'}</span>
                       <span className="settings-info-badge">
                         {appSettings?.updateChannel === 'beta' ? 'Beta' : 'Stable'}
                       </span>
@@ -1035,7 +1051,7 @@ export function SettingsModal({
                     <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Automatic Updates</div>
                       <div className="settings-modal-row-desc">
-                        Check for new releases in the background and notify when ready to install.
+                        Check at startup and every 6 hours, download verified updates in the background, and restart only when you choose.
                       </div>
                     </div>
                     <button
@@ -1070,10 +1086,11 @@ export function SettingsModal({
                     <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Check for Updates</div>
                       <div className="settings-modal-row-desc">
-                        {updateResult?.message ??
+                        {updateEvent?.message ??
+                          updateResult?.message ??
                           (appSettings?.lastUpdateCheckAt
                             ? `Last checked ${new Date(appSettings.lastUpdateCheckAt).toLocaleTimeString()}`
-                            : 'No checks executed yet.')}
+                            : 'Sovara checks at startup and every 6 hours when enabled.')}
                       </div>
                     </div>
                     <button
@@ -1082,7 +1099,7 @@ export function SettingsModal({
                       onClick={() => void handleCheckUpdates()}
                       disabled={checkingUpdate}
                     >
-                      {checkingUpdate ? (
+                      {checkingUpdate || updateEvent?.status === 'checking' ? (
                         <>
                           <RefreshCw size={13} className="spin" />
                           <span>Checking…</span>
@@ -1093,11 +1110,27 @@ export function SettingsModal({
                     </button>
                   </div>
 
+                  {updateEvent?.status === 'downloaded' ? (
+                    <div className="settings-modal-row">
+                      <div className="settings-modal-row-info">
+                        <div className="settings-modal-row-label">Update Ready</div>
+                        <div className="settings-modal-row-desc">{updateEvent.message}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="settings-btn-action"
+                        onClick={() => void installDownloadedUpdate()}
+                      >
+                        Restart &amp; Install
+                      </button>
+                    </div>
+                  ) : null}
+
                   <div className="settings-modal-row">
                     <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Update Feed URL</div>
                       <div className="settings-modal-row-desc">
-                        Custom GitHub Releases feed or update mirror. Leave blank for default feed.
+                        Optional electron-builder latest.yml URL. Leave the default GitHub Releases feed for automatic NSIS updates.
                       </div>
                     </div>
                   </div>
@@ -1105,7 +1138,7 @@ export function SettingsModal({
                     <input
                       className="settings-input"
                       type="url"
-                      placeholder="https://api.github.com/repos/karthik-ak-Git/SOVARA/releases"
+                      placeholder="https://github.com/karthik-ak-Git/SOVARA/releases/latest/download/latest.yml"
                       value={feedDraft ?? appSettings?.updateFeedUrl ?? ''}
                       onChange={(e) => setFeedDraft(e.target.value)}
                       onBlur={() => {
@@ -2360,7 +2393,7 @@ export function SettingsModal({
                     <div className="settings-modal-row-info">
                       <div className="settings-modal-row-label">Application Version</div>
                     </div>
-                    <span className="settings-info-chip">{appInfo?.version ?? '1.1.0'}</span>
+                    <span className="settings-info-chip">{appInfo?.version ?? '1.1.1'}</span>
                   </div>
                   <div className="settings-modal-row">
                     <div className="settings-modal-row-info">

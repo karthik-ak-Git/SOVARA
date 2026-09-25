@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
-import { getFullHardwareProfile, hardwareFingerprint, getHardwareProfile } from '../src/main/services/hardwareProfile'
+import { getFullHardwareProfile, hardwareFingerprint, getHardwareProfile, classifyGpu } from '../src/main/services/hardwareProfile'
 import { analyzeLocalModel, analyzeExploreModel, estimateResources, precheck } from '../src/main/services/modelAnalyzer'
 import { estimateCompatibility, estimateKvCacheGB } from '../src/main/services/hardwareCheck'
+import { estimateExplorerFit } from '../src/main/services/explorerFit'
 import { ValidationRunner, StubRuntimeAdapter } from '../src/main/services/modelValidationRunner'
 import { ValidationStore } from '../src/main/services/validationStore'
 import type { HardwareProfileFull } from '../src/shared/types/validation'
@@ -32,6 +33,46 @@ describe('MODEL_HARDWARE_VALIDATION — acceptance criteria', () => {
     expect(simple.totalRamMB).toBe(hw.memory.ram_total_mb)
   })
 
+  it('does not advertise GPU fit for an AMD adapter unsupported by the owned runtime', () => {
+    const model = { id: 'org/7b', name: '7b', slug: 'org/7b', author: 'org', description: '', longDescription: '', downloads: 0, likes: 0, staffPick: false, updatedAt: new Date().toISOString(), parameters: '7B', architecture: 'llama', capabilities: [], files: [{ format: 'GGUF', sizeGB: 4.5, downloadUrl: 'https://huggingface.co/org/7b/resolve/main/a.gguf', rfilename: 'a.gguf', sizeBytes: 4.5 * 1024 ** 3 }], tags: [], iconType: 'hf' as const }
+    const hw = { totalRamMB: 8 * 1024, freeRamMB: 6 * 1024, totalVramMB: 8 * 1024, freeVramMB: 8 * 1024, gpuDetected: true, gpuAvailable: true, gpuVendor: 'AMD' as const, gpuRuntime: 'cpu' as const, gpuName: 'AMD Radeon RX 7800M' }
+    const result = estimateCompatibility(model as any, hw as any, 4096)
+    expect(result.message).toMatch(/CPU|no VRAM|Not enough/i)
+    expect(result.message).not.toMatch(/Fits in VRAM|optimal for fast inference/i)
+
+    const catalogHw = { ...hw, totalRamMB: 16 * 1024, freeRamMB: 12 * 1024 }
+    const fit = estimateExplorerFit(model.files[0] as any, model as any, catalogHw as any, { contextLength: 4096 })
+    expect(fit.fit).toBe('fitWithoutGPU')
+    expect(fit.message).toMatch(/CPU/i)
+    expect(fit.message).not.toMatch(/Full GPU offload/i)
+  })
+
+  it('only advertises NVIDIA CUDA as an available GPU runtime', () => {
+    expect(classifyGpu('NVIDIA GeForce RTX 4060 Laptop GPU', 6144)).toMatchObject({
+      gpuDetected: true,
+      gpuAvailable: true,
+      gpuVendor: 'NVIDIA',
+      gpuRuntime: 'cuda',
+    })
+    expect(classifyGpu('AMD Radeon RX 7800M', 8192)).toMatchObject({
+      gpuDetected: true,
+      gpuAvailable: false,
+      gpuVendor: 'AMD',
+      gpuRuntime: 'cpu',
+    })
+    expect(classifyGpu('Intel Arc Graphics', 4096)).toMatchObject({
+      gpuDetected: true,
+      gpuAvailable: false,
+      gpuVendor: 'Intel',
+      gpuRuntime: 'cpu',
+    })
+    expect(classifyGpu(undefined, undefined)).toMatchObject({
+      gpuDetected: false,
+      gpuAvailable: false,
+      gpuRuntime: 'cpu',
+    })
+  })
+
   it('model profile identifies architecture/format/params/context', () => {
     const p = tmpFile(8)
     const prof = analyzeLocalModel('test/model', p, { architecture: 'llama', parameters: '7B', files: [{ format: 'GGUF', quantization: 'Q4_K_M', sizeGB: 0.008, downloadUrl: '', sizeBytes: 8 * 1024 * 1024 }] } as any)
@@ -39,6 +80,7 @@ describe('MODEL_HARDWARE_VALIDATION — acceptance criteria', () => {
     expect(prof.format).toBe('GGUF')
     expect(prof.fileSizeMB).toBe(8)
     expect(prof.quantization).toBe('Q4_K_M')
+    expect(prof.supportedBackends).toEqual(['CPU', 'CUDA'])
     fs.rmSync(path.dirname(p), { recursive: true, force: true })
   })
 

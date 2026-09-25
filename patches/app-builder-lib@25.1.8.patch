@@ -1,0 +1,19 @@
+diff --git a/out/wine.js b/out/wine.js
+index aeff507552646ea225202aecec784265659a18ca..56c7a1e46e574c563bb5f7563342eacbdb98480d 100644
+--- a/out/wine.js
++++ b/out/wine.js
+@@ -10,7 +10,13 @@ function execWine(file, file64 = null, appArgs = [], options = {}) {
+             // 2 minutes
+             options.timeout = 120 * 1000;
+         }
+-        return (0, builder_util_1.exec)(file, appArgs, options);
++        // Preserve the parent environment on Windows. electron-builder invokes
++        // the partially-built NSIS installer to create its uninstaller, and
++        // passing only __COMPAT_LAYER makes CreateProcess fail with UNKNOWN.
++        return (0, builder_util_1.exec)(file, appArgs, {
++            ...options,
++            env: { ...process.env, ...(options.env || {}) },
++        });
+     }
+     const commandArgs = ["wine", "--ia32", file];
+     if (file64 != null) {

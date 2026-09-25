@@ -92,7 +92,7 @@ export function appendLlamaLog(
  * Runtime dir — %LOCALAPPDATA%\Sovara\runtime (no @, no Roaming).
  * The old dir under Electron userData (…\@sovara\desktop\runtime) contains '@'
  * which trips Windows CreateProcess via Node spawn → UNKNOWN. We migrate
- * forward: new installs go to Local; lookups check new first, then legacy.
+ * forward: new installs go to Local; packaged lookup is preferred, then new, then legacy.
  */
 export function getLlamaRuntimeDir(baseDir?: string): string {
   if (baseDir) return path.join(getSovaraDataDir(baseDir), 'runtime', 'llama.cpp', LLAMA_BUILD)
@@ -107,6 +107,18 @@ export function getLegacyLlamaRuntimeDir(baseDir?: string): string | null {
   try {
     const legacy = path.join(getSovaraDataDir(baseDir), 'runtime', 'llama.cpp', LLAMA_BUILD)
     return legacy === getLlamaRuntimeDir(baseDir) ? null : legacy
+  } catch {
+    return null
+  }
+}
+
+/** Runtime directory shipped inside the Windows installer, when packaged. */
+export function getPackagedLlamaRuntimeDir(): string | null {
+  if (process.platform !== 'win32') return null
+  try {
+    const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    if (!resourcesPath) return null
+    return path.join(resourcesPath, 'llama-runtime')
   } catch {
     return null
   }
@@ -154,6 +166,14 @@ function findExeRecursive(dir: string, depth = 0): string | null {
 /** Absolute llama-server.exe when provisioned, else null (never throws). Checks new dir first, then legacy @-path for migration. */
 export function getLlamaServerPath(baseDir?: string): string | null {
   try {
+    // The installer ships the pinned CUDA runtime under resources/llama-runtime.
+    // Prefer it in packaged mode so a fresh install works without a first-run
+    // download. Tests and development continue to use the user-data runtime.
+    const packaged = baseDir ? null : getPackagedLlamaRuntimeDir()
+    if (packaged && fs.existsSync(packaged)) {
+      const hit = findExeRecursive(packaged)
+      if (hit && !hit.includes('@')) return hit
+    }
     const dir = getLlamaRuntimeDir(baseDir)
     if (fs.existsSync(dir)) {
       const hit = findExeRecursive(dir)
@@ -189,7 +209,7 @@ export function autoUnblockIfNeeded(baseDir?: string): void {
     if (process.platform !== 'win32') return
     const exe = getLlamaServerPath(baseDir)
     if (!exe || !hasZoneIdentifier(exe)) return
-    const dir = getLlamaRuntimeDir(baseDir)
+    const dir = path.dirname(exe)
     // Don't block startup — background unblock
     void unblockRuntimeDir(dir).then((r) => {
       appendLlamaLog(baseDir, 'auto-unblock-motw', { dir, unblocked: r.unblocked, detail: r.detail })

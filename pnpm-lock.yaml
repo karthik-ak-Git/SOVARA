@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  app-builder-lib@25.1.8: efd3ed42cd018df1adf61e9a01526cc350697888877cfb5f0e7d51467125520a
   zod@3.24.3: f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c
 
 importers:
@@ -23,6 +24,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(supports-color@7.2.0)(zod@3.24.3(patch_hash=f3d96efa92c9cf24fc00345aa63402ac5e6deb9e2f8a44594bdbeeba6faef39c))
+      electron-updater:
+        specifier: ^6.8.9
+        version: 6.8.9(supports-color@7.2.0)
       lucide-react:
         specifier: 0.511.0
         version: 0.511.0(react@18.3.1)
@@ -1132,6 +1136,10 @@ packages:
     resolution: {integrity: sha512-6p/gfG1RJSQeIbz8TK5aPNkoztgY1q5TgmGFMAXcY8itsGW6Y2ld1ALsZ5UJn8rog7hKF3zHx5iQbNQ8uLcRlw==}
     engines: {node: '>=12.0.0'}
 
+  builder-util-runtime@9.7.0:
+    resolution: {integrity: sha512-g/kR520giAFYkSXTzcmF3kqQq7wi8F6N6SzeDgZrqTBN+VHdmgWOyTdD1yD7AATDId/yXLvuP34CxW46/BwCdw==}
+    engines: {node: '>=12.0.0'}
+
   builder-util@25.1.7:
     resolution: {integrity: sha512-7jPjzBwEGRbwNcep0gGNpLXG9P94VA3CPAZQCzxkFXiV2GMQKlziMbY//rXPI7WKfhsvGgFXjTcXdBEwgXw9ww==}
 
@@ -1470,6 +1478,9 @@ packages:
 
   electron-to-chromium@1.5.422:
     resolution: {integrity: sha512-UvA/32XqrLDdZSn7Jllo1AYNcWji/G0d5M0GTViE7KoGBiMunw3a34Sb2KO4ZZyrSEhqsxFoVhWWJshdyfKqJA==}
+
+  electron-updater@6.8.9:
+    resolution: {integrity: sha512-ZhVxM9iGONUpZGI1FxdMRgJjUFXi7AYGVa5PwKlO1tV1/4zDxQmfKpXOHVztKrd6L9rLcFjERvi1Mf2vxyTkig==}
 
   electron-vite@3.1.0:
     resolution: {integrity: sha512-M7aAzaRvSl5VO+6KN4neJCYLHLpF/iWo5ztchI/+wMxIieDZQqpbCYfaEHHHPH6eupEzfvZdLYdPdmvGqoVe0Q==}
@@ -2021,8 +2032,15 @@ packages:
   lodash.difference@4.5.0:
     resolution: {integrity: sha512-dS2j+W26TQ7taQBGN8Lbbq04ssV3emRw4NY58WErlTO29pIqS0HmoT5aJ9+TUQ1N3G+JOZSji4eugsWwGp9yPA==}
 
+  lodash.escaperegexp@4.1.2:
+    resolution: {integrity: sha512-TM9YBvyC84ZxE3rgfefxUWiQKLilstD6k7PTGt6wfbtXF8ixIJLOL3VYyV/z+ZiPLsVxAsKAFVwWlWeb2Y8Yyw==}
+
   lodash.flatten@4.4.0:
     resolution: {integrity: sha512-C5N2Z3DgnnKr0LOpv/hKCgKdb7ZZwafIrsesve6lmzvZIRZRGaZ/l6Q8+2W7NaT+ZwO3fFlSCzCzrDCFdJfZ4g==}
+
+  lodash.isequal@4.5.0:
+    resolution: {integrity: sha512-pDo3lu8Jhfjqls6GkMgpahsF9kCyayhgykjyLMNFTKWrpVdAQtYyB4muAMWozBB4ig/dtWAmsMxLEI8wuz+DYQ==}
+    deprecated: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 
   lodash.isplainobject@4.0.6:
     resolution: {integrity: sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA==}
@@ -2620,6 +2638,11 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
+  semver@7.7.4:
+    resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
@@ -2833,6 +2856,9 @@ packages:
 
   three@0.186.0:
     resolution: {integrity: sha512-cr/fIM2ddMSVbYVgkfD4jLJv7Fh/8ZTjvo+7gQeSVGUZHxpx9FDwoL5iC7hUz/LiRA8wMbqfnb90xKfm1/HHkQ==}
+
+  tiny-typed-emitter@2.1.0:
+    resolution: {integrity: sha512-qVtvMxeXbVej0cQWKqVSSAHmKZEHAvxdF8HEUBFWts8h+xEo5m/lEiPakuyZ3BnCBjOD8i24kzNOiOLLgsSxhA==}
 
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
@@ -3988,7 +4014,7 @@ snapshots:
 
   app-builder-bin@5.0.0-alpha.10: {}
 
-  app-builder-lib@25.1.8(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
+  app-builder-lib@25.1.8(patch_hash=efd3ed42cd018df1adf61e9a01526cc350697888877cfb5f0e7d51467125520a)(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
       '@develar/schema-utils': 2.6.5
       '@electron/notarize': 2.5.0(supports-color@7.2.0)
@@ -4167,6 +4193,13 @@ snapshots:
       ieee754: 1.2.1
 
   builder-util-runtime@9.2.10(supports-color@7.2.0):
+    dependencies:
+      debug: 4.4.3(supports-color@7.2.0)
+      sax: 1.6.1
+    transitivePeerDependencies:
+      - supports-color
+
+  builder-util-runtime@9.7.0(supports-color@7.2.0):
     dependencies:
       debug: 4.4.3(supports-color@7.2.0)
       sax: 1.6.1
@@ -4484,7 +4517,7 @@ snapshots:
 
   dmg-builder@25.1.8(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(patch_hash=efd3ed42cd018df1adf61e9a01526cc350697888877cfb5f0e7d51467125520a)(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       builder-util: 25.1.7(supports-color@7.2.0)
       builder-util-runtime: 9.2.10(supports-color@7.2.0)
       fs-extra: 10.1.0
@@ -4535,7 +4568,7 @@ snapshots:
 
   electron-builder-squirrel-windows@25.1.8(bluebird@3.7.2)(dmg-builder@25.1.8)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(patch_hash=efd3ed42cd018df1adf61e9a01526cc350697888877cfb5f0e7d51467125520a)(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       archiver: 5.3.2
       builder-util: 25.1.7(supports-color@7.2.0)
       fs-extra: 10.1.0
@@ -4546,7 +4579,7 @@ snapshots:
 
   electron-builder@25.1.8(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0):
     dependencies:
-      app-builder-lib: 25.1.8(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
+      app-builder-lib: 25.1.8(patch_hash=efd3ed42cd018df1adf61e9a01526cc350697888877cfb5f0e7d51467125520a)(bluebird@3.7.2)(dmg-builder@25.1.8)(electron-builder-squirrel-windows@25.1.8)(supports-color@7.2.0)
       builder-util: 25.1.7(supports-color@7.2.0)
       builder-util-runtime: 9.2.10(supports-color@7.2.0)
       chalk: 4.1.2
@@ -4574,6 +4607,19 @@ snapshots:
       - supports-color
 
   electron-to-chromium@1.5.422: {}
+
+  electron-updater@6.8.9(supports-color@7.2.0):
+    dependencies:
+      builder-util-runtime: 9.7.0(supports-color@7.2.0)
+      fs-extra: 10.1.0
+      js-yaml: 4.3.2
+      lazy-val: 1.0.5
+      lodash.escaperegexp: 4.1.2
+      lodash.isequal: 4.5.0
+      semver: 7.7.4
+      tiny-typed-emitter: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
 
   electron-vite@3.1.0(supports-color@7.2.0)(vite@6.4.3(@types/node@22.20.1)):
     dependencies:
@@ -5211,7 +5257,11 @@ snapshots:
 
   lodash.difference@4.5.0: {}
 
+  lodash.escaperegexp@4.1.2: {}
+
   lodash.flatten@4.4.0: {}
+
+  lodash.isequal@4.5.0: {}
 
   lodash.isplainobject@4.0.6: {}
 
@@ -5881,6 +5931,8 @@ snapshots:
 
   semver@6.3.1: {}
 
+  semver@7.7.4: {}
+
   semver@7.8.5: {}
 
   send@1.2.1(supports-color@7.2.0):
@@ -6144,6 +6196,8 @@ snapshots:
       fs-extra: 10.1.0
 
   three@0.186.0: {}
+
+  tiny-typed-emitter@2.1.0: {}
 
   tinybench@2.9.0: {}
 

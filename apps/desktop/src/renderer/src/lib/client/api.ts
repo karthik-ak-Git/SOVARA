@@ -409,6 +409,14 @@ export interface UpdateCheckView {
   message: string
 }
 
+export interface UpdateEventView {
+  status: 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'current' | 'error'
+  current: string
+  latest: string | null
+  message: string
+  percent?: number
+}
+
 export async function getAppSettings(): Promise<AppSettingsState> {
   return ipcInvoke('settings:get')
 }
@@ -419,6 +427,17 @@ export async function setAppSettings(patch: AppSettingsPatch): Promise<AppSettin
 
 export async function checkForUpdatesNow(): Promise<UpdateCheckView> {
   return ipcInvoke('updates:checkNow')
+}
+
+export async function installDownloadedUpdate(): Promise<void> {
+  await ipcInvoke('updates:install')
+}
+
+export function onUpdateEvent(callback: (event: UpdateEventView) => void): () => void {
+  return window.sovara.on('updates:event', (...args) => {
+    const event = args[0] as UpdateEventView | undefined
+    if (event) callback(event)
+  })
 }
 
 export async function minimizeWindow(): Promise<void> {

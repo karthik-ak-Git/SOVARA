@@ -24,7 +24,7 @@ import {
   zStudioPermissionsSet,
   zStudioVersionSave,
 } from '../services/agentStudio'
-import { checkForUpdates } from '../services/updateFeed'
+import { checkForUpdatesWithManager, installDownloadedUpdate, startAutomaticUpdates, syncUpdateManager, type UpdateEvent } from '../services/updateManager'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
@@ -58,6 +58,19 @@ function broadcastDownload(event: import('../services/modelDownloads').DownloadE
     if (!win.isDestroyed()) {
       try {
         win.webContents.send('events:download', event)
+      } catch {
+        // ignore dead renderers
+      }
+    }
+  }
+}
+
+/** Push update state to Settings → General without exposing Electron updater APIs to the renderer. */
+function broadcastUpdate(event: UpdateEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      try {
+        win.webContents.send('updates:event', event)
       } catch {
         // ignore dead renderers
       }
@@ -499,7 +512,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('settings:set', async (_e, raw: unknown) => {
     const parsed = zSettingsSet.safeParse(raw ?? {})
     if (!parsed.success) throw new Error(`invalid settings payload: ${parsed.error.message}`)
-    return { ...getBackend().setAppSettings(parsed.data), version: getBackend().getAppVersion() }
+    const settings = getBackend().setAppSettings(parsed.data)
+    syncUpdateManager(settings)
+    if (settings.autoUpdates && (
+      parsed.data.autoUpdates !== undefined ||
+      parsed.data.updateChannel !== undefined ||
+      parsed.data.updateFeedUrl !== undefined
+    )) {
+      void checkForUpdatesWithManager(settings)
+    }
+    return { ...settings, version: getBackend().getAppVersion() }
   })
 
   ipcMain.handle('app:getVersion', async () => {
@@ -509,9 +531,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('updates:checkNow', async () => {
     const backend = getBackend()
     const settings = backend.getAppSettings()
-    const result = await checkForUpdates(settings.updateFeedUrl, backend.getAppVersion())
+    const result = await checkForUpdatesWithManager(settings)
     backend.recordUpdateCheck(result.status)
     return result
+  })
+
+  ipcMain.handle('updates:install', async () => {
+    installDownloadedUpdate()
+    return { ok: true }
   })
 
   // ── Exec permissions — the AI command levels, enforced on every dispatch ──
@@ -1220,4 +1247,8 @@ export function registerIpcHandlers(): void {
     if (!parsed.success) throw new Error(`invalid agents:permissions:set payload: ${parsed.error.message}`)
     return getStudioStore().setPermissions(parsed.data.agentId, parsed.data.patch)
   })
+}
+
+export function startAppUpdateChecks(): void {
+  startAutomaticUpdates(() => getBackend().getAppSettings(), broadcastUpdate)
 }

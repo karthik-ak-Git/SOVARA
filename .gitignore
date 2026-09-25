@@ -66,3 +66,5 @@ sovara-newui/
 
 # Local llama runtime binaries
 runtime/
+apps/desktop/resources/runtime/
+apps/desktop/resources/runtime-cache/

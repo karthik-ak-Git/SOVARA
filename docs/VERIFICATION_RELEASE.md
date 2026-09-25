@@ -1,9 +1,8 @@
-# Sovara Desktop Verification and Release
+# Release Verification
 
-**Status:** Release gate  
-**Target:** Windows x64 desktop installer
+This is the release checklist for the Windows x64 desktop application.
 
-## Required checks
+## Automated checks
 
 Run from the repository root:
 
@@ -13,46 +12,72 @@ pnpm --filter @sovara/desktop test
 pnpm --filter @sovara/desktop build
 ```
 
-For a packaging check:
+Focused hardware and runtime checks:
+
+```powershell
+pnpm --filter @sovara/desktop exec vitest run tests/hardware-sandbox/hardware-sandbox.test.ts
+pnpm --filter @sovara/desktop exec vitest run tests/llama.runtime.test.ts
+pnpm --filter @sovara/desktop exec vitest run tests/model.lifecycle.test.ts
+```
+
+## Windows package check
 
 ```powershell
 pnpm --filter @sovara/desktop build:win:dir
 ```
 
-## Focused regression checks
+The build stages the pinned llama.cpp CUDA runtime and the ConPTY resources before packaging. Inspect `apps/desktop/dist/` and confirm the unpacked application contains:
 
-```powershell
-pnpm --filter @sovara/desktop exec vitest run tests/sovereignty.test.ts
-pnpm --filter @sovara/desktop exec vitest run tests/attachments.artifacts.test.ts
-pnpm --filter @sovara/desktop exec vitest run tests/llama.runtime.test.ts
+- `llama-server.exe` and CUDA DLLs under packaged `llama-runtime`;
+- `pty/node-pty` native files;
+- compiled main, preload, and renderer files;
+- no Python runtime or application-owned Python sidecar.
+
+## Clean-machine checks
+
+- Install from the `.exe` on a clean Windows user profile.
+- Launch without Python, pip, LM Studio, or Ollama installed.
+- Confirm a model can be downloaded and loaded locally.
+- Confirm NVIDIA systems report CUDA and GPU layers.
+- Confirm CPU-only systems report CPU/RAM honestly.
+- Confirm partial offload is labelled partial.
+- Confirm unload releases the process without deleting weights.
+
+## Installer check
+
+The `npx --yes sovara@latest` command must:
+
+1. fetch the pinned Sovara release;
+2. select the Windows installer asset;
+3. download it to a temporary path;
+4. verify the release digest when GitHub provides one;
+5. launch the installer without a shell command string.
+
+## Automatic updates
+
+Sovara uses `electron-updater` with a GitHub Releases provider. The app checks at startup and every six hours when **Automatic Updates** is enabled, downloads the new NSIS package in the background, and exposes **Restart & Install** in Settings → General after the download is verified.
+
+For a release, upload these files together to the `Sovara-versions` GitHub release:
+
+```text
+Sovara-Setup-1.1.1-x64.exe
+Sovara-Setup-1.1.1-x64.exe.blockmap
+latest.yml
 ```
 
-## Clean-install checks
+The release must contain the versioned installer, its blockmap, and `latest.yml`. The `npx --yes sovara@latest` installer and the in-app updater must point at the same release. Beta builds use `latest-beta.yml` and the `build:win:beta` command.
 
-- Uninstall the prior Sovara package or use a fresh Windows user data directory.
-- Confirm the app window opens without Python, pip, a browser download, or a web companion.
-- Confirm Settings contains Preferences but no theme picker, Python engine, voice, or OCR controls.
-- Confirm the renderer uses a light background and native controls use light color scheme.
-- Load a model on an AMD Ryzen system with an NVIDIA GPU. Verify the hardware panel names the GPU and the runtime log reports GPU layers rather than silently claiming CPU placement.
-- Test CPU-only fallback with no NVIDIA driver and confirm the UI reports CPU/shared-memory mode honestly.
+The updater is skipped in unpackaged development builds. A production build also needs a Windows code-signing certificate before release; unsigned builds can update, but Windows SmartScreen may warn users.
 
-## Packaged resource gate
+## Physical hardware matrix
 
-The installer must not contain:
+Validate at least one machine in each available class:
 
-- `resources/python`
-- `whisper_server.py`
-- `crawl_server.py`
-- Python virtual environments
-- a Vercel/Next.js web application
+- CPU-only laptop;
+- NVIDIA laptop;
+- Ryzen CPU + NVIDIA GPU;
+- NVIDIA workstation;
+- CPU-only server;
+- NVIDIA server.
 
-The application may still use Python indirectly as a native-build prerequisite of `node-gyp`; that is a build-time tool requirement, not a shipped runtime or application script.
-
-## Release notes template
-
-- Sovara now ships as a desktop-only application.
-- The web deployment and local web companion have been removed.
-- Python sidecars, voice transcription, OCR sidecar paths, and Python provisioning are no longer part of the product.
-- The renderer uses a single light visual system.
-- Local model routing reports NVIDIA/CPU placement more reliably on Windows.
-- Web search remains available through an explicit TypeScript-only adapter.
+Do not claim a hardware range is verified from unit tests alone. Record the actual runtime path, `-ngl`, backend, readiness, inference, and observed VRAM.

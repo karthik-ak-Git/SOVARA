@@ -9,8 +9,16 @@ directories:
 files:
   - out/**/*
   - package.json
+  # node-pty ships Python build/debug helpers that are not runtime dependencies.
+  - '!node_modules/node-pty/**/*.py'
+  - '!node_modules/node-pty/deps/**/*.py'
 
 extraResources:
+  # Pinned llama.cpp CUDA runtime staged by scripts/prepare-package-runtime.mjs
+  - from: resources/runtime
+    to: llama-runtime
+    filter:
+      - "**/*"
   # node-llama-cpp prebuilt binaries — bundled like Ollama, no Toolkit needed at runtime
   - from: node_modules/node-llama-cpp/llama
     to: llama
@@ -44,4 +52,12 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: Sovara
 
-publish: null
+artifactName: Sovara-Setup-${version}-${arch}.${ext}
+
+publish:
+  provider: github
+  owner: karthik-ak-Git
+  repo: SOVARA
+  releaseType: release
+  # Upload the generated latest.yml with the installer to the Sovara-versions release.
+  # The application updater uses this metadata for verified NSIS downloads.

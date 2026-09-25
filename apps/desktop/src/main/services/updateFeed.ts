@@ -8,6 +8,10 @@
  * installs anything; it only reports current / available / error.
  */
 
+import { APP_VERSION } from '@shared/constants'
+
+export const DEFAULT_UPDATE_FEED_URL = 'https://api.github.com/repos/karthik-ak-Git/SOVARA/releases'
+
 export type UpdateCheckStatus = 'current' | 'available' | 'no-feed' | 'error'
 
 export interface UpdateCheckResult {
@@ -24,7 +28,7 @@ type FetchFn = (url: string, init?: { signal?: AbortSignal; headers?: Record<str
 }>
 
 /** GitHub's API rejects requests without a User-Agent (HTTP 403). */
-const FEED_USER_AGENT = 'sovara-desktop/1.1.0'
+const FEED_USER_AGENT = `sovara-desktop/${APP_VERSION}`
 
 function normalizeVersion(v: unknown): string | null {
   if (typeof v !== 'string') return null

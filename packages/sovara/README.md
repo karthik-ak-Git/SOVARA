@@ -1,23 +1,19 @@
-# Sovara Installer
+# Sovara Windows installer
 
-This package provides a 1-line CLI installer for **Sovara**, an autonomous local-first AI coding companion.
+`sovara` is a small Node.js CLI installer. It downloads the latest Windows release asset, verifies its SHA-256 digest when GitHub provides one, and launches the setup wizard.
 
 ## Usage
 
-**Do not use `npm install sovara`.** This is a standalone CLI installer meant to be executed directly via `npx`.
-
-To download and launch the Sovara installer, simply run:
-
-```bash
+```powershell
 npx --yes sovara@latest
 ```
 
-This will automatically:
-1. Fetch the latest release data for Sovara.
-2. Download the `Sovara.Setup.exe` (with a progress bar).
-3. Launch the setup wizard on your Windows machine.
+The command:
 
-## About Sovara
-SOVARA is an on-premise, offline-first AI workbench designed for confidential industrial work and agentic coding. It gives you a powerful LLM assistant that can read, write, and execute code directly on your local filesystem—without sending your intellectual property to the cloud.
+1. Fetches the `Sovara-versions` release metadata.
+2. Selects the Sovara Windows `.exe` installer.
+3. Downloads it to a temporary directory.
+4. Verifies the release digest when available.
+5. Launches the installer directly without a shell command string.
 
-For more information, visit our [GitHub Repository](https://github.com/karthik-ak-Git/SOVARA).
+Sovara requires Windows x64. Node.js is needed only for this installer command; the installed desktop application does not require Python, LM Studio, Ollama, or a separate Node.js runtime.

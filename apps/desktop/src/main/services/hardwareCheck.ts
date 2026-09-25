@@ -16,6 +16,13 @@ export interface CompatibilityOptions {
 
 const DEFAULT_N_CTX = 4096
 
+function hasOwnedGpuRuntime(hw: HardwareInfo): boolean {
+  // The current owned Windows runtime is CUDA + CPU. Keep the optional field
+  // backward-compatible with older test/catalog fixtures that only supplied
+  // gpuAvailable, but never treat a detected AMD/Intel adapter as CUDA.
+  return hw.gpuAvailable && (hw.gpuRuntime === 'cuda' || (hw.gpuRuntime === undefined && (hw.gpuVendor === undefined || hw.gpuVendor === 'NVIDIA')))
+}
+
 /**
  * KV cache estimate: ~0.42GB per 1k tokens for 7B, scales with params.
  * 2048 → 0.8GB (7B) / 1.8GB (20B), 4096 → 1.7GB / 3.6GB
@@ -69,7 +76,7 @@ export function estimateCompatibility(
       const totalVramGB = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
       const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
       const totalRamGB = hw.totalRamMB / 1024
-      if (hw.gpuAvailable && totalVramGB) {
+      if (hasOwnedGpuRuntime(hw) && totalVramGB) {
         if (need > totalVramGB) {
           // Isolated: check RAM separately — no summing
           if (need <= totalRamGB) {
@@ -107,7 +114,7 @@ export function estimateCompatibility(
   const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
 
   // GPU path — isolated VRAM check, no RAM summing
-  if (hw.gpuAvailable && totalVramGB) {
+  if (hasOwnedGpuRuntime(hw) && totalVramGB) {
     if (estimatedNeedGB > totalVramGB) {
       // Too large for VRAM — can it still run on RAM (CPU/partial offload)?
       if (estimatedNeedGB <= totalRamGB) {
@@ -220,7 +227,7 @@ function severityForFile(
   const freeVramGB = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
   const totalRamGB = hw.totalRamMB / 1024
   const freeRamGB = hw.freeRamMB / 1024
-  if (hw.gpuAvailable && totalVramGB) {
+  if (hasOwnedGpuRuntime(hw) && totalVramGB) {
     if (need > totalVramGB) {
       // Isolated: does it at least fit in RAM? then tight (partial), else too-large
       if (need <= totalRamGB) return { severity: 'tight', estimatedRamGB: need, fits: true }
@@ -266,7 +273,7 @@ export function recommendFiles(
         const vram = hw.totalVramMB ? hw.totalVramMB / 1024 : undefined
         const freeV = hw.freeVramMB ? hw.freeVramMB / 1024 : undefined
         const totalRamGB = hw.totalRamMB / 1024
-        if (hw.gpuAvailable && vram) {
+        if (hasOwnedGpuRuntime(hw) && vram) {
           if (need > vram) return need <= totalRamGB ? 'tight' : 'too-large'
           if (freeV !== undefined && need > freeV * 0.92) return 'tight'
           if (freeV === undefined && need > vram * 0.88) return 'tight'

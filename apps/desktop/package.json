@@ -1,6 +1,6 @@
 {
   "name": "@sovara/desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Sovara — Sovereign AI Desktop Workbench (Phase 1 foundation)",
   "type": "module",
@@ -10,13 +10,16 @@
     "dev": "electron-vite dev -w",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
-    "build:win": "electron-vite build && electron-builder --win --x64",
-    "build:win:dir": "electron-vite build && electron-builder --win --x64 --dir",
+    "prepare:package-runtime": "node scripts/prepare-package-runtime.mjs",
+    "build:win": "pnpm run prepare:package-runtime && electron-vite build && electron-builder --win --x64",
+    "build:win:beta": "pnpm run prepare:package-runtime && electron-vite build && electron-builder --win --x64 --config.publish.channel=beta",
+    "build:win:dir": "pnpm run prepare:package-runtime && electron-vite build && electron-builder --win --x64 --dir",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "0.511.0",
     "node-addon-api": "^8.9.2",
     "node-llama-cpp": "^3.20.0",

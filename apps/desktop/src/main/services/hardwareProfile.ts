@@ -3,6 +3,44 @@ import fs from 'node:fs'
 import { execSync, execFileSync } from 'node:child_process'
 import type { HardwareInfo } from '@shared/types/explore'
 
+type GpuVendor = NonNullable<HardwareInfo['gpuVendor']>
+type GpuRuntime = NonNullable<HardwareInfo['gpuRuntime']>
+
+export interface GpuClassification {
+  gpuDetected: boolean
+  gpuAvailable: boolean
+  gpuVendor: GpuVendor
+  gpuRuntime: GpuRuntime
+}
+
+/**
+ * Classify a detected adapter without pretending that every GPU can use the
+ * current runtime. Sovara's owned Windows build is CUDA + CPU today; AMD and
+ * Intel adapters therefore remain detected but route to CPU unless a matching
+ * runtime is added later.
+ */
+export function classifyGpu(name: string | undefined, totalVramMB: number | undefined): GpuClassification {
+  const gpuName = String(name ?? '').trim()
+  const lower = gpuName.toLowerCase()
+  const hasName = gpuName.length > 0
+  const hasVram = typeof totalVramMB === 'number' && Number.isFinite(totalVramMB) && totalVramMB >= 1024
+  const gpuDetected = hasName && hasVram
+
+  let gpuVendor: GpuVendor = 'Unknown'
+  if (lower.includes('nvidia') || lower.includes('geforce') || lower.includes('quadro') || lower.includes('tesla') || lower.includes('rtx')) gpuVendor = 'NVIDIA'
+  else if (lower.includes('amd') || lower.includes('radeon') || lower.includes('advanced micro devices')) gpuVendor = 'AMD'
+  else if (lower.includes('intel') || lower.includes('arc graphics')) gpuVendor = 'Intel'
+  else if (lower.includes('apple')) gpuVendor = 'Apple'
+
+  const gpuRuntime: GpuRuntime = gpuDetected && gpuVendor === 'NVIDIA' ? 'cuda' : 'cpu'
+  return {
+    gpuDetected,
+    gpuAvailable: gpuRuntime === 'cuda',
+    gpuVendor,
+    gpuRuntime,
+  }
+}
+
 function tryStorage(): { freeGB?: number; totalGB?: number } {
   try {
     const s = fs.statfsSync(process.cwd())
@@ -127,18 +165,21 @@ export function getHardwareProfile(): HardwareInfo {
   // WMIC can report AdapterRAM as signed 32-bit; large VRAM wraps negative — clamp without fabricating free
   if (totalVramMB !== undefined && totalVramMB < 0) totalVramMB = Math.abs(totalVramMB)
   // Do NOT synthesize freeVramMB when nvidia-smi unavailable: keep undefined so callers show estimation-only warning
-  // Filter integrated GPUs with tiny VRAM (< 1GB) — treat as CPU-only
-  const isDedicated = totalVramMB !== undefined && totalVramMB >= 1024
-  const gpuAvailable = Boolean(isDedicated && gpu?.name)
+  const gpuClass = classifyGpu(gpu?.name, totalVramMB)
+  const gpuDetected = gpuClass.gpuDetected
+  const gpuAvailable = gpuClass.gpuAvailable
 
   const storage = tryStorage()
   return {
     totalRamMB,
     freeRamMB,
-    totalVramMB: isDedicated ? totalVramMB : undefined,
-    freeVramMB: isDedicated ? freeVramMB : undefined,
+    totalVramMB: gpuDetected ? totalVramMB : undefined,
+    freeVramMB: gpuDetected ? freeVramMB : undefined,
     gpuName: gpu?.name,
+    gpuDetected,
     gpuAvailable,
+    gpuVendor: gpuClass.gpuVendor,
+    gpuRuntime: gpuClass.gpuRuntime,
     gpuUtilization: gpuAvailable ? gpuUtil : undefined,
     storageFreeGB: storage.freeGB,
     storageTotalGB: storage.totalGB,
@@ -148,6 +189,9 @@ export function getHardwareProfile(): HardwareInfo {
 export function getVramAwareCompatibilityMessage(hw: HardwareInfo): string {
   if (hw.gpuAvailable && hw.totalVramMB) {
     return `VRAM: ${Math.round(hw.totalVramMB / 1024)}GB ${hw.gpuName ?? ''} · RAM: ${Math.round(hw.totalRamMB / 1024)}GB`
+  }
+  if (hw.gpuDetected && hw.gpuName) {
+    return `Detected ${hw.gpuName}, but the current runtime has no compatible GPU backend · CPU/RAM mode · ${Math.round(hw.totalRamMB / 1024)}GB RAM`
   }
   return `CPU mode · RAM: ${Math.round(hw.totalRamMB / 1024)}GB · No dedicated GPU detected`
 }

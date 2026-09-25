@@ -4,8 +4,9 @@ process.on('warning', (w: Error & { name?: string }) => {
 })
 import { app, BrowserWindow } from 'electron'
 import { createMainWindow } from './window'
-import { registerIpcHandlers } from './ipc/handlers'
+import { registerIpcHandlers, startAppUpdateChecks } from './ipc/handlers'
 import { disposeBackend } from './backendComposition'
+import { isUpdateInstallInProgress } from './services/updateManager'
 
 app.setName('Sovara')
 
@@ -26,6 +27,7 @@ app.on('second-instance', onSecondInstance)
 app.whenReady().then(async () => {
   registerIpcHandlers()
   mainWindow = await createMainWindow()
+  startAppUpdateChecks()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -41,6 +43,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async (event) => {
+  // electron-updater owns the quit/install lifecycle. Do not intercept it.
+  if (isUpdateInstallInProgress()) return
   // Allow async dispose before quit — prevent half-flushed state
   event.preventDefault()
   try {

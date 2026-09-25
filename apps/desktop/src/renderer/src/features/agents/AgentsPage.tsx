@@ -307,20 +307,20 @@ function HardwareReco(): React.JSX.Element {
 
 // ── Shared collection hook (per-agent store entities) ────────────────
 
-function useAgentCollection<T>(agentId: string | null, fetch: (agentId: string) => Promise<T[]>): { items: T[]; loading: boolean; reload: () => Promise<void> } {
+function useAgentCollection<T>(agentId: string | null, load: (agentId: string) => Promise<T[]>): { items: T[]; loading: boolean; reload: () => Promise<void> } {
   const [items, setItems] = useState<T[]>([])
   const [loading, setLoading] = useState(true)
   const reload = useCallback(async () => {
     if (!agentId) { setItems([]); setLoading(false); return }
     setLoading(true)
     try {
-      setItems(await fetch(agentId))
+      setItems(await load(agentId))
     } catch {
       setItems([])
     } finally {
       setLoading(false)
     }
-  }, [agentId, fetch])
+  }, [agentId, load])
   useEffect(() => { void reload() }, [reload])
   return { items, loading, reload }
 }

@@ -120,6 +120,12 @@ export interface HardwareInfo {
   gpuAvailable: boolean
   /** Live GPU compute utilization 0-100 from nvidia-smi utilization.gpu (undefined when unavailable). */
   gpuUtilization?: number
+  /** True when a physical GPU was detected, even if the current runtime cannot use it. */
+  gpuDetected?: boolean
+  /** GPU vendor inferred from the device name. */
+  gpuVendor?: 'NVIDIA' | 'AMD' | 'Intel' | 'Apple' | 'Unknown'
+  /** Backend that the current owned runtime can actually use. */
+  gpuRuntime?: 'cuda' | 'vulkan' | 'metal' | 'cpu' | 'unknown'
   /** Disk storage space (GB) available for local model weights. */
   storageFreeGB?: number
   storageTotalGB?: number

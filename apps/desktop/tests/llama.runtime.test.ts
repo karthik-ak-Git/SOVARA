@@ -182,6 +182,28 @@ describe('llamaRuntime — pure helpers', () => {
     const dir = mkTmp()
     expect(getLlamaRuntimeDir(dir)).toBe(path.join(dir, 'runtime', 'llama.cpp', LLAMA_BUILD))
   })
+
+  it('prefers the packaged runtime when Electron resourcesPath is available', () => {
+    const resources = mkTmp()
+    const packagedDir = path.join(resources, 'llama-runtime')
+    fs.mkdirSync(packagedDir, { recursive: true })
+    fs.writeFileSync(path.join(packagedDir, 'llama-srv.exe'), 'packaged-runtime')
+    const processWithResources = process as NodeJS.Process & { resourcesPath?: string }
+    const previous = processWithResources.resourcesPath
+    Object.defineProperty(processWithResources, 'resourcesPath', { value: resources, configurable: true })
+    try {
+      const found = getLlamaServerPath()
+      expect(found).not.toBeNull()
+      expect(path.dirname(found!)).toBe(packagedDir)
+    } finally {
+      if (previous === undefined) {
+        Object.defineProperty(processWithResources, 'resourcesPath', { value: undefined, configurable: true })
+      } else {
+        processWithResources.resourcesPath = previous
+      }
+      fs.rmSync(resources, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('llamaRuntime — GGUF header probing', () => {

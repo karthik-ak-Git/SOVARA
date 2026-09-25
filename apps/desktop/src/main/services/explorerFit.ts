@@ -31,6 +31,10 @@ const OS_RAM_RESERVE_GB = 2
 const GPU_RESERVE_GB = 0.5
 const VISION_PROJECTOR_GB = 0.9
 
+function hasOwnedGpuRuntime(hw: HardwareInfo): boolean {
+  return hw.gpuAvailable && (hw.gpuRuntime === 'cuda' || (hw.gpuRuntime === undefined && (hw.gpuVendor === undefined || hw.gpuVendor === 'NVIDIA')))
+}
+
 function paramsBillion(model: ExploreModel, fileGB?: number): number {
   const m = model.parameters.match(/([\d.]+)\s*B\b/i)
   if (m) {
@@ -140,7 +144,7 @@ export function estimateExplorerFit(
   const need1 = need.toFixed(1)
   const confidenceLevel = (file.sizeBytes ?? 0) > 0 ? ('high' as const) : ('low' as const)
 
-  if (hw.gpuAvailable && cap.vramGB !== undefined) {
+  if (hasOwnedGpuRuntime(hw) && cap.vramGB !== undefined) {
     const vram = cap.vramGB
     const freeV = cap.freeVramGB
     const fitsTotal = need <= vram

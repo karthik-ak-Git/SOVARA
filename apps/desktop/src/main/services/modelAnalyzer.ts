@@ -49,7 +49,9 @@ export function analyzeLocalModel(modelId: string, libraryPath: string, extra?: 
     contextLength: 4096,
     runtime: 'llama.cpp',
     quantization: extra?.files?.[0]?.quantization,
-    supportedBackends: format === 'GGUF' ? ['CPU', 'CUDA', 'Vulkan'] : ['CPU'],
+    // The owned Windows runtime currently ships CUDA + CPU only. Do not
+    // advertise Vulkan until a matching runtime asset is actually packaged.
+    supportedBackends: format === 'GGUF' ? ['CPU', 'CUDA'] : ['CPU'],
   }
 }
 

@@ -12,6 +12,7 @@
     "addon:configure": "node-gyp configure",
     "build": "pnpm -r build",
     "build:win": "pnpm --filter @sovara/desktop build:win",
+    "build:win:beta": "pnpm --filter @sovara/desktop build:win:beta",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
