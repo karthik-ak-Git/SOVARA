@@ -1,81 +1,37 @@
-"use client"
-
 import Link from "next/link"
-import { useEffect, useState } from "react"
 import { Download as DownloadIcon, FileText, Code2, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import {
+  FALLBACK_DOWNLOAD_URL,
+  FALLBACK_FILE_NAME,
+  type SovaraRelease,
+} from "@/lib/releases"
 
 const DOCUMENTATION_URL = "/docs"
-const RELEASES_API = "https://api.github.com/repos/karthik-ak-Git/SOVARA/releases?per_page=10"
-const FALLBACK_DOWNLOAD_URL = "https://github.com/karthik-ak-Git/SOVARA/releases/latest"
-const FALLBACK_FILE_NAME = "Sovara-Setup-1.1.4-x64.exe"
 
-interface GitHubAsset {
-  name: string
-  size?: number
-  browser_download_url: string
+/** The home page advertises only the two newest builds; /versions holds the rest. */
+const FEATURED_RELEASE_COUNT = 2
+
+function releaseDate(release: SovaraRelease): string {
+  if (!release.published_at) return "Latest"
+  const parsed = Date.parse(release.published_at)
+  if (Number.isNaN(parsed)) return "Latest"
+  return new Date(parsed).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
 }
 
-interface GitHubRelease {
-  id: number
-  name?: string | null
-  tag_name?: string | null
-  html_url: string
-  published_at?: string | null
-  draft?: boolean
-  prerelease?: boolean
-  assets?: GitHubAsset[]
-}
-
-function selectWindowsInstaller(release: GitHubRelease): GitHubAsset | null {
-  const assets = release.assets ?? []
-  return assets.find((asset) => /^Sovara-Setup-.*\.exe$/i.test(asset.name))
-    ?? assets.find((asset) => /\.exe$/i.test(asset.name) && !/(blockmap|debug|helper|update)/i.test(asset.name))
-    ?? null
-}
-
-function releaseVersion(release: GitHubRelease | null): string {
-  if (!release) return "Latest"
-  const text = `${release.name ?? ""} ${release.tag_name ?? ""}`
-  return text.match(/\b\d+\.\d+\.\d+\b/)?.[0] ?? release.tag_name ?? "Latest"
-}
-
-export function DownloadSection() {
-  const [releases, setReleases] = useState<GitHubRelease[]>([])
-  const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null)
-  const [latestExeAsset, setLatestExeAsset] = useState<GitHubAsset | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-
-  useEffect(() => {
-    async function fetchReleases(): Promise<void> {
-      try {
-        const response = await fetch(RELEASES_API, {
-          cache: "no-store",
-          headers: { Accept: "application/vnd.github+json" },
-        })
-        if (!response.ok) throw new Error(`GitHub returned ${response.status}`)
-        const payload: unknown = await response.json()
-        if (!Array.isArray(payload)) throw new Error("GitHub returned an invalid release list")
-
-        const data = payload as GitHubRelease[]
-        const published = data.filter((release) => !release.draft && !release.prerelease)
-        setReleases(published)
-        const found = published.find((release) => selectWindowsInstaller(release) !== null)
-        setLatestRelease(found ?? published[0] ?? null)
-        setLatestExeAsset(found ? selectWindowsInstaller(found) : null)
-      } catch (error) {
-        console.error("Failed to fetch Sovara releases:", error)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    void fetchReleases()
-  }, [])
+export function DownloadSection({ releases }: { releases: SovaraRelease[] }) {
+  // Prefer the newest release that actually ships an installer; otherwise the
+  // newest release so the page still renders a sensible version string.
+  const latestRelease = releases.find((release) => release.installer !== null) ?? releases[0] ?? null
+  const latestExeAsset = latestRelease?.installer ?? null
 
   const downloadUrl = latestExeAsset?.browser_download_url ?? FALLBACK_DOWNLOAD_URL
-  const versionStr = releaseVersion(latestRelease)
+  const versionStr = latestRelease?.version ?? "Latest"
   const fileName = latestExeAsset?.name ?? FALLBACK_FILE_NAME
   const fileSize = latestExeAsset?.size
     ? `${(latestExeAsset.size / (1024 * 1024)).toFixed(1)} MB`
@@ -85,8 +41,10 @@ export function DownloadSection() {
     { label: "File", value: fileName },
     { label: "Size", value: fileSize },
     { label: "Release", value: versionStr },
-    { label: "Date", value: latestRelease?.published_at ? new Date(latestRelease.published_at).toLocaleDateString() : "Latest" },
+    { label: "Date", value: latestRelease ? releaseDate(latestRelease) : "Latest" },
   ]
+
+  const featured = releases.slice(0, FEATURED_RELEASE_COUNT)
 
   return (
     <section id="download" className="border-b border-border/60 bg-background">
@@ -108,10 +66,9 @@ export function DownloadSection() {
                 render={<a href={downloadUrl} target={!latestExeAsset ? "_blank" : undefined} rel={!latestExeAsset ? "noopener noreferrer" : undefined} download={!!latestExeAsset} />}
                 nativeButton={false}
                 size="lg"
-                disabled={isLoading && !latestExeAsset}
               >
                 <DownloadIcon data-icon="inline-start" />
-                {isLoading && !latestExeAsset ? "Loading release…" : "Download SOVARA .EXE"}
+                Download SOVARA .EXE
               </Button>
               <Button
                 render={<Link href={DOCUMENTATION_URL} />}
@@ -136,27 +93,27 @@ export function DownloadSection() {
             ))}
           </div>
 
-          {releases.length > 0 && (
+          {featured.length > 0 && (
             <>
               <Separator />
               <div className="px-6 py-8 sm:px-10">
                 <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-foreground">
                   <Clock className="size-4" />
-                  Version History
+                  Latest Releases
                 </h3>
                 <div className="space-y-3">
-                  {releases.slice(0, 5).map((release) => {
-                    const exe = selectWindowsInstaller(release)
+                  {featured.map((release) => {
+                    const exe = release.installer
                     const url = exe?.browser_download_url ?? release.html_url
 
                     return (
                       <div key={release.id} className="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/20 p-3">
                         <div className="flex flex-col gap-1">
                           <span className="text-sm font-medium text-foreground">
-                            {release.name || release.tag_name}
+                            {release.name || release.version}
                           </span>
                           <span className="text-xs text-muted-foreground">
-                            {release.published_at ? new Date(release.published_at).toLocaleDateString() : "Latest"}
+                            {releaseDate(release)}
                           </span>
                         </div>
                         <a
@@ -174,14 +131,12 @@ export function DownloadSection() {
                   })}
                 </div>
                 <div className="mt-4 text-center">
-                  <a
-                    href="https://github.com/karthik-ak-Git/SOVARA/releases"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-muted-foreground transition-colors hover:text-primary"
+                  <Link
+                    href="/versions"
+                    className="text-xs font-medium text-primary underline-offset-4 hover:underline"
                   >
-                    View all releases on GitHub &rarr;
-                  </a>
+                    View all versions &rarr;
+                  </Link>
                 </div>
               </div>
             </>

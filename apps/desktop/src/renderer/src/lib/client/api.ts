@@ -429,6 +429,10 @@ export async function checkForUpdatesNow(): Promise<UpdateCheckView> {
   return ipcInvoke('updates:checkNow')
 }
 
+export async function downloadUpdateNow(): Promise<void> {
+  await ipcInvoke('updates:download')
+}
+
 export async function installDownloadedUpdate(): Promise<void> {
   await ipcInvoke('updates:install')
 }

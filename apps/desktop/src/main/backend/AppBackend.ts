@@ -17,6 +17,7 @@ import { ChatService } from './ChatService'
 import { AgentOrchestrator } from './AgentOrchestrator'
 import { ToolInfrastructure, getToolInfrastructure } from './tools'
 import { ValidationRunner } from '../services/modelValidationRunner'
+import { SubagentRunner } from '../services/subagentRunner'
 import { ValidationStore } from '../services/validationStore'
 import { getFullHardwareProfile } from '../services/hardwareProfile'
 import { isExecMode, type ExecMode } from '../services/execPermissions'
@@ -62,6 +63,8 @@ export class AppBackend {
   /** Validation per MODEL_HARDWARE_VALIDATION spec — isolated-pool estimator + real load/infer */
   public readonly validation: ValidationRunner
   public readonly validationStore: ValidationStore
+  /** Background subagent jobs dispatched by the main agent. */
+  public readonly subagents: SubagentRunner
   private readonly runtimeConfig: RuntimeConfigStore
 
   constructor(baseDir?: string, emit?: (event: import('@shared/types/chat').ChatStreamEvent) => void) {
@@ -83,6 +86,48 @@ export class AppBackend {
     const webRuntime = createWebRuntime(() => this.getWebSearchConfig().enabled)
     // Capture session append for todo/write projection (harness-style last-write-wins, visible in ContextPanel Session context)
     let currentSessionId: string | null = null
+    // Background subagents. `this.orchestrator` is assigned further down, so the
+    // closure resolves it at dispatch time rather than capture a null.
+    this.subagents = new SubagentRunner({
+      runSubagent: async ({ jobId, parentSessionId, role, description, signal }) => {
+        // One resident model (`maxConcurrentModels === 1`) and LRU eviction
+        // refuses while a request is active. Pin to whatever is already loaded
+        // and fail fast rather than queueing behind an eviction that can never
+        // succeed. A different in-flight slot keeps this turn independent of the
+        // parent, so neither trips `already-generating`.
+        const prompt =
+          role === 'explore'
+            ? `You are a focused read-only subagent working on one delegated task. Do not ask the user anything and do not delegate further.\n\nTask: ${description}\n\nReport the concrete answer, including exact file paths and line numbers where relevant.`
+            : `You are a focused subagent working on one delegated task. Do not ask the user anything and do not delegate further.\n\nTask: ${description}\n\nReport the concrete result of what you actually did or found.`
+        const result = await this.orchestrator.execute(
+          parentSessionId as never,
+          prompt,
+          { reasoning: false },
+          { slotKey: `subagent:${jobId}`, externalSignal: signal },
+        )
+        // The orchestrator persists its own turn; read back the assistant answer
+        // so the parent receives the real text rather than a summary of ids.
+        const events = await this.persistenceAdapter.getEvents(parentSessionId as never)
+        const last = [...events].reverse().find((e) => e.type === 'assistant/message') as { data?: { content?: string } } | undefined
+        const text = typeof last?.data?.content === 'string' ? last.data.content : ''
+        return { text, steps: result.ok ? 1 : undefined }
+      },
+      getResidentModelId: () => {
+        try {
+          const instances = models.listInstances() as unknown as Array<{ id?: string; status?: string }>
+          const active = instances.find((i) => i.status === 'ready' || i.status === 'loading') ?? instances[0]
+          return active?.id ?? null
+        } catch {
+          return null
+        }
+      },
+      noteRequestStart: (modelId) => {
+        try { (models as unknown as { noteRequestStart?: (id: unknown) => void }).noteRequestStart?.(modelId) } catch {}
+      },
+      noteRequestEnd: (modelId) => {
+        try { (models as unknown as { noteRequestEnd?: (id: unknown) => void }).noteRequestEnd?.(modelId) } catch {}
+      },
+    })
     const toolAdapter = new ToolStubAdapter(
       webRuntime,
       () => listMcpServers(this.runtimeConfig),
@@ -105,7 +150,11 @@ export class AppBackend {
         try {
           if (currentSessionId) this.persistenceAdapter.appendEvent(currentSessionId as unknown as import('@shared/types/branded').SessionId, type as never, data as never)
         } catch {}
-      }
+      },
+      false,
+      // Deliberately NOT registered in the tool infrastructure: that registry
+      // enforces a 30s default timeout, which would kill long subagent runs.
+      this.subagents,
     )
     // Keep currentSessionId in sync via persistence events (best-effort)
     ;(toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession = (id: string) => { currentSessionId = id }
@@ -237,6 +286,9 @@ export class AppBackend {
       try { (toolAdapter as unknown as { _setSession?: (id: string) => void })._setSession?.(String(sid)) } catch {}
       return origRegen(sid, opts)
     }) as typeof this.orchestrator.regenerate
+    // Cancelling a parent turn must also reap its children, otherwise an
+    // invisible subagent keeps the single resident model pinned.
+    this.orchestrator.setSubagentCanceller((sid) => this.subagents.cancelForSession(sid))
     this.ports = {
       persistence: this.persistenceAdapter,
       llm,
@@ -850,6 +902,9 @@ export class AppBackend {
   }
 
   async dispose(): Promise<void> {
+    // Abort background subagents first so none keeps a model instance busy
+    // while the runtimes are being torn down.
+    try { this.subagents.dispose() } catch { /* ignore */ }
     // Kill owned sidecars FIRST so no VRAM stays claimed after quit.
     try {
       const models = this.ports.models as unknown as { disposeAll?: () => Promise<void> }

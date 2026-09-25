@@ -24,7 +24,7 @@ import {
   zStudioPermissionsSet,
   zStudioVersionSave,
 } from '../services/agentStudio'
-import { checkForUpdatesWithManager, installDownloadedUpdate, startAutomaticUpdates, syncUpdateManager, type UpdateEvent } from '../services/updateManager'
+import { checkForUpdatesWithManager, downloadUpdateNow, installDownloadedUpdate, startAutomaticUpdates, syncUpdateManager, type UpdateEvent } from '../services/updateManager'
 import { scanSkillsSources, listBionicSkills, createBionicSkill, deleteBionicSkill, setSkillsSourceEnabled, listDetailedSkillsForSources, importSkillFromUrl } from '../services/skillsScanner'
 import { migrateLegacyRuntime } from '../services/llamaRuntime'
 import { diagnoseLlamaExecutable, getLlamaRuntimeDir, getLegacyLlamaRuntimeDir, unblockRuntimeDir, getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
@@ -536,9 +536,25 @@ export function registerIpcHandlers(): void {
     return result
   })
 
+  ipcMain.handle('updates:download', async () => {
+    const backend = getBackend()
+    try {
+      downloadUpdateNow(backend.getAppSettings())
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(message)
+    }
+  })
+
   ipcMain.handle('updates:install', async () => {
-    installDownloadedUpdate()
-    return { ok: true }
+    try {
+      installDownloadedUpdate()
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(message)
+    }
   })
 
   // ── Exec permissions — the AI command levels, enforced on every dispatch ──

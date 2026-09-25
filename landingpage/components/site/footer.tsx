@@ -8,6 +8,7 @@ const columns = [
     links: [
       { label: "Features", href: "/#features" },
       { label: "Download", href: "/#download" },
+      { label: "All Versions", href: "/versions" },
       { label: "Security", href: "/#security" },
       { label: "Architecture", href: "/#architecture" },
     ],
@@ -16,6 +17,7 @@ const columns = [
     title: "Resources",
     links: [
       { label: "Documentation", href: "/docs" },
+      { label: "API Reference", href: "/api-docs" },
       { label: "GitHub", href: "https://github.com/karthik-ak-Git/SOVARA.git" },
       { label: "System Requirements", href: "/#requirements" },
       { label: "Installation Guide", href: "/#install" },

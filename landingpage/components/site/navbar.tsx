@@ -12,6 +12,8 @@ const links = [
   { label: "Security", href: "/#security" },
   { label: "Architecture", href: "/#architecture" },
   { label: "Documentation", href: "/docs" },
+  { label: "API Docs", href: "/api-docs" },
+  { label: "Versions", href: "/versions" },
   { label: "Download", href: "/#download" },
 ]
 

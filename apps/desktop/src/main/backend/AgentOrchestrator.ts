@@ -738,10 +738,34 @@ export class AgentOrchestrator {
   }
 
   private safeLog(msg: string): void { try { console.log(msg) } catch {} }
+  /**
+   * True while a turn holds this session's in-flight slot. Subagents use their
+   * own key, so this reports the *parent* turn only.
+   */
+  isGenerating(sessionId: SessionId): boolean {
+    return this.inFlight.has(String(sessionId))
+  }
+  /**
+   * Cancels every background subagent belonging to a turn. Wired by the host so
+   * that cancelling a parent turn can never leave an orphan child holding the
+   * single resident model.
+   */
+  private subagentCanceller: ((parentSessionId: string) => number) | null = null
+  setSubagentCanceller(fn: (parentSessionId: string) => number): void {
+    this.subagentCanceller = fn
+  }
+
   cancel(sessionId: SessionId): { cancelled: boolean } {
-    const c = this.inFlight.get(String(sessionId))
-    if (!c) return { cancelled: false }
-    this.safeLog(`[AgentOrchestrator] cancel sid=${String(sessionId)}`)
+    const sid = String(sessionId)
+    // Children first: a parent that aborts while its subagent still holds the
+    // model would leave the runtime pinned until the child is reaped.
+    const childrenCancelled = this.subagentCanceller?.(sid) ?? 0
+    const c = this.inFlight.get(sid)
+    if (!c) {
+      if (childrenCancelled > 0) this.safeLog(`[AgentOrchestrator] cancel sid=${sid} children=${childrenCancelled}`)
+      return { cancelled: childrenCancelled > 0 }
+    }
+    this.safeLog(`[AgentOrchestrator] cancel sid=${sid}${childrenCancelled > 0 ? ` children=${childrenCancelled}` : ''}`)
     c.abort(new Error('cancelled'))
     return { cancelled: true }
   }
@@ -749,14 +773,30 @@ export class AgentOrchestrator {
   async execute(
     sessionId: SessionId,
     content: string,
-    opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: IncomingAttachment[] }
+    opts?: { webSearch?: boolean; reasoning?: boolean; attachments?: IncomingAttachment[] },
+    /**
+     * Internal escape hatch used by background subagents.
+     *
+     * `slotKey` decouples the in-flight guard from the session id so a subagent
+     * can run alongside its parent without either one tripping
+     * `already-generating`. `externalSignal` lets the job runner cancel a child
+     * that the user never addressed directly. Neither is part of the public
+     * chat surface.
+     */
+    runtime?: { slotKey?: string; externalSignal?: AbortSignal },
   ): Promise<{ ok: true; userSeq: number; assistantSeq: number; routing: ModelRoutingDecision; classification: TaskClassification }> {
     const sid = String(sessionId)
+    const slotKey = runtime?.slotKey ?? sid
     const startedAll = Date.now()
-    if (this.inFlight.has(sid)) throw new AgentOrchestratorError('llm-failed', 'already-generating: wait for the current reply to finish')
+    if (this.inFlight.has(slotKey)) throw new AgentOrchestratorError('llm-failed', 'already-generating: wait for the current reply to finish')
 
     const controller = new AbortController()
-    this.inFlight.set(sid, controller)
+    this.inFlight.set(slotKey, controller)
+    const onExternalAbort = (): void => { controller.abort(new Error('cancelled')) }
+    if (runtime?.externalSignal) {
+      if (runtime.externalSignal.aborted) onExternalAbort()
+      else runtime.externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+    }
     const onAbort = (): void => {
       // propagate to orchestrator's emit for UI cancellation
     }
@@ -2374,7 +2414,12 @@ export class AgentOrchestrator {
       if (needsShellAction && successfulShellTools.size === 0) {
         requiredActionFailures.push('no successful install/run command was executed')
       }
-      if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search'].some((name) => successfulTools.has(name))) {
+      // A successful invoke_subagent is genuine verified evidence: the child
+      // really ran and its answer is persisted in tool/result. It is listed here
+      // so delegation can satisfy an inspection request. Because
+      // `successfulTools` is already filtered on r.success, a subagent that
+      // failed, was cancelled, or timed out still cannot open this gate.
+      if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search', 'invoke_subagent'].some((name) => successfulTools.has(name))) {
         requiredActionFailures.push('no successful workspace inspection was executed')
       }
       if (needsWebAction && !['web_search', 'web_fetch'].some((name) => successfulTools.has(name))) {
@@ -2875,8 +2920,9 @@ export class AgentOrchestrator {
       throw new AgentOrchestratorError('llm-failed', msg)
     } finally {
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
-      this.inFlight.delete(sid)
+      this.inFlight.delete(slotKey)
       controller.signal.removeEventListener('abort', onAbort)
+      runtime?.externalSignal?.removeEventListener('abort', onExternalAbort)
     }
   }
 

@@ -67,6 +67,21 @@ function toolOutputIndicatesError(output: string): boolean {
   return /^\s*(?:error|failed|failure)\s*[:\-\s]/i.test(output)
 }
 
+/**
+ * Optional delegation seam. Injected rather than constructed here so the tool
+ * layer stays free of orchestration concerns and unit tests keep working with
+ * the default `null`.
+ */
+export interface SubagentDispatchPort {
+  dispatch: (input: {
+    parentSessionId: string
+    toolCallId: string
+    role?: unknown
+    description?: unknown
+    deadlineMs?: number
+  }) => { jobId: string; done: Promise<{ status: string; result?: string; error?: string; durationMs: number }> }
+}
+
 export class ToolStubAdapter implements ToolPort {
   private toolInfrastructure: ToolInfrastructure | null = null
   private hooksEnabled = false
@@ -77,6 +92,8 @@ export class ToolStubAdapter implements ToolPort {
     timestamp: number
     executionTime: number
   }> = []
+  /** Session currently owning the turn, used to attribute subagent events. */
+  private sessionId: string | null = null
 
   constructor(
     private readonly web: WebRuntime = disabledRuntime(),
@@ -93,11 +110,17 @@ export class ToolStubAdapter implements ToolPort {
     },
     private readonly appendEvent?: (type: string, data: unknown) => void,
     private readonly enableToolInfrastructure = false,
+    private readonly subagents: SubagentDispatchPort | null = null,
   ) {
     // Auto-initialize tool infrastructure if enabled
     if (this.enableToolInfrastructure) {
       this.initializeToolInfrastructure()
     }
+  }
+
+  /** Test/host seam: attribute dispatched tools to the owning session. */
+  _setSession(id: string | null): void {
+    this.sessionId = id
   }
 
   /**
@@ -570,6 +593,38 @@ export class ToolStubAdapter implements ToolPort {
         },
       },
       // PTC tool: run_code for programmatic tool invocation
+      // Subagent delegation: one focused background task on the resident model.
+      {
+        name: 'invoke_subagent',
+        toolset: 'agent' as const,
+        description:
+          'Delegate one narrow, self-contained sub-task to an independent background agent. ' +
+          'Input: { role: "explore" | "general", description: string }. ' +
+          'The subagent runs on the already-loaded local model in its own isolated slot, so it ' +
+          'cannot collide with this turn, and the user can keep working while it runs. ' +
+          'Its answer is returned to you as this tool result. ' +
+          'Use it for work you can state in one or two sentences: locate a file, summarise one ' +
+          'module, or extract facts from one document. ' +
+          'Do NOT use it to ask the user anything, and do not use it for work that would require ' +
+          'loading a second model. Dispatch at most 3 per turn.',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            role: {
+              type: 'string' as const,
+              enum: ['explore', 'general'] as const,
+              default: 'general',
+              description: 'explore = read-only investigation; general = focused task with tools',
+            },
+            description: {
+              type: 'string' as const,
+              minLength: 1,
+              description: 'The self-contained task for the subagent to complete.',
+            },
+          },
+          required: ['description'] as const,
+        },
+      },
       {
         name: 'run_code',
         toolset: 'code' as const,
@@ -671,6 +726,7 @@ export class ToolStubAdapter implements ToolPort {
       )
         out = await this.dispatchShell(args)
       else if (name === 'list_dev_servers' || name === 'stop_dev_server') out = await this.dispatchDevServers(name, args)
+      else if (name === 'invoke_subagent') out = await this.dispatchSubagent(name, args)
       else if (name === 'run_code') out = await this.dispatchRunCode(args)
       else if (name.startsWith('mcp_')) out = await this.dispatchMcp(name, args)
       else out = JSON.stringify({ error: 'tool-unavailable-in-Phase1' })
@@ -950,6 +1006,72 @@ export class ToolStubAdapter implements ToolPort {
     if (!clean['command'] && clean['cmd']) clean['command'] = clean['cmd']
     if (!clean['command'] && clean['CommandLine']) clean['command'] = clean['CommandLine']
     return dispatchShell(clean, ws)
+  }
+
+  /**
+   * Dispatch a background subagent and wait for its genuine result.
+   *
+   * The returned promise settles only when the subagent actually finished, so
+   * the parent's tool loop resumes with real evidence. A failure, cancellation
+   * or deadline is reported as an explicit error object — never as a silent
+   * success, and never as a fabricated answer.
+   */
+  private async dispatchSubagent(name: string, args: Record<string, unknown>): Promise<string> {
+    if (!this.subagents) {
+      return JSON.stringify({
+        error: 'invoke_subagent is unavailable: no subagent runner is configured for this build',
+        code: 'SUBAGENT_UNAVAILABLE',
+      })
+    }
+    const description = typeof args['description'] === 'string' ? args['description'].trim() : ''
+    if (!description) {
+      return JSON.stringify({
+        error: 'invoke_subagent requires { description: string }',
+        code: 'INVALID_ARGUMENTS',
+      })
+    }
+
+    const parentSessionId = this.sessionId ?? 'unknown-session'
+    const toolCallId = typeof args['_toolCallId'] === 'string' ? args['_toolCallId'] : `sub-call-${Date.now().toString(36)}`
+    const started = Date.now()
+
+    let dispatched: { jobId: string; done: Promise<{ status: string; result?: string; error?: string; durationMs: number }> }
+    try {
+      dispatched = this.subagents.dispatch({
+        parentSessionId,
+        toolCallId,
+        role: args['role'],
+        description,
+        deadlineMs: typeof args['deadlineMs'] === 'number' ? args['deadlineMs'] : undefined,
+      })
+    } catch (error) {
+      return JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+        code: 'SUBAGENT_DISPATCH_FAILED',
+      })
+    }
+
+    const outcome = await dispatched.done
+    const durationMs = Date.now() - started
+
+    if (outcome.status === 'succeeded' && outcome.result) {
+      return JSON.stringify({
+        ok: true,
+        jobId: dispatched.jobId,
+        role: typeof args['role'] === 'string' ? args['role'] : 'general',
+        durationMs,
+        answer: outcome.result,
+      })
+    }
+
+    return JSON.stringify({
+      ok: false,
+      jobId: dispatched.jobId,
+      status: outcome.status,
+      durationMs,
+      error: outcome.error ?? `subagent ${outcome.status}`,
+      code: outcome.status === 'cancelled' ? 'SUBAGENT_CANCELLED' : 'SUBAGENT_FAILED',
+    })
   }
 
   private async dispatchDevServers(name: string, args: Record<string, unknown>): Promise<string> {

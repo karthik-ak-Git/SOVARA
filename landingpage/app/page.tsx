@@ -17,8 +17,15 @@ import { DownloadSection } from "@/components/site/download"
 import { Installation } from "@/components/site/installation"
 import { SystemRequirements } from "@/components/site/system-requirements"
 import { Developer } from "@/components/site/developer"
+import { getReleases } from "@/lib/releases"
 
-export default function Page() {
+// Next requires segment config to be a static literal, not an imported binding.
+// Keep in sync with RELEASES_REVALIDATE_SECONDS in lib/releases.ts.
+export const revalidate = 3600
+
+export default async function Page() {
+  const releases = await getReleases()
+
   return (
     <main className="pb-16 sm:pb-0">
       <Navbar />
@@ -34,7 +41,7 @@ export default function Page() {
       <Architecture />
       <TechStack />
       <Testing />
-      <DownloadSection />
+      <DownloadSection releases={releases} />
       <Installation />
       <SystemRequirements />
       <Developer />

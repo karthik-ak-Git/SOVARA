@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -554,6 +554,262 @@ describe('AgentOrchestrator — action-first autonomy', () => {
     expect(calls).toEqual(expect.arrayContaining(['run_code', 'fs_write']))
     const answer = events.find((e) => e.type === 'assistant/message')?.data as { content: string }
     expect(answer.content).toContain('nested.txt')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('dispatches a subagent, parks the parent, and resumes with the real answer', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const emitted: ChatStreamEvent[] = []
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0],
+      load: async () => loaded[0],
+      unload: async () => {},
+      health: async () => ({ ok: true }),
+      listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }),
+      listLocalModels: async () => [],
+    }
+
+    let subagentFinished = false
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      // Parent turn 1 delegates; parent turn 2 reports what came back.
+      llm: sequenceLlm([
+        ['```tool:invoke_subagent\n{"role":"explore","description":"find the config"}\n```'],
+        ['The subagent found it.'],
+      ]),
+      tools: {
+        list: () => [{ name: 'invoke_subagent', description: 'Delegate', parameters: { type: 'object', properties: { role: { type: 'string' }, description: { type: 'string' } }, required: ['description'] } }],
+        dispatch: async (name: string, args: Record<string, unknown>) => {
+          if (name === 'invoke_subagent') {
+            // The parent must be suspended here, not generating.
+            expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(true)
+            subagentFinished = true
+            return JSON.stringify({
+              ok: true,
+              jobId: 'sub_1',
+              role: args.role,
+              answer: 'the config lives in src/config.ts',
+            })
+          }
+          return JSON.stringify({ error: `unexpected tool ${name}` })
+        },
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: (e: ChatStreamEvent) => emitted.push(e),
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: (name: string) => name === 'invoke_subagent' }) } as never,
+    })
+
+    const result = await orchestrator.execute('sess-1' as SessionId, 'Find the config file for me.', {})
+    expect(result.ok).toBe(true)
+    expect(subagentFinished).toBe(true)
+
+    // The delegated answer must reach the parent's transcript as real evidence.
+    const events = await persistence.getEvents('sess-1' as SessionId)
+    const calls = events.filter((e) => e.type === 'tool/call').map((e) => (e.data as { name?: string }).name)
+    expect(calls).toContain('invoke_subagent')
+    const resultEvent = events.find((e) => e.type === 'tool/result')?.data as { content?: string }
+    expect(resultEvent.content).toContain('src/config.ts')
+
+    // And the parent's final answer is persisted.
+    const answer = [...events].reverse().find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).toContain('found it')
+
+    // Live lifecycle events were projected for the UI.
+    const kinds = emitted.filter((e) => e.sessionId === 'sess-1').map((e) => e.kind)
+    expect(kinds).toContain('tool:start')
+    expect(kinds).toContain('tool:end')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not let a failed subagent satisfy the completion gate', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0], load: async () => loaded[0], unload: async () => {},
+      health: async () => ({ ok: true }), listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }), listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([
+        ['```tool:invoke_subagent\n{"role":"explore","description":"find the config"}\n```'],
+        ['I looked, but it failed.'],
+      ]),
+      tools: {
+        list: () => [{ name: 'invoke_subagent', description: 'Delegate', parameters: { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] } }],
+        dispatch: async () => JSON.stringify({
+          ok: false, jobId: 'sub_1', status: 'failed',
+          error: 'model resident and busy', code: 'SUBAGENT_FAILED',
+        }),
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: (name: string) => name === 'invoke_subagent' }) } as never,
+    })
+
+    // The gate must still refuse: a failed delegation is not evidence of work.
+    await expect(orchestrator.execute('sess-1' as SessionId, 'Find and read the config file.', {}))
+      .rejects.toThrow(/did not complete/i)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not leak a subagent fence into the assistant answer', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0], load: async () => loaded[0], unload: async () => {},
+      health: async () => ({ ok: true }), listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }), listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([
+        ['```tool:invoke_subagent\n{}\n```'],
+        ['Done.'],
+      ]),
+      tools: {
+        list: () => [{ name: 'invoke_subagent', description: 'Delegate', parameters: { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] } }],
+        // An empty description must be rejected, and still must not leak markup.
+        dispatch: async () => JSON.stringify({ error: 'invoke_subagent requires { description: string }', code: 'INVALID_ARGUMENTS' }),
+      } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+      toolInfrastructure: { getRegistry: () => ({ list: () => [], has: (name: string) => name === 'invoke_subagent' }) } as never,
+    })
+
+    await orchestrator.execute('sess-1' as SessionId, 'Delegate this.', {})
+    const events = await persistence.getEvents('sess-1' as SessionId)
+    const answer = [...events].reverse().find((e) => e.type === 'assistant/message')?.data as { content: string }
+    expect(answer.content).not.toContain('tool:invoke_subagent')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('rejects a second turn on the same session while one is generating', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0], load: async () => loaded[0], unload: async () => {},
+      health: async () => ({ ok: true }), listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }), listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([['first'], ['second']]),
+      tools: { list: () => [], dispatch: async () => '{}' } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+    })
+
+    const first = orchestrator.execute('sess-1' as SessionId, 'one', {})
+    await vi.waitFor(() => expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(true))
+    // The real guard: a colliding request is refused, not interleaved.
+    await expect(orchestrator.execute('sess-1' as SessionId, 'two', {})).rejects.toThrow(/already-generating/)
+    await first
+    // Once the first turn finishes, the session is usable again.
+    expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(false)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('runs a subagent in an isolated slot so it never blocks its own parent session', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0], load: async () => loaded[0], unload: async () => {},
+      health: async () => ({ ok: true }), listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }), listLocalModels: async () => [],
+    }
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([['parent answer'], ['child answer']]),
+      tools: { list: () => [], dispatch: async () => '{}' } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+    })
+
+    const parent = orchestrator.execute('sess-1' as SessionId, 'parent turn', {})
+    await vi.waitFor(() => expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(true))
+
+    // The subagent shares the parent session id but uses its own slot, so it
+    // must be accepted instead of tripping the already-generating guard.
+    const child = orchestrator.execute(
+      'sess-1' as SessionId,
+      'child task',
+      {},
+      { slotKey: 'subagent:sub_test' },
+    )
+    await expect(child).resolves.toMatchObject({ ok: true })
+    await parent
+
+    // And cancelling the parent must not have been confused by the child.
+    expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(false)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('cancels child subagents when the parent turn is cancelled', async () => {
+    const dir = mkTmp()
+    const persistence = makePersistence()
+    const workbench = makeWorkbench([{ modelId: 'rt-1:phi-4', displayName: 'phi-4', runtimeId: 'rt-1', available: true, contextLength: 8192 }], { runtimeId: 'rt-1', modelId: 'rt-1:phi-4' })
+    const loaded = [{ id: 'inst-1', modelId: 'rt-1:phi-4', runtimeId: 'rt-1', status: 'loaded' as const, ctxLen: 4096 }]
+    const mockModels = {
+      ensureHealthy: async () => loaded[0], load: async () => loaded[0], unload: async () => {},
+      health: async () => ({ ok: true }), listInstances: async () => loaded,
+      probeRuntime: async () => ({ available: true }), listLocalModels: async () => [],
+    }
+    const cancelledChildren: string[] = []
+    const orchestrator = new AgentOrchestrator({
+      persistence,
+      llm: sequenceLlm([['never finishes in time']]),
+      tools: { list: () => [], dispatch: async () => '{}' } as never,
+      workbench,
+      resources: okResources,
+      models: mockModels as never,
+      baseDir: dir,
+      getExecMode: () => 'allow',
+      emit: () => {},
+    })
+    orchestrator.setSubagentCanceller((sid) => {
+      cancelledChildren.push(sid)
+      return 1
+    })
+
+    const turn = orchestrator.execute('sess-1' as SessionId, 'long turn', {})
+    await vi.waitFor(() => expect(orchestrator.isGenerating('sess-1' as SessionId)).toBe(true))
+    orchestrator.cancel('sess-1' as SessionId)
+    // The canceller ran for this session, so no child is left holding the model.
+    expect(cancelledChildren).toEqual(['sess-1'])
+    await turn.catch(() => {})
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

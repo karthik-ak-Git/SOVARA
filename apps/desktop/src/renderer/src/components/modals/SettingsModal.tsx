@@ -43,6 +43,7 @@ import {
   getAppSettings,
   setAppSettings,
   checkForUpdatesNow,
+  downloadUpdateNow,
   installDownloadedUpdate,
   onUpdateEvent,
   getExecMode,
@@ -243,6 +244,9 @@ export function SettingsModal({
   const [updateResult, setUpdateResult] = useState<UpdateCheckView | null>(null)
   const [updateEvent, setUpdateEvent] = useState<UpdateEventView | null>(null)
   const [feedDraft, setFeedDraft] = useState<string | null>(null)
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [updateActionError, setUpdateActionError] = useState<string | null>(null)
 
   // Sessions: Both Active & Archived
   const [activeSessions, setActiveSessions] = useState<SessionHeaderView[]>([])
@@ -497,6 +501,7 @@ export function SettingsModal({
 
   const handleCheckUpdates = useCallback(async () => {
     setCheckingUpdate(true)
+    setUpdateActionError(null)
     try {
       const res = await checkForUpdatesNow()
       setUpdateResult(res)
@@ -511,6 +516,32 @@ export function SettingsModal({
       setCheckingUpdate(false)
     }
   }, [appSettings?.version, appInfo?.version])
+
+  // Detection alone is a dead end when "Automatic Updates" is off: the
+  // updater's autoDownload is tied to that toggle, so a detected update would
+  // never be fetched. This is the explicit, user-gated download action.
+  const handleDownloadUpdate = useCallback(async () => {
+    setDownloadingUpdate(true)
+    setUpdateActionError(null)
+    try {
+      await downloadUpdateNow()
+    } catch (error) {
+      setUpdateActionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDownloadingUpdate(false)
+    }
+  }, [])
+
+  const handleInstallUpdate = useCallback(async () => {
+    setInstallingUpdate(true)
+    setUpdateActionError(null)
+    try {
+      await installDownloadedUpdate()
+    } catch (error) {
+      setUpdateActionError(error instanceof Error ? error.message : String(error))
+      setInstallingUpdate(false)
+    }
+  }, [])
 
   // Chat Actions
   const handleOpenChat = useCallback(
@@ -1110,21 +1141,96 @@ export function SettingsModal({
                     </button>
                   </div>
 
-                  {updateEvent?.status === 'downloaded' ? (
-                    <div className="settings-modal-row">
-                      <div className="settings-modal-row-info">
-                        <div className="settings-modal-row-label">Update Ready</div>
-                        <div className="settings-modal-row-desc">{updateEvent.message}</div>
+                  {(() => {
+                    const phase = updateEvent?.status
+                      ?? (updateResult?.status === 'available' ? 'available' : null)
+                    const showUpdateRow =
+                      phase === 'available' || phase === 'downloading' || phase === 'downloaded'
+
+                    if (!showUpdateRow) {
+                      return updateActionError ? (
+                        <div className="settings-modal-row">
+                          <div className="settings-modal-row-info">
+                            <div className="settings-modal-row-label">Update Error</div>
+                            <div className="settings-modal-row-desc">{updateActionError}</div>
+                          </div>
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            onClick={() => void handleCheckUpdates()}
+                            disabled={checkingUpdate}
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : null
+                    }
+
+                    const isDownloading = phase === 'downloading' || downloadingUpdate
+                    const isDownloaded = phase === 'downloaded'
+
+                    return (
+                      <div className="settings-modal-row">
+                        <div className="settings-modal-row-info">
+                          <div className="settings-modal-row-label">
+                            {isDownloaded
+                              ? 'Update Ready'
+                              : isDownloading
+                                ? 'Downloading Update'
+                                : 'Update Available'}
+                          </div>
+                          <div className="settings-modal-row-desc">
+                            {updateActionError
+                              ?? updateEvent?.message
+                              ?? updateResult?.message
+                              ?? (updateResult?.latest
+                                ? `Sovara ${updateResult.latest} is available.`
+                                : 'A new Sovara release is available.')}
+                          </div>
+                        </div>
+                        {isDownloaded ? (
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            onClick={() => void handleInstallUpdate()}
+                            disabled={installingUpdate}
+                          >
+                            {installingUpdate ? (
+                              <>
+                                <RefreshCw size={13} className="spin" />
+                                <span>Installing…</span>
+                              </>
+                            ) : (
+                              'Restart & Install'
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="settings-btn-action"
+                            onClick={() => void handleDownloadUpdate()}
+                            disabled={isDownloading}
+                          >
+                            {isDownloading ? (
+                              <>
+                                <RefreshCw size={13} className="spin" />
+                                <span>
+                                  Downloading{typeof updateEvent?.percent === 'number'
+                                    ? ` ${updateEvent.percent}%`
+                                    : '…'}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <Download size={13} />
+                                <span>Download Update</span>
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
-                      <button
-                        type="button"
-                        className="settings-btn-action"
-                        onClick={() => void installDownloadedUpdate()}
-                      >
-                        Restart &amp; Install
-                      </button>
-                    </div>
-                  ) : null}
+                    )
+                  })()}
 
                   <div className="settings-modal-row">
                     <div className="settings-modal-row-info">

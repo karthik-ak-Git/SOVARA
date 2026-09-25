@@ -44,6 +44,7 @@ export const IPC_CHANNELS = {
   // App version + update feed (Settings → General)
   'app:getVersion': { type: 'invoke' as const },
   'updates:checkNow': { type: 'invoke' as const },
+  'updates:download': { type: 'invoke' as const },
   'updates:install': { type: 'invoke' as const },
   'updates:event': { type: 'on' as const },
   // Usage stats

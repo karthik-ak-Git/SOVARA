@@ -36,6 +36,7 @@ const TOOL_NAMES = [
   'memory',
   'search_skills', 'read_skill', 'clarify',
   'web_search', 'web_fetch',
+  'invoke_subagent',
   'run_code',
 ] as const
 type ToolName = typeof TOOL_NAMES[number]
@@ -225,6 +226,7 @@ function defaultArgsFor(toolName?: string): Record<string, unknown> {
   if (toolName === 'todo_write') return { todos: [] }
   if (toolName === 'search_skills') return { query: '' }
   if (toolName === 'read_skill') return { skill_name: '' }
+  if (toolName === 'invoke_subagent') return { role: 'general', description: '' }
   if (toolName === 'shell_exec' || toolName === 'bash' || toolName === 'cmd' || toolName === 'powershell' || toolName === 'terminal_exec') return { command: 'dir' }
   return {}
 }
@@ -245,7 +247,7 @@ export function looksLikeToolFence(text: string): boolean {
  */
 export function looksLikeBareToolCall(text: string): boolean {
   const bare = new RegExp(
-    '(?:^|[\\s{(<\\[])(' + TOOL_NAME_PATTERN + ')\\s*(?::|\\(|\\{|\\[|\\b(?:path|query|queries|command|todos|content|code)\\b)',
+    '(?:^|[\\s{(<\\[])(' + TOOL_NAME_PATTERN + ')\\s*(?::|\\(|\\{|\\[|\\b(?:path|query|queries|command|todos|content|code|description)\\b)',
     'im'
   )
   const xmlTag = new RegExp('<(' + TOOL_NAME_PATTERN + ')\\b', 'i')

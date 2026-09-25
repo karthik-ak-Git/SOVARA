@@ -27,9 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with: { version: ${{ env.PNPM_VERSION }} }
+        with:
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
-        with: { node-version: ${{ env.NODE_VERSION }}, cache: pnpm }
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
         env:
           # prevent postinstall llama download from crashing gate
@@ -42,16 +45,22 @@ jobs:
     needs: quality
     runs-on: windows-latest
     timeout-minutes: 30
-    defaults: { run: { shell: pwsh } }
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
-        with: { version: ${{ env.PNPM_VERSION }} }
+        with:
+          version: ${{ env.PNPM_VERSION }}
 
       - uses: actions/setup-node@v4
-        with: { node-version: ${{ env.NODE_VERSION }}, cache: pnpm }
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
       - name: Install dependencies (with retry, llama non-fatal)
         shell: pwsh
@@ -116,11 +125,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - name: Download installer artifact
         uses: actions/download-artifact@v4
-        with: { name: Sovara-Windows-x64, path: dist }
+        with:
+          name: Sovara-Windows-x64
+          path: dist
 
       - name: Generate release notes (with Known Issue section)
         id: notes
@@ -154,7 +166,14 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          # electron-updater cannot install anything without `latest.yml`, and it
+          # uses the `.blockmap` for differential downloads. Uploading only the
+          # .exe left the in-app "Update Now" flow permanently stuck at
+          # "available" even though detection worked.
+          files: |
+            dist/*.exe
+            dist/latest*.yml
+            dist/*.blockmap
           body_path: RELEASE_NOTES.md
           generate_release_notes: false
           fail_on_unmatched_files: true

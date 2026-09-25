@@ -49,6 +49,12 @@ let broadcast: Broadcast = () => {}
 let interval: IntervalHandle | null = null
 let installRequested = false
 let lastEvent: UpdateEvent | null = null
+/**
+ * Version of an update that finished downloading. Kept separately from
+ * `lastEvent` so a "Restart & Install" click still works after a renderer
+ * reload or a window rebuild, where the transient event stream is lost.
+ */
+let downloadedVersion: string | null = null
 
 function currentVersion(): string {
   return app.getVersion()
@@ -105,7 +111,19 @@ function updateMessage(info: UpdateInfo): string {
 }
 
 function installEvent(): UpdateEvent | null {
-  return lastEvent?.status === 'downloaded' ? lastEvent : null
+  if (lastEvent?.status === 'downloaded') return lastEvent
+  // The event is in-memory only. If we know an update finished downloading,
+  // reconstruct the install state so the button still works after a reload.
+  if (downloadedVersion) {
+    return {
+      status: 'downloaded',
+      current: currentVersion(),
+      latest: downloadedVersion,
+      percent: 100,
+      message: `Sovara ${downloadedVersion} is ready. Restart to install it.`,
+    }
+  }
+  return null
 }
 
 function ensureEventListeners(): void {
@@ -131,6 +149,7 @@ function ensureEventListeners(): void {
     })
   })
   updater.on('update-downloaded', (info) => {
+    downloadedVersion = info.version
     emit({
       status: 'downloaded',
       current: currentVersion(),
@@ -140,6 +159,9 @@ function ensureEventListeners(): void {
     })
   })
   updater.on('error', (error) => {
+    // A failed download must not leave a stale "downloaded" version behind,
+    // otherwise the install button would offer a package that never landed.
+    downloadedVersion = null
     emit({ status: 'error', current: currentVersion(), latest: lastEvent?.latest ?? null, message: `Update failed: ${error.message}` })
   })
 }
@@ -156,10 +178,10 @@ export function syncUpdateManager(settings: UpdateSettings): void {
 
 export async function checkForUpdatesWithManager(settings: UpdateSettings): Promise<UpdateCheckResult> {
   const current = currentVersion()
-  if (!settings.autoUpdates && !settings.updateFeedUrl.trim()) {
-    return { status: 'no-feed', current, latest: null, message: 'Automatic updates are disabled and no update feed is configured.' }
-  }
-
+  // A feed is always configured: an empty URL resolves to the default GitHub
+  // provider (see resolveUpdaterFeed). A manual "Check Now" must therefore work
+  // even when Automatic Updates is off — otherwise the user can never see or
+  // act on an available update without enabling the toggle first.
   syncUpdateManager(settings)
   emit({ status: 'checking', current, latest: lastEvent?.latest ?? null, message: 'Checking for Sovara updates…' })
   try {
@@ -208,6 +230,39 @@ export function installDownloadedUpdate(): void {
   updater.quitAndInstall(false, true)
 }
 
+/**
+ * Explicitly download an available update.
+ *
+ * `autoDownload` is wired to the "Automatic Updates" toggle, so with that
+ * toggle off a detected update would sit at `available` forever with no way
+ * to act on it. This is the user-gated download path: it never installs, it
+ * only fetches. Installation stays a separate explicit action.
+ */
+export function downloadUpdateNow(settings?: UpdateSettings): void {
+  if (installRequested) throw new Error('Sovara is already restarting to install an update.')
+  if (downloadedVersion) {
+    emit({ status: 'downloaded', current: currentVersion(), latest: downloadedVersion, percent: 100, message: `Sovara ${downloadedVersion} is already downloaded. Restart to install it.` })
+    return
+  }
+  if (lastEvent?.status === 'downloading') {
+    throw new Error('An update download is already in progress.')
+  }
+  if (lastEvent?.status === 'available' && !lastEvent.latest) {
+    throw new Error('No update version is available to download.')
+  }
+
+  if (settings) syncUpdateManager(settings)
+  initializeUpdateManager(broadcast)
+
+  const version = lastEvent?.latest ?? null
+  emit({ status: 'downloading', current: currentVersion(), latest: version, percent: 0, message: 'Downloading update… 0%' })
+  // electron-updater rejects with a promise; never let it become an unhandled
+  // rejection. The `error` listener turns a failure into an `error` event.
+  void Promise.resolve(updater.downloadUpdate()).catch(() => {
+    // Already surfaced through the `error` listener in ensureEventListeners.
+  })
+}
+
 export function isUpdateInstallInProgress(): boolean {
   return installRequested
 }
@@ -221,6 +276,8 @@ export function setUpdaterForTests(nextUpdater: Updater): void {
   updater = nextUpdater
   initialized = false
   lastEvent = null
+  downloadedVersion = null
+  installRequested = false
   if (interval !== null) clearInterval(interval)
   interval = null
 }

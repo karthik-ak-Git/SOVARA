@@ -299,8 +299,31 @@ export function AuxiliaryPane({
         const d: any = e.data || {}
         const toolName = d.name || d.toolName || d.toolCall?.name
         if (toolName === 'invoke_subagent' || toolName === 'define_subagent') {
-          const role = d.args?.Role || d.args?.name || d.args?.role || 'Subagent Task'
-          list.push({ id: String(e.seq || Math.random()), role: String(role), type: String(toolName), state: 'completed', duration: 'Worked for subagent' })
+          const callId = String(d.toolCallId || e.seq || Math.random())
+          const args = d.args || {}
+          // Prefer the actual task text; fall back to the role so the card is
+          // never a content-free "Subagent Task" placeholder.
+          const description = typeof args.description === 'string' ? args.description.trim() : ''
+          const role = args.role || args.Role || 'general'
+          const label = description || String(role)
+          // A tool/call only proves the subagent STARTED. Correlate the matching
+          // tool/result so the card reports the real outcome instead of assuming
+          // success — a failed or cancelled subagent must not read as completed.
+          const result = events.find((r) => {
+            if (r.type !== 'tool/result') return false
+            const rd: any = r.data || {}
+            const sameName = (rd.name || rd.toolName) === toolName
+            return sameName && (!rd.toolCallId || String(rd.toolCallId) === callId || String(e.seq) === callId)
+          })
+          let state = 'running'
+          let detail: string | undefined = description ? undefined : `Role: ${String(role)}`
+          if (result) {
+            const rd: any = result.data || {}
+            const ok = rd.ok !== false && !rd.error
+            state = ok ? 'completed' : 'failed'
+            detail = ok ? description || undefined : (rd.error || 'Subagent did not complete')
+          }
+          list.push({ id: callId, role: label, type: String(toolName), state, detail })
         }
       }
     }
@@ -1166,14 +1189,18 @@ export function AuxiliaryPane({
                 >
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text, #0f172a)', display:'flex', alignItems:'center', gap:6 }}>
-                      {sa.type==='live' ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', animation:'pulse 1s infinite', display:'inline-block' }} /> : null}
+                      {sa.type==='live' || sa.state==='running' ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#f59e0b', animation:'pulse 1s infinite', display:'inline-block' }} /> : null}
                       <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{sa.role}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted, #64748b)', marginTop: 2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {sa.detail || sa.duration || 'Worked for subagent'}
+                    <div style={{ fontSize: 11, color: sa.state==='failed' ? '#b91c1c' : 'var(--muted, #64748b)', marginTop: 2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {sa.detail || sa.duration || (sa.state==='failed' ? 'Subagent did not complete' : 'Delegated task')}
                     </div>
                   </div>
-                  {sa.type==='live' ? <div style={{ width:14, height:14, border:'2px solid #f59e0b', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.6s linear infinite', flexShrink:0 }} /> : <Check size={16} style={{ color: '#10b981', flexShrink:0 }} aria-hidden />}
+                  {sa.type==='live' || sa.state==='running'
+                    ? <div style={{ width:14, height:14, border:'2px solid #f59e0b', borderTopColor:'transparent', borderRadius:'50%', animation:'spin 0.6s linear infinite', flexShrink:0 }} aria-label="Subagent running" />
+                    : sa.state==='failed'
+                      ? <span style={{ color:'#dc2626', fontSize:16, fontWeight:700, lineHeight:1, flexShrink:0 }} aria-label="Subagent failed">&times;</span>
+                      : <Check size={16} style={{ color: '#10b981', flexShrink:0 }} aria-label="Subagent completed" />}
                 </div>
               ))
             ) : null}

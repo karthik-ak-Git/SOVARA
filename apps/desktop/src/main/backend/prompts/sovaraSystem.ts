@@ -147,7 +147,7 @@ text: `Tool MCP - call MCP servers (context, resources). Treat as background too
 {
 name: 'tool:task',
 order: SECTION_ORDERS.TOOL_TASK,
-text: `Tool Task — launch subagents (explore/general) for parallel independent work.`
+text: `Tool invoke_subagent - delegate ONE narrow, self-contained sub-task to an independent background agent. Emit it as a fenced tool call: tool:invoke_subagent {"role":"explore","description":"..."}. It runs on the already-loaded local model in its own slot, so it cannot collide with this turn and the user can keep working; its answer comes back as this tool result. Use role=explore for read-only investigation. Dispatch at most 3 per turn. NEVER use it to ask the user something (use clarify), and never for work that would need a second model.`
 },
 {
 name: 'sovara:env',
@@ -190,6 +190,7 @@ const CONTEXT_ORDERS = { SANDBOX_POLICY: 110, APPROVAL_POLICY: 115, SUBAGENT_DEL
 export const SOVARA_CONTEXTS: PromptContext[] = [
   { name: 'ctx:sandbox', order: CONTEXT_ORDERS.SANDBOX_POLICY, text: `Sandbox: workspace root only, never touch D:\\SOVARA repo, PowerShell 5.1 quoted.` },
   { name: 'ctx:approval', order: CONTEXT_ORDERS.APPROVAL_POLICY, text: `Approval: confirm destructive/overwrite outside workspace, otherwise proceed reversible.` },
+  { name: 'ctx:subagent', order: CONTEXT_ORDERS.SUBAGENT_DELEGATION, text: `Delegation: one resident model, so a subagent shares it. Each subagent gets an isolated slot, so it never collides with the parent turn. Prefer doing work yourself unless the task is genuinely narrow and independent; a subagent cannot ask the user anything.` },
 ]
 
 export const TOOL_ORDER = ['Read','Write','Edit','Glob','Grep','Bash','todo_write','WebSearch','WebFetch','Skill','MCP','Task'] as const

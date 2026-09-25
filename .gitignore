@@ -45,6 +45,7 @@ apps/desktop/out/
 apps/desktop/dist/
 apps/desktop/web-runtime/
 *.log
+*.tsbuildinfo
 
 # Screenshots & visual test traces / images
 screenshots/
