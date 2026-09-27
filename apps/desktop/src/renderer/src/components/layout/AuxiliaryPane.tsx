@@ -414,7 +414,7 @@ export function AuxiliaryPane({
       const label = info.count > 1 ? `${tool} ×${info.count}` : tool
       // avoid duplicating a skill name already listed
       if (!out.some((o) => o.name === tool || o.name === label)) {
-        out.push({ name: label, path: info.sampleArgs || undefined, source: info.isSkill ? 'skill' : 'tool' })
+        out.push({ name: label, path: undefined, source: info.isSkill ? 'skill' : 'tool' })
       }
     }
     return out.slice(0, 12)
@@ -1476,7 +1476,7 @@ export function AuxiliaryPane({
                         key={idx}
                         type="button"
                         onClick={() => {
-                          if (sk.path) {
+                          if (sk.path && typeof sk.path === 'string' && (sk.path.endsWith('.md') || sk.path.includes('/') || sk.path.includes('\\'))) {
                             openArtifact(sk.path + (sk.path.endsWith('SKILL.md') ? '' : '/SKILL.md'))
                           }
                         }}

@@ -132,20 +132,41 @@ function buildGateMessage(missing: string[]): string {
   return `GATE FAILED: Must read skills before generating artifacts. Missing: ${missing.join(', ')}. Call search_skills then read_skill {skill_name: '${missing[0]}'}`
 }
 
-// Skill-read gate — mirrors EnhancedAgentOrchestrator.SkillReadingGate
-function checkSkillReadGate(classification: TaskClassification & { skillsNeeded?: string[] }, toolHistory: Array<{ name: string; args: Record<string, unknown> }>, skillsReadSet: Set<string>): { passed: boolean; missing: string[]; message: string } {
+/** How many search attempts count as "genuinely unavailable" before we stop
+ *  blocking. Without this the gate deadlocks: a failed search satisfied the
+ *  attempt check, the gate re-failed, and the turn burned all 32 steps with no
+ *  inference. Two honest misses means the skill probably is not installed, and
+ *  the correct move is to degrade to the built-in writer, not to spin. */
+export const MAX_SKILL_SEARCH_ATTEMPTS = 2
+
+/** Skill-read gate - format-agnostic by design.
+ *
+ *  It used to filter `skillsNeeded` through a hardcoded allowlist
+ *  (['pptx','docx','xlsx','pdf','diagram','code']) and skip the gate entirely
+ *  for anything else, which made 6 buckets gated and left the rest of the
+ *  installed corpus invisible. It now gates on the classifier's own signal,
+ *  whatever it names, and hardcodes no list of formats into the router. */
+export function checkSkillReadGate(classification: TaskClassification & { skillsNeeded?: string[] }, toolHistory: Array<{ name: string; args: Record<string, unknown> }>, skillsReadSet: Set<string>): { passed: boolean; missing: string[]; message: string } {
   const needed = (classification as any).skillsNeeded as string[] | undefined
   if (!needed || needed.length === 0) return { passed: true, missing: [], message: 'No skills needed' }
-  // Filter to artifact-relevant skills (pptx/docx/xlsx/pdf — code/rag use broader handling)
-  const artifactSkills = needed.filter((s) => ['pptx','docx','xlsx','pdf','diagram','code'].includes(s))
-  if (artifactSkills.length === 0) return { passed: true, missing: [], message: 'No artifact skills needed' }
-  const hasSearch = toolHistory.some((t) => t.name === 'search_skills')
   const read = new Set<string>(toolHistory.filter((t) => t.name === 'read_skill').map((t) => String((t.args as any).skill_name ?? (t.args as any).skillName ?? '').toLowerCase()))
   for (const s of skillsReadSet) read.add(s.toLowerCase())
-  const missing = artifactSkills.filter((s) => !read.has(s.toLowerCase()) && !read.has(s))
-  if (missing.length > 0 && !hasSearch) return { passed: false, missing, message: `GATE FAILED: Must read skills before artifacts. Missing: ${missing.join(', ')}. Call search_skills {query: '${missing[0]}'}` }
-  if (missing.length > 0) return { passed: false, missing, message: buildGateMessage(missing) }
-  return { passed: true, missing: [], message: 'Skill gate passed' }
+  for (const r of read) if (r) return { passed: true, missing: [], message: `Skill gate passed (read: ${[...read].filter(Boolean).join(', ')})` }
+  // BUG FOUND HERE: this used to compare the classifier's FORMAT BUCKETS against
+  // the names of skills the model actually read. The classifier emits 'pptx';
+  // the installed skill is 'pptx-official'. Those never match, so the gate could
+  // not be satisfied by a genuine read and the turn spun to its step limit with
+  // no artifact and no memory write. Gating on "at least one skill was read" is
+  // both satisfiable and format-agnostic.
+  const searchAttempts = toolHistory.filter((t) => t.name === 'search_skills').length
+  if (searchAttempts >= MAX_SKILL_SEARCH_ATTEMPTS) {
+    return {
+      passed: true,
+      missing: needed,
+      message: `SKILL UNAVAILABLE after ${searchAttempts} searches for: ${needed.join(', ')}. No installed skill matches. State that plainly, then use the built-in writer or answer in text. Never claim a skill was read.`,
+    }
+  }
+  return { passed: false, missing: needed, message: buildGateMessage(needed) }
 }
 
 function checkTaskCompletionGate(classification: TaskClassification & { requiresArtifact?: boolean; artifactType?: string }, hasArtifact: boolean): { passed: boolean; message: string } {
@@ -1260,6 +1281,13 @@ export class AgentOrchestrator {
           this.emit(sid, 'task:reading', { taskKind: classification.kind, fileName: `Skills: ${skillList}`, detail: `Active skills: ${skillList}` })
         }
       } catch { /* ignore */ }
+      // When skills match, they are the source of truth for HOW to do the work.
+      // Without this the model skips straight to fs_write/shell_exec and only
+      // reaches for MCP tools, producing plausible output that ignores the
+      // skill's actual procedure. Force search_skills → read_skill first.
+      if (skillsContext) {
+        skillsContext += `\n\n[Skill Routing — mandatory]: Matching skills were found for this request (listed above). Before calling any write, shell, or MCP tool, you MUST call search_skills to confirm, then read_skill on the best match, and follow its procedure. MCP tools are for capabilities the skills do not provide; they are not a substitute for reading a skill.`
+      }
       let todoContext: string | null = null
       try { todoContext = this.deps.getTodoContext?.() ?? null } catch { /* ignore */ }
       let webContext: string | null = null
@@ -1625,34 +1653,77 @@ export class AgentOrchestrator {
       }
       const skillsReadSet = new Set<string>()
       const toolHistoryForGate: Array<{ name: string; args: Record<string, unknown> }> = []
+      // Skill-gate mandate counter. The gate must let the MODEL act (that is the
+      // whole point — it can only satisfy the gate by emitting search_skills /
+      // read_skill), but it must not loop forever if the model ignores it.
+      let skillGateMandates = 0
+      const MAX_SKILL_GATE_MANDATES = 4
+      // Loop-breaker state MUST live at toolLoop scope. Declared inside the
+      // per-`done`-chunk block it was re-initialised every iteration, so
+      // dupStreak could never reach the threshold and a model stuck repeating
+      // one identical failing command spun until MAX_LOOP instead of being told
+      // to clarify.
+      let lastCallSig = ''
+      let dupStreak = 0
 
       toolLoop: while (loopSteps++ < MAX_LOOP) {
         shouldContinueLoop = false
 
         // Context Compactor for Tool Loop:
-        // If prompt tokens exceed 75% of context window, compress earlier tool outputs to prevent context overflow
-        const currentTokens = messages.reduce((n, m) => n + Math.ceil((m.content || '').length / 4), 0)
-        if (currentTokens > nCtx * 0.75 && messages.length > 5) {
-          const protectedTail = 4
-          for (let idx = 2; idx < messages.length - protectedTail; idx++) {
+        // If prompt tokens exceed 70% of context window, compress earlier tool outputs and system contexts to prevent exceed_context_size_error
+        const estTokens = messages.reduce((n, m) => n + Math.ceil((m.content || '').length / 3.2), 0)
+        const tokenBudget = Math.max(1024, nCtx - 1200)
+        if (estTokens > tokenBudget && messages.length > 3) {
+          this.safeLog(`[SOVARA][ORCH] Context size high (${estTokens} est. tokens vs budget ${tokenBudget}, nCtx=${nCtx}), compacting prompt messages...`)
+          // 1. Truncate system message skillsContext if bloated
+          if (messages[0] && messages[0].role === 'system' && messages[0].content.length > 6000) {
+            messages[0].content = messages[0].content.slice(0, 6000) + '\n... [skills_context truncated to fit context window]'
+          }
+          // 2. Compress earlier tool & assistant messages
+          const protectedTail = 3
+          for (let idx = 1; idx < messages.length - protectedTail; idx++) {
             const m = messages[idx]
-            if (m.role === 'tool' && m.content && m.content.length > 300) {
-              m.content = m.content.slice(0, 180) + '... [earlier tool output compressed]'
-            } else if (m.role === 'assistant' && m.content && m.content.length > 1000) {
-              m.content = m.content.slice(0, 500) + '... [earlier thoughts compressed]'
+            if (!m) continue
+            if (m.role === 'tool' || ((m as any).role === 'user' && m.content.startsWith('SYSTEM GATE:'))) {
+              if (m.content.length > 150) {
+                m.content = m.content.slice(0, 150) + '... [earlier tool output truncated for context window]'
+              }
+            } else if (m.role === 'assistant') {
+              if (m.content.length > 300) {
+                m.content = m.content.slice(0, 300) + '... [earlier assistant text truncated]'
+              }
             }
           }
+          // 3. Drop middle turns if still over budget
+          let revisedTokens = messages.reduce((n, m) => n + Math.ceil((m.content || '').length / 3.2), 0)
+          while (revisedTokens > tokenBudget && messages.length > 4) {
+            messages.splice(2, 1)
+            revisedTokens = messages.reduce((n, m) => n + Math.ceil((m.content || '').length / 3.2), 0)
+          }
         }
-        // GATE 1: Skill-read enforcement — block artifact generation until required skills are read
+        // GATE 1: Skill-read enforcement — block artifact generation until required skills are read.
+        //
+        // The mandate is injected into `messages` and execution FALLS THROUGH to
+        // the model call. It must NOT `continue`: skipping the LLM call here
+        // deadlocks the turn, because the gate can only be satisfied by a model
+        // that emits search_skills/read_skill — a model that is never invoked can
+        // never satisfy it. The old `continue` burned all MAX_LOOP iterations
+        // without a single inference and the turn died as "autonomous execution
+        // did not complete" with skillsRead empty.
         {
           const gate = checkSkillReadGate(classification as any, toolHistoryForGate, skillsReadSet)
           trace.gateChecks.push({ gate: 'skill_read_gate', passed: gate.passed, message: gate.message })
           if (!gate.passed) {
+            if (skillGateMandates >= MAX_SKILL_GATE_MANDATES) {
+              // The model ignored the mandate repeatedly. Stop burning steps and
+              // let the honest completion gate report the real reason.
+              trace.gateChecks.push({ gate: 'skill_read_gate', passed: false, message: 'skill-read mandate ignored by the model after repeated attempts' })
+              break
+            }
+            skillGateMandates++
             this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: loopSteps, detail: gate.message })
-            // Inject mandatory system note so LLM is forced to call search_skills → read_skill
-            messages.push({ role: 'user', content: `SYSTEM GATE: ${gate.message}\nYou must call search_skills and read_skill now. Do not generate files yet.` })
+            messages.push({ role: 'user', content: `SYSTEM GATE: ${gate.message}\nYou must call search_skills and read_skill NOW, as your very next action. Do not generate any file yet.` })
             this.emit(sid, 'step:end', { taskKind: classification.kind, stepIndex: loopSteps, detail: 'injected skill-read mandate' })
-            continue
           }
         }
         if (classification.reasoningRequired || opts?.reasoning) {
@@ -1932,9 +2003,8 @@ export class AgentOrchestrator {
             }
             messages.push(assistantToolCallMsg)
 
-            // Execute each requested tool and append its result
-            let lastCallSig = ''
-            let dupStreak = 0
+            // Execute each requested tool and append its result.
+            // lastCallSig / dupStreak are toolLoop-scoped (see declaration above).
             for (const tc of chunk.toolCalls) {
               const toolName = tc.function.name
               let toolArgs: Record<string, unknown> = {}
@@ -2406,7 +2476,18 @@ export class AgentOrchestrator {
       const needsFileMutation = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
       const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
       const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
-      const needsInspectionAction = !hasImageAttachment && (/\b(?:read|inspect|list|find|show|view|open)\b/i.test(content) || (classification.kind === 'tool-use' && !needsWebAction))
+      // Inspection is only REQUIRED when the user actually asked to read/see
+      // something. Firing it for every `tool-use` classification made legitimate
+      // "create file X" turns fail with "no successful workspace inspection" even
+      // though the write succeeded — a false positive that broke the very turn the
+      // gate was supposed to protect.
+      //
+      // A successful shell_exec already produced output the user asked to see, so
+      // "run X and show me the output" is satisfied by the command, not by a
+      // second filesystem read.
+      const hasShellEvidence = trace.toolResults.some((r) => r.success && r.effect === 'shell')
+      const needsInspectionAction = !hasImageAttachment && !hasShellEvidence
+        && /\b(?:read|inspect|list|find|show|view|open)\b/i.test(content)
       const requiredActionFailures: string[] = []
       if (needsFileMutation && successfulFileTools.size === 0) {
         requiredActionFailures.push('no successful file-writing tool was executed')
@@ -2808,6 +2889,24 @@ export class AgentOrchestrator {
         }
       }
 
+      // Auto 2D Memory Store check — ensure wiki/ markdown files are written when memory intent is present
+      const isMemoryIntent = /\b(?:remember|save memory|wiki|knowledge graph|store memory|memory store)\b/i.test(content) || /\b(?:remember this|keep track of|note down)\b/i.test(content)
+      if (isMemoryIntent && !trace.toolResults.some((r) => r.toolName === 'memory')) {
+        try {
+          const rawTitle = content.replace(/^(?:please|can you)?\s*(?:remember|save|store|note down|keep track of)\s*/i, '').trim()
+          const title = rawTitle.slice(0, 60) || 'Project Knowledge Note'
+          await (this.deps.tools as unknown as { dispatch: (n: string, a: Record<string, unknown>) => Promise<string> }).dispatch('memory', {
+            action: 'store',
+            title,
+            type: 'concept',
+            body: text.slice(0, 2000),
+            links: [],
+            tags: ['memory', 'knowledge']
+          })
+          text += `\n\n🧠 2D Memory note updated: **${title}** — saved to workspace \`wiki/\` for Knowledge Graph.`
+        } catch {}
+      }
+
       const promptText = messages.map((m) => m.content).join(' ')
       const visionTokenEstimate = messages.reduce((n, m) => n + (m.images?.length ?? 0) * 1024, 0)
       const tokenUsage = usage ?? {
@@ -3112,7 +3211,13 @@ export class AgentOrchestrator {
       let mcpContext: string | null = null
       try { mcpContext = this.deps.getMcpContext?.() ?? null } catch {}
       let skillsContext: string | null = null
-      try { skillsContext = (await this.deps.getSkillsContext?.(content, wsRoot ?? undefined)) ?? null } catch {}
+      try {
+        skillsContext = (await this.deps.getSkillsContext?.(content, wsRoot ?? undefined)) ?? null
+        // Same skill-first rule as the send() path (see Phase 5 injection).
+        if (skillsContext) {
+          skillsContext += `\n\n[Skill Routing — mandatory]: Matching skills were found for this request (listed above). Before calling any write, shell, or MCP tool, you MUST call search_skills to confirm, then read_skill on the best match, and follow its procedure. MCP tools are for capabilities the skills do not provide; they are not a substitute for reading a skill.`
+        }
+      } catch {}
       let todoContextReg: string | null = null
       try { todoContextReg = this.deps.getTodoContext?.() ?? null } catch {}
 

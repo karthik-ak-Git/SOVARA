@@ -284,11 +284,16 @@ describe('processAttachments', () => {
       false
     )
     expect(ctx[0]).toContain('NO vision input')
-    // Must steer the model to the ocr tool — never to fs_read on image bytes,
-    // which is how the model ended up "reading image.png" instead of seeing it.
-    expect(ctx[0]).toContain('suggest a vision model')
-    expect(ctx[0]).toContain('Do NOT try fs_read')
-    expect(ctx[0]).toContain('Never pretend')
+    // A passive "tell the user you cannot see it" is not enough: the model must
+    // be told to ASK through the clarify card, or it invents a text stand-in for
+    // the image and writes it to disk as if it were the picture.
+    const all = ctx.join('\n')
+    // Never fs_read the image bytes (they are not text) and never fabricate a
+    // placeholder "image" file.
+    expect(all).toContain('Do NOT call fs_read')
+    expect(all).toContain('tool:clarify')
+    expect(all).toMatch(/MANDATORY/)
+    expect(all).toMatch(/do NOT create placeholder files/i)
   })
 })
 

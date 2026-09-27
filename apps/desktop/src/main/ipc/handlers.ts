@@ -1031,12 +1031,33 @@ export function registerIpcHandlers(): void {
   })
 
   // ── Git status / diff for right-rail Files Changed (full sync, not synthetic) ──
+  //
+  // Non-repo workspaces are the common case (a plain scratch dir, an unpacked
+  // project). `git` writes "fatal: not a git repository" to stderr and exits
+  // non-zero; execSync forwarded that straight to the app console on EVERY
+  // tool-dispatch event, burying the real log. Probe once with stderr piped,
+  // then answer `notARepo` without spawning git again.
+  const isGitRepo = (cwd: string): boolean => {
+    try {
+      const out = execSync('git rev-parse --is-inside-work-tree', {
+        cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      return out === 'true'
+    } catch { return false }
+  }
+  const gitExec = (cmd: string, cwd: string): string => execSync(cmd, {
+    cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'],
+  })
+
   ipcMain.handle('git:status', async (_e, raw: unknown) => {
     const parsed = zGitStatus.safeParse(raw ?? {})
     const workspaceRoot = (parsed.success ? parsed.data.workspaceRoot : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
     const cwd = path.resolve(workspaceRoot)
+    if (!isGitRepo(cwd)) {
+      return { ok: false, notARepo: true, cwd, files: [], statRaw: '' }
+    }
     try {
-      const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf8', timeout: 4000 })
+      const porcelain = gitExec('git status --porcelain', cwd)
       const files = porcelain.split('\n').filter(Boolean).map((line) => {
         const staged = line[0] !== ' ' && line[0] !== '?' && line[0] !== '!'
         const code = line.slice(0, 2)
@@ -1044,7 +1065,7 @@ export function registerIpcHandlers(): void {
         return { path: filePath, code, staged }
       })
       let statRaw = ''
-      try { statRaw = execSync('git diff --stat --no-color; echo "---STAGED---"; git diff --cached --stat --no-color', { cwd, encoding: 'utf8', timeout: 4000 }) } catch { statRaw = '' }
+      try { statRaw = gitExec('git diff --stat --no-color; echo "---STAGED---"; git diff --cached --stat --no-color', cwd) } catch { statRaw = '' }
       return { ok: true, cwd, files, statRaw }
     } catch (e) {
       return { ok: false, cwd, files: [], error: e instanceof Error ? e.message : String(e) }
@@ -1057,21 +1078,25 @@ export function registerIpcHandlers(): void {
     const cwd = path.resolve(workspaceRoot || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd())
     const file = String(filePath || '').trim()
     if (!file) throw new Error('missing filePath')
+    if (!isGitRepo(cwd)) {
+      return { ok: false, notARepo: true, cwd, file, diff: '', content: '', oldContent: null, isMarkdown: false, isHtml: false, isImage: false, imageDataUrl: null } as any
+    }
+    const safeFile = file.replace(/"/g, '\\"')
     try {
       // Try unstaged diff first, then staged, then HEAD
       let diff = ''
-      try { diff = execSync(`git diff --no-color -U3 -- "${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch {}
+      try { diff = gitExec(`git diff --no-color -U3 -- "${safeFile}"`, cwd) } catch {}
       if (!diff) {
-        try { diff = execSync(`git diff --cached --no-color -U3 -- "${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch {}
+        try { diff = gitExec(`git diff --cached --no-color -U3 -- "${safeFile}"`, cwd) } catch {}
       }
       if (!diff) {
-        try { diff = execSync(`git show HEAD:"${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }); diff = `--- a/${file}\n+++ b/${file}\n@@ -0,0 +1,${diff.split('\n').length} @@\n${diff.split('\n').map((l) => `+${l}`).join('\n')}` } catch {}
+        try { diff = gitExec(`git show HEAD:"${safeFile}"`, cwd); diff = `--- a/${file}\n+++ b/${file}\n@@ -0,0 +1,${diff.split('\n').length} @@\n${diff.split('\n').map((l) => `+${l}`).join('\n')}` } catch {}
       }
       // Also get file contents for renderers
       let content = ''
       let oldContent: string | null = null
       try { content = fs.readFileSync(path.join(cwd, file), 'utf8') } catch {}
-      try { oldContent = execSync(`git show HEAD:"${file.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf8', timeout: 4000 }) } catch { oldContent = null }
+      try { oldContent = gitExec(`git show HEAD:"${safeFile}"`, cwd) } catch { oldContent = null }
       const ext = path.extname(file).toLowerCase()
       const isMarkdown = ext === '.md' || file.toLowerCase().endsWith('readme.md')
       const isHtml = ext === '.html' || ext === '.htm'

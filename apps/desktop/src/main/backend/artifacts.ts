@@ -1,10 +1,10 @@
 /**
- * artifacts — required-output generation driven by the user's instruction.
+ * artifacts â€” required-output generation driven by the user's instruction.
  *
  * `detectOutputFormat(userContent)` is deterministic: it fires only on an
  * explicit file request (a filename with a known extension, or a
  * generate/export/save verb aimed at pdf / excel / word). Anything else is
- * chat — the model answers in the timeline as usual.
+ * chat â€” the model answers in the timeline as usual.
  *
  * All writers are dependency-free: minimal PDF 1.4, and .xlsx / .docx built
  * on the bundled mini-zip writer. Tables in the reply become spreadsheet
@@ -28,8 +28,37 @@ export interface DetectedOutput {
 
 const CODE_EXTS = ['py', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cs', 'rb', 'php', 'swift', 'html', 'css', 'scss', 'json', 'yaml', 'yml', 'xml', 'md', 'txt', 'sh', 'ps1', 'bat', 'sql', 'r', 'lua', 'toml', 'ini', 'cfg', 'vue', 'svelte']
 
+/** Connectives that are never part of a filename the user asked for. */
+const FILENAME_STOP_WORDS = new Set([
+  'as', 'to', 'into', 'in', 'on', 'at', 'for', 'of', 'the', 'a', 'an', 'and', 'or',
+  'is', 'it', 'this', 'that', 'named', 'called', 'file', 'output',
+])
+
+/** Document-type nouns that describe the FORMAT, not the name. "generate an excel
+ *  spreadsheet sales.xlsx" must yield sales.xlsx, not spreadsheet-sales.xlsx. */
+const FILENAME_TYPE_WORDS = new Set([
+  'report', 'spreadsheet', 'document', 'presentation', 'deck', 'slides', 'slide',
+  'table', 'summary', 'doc', 'sheet', 'sheets', 'workbook', 'notes', 'letter',
+  'memo', 'chart', 'csv', 'pdf', 'ppt', 'pptx', 'xls', 'xlsx', 'docx', 'text',
+  'code', 'script', 'markdown', 'copy', 'draft', 'export', 'printout', 'page',
+])
+
 export function sanitizeFileName(name: string, fallback: string): string {
-  const base = path.basename(name).replace(/[^\w.\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 96)
+  // Drop leading words the sentence left behind. Without this,
+  // "â€¦a report as revenue.pdf" yields "report-as-revenue.pdf" instead of the
+  // "revenue.pdf" the user actually asked for, and
+  // "â€¦an excel spreadsheet sales.xlsx" yields "spreadsheet-sales.xlsx".
+  // A meaningful qualifier ("Q3 revenue.pdf") is preserved because it is
+  // neither a connective nor a format noun.
+  let stem = path.basename(name)
+  const words = stem.replace(/[^\w.\- ]+/g, '').trim().split(/[\s_]+/).filter(Boolean)
+  while (words.length > 1) {
+    const head = (words[0] ?? '').toLowerCase()
+    if (!FILENAME_STOP_WORDS.has(head) && !FILENAME_TYPE_WORDS.has(head)) break
+    words.shift()
+  }
+  stem = words.join(' ')
+  const base = stem.trim().replace(/\s+/g, '-').slice(0, 96)
   return base || fallback
 }
 
@@ -64,7 +93,15 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
   if (isReadIntent && !wantsCreateArtifact) return null
 
   // 1. Explicit filename with a known extension wins (only if not a stack trace/log paste).
-  const fileRe = /([A-Za-z0-9 _\-][A-Za-z0-9 _\-.]{0,90}\.(pdf|xlsx?|docx?|pptx?|csv|py|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|cpp|h|hpp|cs|rb|php|swift|html|css|json|ya?ml|xml|md|txt|sh|ps1|sql|r|lua|toml|vue|svelte))\b/i
+  //
+  // The candidate must be bounded to the LAST whitespace-delimited token (plus
+  // at most one qualifier word) before the extension. A greedy
+  // `[A-Za-z0-9 _\-]{0,90}` swallowed the whole sentence, so
+  // "Create a quarterly revenue report as revenue.pdf" produced
+  // "Create-a-quarterly-revenue-report-as-revenue.pdf". Bounding to one
+  // preceding word yields "as revenue.pdf", and sanitizeFileName then drops the
+  // leading stop word "as" to give the real "revenue.pdf".
+  const fileRe = /((?:[A-Za-z0-9_\-]+[ ])?[A-Za-z0-9_\-]+\.(pdf|xlsx?|docx?|pptx?|csv|py|ts|tsx|js|jsx|mjs|rs|go|java|kt|c|cpp|h|hpp|cs|rb|php|swift|html|css|json|ya?ml|xml|md|txt|sh|ps1|sql|r|lua|toml|vue|svelte))\b/i
   const fileM = !isStackTraceOrLog ? fileRe.exec(text) : null
   if (fileM) {
     const raw = fileM[1]!.trim()
@@ -75,7 +112,7 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
     if (ext === 'ppt' || ext === 'pptx') return { kind: 'pptx', fileName: sanitizeFileName(raw.replace(/\.ppt$/i, '.pptx'), 'sovara-output.pptx'), explicitName: true }
     if (CODE_EXTS.includes(ext)) return { kind: 'code', fileName: sanitizeFileName(raw, `sovara-output.${ext}`), explicitName: true }
   }
-  // 2. Generate/export/save verb aimed at a document kind — scan FULL prompt, not just 400ch head.
+  // 2. Generate/export/save verb aimed at a document kind â€” scan FULL prompt, not just 400ch head.
   const scan = text.toLowerCase()
   const wantsPptx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(ppt|pptx|presentation|slide deck|slides|powerpoint)\b/i.test(text) || /\b(ppt|pptx|presentation|slide deck|powerpoint) (file|document|export|download|deck)\b/i.test(text)
   if (wantsPptx) return { kind: 'pptx', fileName: `${slugify(text.slice(0,120))}.pptx`, explicitName: false }
@@ -85,7 +122,7 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
   if (wantsXlsx) return { kind: 'xlsx', fileName: `${slugify(text.slice(0,120))}.xlsx`, explicitName: false }
   const wantsDocx = /\b(generate|create|make|export|save|download|produce|write|build)\b[^.\n]{0,80}\b(word|docx?|document file)\b/i.test(text) || /\b(word) (file|document|export|download)\b/i.test(text)
   if (wantsDocx) return { kind: 'docx', fileName: `${slugify(text.slice(0,120))}.docx`, explicitName: false }
-  // 3. Code file — only trigger if the user explicitly asked to save to a specific filename
+  // 3. Code file â€” only trigger if the user explicitly asked to save to a specific filename
   const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(text)
   if (codeFileM) return { kind: 'code', fileName: sanitizeFileName(codeFileM[1]!.trim(), 'script.txt'), explicitName: true }
   return null
@@ -105,7 +142,7 @@ export function extractCodeBlock(text: string, preferredLang?: string): { lang: 
   return blocks[0] ?? null
 }
 
-/** Markdown tables → sheets. Falls back to one sheet of raw lines. */
+/** Markdown tables â†’ sheets. Falls back to one sheet of raw lines. */
 export function markdownToSheets(text: string): Array<{ name: string; rows: string[][] }> {
   const sheets: Array<{ name: string; rows: string[][] }> = []
   const lines = text.split('\n')
@@ -134,7 +171,7 @@ export function markdownToSheets(text: string): Array<{ name: string; rows: stri
   return sheets
 }
 
-/** Markdown → plain paragraphs (headings kept as lead lines, markup stripped). */
+/** Markdown â†’ plain paragraphs (headings kept as lead lines, markup stripped). */
 export function markdownToParagraphs(text: string): string[] {
   const out: string[] = []
   for (const raw of text.split('\n')) {
@@ -143,7 +180,7 @@ export function markdownToParagraphs(text: string): string[] {
     if (/^```/.test(t)) continue
     const clean = t
       .replace(/^#{1,6}\s+/, '')
-      .replace(/^\s*[-*+]\s+/, '• ')
+      .replace(/^\s*[-*+]\s+/, 'â€¢ ')
       .replace(/^\s*\d+[.)]\s+/, '')
       .replace(/[*_`~]/g, '')
       .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -156,11 +193,42 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function escapePdf(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+/**
+ * Fold typographic characters down to ASCII before they reach the PDF byte
+ * stream.
+ *
+ * The PDF writer emits content through a latin1 byte path (`Buffer.byteLength
+ * (ops, 'latin1')`), so any codepoint above U+00FF is silently TRUNCATED to its
+ * low byte rather than encoded. U+2022 BULLET became 0x22, which renders as a
+ * double-quote - that is why every markdown list item came out as
+ * `" Enterprise: $2.1M` instead of a bullet. Em dashes, curly quotes and
+ * ellipses were mangled the same way.
+ *
+ * The system prompt now asks the model for ASCII, but a local 4B model will
+ * still slip. Correctness cannot depend on the model obeying, so the writer
+ * normalises defensively. DOCX and PPTX are UTF-8 XML and need none of this.
+ */
+function pdfSafe(s: string): string {
+  return s
+    .replace(/[\u2018\u2019\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2010-\u2015]/g, '-')   // hyphen, figure dash, en dash, em dash, horizontal bar
+    .replace(/[\u2212]/g, '-')                       // minus sign
+    .replace(/[\u2022\u2023\u2043\u25CF\u25E6]/g, '-') // bullet, triangle, hyphen bullet, circles
+    .replace(/\u2026/g, '...')                                  // ellipsis
+    .replace(/[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g, '->') // arrows
+    .replace(/[\u00A0\u2007\u202F]/g, ' ')                      // nbsp and friends
+    .replace(/[\u00B0]/g, ' degrees')
+    .replace(/[\u00A7\u00B6]/g, '')                            // section, pilcrow
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')                     // zero-width
+    .replace(/[^\x20-\x7E]/g, '')                              // anything still non-ASCII
 }
 
-/** Minimal multi-page PDF 1.4 (Helvetica only — always available). */
+function escapePdf(s: string): string {
+  return pdfSafe(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+}
+
+/** Minimal multi-page PDF 1.4 (Helvetica only â€” always available). */
 export function writePdfFile(filePath: string, title: string, bodyText: string): void {
   const paras = markdownToParagraphs(`${title}\n\n${bodyText}`)
   const lines: string[] = []
@@ -304,7 +372,7 @@ export function markdownToSlides(text: string): Array<{ title: string; bullets: 
       const b = tm[1]!.trim()
       if (b && !bullets.includes(b)) bullets.push(b)
     }
-    slides.push({ title, bullets: bullets.length > 0 ? bullets : ['Key point overview'] })
+    slides.push({ title, bullets })
   }
   if (slides.length >= 2) return slides
 
@@ -317,7 +385,7 @@ export function markdownToSlides(text: string): Array<{ title: string; bullets: 
     if (curTitle) {
       slides.push({
         title: curTitle,
-        bullets: curBullets.length > 0 ? curBullets : ['Key point overview'],
+        bullets: curBullets,
       })
       curTitle = ''
       curBullets = []
@@ -336,7 +404,7 @@ export function markdownToSlides(text: string): Array<{ title: string; bullets: 
       continue
     }
 
-    const bulletMatch = /^(?:[-*•+]|\d+[.)])\s+(.+)$/.exec(l)
+    const bulletMatch = /^(?:[-*â€¢+]|\d+[.)])\s+(.+)$/.exec(l)
     if (bulletMatch) {
       const b = bulletMatch[1]!.replace(/[*_`]/g, '').trim()
       if (b) curBullets.push(b)
@@ -360,7 +428,7 @@ export function markdownToSlides(text: string): Array<{ title: string; bullets: 
   return slides
 }
 
-/** Premium OpenXML .pptx — 16:9 widescreen, editorial system: slate-900 title, accent bar, comfortable spacing, footer. */
+/** Premium OpenXML .pptx â€” 16:9 widescreen, editorial system: slate-900 title, accent bar, comfortable spacing, footer. */
 export function writePptxFile(filePath: string, slides: Array<{ title: string; bullets: string[] }>): void {
   const slideParts: Array<{ name: string; data: string }> = []
   const contentTypesSlides: string[] = []
@@ -381,7 +449,7 @@ export function writePptxFile(filePath: string, slides: Array<{ title: string; b
     const isCover = idx === 0
     const bulletXml = slide.bullets.slice(0, 8).map((b) => `
       <a:p>
-        <a:pPr marL="0" indent="0" lvl="0" algn="l"><a:buFont typeface="Calibri"/><a:buChar char="•"/><a:spcBef><a:spcPts val="600"/></a:spcBef><a:lnSpc><a:spcPct val="110000"/></a:lnSpc></a:pPr>
+        <a:pPr marL="0" indent="0" lvl="0" algn="l"><a:buFont typeface="Calibri"/><a:buChar char="â€¢"/><a:spcBef><a:spcPts val="600"/></a:spcBef><a:lnSpc><a:spcPct val="110000"/></a:lnSpc></a:pPr>
         <a:r>
           <a:rPr lang="en-US" sz="1700" b="0"><a:solidFill><a:srgbClr val="334155"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr>
           <a:t>${escapeXml(b.slice(0, 180))}</a:t>
@@ -390,7 +458,7 @@ export function writePptxFile(filePath: string, slides: Array<{ title: string; b
 
     // Accent bar + title + footer
     const accentBar = `<p:sp><p:nvSpPr><p:cNvPr id="10" name="accent"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="838200" y="520000"/><a:ext cx="900000" cy="70000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="0284C7"/></a:solidFill></p:spPr></p:sp>`
-    const footer = `<p:sp><p:nvSpPr><p:cNvPr id="11" name="footer"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="838200" y="6400000"/><a:ext cx="10515600" cy="200000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn="r"/><a:r><a:rPr lang="en-US" sz="900"><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></a:rPr><a:t>${sId} / ${slides.length}  •  SOVARA</a:t></a:r></a:p></p:txBody></p:sp>`
+    const footer = `<p:sp><p:nvSpPr><p:cNvPr id="11" name="footer"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="838200" y="6400000"/><a:ext cx="10515600" cy="200000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn="r"/><a:r><a:rPr lang="en-US" sz="900"><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></a:rPr><a:t>${sId} / ${slides.length}  â€¢  SOVARA</a:t></a:r></a:p></p:txBody></p:sp>`
 
     const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
@@ -420,7 +488,7 @@ export function writePptxFile(filePath: string, slides: Array<{ title: string; b
         <p:txBody>
           <a:bodyPr lIns="12000" rIns="12000" tIns="6000" bIns="6000" anchor="${isCover ? 'ctr' : 't'}"/>
           <a:lstStyle/>
-          ${bulletXml || '<a:p><a:r><a:rPr lang="en-US" sz="1700"><a:solidFill><a:srgbClr val="64748B"/></a:solidFill></a:rPr><a:t>Key insights on this topic — add your narrative here.</a:t></a:r></a:p>'}
+          ${bulletXml || ''}
         </p:txBody>
       </p:sp>
       ${footer}
@@ -520,28 +588,102 @@ export interface GeneratedArtifact {
 /**
  * Write the artifact for a detected output request, derived from the
  * assistant's final reply text. Returns null when nothing sensible can be
- * built (caller then skips the artifact honestly — chat reply stands).
+ * built (caller then skips the artifact honestly â€” chat reply stands).
  */
 function stripThinkingTags(s: string): string {
-  return s
-    .replace(/<\/?think>/gi, '')
-    .replace(/<\/?thinking>/gi, '')
-    .replace(/<\/?\/think>/gi, '')
-    .replace(/<\/?thought>/gi, '')
-    .trim()
+  let text = s ?? ''
+  // 1) Remove paired thinking tags
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
+  text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+  text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+  text = text.replace(/```json:reasoning[\s\S]*?```/gi, '')
+
+  // 2) Remove unpaired/dangling thinking tags
+  text = text.replace(/<\/?think(?:ing)?>/gi, '')
+  text = text.replace(/<\/?thought>/gi, '')
+
+  // 3) Remove standalone JSON objects containing "thought" / "thinking" / "reasoning"
+  text = text.replace(/\{\s*"(?:thought|thinking|reasoning)"\s*:\s*"[\s\S]*?"\s*\}/gi, '')
+
+  // 4) Remove pseudo tool call JSON objects printed in prose (action / tool)
+  text = text.replace(/\{\s*"(?:action|tool|name)"\s*:\s*"(?:fs_write|fswrite|shell_exec|shellexec|fs_read|fsread|fs_list|fslist|fs_patch|fspatch|fs_search|fssearch|todo_write|todowrite)"[\s\S]*?\}/gi, '')
+
+  // 5) Remove system gate headers and think lines
+  text = text.replace(/SYSTEM GATE:[\s\S]*?\n/gi, '')
+  text = text.replace(/^Think:[\s\S]*?\n\n/gm, '')
+  text = text.replace(/## Recap[\s\S]*$/gi, '')
+
+  // If text is a raw JSON envelope string containing "content", "query", etc.
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>
+      if (typeof parsed.content === 'string') text = parsed.content
+      else if (typeof parsed.text === 'string') text = parsed.text
+      else if (typeof parsed.summary === 'string') text = parsed.summary
+      else if (typeof parsed.output === 'string') text = parsed.output
+    } catch {}
+  }
+  // Unescape raw \n \t if present in raw string
+  if (text.includes('\\n') && !text.includes('\n')) {
+    text = text.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"')
+  }
+  return text.trim()
+}
+
+/**
+ * Title for a generated document.
+ *
+ * This used to be `userContent.split('\n')[0]`, i.e. the user's own instruction.
+ * Every PDF and DOCX therefore opened with its own prompt as the heading:
+ * "Create a word document memo.docx for the team" was the memo's title. The
+ * title now comes from the model's own first heading, which is what the
+ * document is actually about.
+ */
+function deriveTitle(markdown: string, fallback: string): string {
+  for (const raw of markdown.split('\n')) {
+    const m = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(raw)
+    if (m?.[1]) {
+      const t = m[1]
+        .replace(/[*_`~]/g, '')
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .trim()
+      if (t) return t.slice(0, 120)
+    }
+  }
+  // No heading at all: use the first substantive line, not the prompt.
+  for (const raw of markdown.split('\n')) {
+    const t = raw.replace(/[*_`~]/g, '').trim()
+    if (t && !t.startsWith('```') && !/^[|>#-]/.test(t)) return t.slice(0, 120)
+  }
+  return fallback
 }
 
 export function generateArtifactFile(kind: ArtifactKind, filePath: string, assistantText: string, userContent: string): GeneratedArtifact | null {
   const text = stripThinkingTags((assistantText ?? '').trim())
   if (!text) return null
+  // An unknown kind must NOT fall through to the code branch: doing so wrote a
+  // 2-byte junk file for capabilities the app does not have (video/audio/image),
+  // silently littering the user's disk. Return null so the caller can fall back
+  // to the normal text answer.
+  if (kind !== 'pdf' && kind !== 'xlsx' && kind !== 'docx' && kind !== 'pptx' && kind !== 'code') return null
+
+  // Guard: if non-code artifact is requested (pdf/docx/xlsx/pptx) but text is script source code,
+  // pseudo JSON tool calls, or code blocks, do not bake raw source code into a document. Return null.
+  if (kind !== 'code') {
+    const hasRawScriptOrJson =
+      /\{\s*"(?:path|command|action|content)"\s*:/i.test(text) ||
+      /\b(?:from\s+\w+\s+import|import\s+reportlab|import\s+pypdf|import\s+docx|import\s+openpyxl|import\s+pptx|def\s+\w+\(|canvas\.Canvas|PdfWriter\(\))\b/i.test(text) ||
+      /```(?:python|py|javascript|js|typescript|ts|sh|bash)\n[\s\S]*?```/i.test(text)
+    if (hasRawScriptOrJson) return null
+  }
   if (kind === 'pdf') {
-    const title = userContent.trim().split('\n')[0]?.slice(0, 120) ?? 'Sovara output'
-    writePdfFile(filePath, title, text)
+    writePdfFile(filePath, deriveTitle(text, 'Sovara output'), text)
   } else if (kind === 'xlsx') {
     const sheets = markdownToSheets(text)
     writeXlsxFile(filePath, sheets)
   } else if (kind === 'docx') {
-    const title = userContent.trim().split('\n')[0]?.slice(0, 120) ?? 'Sovara document'
+    const title = deriveTitle(text, 'Sovara document')
     writeDocxFile(filePath, title, markdownToParagraphs(text))
   } else if (kind === 'pptx') {
     const slides = markdownToSlides(text)

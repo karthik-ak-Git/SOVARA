@@ -855,13 +855,37 @@ export class ToolStubAdapter implements ToolPort {
       const allSkills = await getAllDiscoveredSkills(undefined, this.getWorkspace())
 
       if (toolName === 'search_skills') {
-        const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
-        const matches = allSkills.filter(s => s.name.toLowerCase().includes(query) || (s.description && s.description.toLowerCase().includes(query)))
-        if (matches.length === 0) return JSON.stringify({ error: `No skills found matching "${query}". Try a different keyword.` })
-        return JSON.stringify({ 
-          matches: matches.slice(0, 50).map(s => ({ name: s.name, source: s.source, description: s.description })),
-          totalCount: matches.length,
-          hint: 'Use read_skill with the exact name to see full instructions.'
+        const rawQuery = typeof args.query === 'string' ? args.query.trim() : ''
+        if (!rawQuery) {
+          return JSON.stringify({ error: 'search_skills requires { "query": "<keyword>" } — e.g. "pptx", "xlsx", "docx", "pdf".' })
+        }
+        // Term matching, deliberately UNWEIGHTED. The app must not contain
+        // knowledge of what a "pptx" is, nor hand-tuned ranking constants. It
+        // returns every skill whose name or description contains any query term;
+        // the MODEL picks the right one and calls read_skill. Ranking is the
+        // model's job, not a table in the router.
+        const terms = rawQuery.toLowerCase().split(/[^a-z0-9+#.]+/).filter(t => t.length > 1)
+        if (terms.length === 0) {
+          return JSON.stringify({ error: `No usable keywords in "${rawQuery}". Try a single word such as "pptx".` })
+        }
+        const hits = allSkills.filter(s => {
+          const name = (s.name || '').toLowerCase()
+          const desc = (s.description || '').toLowerCase()
+          return terms.some(t => name.includes(t) || desc.includes(t))
+        })
+        if (hits.length === 0) {
+          return JSON.stringify({
+            error: `No skills found matching "${rawQuery}". Try a different keyword - one short word naming the capability, e.g. "pptx", "xlsx", "docx", "pdf", "slides", "chart".`,
+            hint: 'Retry once with a different keyword before concluding no skill exists.',
+            triedTerms: terms,
+          })
+        }
+        return JSON.stringify({
+          query: rawQuery,
+          interpretedAs: terms,
+          matches: hits.slice(0, 60).map(s => ({ name: s.name, source: s.source, description: s.description })),
+          totalCount: hits.length,
+          hint: 'Pick the skill that best covers the request, then call read_skill with its exact name.'
         })
       }
 

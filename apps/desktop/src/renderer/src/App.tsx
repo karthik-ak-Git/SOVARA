@@ -387,10 +387,9 @@ export function App(): React.JSX.Element {
       console.error('[App] openArtifact failed:', e instanceof Error ? e.message : String(e))
     })
   }, [])
-  const handleOpenArtifactFileInPanel = useCallback((filePath: string): void => {
+  const handleOpenArtifactFileInPanel = useCallback((_filePath: string): void => {
     setArtifactsOpen(true)
-    handleOpenArtifact(filePath)
-  }, [handleOpenArtifact])
+  }, [])
 
   const handleShareSession = useCallback(() => {
     const transcript = chat.events

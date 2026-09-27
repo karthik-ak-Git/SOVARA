@@ -547,33 +547,42 @@ function safeEmitTo(emit: Emit, event: DownloadEvent): void {
 export function deleteLibraryEntry(root: string, entryPath: string, config?: RuntimeConfigStore): void {
   if (!entryPath || typeof entryPath !== 'string') throw new Error('delete: empty path')
   const rootAbs = resolve(root)
-  const abs = resolveEntrySafe(rootAbs, entryPath)
-  if (!abs) {
-    throw new Error(`path escapes the model library (root: ${rootAbs}, entry: ${entryPath})`)
-  }
-  if (!existsSync(abs)) return
-  rmSync(abs, { force: true })
-  // Prune the now-empty repo folder (don't walk above the library root).
-  try {
-    const parent = dirname(abs)
-    if (parent !== rootAbs && isUnder(rootAbs, parent) && readdirSync(parent).length === 0) {
-      rmSync(parent, { recursive: true, force: true })
+  const targetAbs = resolve(entryPath)
+  const isInternal = isUnder(rootAbs, targetAbs) || (process.platform === 'win32' && targetAbs.toLowerCase().startsWith(rootAbs.toLowerCase()))
+
+  if (isInternal) {
+    const abs = resolveEntrySafe(rootAbs, entryPath) || targetAbs
+    if (existsSync(abs)) {
+      rmSync(abs, { force: true })
+      try {
+        const parent = dirname(abs)
+        if (parent !== rootAbs && isUnder(rootAbs, parent) && readdirSync(parent).length === 0) {
+          rmSync(parent, { recursive: true, force: true })
+        }
+      } catch {
+        // best-effort prune
+      }
+      for (const suffix of ['.part', '.json', '.set.json']) {
+        try {
+          const sidecar = `${abs}${suffix}`
+          if (existsSync(sidecar)) unlinkSync(sidecar)
+        } catch { /* ignore */ }
+      }
     }
-  } catch {
-    // best-effort prune
-  }
-  // Delete every associated artifact: partial, provenance + set sidecars.
-  for (const suffix of ['.part', '.json', '.set.json']) {
+  } else {
+    // External model (LM Studio, node-llama-cpp, etc.): do NOT delete the external file on disk,
+    // but exclude its directory from auto-discovery and un-integrate it from SOVARA's registry.
     try {
-      const sidecar = `${abs}${suffix}`
-      if (existsSync(sidecar)) unlinkSync(sidecar)
-    } catch { /* ignore */ }
+      config?.removeExternalModelDir(targetAbs)
+      config?.removeExternalModelDir(dirname(targetAbs))
+    } catch { /* best-effort */ }
   }
-  // Drop the persistent lifecycle + inventory rows so the UI offers Download again.
+
+  // Drop persistent rows so the UI removes the model card and unlinks integration cleanly
   try {
     const reg = regOf(config)
-    reg?.removeDownloadRowsByDest(abs)
-    reg?.removeRegistryRowsByPath(abs)
+    reg?.removeDownloadRowsByDest(targetAbs)
+    reg?.removeRegistryRowsByPath(targetAbs)
   } catch { /* best-effort */ }
 }
 

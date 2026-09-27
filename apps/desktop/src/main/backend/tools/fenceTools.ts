@@ -42,6 +42,24 @@ const TOOL_NAMES = [
 type ToolName = typeof TOOL_NAMES[number]
 const TOOL_NAME_PATTERN = TOOL_NAMES.join('|')
 
+export function normalizeToolName(name: string): string {
+  const clean = (name || '').toLowerCase().trim().replace(/[^a-z0-9_]/g, '')
+  if (clean === 'fswrite' || clean === 'fs_write') return 'fs_write'
+  if (clean === 'fsread' || clean === 'fs_read') return 'fs_read'
+  if (clean === 'fslist' || clean === 'fs_list') return 'fs_list'
+  if (clean === 'fspatch' || clean === 'fs_patch') return 'fs_patch'
+  if (clean === 'fssearch' || clean === 'fs_search') return 'fs_search'
+  if (clean === 'shellexec' || clean === 'shell_exec') return 'shell_exec'
+  if (clean === 'todowrite' || clean === 'todo_write') return 'todo_write'
+  if (clean === 'searchskills' || clean === 'search_skills') return 'search_skills'
+  if (clean === 'readskill' || clean === 'read_skill') return 'read_skill'
+  if (clean === 'websearch' || clean === 'web_search') return 'web_search'
+  if (clean === 'webfetch' || clean === 'web_fetch') return 'web_fetch'
+  if (clean === 'invokesubagent' || clean === 'invoke_subagent') return 'invoke_subagent'
+  if (clean === 'runcode' || clean === 'run_code') return 'run_code'
+  return clean
+}
+
 
 /**
  * Lenient JSON: strict parse first; on failure, repair the common model
@@ -156,9 +174,125 @@ function tryParse(s: string): Record<string, unknown> | null {
  * fences resolve individually instead of collapsing into one blob.
  * Empty-args tool calls get their defaults ({path:'.'} / {todos:[]}).
  */
+/**
+ * Parse the XML/arg-tag tool-call dialect that local models actually emit.
+ *
+ * Measured live against Spark-X2.5-4B on the app's own sidecar, same prompt,
+ * temperature 0.2, three consecutive runs:
+ *     fences parsed: 18, 0, 1     xml form: no, YES, no
+ * The model flip-flops between the ```tool:name fence the prompt asks for and
+ * an arg-tag form the parser could not read at all. When it chose the arg-tag
+ * form the turn produced ZERO tool calls and the agent loop died - which is the
+ * 32-step, 20-completion-token failure recorded in the app's own chat.log.
+ *
+ * So the parser accepts both dialects instead of insisting on one. This is not
+ * a special case for one model: every instruct-tuned checkpoint carries
+ * tool-call syntax from its own training, and a router that only understands
+ * one dialect is fragile against all of them.
+ *
+ * Shapes handled:
+ *   <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>
+ *   <tool_call>{"name":"x","arguments":{...}}</tool_call>
+ *   <|tool_call_begin|><|tool_sep|>name<|tool_call_end|>
+ * Zero-width and BOM characters are stripped first, because they appear
+ * INSIDE the tag names and defeat any literal match.
+ */
+function extractXmlToolCalls(raw: string): ToolFence[] {
+  // U+200B/200C/200D, U+FEFF and soft hyphen are invisible but were observed
+  // inside the emitted tag names.
+  const text = raw.replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+  // The guard must accept the `<|...|>` ChatML prefix as well as a bare `<`.
+  // Without the optional `|` here, `<|tool_call_begin|>` never matches and the
+  // entire ChatML form below is unreachable.
+  if (!/<\s*\|?\s*\/?\s*(?:tool_call|tool\b|function\b|function_calls|tool_calls)/i.test(text)) return []
+
+  const out: ToolFence[] = []
+
+  // Form 1: arg_key / arg_value pairs.
+  const pairsRe = /<\s*tool_call\s*>([\s\S]*?)<\s*\/\s*tool_call\s*>/gi
+  let m: RegExpExecArray | null
+  while ((m = pairsRe.exec(text)) !== null) {
+    const inner = m[1] ?? ''
+    const nameM = /<\s*tool_name\s*>\s*([\s\S]*?)\s*<\s*\/\s*tool_name\s*>/i.exec(inner)
+      ?? /^\s*([A-Za-z_][\w.-]*)/.exec(inner)
+    if (!nameM) continue
+    const tool = (nameM[1] ?? '').trim()
+    if (!tool) continue
+    const args: Record<string, unknown> = {}
+    const kv = /<\s*arg_key\s*>\s*([\s\S]*?)\s*<\s*\/\s*arg_key\s*>\s*<\s*arg_value\s*>\s*([\s\S]*?)\s*<\s*\/\s*arg_value\s*>/gi
+    let p: RegExpExecArray | null
+    while ((p = kv.exec(inner)) !== null) {
+      const k = (p[1] ?? '').trim()
+      if (k) args[k] = coerce((p[2] ?? '').trim())
+    }
+    out.push({ toolName: tool, args, raw: m[0]!, index: m.index })
+  }
+  if (out.length) return out
+
+  // Form 2: a JSON payload inside the tag pair.
+  const jsonRe = /<\s*tool_call\s*>([\s\S]*?)<\s*\/\s*tool_call\s*>/gi
+  while ((m = jsonRe.exec(text)) !== null) {
+    const body = (m[1] ?? '').trim()
+    if (!body.startsWith('{')) continue
+    try {
+      const j = JSON.parse(body) as { name?: string; tool?: string; arguments?: unknown; parameters?: unknown; args?: unknown }
+      const tool = (j.name ?? j.tool ?? '').toString().trim()
+      if (!tool) continue
+      const a = (j.arguments ?? j.parameters ?? j.args ?? {}) as Record<string, unknown>
+      out.push({ toolName: tool, args: a && typeof a === 'object' ? a : {}, raw: m[0]!, index: m.index })
+    } catch { /* not JSON, ignore */ }
+  }
+  if (out.length) return out
+
+  // Form 3: ChatML-ish separators. The argument JSON follows tool_call_end
+  // rather than sitting inside the pair, e.g.
+  //   <|tool_call_begin|><|tool_sep|>fs_read<|tool_call_end|>{"path":"a.txt"}
+  const sepRe = /<\s*\|?\s*tool_call_begin\s*\|?\s*>([\s\S]*?)<\s*\|?\s*tool_call_end\s*\|?\s*>([\s\S]*?)(?:<\s*\|?\s*(?:tool_call_end|tool_call_begin|tool_sep|eos_token)\s*\|?\s*>|$)/gi
+  while ((m = sepRe.exec(text)) !== null) {
+    // tool_sep is the ONLY thing separating the tag from the name, so it turns
+    // into a leading newline and the name lands in the NEXT segment.
+    const marked = (m[1] ?? '').replace(/<\s*\|?\s*tool_sep\s*\|?\s*>/i, '\n')
+    const segs = marked.split('\n')
+    let tool = (segs[0] ?? '').trim()
+    let inline = segs.slice(1).join('\n').trim()
+    if (!tool && segs.length > 1) {
+      tool = (segs[1] ?? '').trim()
+      inline = segs.slice(2).join('\n').trim()
+    }
+    if (!tool) continue
+    const trailing = (m[2] ?? '').trim()
+    const rest = trailing || inline
+    let args: Record<string, unknown> = {}
+    if (rest.startsWith('{')) { try { args = JSON.parse(rest) } catch { args = {} } }
+    else {
+      const kv = /(\w+)\s*=\s*"?([^"\n]*)"?/g
+      let q: RegExpExecArray | null
+      while ((q = kv.exec(rest)) !== null) args[q[1]!] = coerce((q[2] ?? '').trim())
+    }
+    out.push({ toolName: tool, args, raw: m[0]!, index: m.index })
+  }
+  return out
+}
+
+/** Best-effort typing of loose arg values: JSON if it parses, else the string. */
+function coerce(v: string): unknown {
+  if (v === '') return ''
+  if (/^(true|false|null)$/i.test(v)) return v.toLowerCase() === 'true' ? true : v.toLowerCase() === 'false' ? false : null
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v)
+  if ((v.startsWith('{') && v.endsWith('}')) || (v.startsWith('[') && v.endsWith(']'))) {
+    try { return JSON.parse(v) } catch { return v }
+  }
+  return v
+}
+
 export function extractToolFences(text: string): ToolFence[] {
   if (!text) return []
   const out: ToolFence[] = []
+  // Accept whichever dialect the model chose this turn. Fence form is tried
+  // first because it is the form the prompt requests; the XML/arg-tag dialect
+  // is the fallback the model falls back to under prompt load.
+  const xml = extractXmlToolCalls(text)
+  if (xml.length) return xml
   // Open: 3+ ticks, optional "tool:" prefix, then a known tool name on the
   // same line OR as the first body line; non-greedy body; close: 3+ ticks
   // (may differ from opener count). Built dynamically from TOOL_NAME_PATTERN.
@@ -214,6 +348,24 @@ export function extractToolFences(text: string): ToolFence[] {
     out.push({ toolName: nameStr, args, raw: m[0], index: m.index })
     scanFrom = m.index + m[0].length
     if (scanFrom >= text.length) break
+    // Glued-fence recovery. The closing run is `` `{3,} `` (greedy), so a
+    // model that glued two calls as ```tool:a … ```tool:b … ``` (6 ticks at
+    // the seam) has ALL of those ticks swallowed by our closer, and call `b`
+    // then looks like bare text and is silently dropped. If the match ends on
+    // more than 3 ticks, hand the surplus back so the next iteration can open
+    // the following fence.
+    const trailing = /`+$/.exec(m[0])?.[0].length ?? 0
+    if (trailing > 3) {
+      const rewindTo = m.index + m[0].length - (trailing - 3)
+      const tail = text.slice(rewindTo)
+      if (new RegExp('^`{3,}[ \\t]*(?:tool:)?[ \\t]*(' + TOOL_NAME_PATTERN + ')', 'i').test(tail)) {
+        scanFrom = rewindTo
+      }
+    }
+  }
+  if (out.length === 0) {
+    const bare = extractBareToolCalls(text)
+    if (bare.length) return bare
   }
   return out
 }
@@ -266,6 +418,64 @@ export function looksLikeBareToolCall(text: string): boolean {
 export function extractBareToolCalls(text: string): ToolFence[] {
   if (!text) return []
   const out: ToolFence[] = []
+
+  // Pattern 0: Bare JSON objects in text (explicit action/tool or implicit by key signature):
+  // e.g. { "action": "fs_write", "path": "...", "content": "..." }
+  // e.g. { "path": "revenue.py", "content": "...", "status": "pending" } -> fs_write
+  // e.g. { "command": "python revenue.py", "status": "pending" } -> shell_exec
+  const jsonObjectStartRe = /\{\s*"(?:action|tool|name|tool_name|function|path|command|cmd|query|skill_name)"\s*:/gi
+  let mObj: RegExpExecArray | null
+  let guardObj = 0
+  while (guardObj++ < 32 && (mObj = jsonObjectStartRe.exec(text)) !== null) {
+    const startIdx = mObj.index
+    jsonObjectStartRe.lastIndex = startIdx + mObj[0].length
+
+    let braceCount = 0
+    let endIdx = -1
+    for (let i = startIdx; i < text.length; i++) {
+      if (text[i] === '{') braceCount++
+      else if (text[i] === '}') {
+        braceCount--
+        if (braceCount === 0) {
+          endIdx = i
+          break
+        }
+      }
+    }
+    if (endIdx > startIdx) {
+      const fullJson = text.slice(startIdx, endIdx + 1)
+      const parsed = tryParse(fullJson)
+      if (parsed && typeof parsed === 'object') {
+        let toolName = ''
+        const rawAction = (parsed['action'] || parsed['tool'] || parsed['name'] || parsed['tool_name'] || parsed['function'])
+        if (typeof rawAction === 'string') {
+          toolName = normalizeToolName(rawAction)
+        }
+        if (!toolName || !TOOL_NAMES.includes(toolName as any)) {
+          if (typeof parsed['command'] === 'string' || typeof parsed['cmd'] === 'string') {
+            toolName = 'shell_exec'
+          } else if (typeof parsed['path'] === 'string' && typeof parsed['content'] === 'string') {
+            toolName = 'fs_write'
+          } else if (typeof parsed['path'] === 'string' && typeof parsed['search'] === 'string' && typeof parsed['replace'] === 'string') {
+            toolName = 'fs_patch'
+          } else if (typeof parsed['path'] === 'string') {
+            toolName = 'fs_read'
+          } else if (typeof parsed['skill_name'] === 'string') {
+            toolName = 'read_skill'
+          } else if (typeof parsed['query'] === 'string') {
+            toolName = 'search_skills'
+          }
+        }
+        if (toolName && TOOL_NAMES.includes(toolName as any)) {
+          const args = { ...parsed }
+          delete args['action']; delete args['tool']; delete args['name']; delete args['tool_name']; delete args['function']; delete args['status']
+          out.push({ toolName, args, raw: fullJson, index: startIdx })
+          jsonObjectStartRe.lastIndex = endIdx + 1
+        }
+      }
+    }
+  }
+  if (out.length > 0) return out
 
   // Pattern 1: [tool_name {args}] or tool_name {args} or tool_name({args})
   const jsonBareRe = new RegExp(

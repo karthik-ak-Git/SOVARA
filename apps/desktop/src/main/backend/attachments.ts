@@ -193,7 +193,8 @@ export function buildAttachmentContext(files: ProcessedAttachment[], visionCapab
       if (visionCapable && f.imageBase64) {
         out.push(`Attached image "${f.name}" (${f.mime}${dims}) is provided as vision input with the user message. Describe or analyze what you actually see in it.`)
       } else {
-        out.push(`Attached image "${f.name}" (${f.mime}${dims}) — this model has NO vision input. Do NOT try fs_read or any file tool on it: image bytes are not text and reading them tells you nothing about the picture. Tell the user plainly that this model cannot see images and suggest a vision model (e.g. GLM-4.6V). Never pretend you saw the image.`)
+        out.push(`Attached image "${f.name}" (${f.mime}${dims}) — this model has NO vision input. You cannot see this picture and you must not guess its contents.`)
+        out.push(`MANDATORY — call the clarify tool NOW as your very next action, before any other tool. Emit exactly one fence:\n\`\`\`tool:clarify\n{"questions":[{"question":"I can't view images — how should I proceed?","options":["Describe the image contents for you","Switch to a vision model and retry","Skip the image, continue without it"],"allow_other":true}]}\n\`\`\`\nThat opens a question card in the user's UI. Do NOT call fs_read on the image (image bytes are not text), do NOT invent a text representation of the image, and do NOT create placeholder files that claim to be the image content. Wait for the user's answer, then act on it.`)
       }
       continue
     }

@@ -9,6 +9,11 @@ export default defineConfig({
     // shared SQLite state; run files serially so those checks are deterministic.
     maxWorkers: 1,
     minWorkers: 1,
+    // Skill/tool contract tests genuinely scan the real home skill library
+    // (thousands of SKILL.md dirs on a real dev machine), which exceeds the
+    // 5s default. Raise it rather than weakening the assertions.
+    testTimeout: 30000,
+    hookTimeout: 30000,
     passWithNoTests: true,
     setupFiles: ['tests/setup.ts']
   },

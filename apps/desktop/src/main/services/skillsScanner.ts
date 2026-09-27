@@ -24,11 +24,13 @@ const SKILL_SOURCES: Array<{ name: string; relPath: string }> = [
   { name: 'Agency Agents', relPath: '.agency-agents/skills' },
   { name: 'Superpowers', relPath: '.superpowers/skills' },
   { name: 'Hyperframes', relPath: '.hyperframes/skills' },
+  { name: 'Antigravity Skills', relPath: '.gemini/antigravity/skills' },
   { name: 'Antigravity Built-in', relPath: '.gemini/antigravity/builtin/skills' },
   { name: 'Antigravity Config', relPath: '.gemini/config/skills' },
   { name: 'Gemini Skills', relPath: '.gemini/skills' },
   { name: 'Cursor Skills', relPath: '.cursor/skills' },
   { name: 'Windsurf Skills', relPath: '.windsurf/skills' },
+  { name: 'Sovara Skills', relPath: '.sovara/skills' },
 ]
 
 function getEnabledMapRaw(store?: { getAppSetting: (k: string) => string | null }): Record<string, boolean> {
@@ -124,7 +126,6 @@ export async function listSkillsInDir(dirPath: string): Promise<BionicSkill[]> {
         await access(skillPath)
         const text = await readFile(skillPath, 'utf8')
         const meta = parseSkillMd(text)
-        const stat = await readFile(skillPath, 'utf8').then(() => null).catch(() => null)
         out.push({
           id: entry.name,
           name: meta.name || entry.name,
@@ -144,11 +145,32 @@ export async function listSkillsInDir(dirPath: string): Promise<BionicSkill[]> {
 export async function listDetailedSkillsForSources(store?: { getAppSetting: (k: string) => string | null }): Promise<Array<{ name: string; path: string; skills: BionicSkill[] }>> {
   const home = homedir()
   const out: Array<{ name: string; path: string; skills: BionicSkill[] }> = []
+
+  // 1. Bionic skills
+  const bionicSkills = await listBionicSkills()
+  if (bionicSkills.length > 0) {
+    out.push({ name: 'Bionic Skills', path: getBionicDir(), skills: bionicSkills })
+  }
+
+  // 2. Global sources
   for (const src of SKILL_SOURCES) {
+    if (!isSourceEnabled(src.name, store)) continue
     const fullPath = join(home, src.relPath)
     const skills = await listSkillsInDir(fullPath)
-    out.push({ name: src.name, path: fullPath, skills })
+    if (skills.length > 0) {
+      out.push({ name: src.name, path: fullPath, skills })
+    }
   }
+
+  // 3. Bundled desktop skills
+  try {
+    const bundled = join(process.cwd(), 'apps', 'desktop', 'skills')
+    const bundledSkills = await listSkillsInDir(bundled)
+    if (bundledSkills.length > 0) {
+      out.push({ name: 'Bundled Desktop', path: bundled, skills: bundledSkills })
+    }
+  } catch {}
+
   return out
 }
 
