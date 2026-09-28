@@ -61,6 +61,7 @@ describe('IPC contracts — Zod strict validation', () => {
   it('library schemas validate download/cancel/delete/directory payloads', () => {
     const dl = { modelId: 'Qwen/Qwen3-4B-GGUF', rfilename: 'model.gguf', downloadUrl: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/model.gguf' }
     expect(zLibraryDownload.safeParse(dl).success).toBe(true)
+    expect(zLibraryDownload.safeParse({ ...dl, companion: { rfilename: 'mmproj.gguf', downloadUrl: 'https://hf.co/mmproj.gguf', sizeBytes: 500000 } }).success).toBe(true)
     expect(zLibraryDownload.safeParse({ ...dl, extra: 1 }).success).toBe(false)
     expect(zLibraryDownload.safeParse({ ...dl, downloadUrl: '' }).success).toBe(false)
     expect(zLibraryCancel.safeParse({ modelId: 'a', rfilename: 'b' }).success).toBe(true)

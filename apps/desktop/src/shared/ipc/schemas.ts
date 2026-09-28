@@ -189,6 +189,7 @@ const zDownloadPart = z
   .object({
     rfilename: z.string().min(1).max(512),
     downloadUrl: z.string().min(1).max(2048),
+    sizeBytes: z.number().int().min(0).optional(),
   })
   .strict()
 
@@ -197,6 +198,7 @@ export const zLibraryDownload = z
     modelId: z.string().min(1).max(128),
     rfilename: z.string().min(1).max(512),
     downloadUrl: z.string().min(1).max(2048),
+    sizeBytes: z.number().int().min(0).optional(),
     /** Shard-set parts (multi-part model): downloaded sequentially as one job. */
     parts: z.array(zDownloadPart).min(2).max(8).optional(),
     /** Vision projector sidecar, fetched automatically with the weight. */
