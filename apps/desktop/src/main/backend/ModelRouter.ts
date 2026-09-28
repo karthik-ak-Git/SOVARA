@@ -102,6 +102,8 @@ export interface RouterContext {
   resources: SystemResources
   /** Pressure for a hypothetical load (caller's checkBeforeLoad for top candidate) */
   checkBeforeLoad?: (modelId: string) => Promise<{ level: 'ok' | 'warn' | 'critical'; blocking?: boolean; reason?: string }>
+  /** Whether an executable OCR tool capability is registered & available. */
+  ocrCapabilityAvailable?: boolean
   /** Preference for reasoning flag etc. (future) */
   preferReasoning?: boolean
   /** Optional hook for future deterministic routing extensions. */
@@ -210,31 +212,107 @@ function scoreModel(
 export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecision> {
   const { task, models, active } = ctx
 
-  // SOVEREIGN: only the owned sidecar (runtimeId=local) may run inference.
-  // LM Studio / Ollama entries are detect-only (see ModelWorkbench.ensureExternalRuntimes).
-  // We keep their files for Library listing, but we NEVER route a prompt to :1234 / :11434.
   const sovereign = models.filter((m) => m.runtimeId === 'local')
   const available = (sovereign.length > 0 ? sovereign : models).filter((m) => m.available)
 
-  // Smart route: if task needs vision but no sovereign vision model is available, surface a vision-model-required decision
-  // Frontend will catch this and prompt user to load a vision model (e.g., Unlimited-OCR, Qwen-VL, LLaVA).
-  if ((task as any).requiresVision || (task as any).needsVision) {
-    const hasVisionModel = available.some((m) => {
+  const isImageTask = Boolean((task as any).requiresVision || (task as any).needsVision || (task as any).needsMultimodal)
+
+  const candidateModelsInfo = available.map((m) => {
+    const { capabilities } = resolveCapabilities(m.modelId, m.capabilities, m.contextLength)
+    return {
+      id: m.modelId,
+      visionCapable: capabilities.includes('vision') || Boolean((m as any).visionCapable),
+    }
+  })
+
+  if (isImageTask) {
+    const visionModels = available.filter((m) => {
       const { capabilities } = resolveCapabilities(m.modelId, m.capabilities, m.contextLength)
-      return capabilities.includes('vision')
+      return capabilities.includes('vision') || Boolean((m as any).visionCapable)
     })
-    if (!hasVisionModel && available.length > 0) {
-      // No vision-capable sovereign model present — return a blocked decision so orchestrator can emit vision:model-required
+
+    if (visionModels.length > 0) {
+      // Vision Route: Pick best vision-capable model candidate
+      const scoredVision = visionModels.map((m) => scoreModel(m, task, ctx.resources))
+      scoredVision.sort((a, b) => b.score - a.score)
+      const bestVision = scoredVision[0]!.model
+
+      const trace = {
+        input: 'image attachment' as const,
+        task: task.kind,
+        requiredModality: 'image' as const,
+        availableModels: candidateModelsInfo,
+        selectedRoute: 'vision_model' as const,
+        selectedModelId: bestVision.modelId,
+        reason: 'Vision-capable model available — routing image to vision model',
+      }
+
       return {
-        modelId: null,
-        runtimeId: null,
-        reason: 'vision-model-required: task requires image understanding but no vision-capable local model is available — prompt user to load a vision model (e.g., baidu/Unlimited-OCR, Qwen2-VL, LLaVA) via Models → Vision',
+        modelId: bestVision.modelId,
+        runtimeId: bestVision.runtimeId,
+        reason: `Auto selected vision model ${bestVision.modelId}`,
+        task,
+        candidatesConsidered: available.length,
+        switched: active ? active.modelId !== bestVision.modelId : false,
+        selectedRoute: 'vision_model',
+        routingTrace: trace,
+      }
+    }
+
+    // No vision model available — check for executable OCR capability
+    const capabilityAvailable = Boolean(ctx.ocrCapabilityAvailable)
+
+    if (capabilityAvailable && available.length > 0) {
+      // OCR Capability Fallback Route: Pick best text/code model to drive the task
+      const scoredText = available.map((m) => scoreModel(m, task, ctx.resources))
+      scoredText.sort((a, b) => b.score - a.score)
+      const bestText = scoredText[0]?.model ?? available[0]!
+
+      const trace = {
+        input: 'image attachment' as const,
+        task: task.kind,
+        requiredModality: 'image' as const,
+        availableModels: candidateModelsInfo,
+        selectedRoute: 'ocr_capability' as const,
+        selectedModelId: bestText.modelId,
+        selectedCapability: 'ocr_tool',
+        reason: 'No vision-capable model available — falling back to local OCR capability',
+      }
+
+      return {
+        modelId: bestText.modelId,
+        runtimeId: bestText.runtimeId,
+        reason: 'No vision model available — using local OCR capability fallback',
         task,
         candidatesConsidered: available.length,
         switched: false,
+        selectedRoute: 'ocr_capability',
+        routingTrace: trace,
       }
     }
+
+    // Neither vision model nor executable OCR capability available
+    const trace = {
+      input: 'image attachment' as const,
+      task: task.kind,
+      requiredModality: 'image' as const,
+      availableModels: candidateModelsInfo,
+      selectedRoute: 'unavailable' as const,
+      reason: 'image-processing-unavailable: No vision-capable model is available and no local executable OCR tool is installed',
+    }
+
+    return {
+      modelId: null,
+      runtimeId: null,
+      reason: 'image-processing-unavailable: No vision-capable model is available and no local executable OCR tool is installed.',
+      task,
+      candidatesConsidered: available.length,
+      switched: false,
+      selectedRoute: 'unavailable',
+      routingTrace: trace,
+    }
   }
+
   if (available.length === 0) {
     return {
       modelId: null,

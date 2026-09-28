@@ -2862,7 +2862,7 @@ export function SettingsModal({
                 <p className="settings-modal-subtitle">Wiki folder • auto-mapped from chat context • 2D • drag to pan, scroll to zoom</p>
               </div>
               <div style={{ flex: 1, minHeight: 0, height: 560, borderTop: '1px solid #e2e8f0', position: 'relative', overflow: 'hidden', background: 'var(--bg-elevated)' }}>
-                <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot ?? undefined} />
+                <KnowledgeGraph3D workspaceRoot={appSettings?.globalWorkspaceRoot && appSettings.globalWorkspaceRoot.trim().length > 0 ? appSettings.globalWorkspaceRoot.trim() : undefined} />
               </div>
             </div>
           ) : null}

@@ -15,7 +15,7 @@ import type { SessionId, InstanceId } from '@shared/types/branded'
 import type { ChatStreamEvent } from '@shared/types/chat'
 import type { LlmPort, PersistencePort, SystemResourceManagerPort, ModelRuntimePort, ToolPort, LlmImagePart } from '@shared/types/ports'
 import type { ModelWorkbench } from './ModelWorkbench'
-import { classifyTask } from './TaskClassifier'
+import { classifyTask, deriveTaskIntentAndPolicy } from './TaskClassifier'
 import { routeModel, pickFittingModel } from './ModelRouter'
 import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCapabilities'
 import { computeContextBudget, truncateFileToBudget } from './contextBudget'
@@ -149,8 +149,9 @@ export const MAX_SKILL_SEARCH_ATTEMPTS = 2
  *  installed corpus invisible. It now gates on the classifier's own signal,
  *  whatever it names, and hardcodes no list of formats into the router. */
 export function checkSkillReadGate(classification: TaskClassification & { skillsNeeded?: string[] }, toolHistory: Array<{ name: string; args: Record<string, unknown> }>, skillsReadSet: Set<string>): { passed: boolean; missing: string[]; message: string } {
-  const needed = (classification as any).skillsNeeded as string[] | undefined
-  if (!needed || needed.length === 0) return { passed: true, missing: [], message: 'No skills needed' }
+  const rawNeeded = (classification as any).skillsNeeded as string[] | undefined
+  const needed = (rawNeeded ?? []).filter((s) => s.toLowerCase() !== 'ocr' && s.toLowerCase() !== 'vision')
+  if (needed.length === 0) return { passed: true, missing: [], message: 'No skills needed' }
   const read = new Set<string>(toolHistory.filter((t) => t.name === 'read_skill').map((t) => String((t.args as any).skill_name ?? (t.args as any).skillName ?? '').toLowerCase()))
   for (const s of skillsReadSet) read.add(s.toLowerCase())
   for (const r of read) if (r) return { passed: true, missing: [], message: `Skill gate passed (read: ${[...read].filter(Boolean).join(', ')})` }
@@ -900,6 +901,8 @@ export class AgentOrchestrator {
         hasImage: attached.hasImage,
         attachmentChars: attached.totalChars,
       })
+      const taskPolicy = deriveTaskIntentAndPolicy(content, classification)
+      const taskIntent = taskPolicy.intent
       const logicalRole = resolveLogicalRole(classification.kind, classification.skillsNeeded)
       const taskId = `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`
       AgentEventBus.emitAgentEvent('TASK_CREATED', { taskId, sessionId: sid, userPrompt: content, timestamp: Date.now() })
@@ -1370,8 +1373,8 @@ export class AgentOrchestrator {
           toolCatalog =
             `TOOLS — call with a fenced block, NOT XML. Format exactly:\n\`\`\`tool:fs_list\n{"path": "."}\n\`\`\`\n` +
             `Available tools:\n${lines}\n` +
-            `Rules: 0) ACTION-FIRST: for a requested file write, package install, command, or multi-step task, your next non-reasoning output MUST be a tool fence. Never return only a plan, promise, todo list, or JSON thought wrapper. ` +
-            `1) For exploration or inspections, you may call fs_list or fs_read directly. If the user provides a file or folder path (e.g. D:\\path or C:\\path or any file name), immediately call fs_read {"path": "..."} (for a file) or fs_list {"path": "..."} (for a folder). SOVARA will request user approval for files outside workspace. Never refuse to read a file or path! ` +
+            `Rules: 0) ACTION-FIRST: for a requested file read, file write, package install, command, inspection, or multi-step task, your next non-reasoning output MUST be a tool fence. Never return only a plan, promise, todo list, or JSON thought wrapper. ` +
+            `1) For exploration or inspections, call fs_list or fs_read directly. If the user provides a file or folder path or filename (e.g. production_notes.txt, D:\\path, or any file name), immediately call \`\`\`tool:fs_read\n{"path": "..."}\`\`\` (for a file) or \`\`\`tool:fs_list\n{"path": "..."}\`\`\` (for a folder) as your very first output token after reasoning. SOVARA will request user approval for files outside workspace. Never refuse to read a file or path! ` +
             `2) Emit ONE fenced tool block per step, then wait for its [Tool result] before the next. ` +
             `3) Use shell_exec for running python, bash, powershell, or npm scripts. Use run_code ONLY for JavaScript snippets executing programmatic tool calls (PTC). ` +
             `4) When asked to build, write, or generate code/apps/files, generate the complete functioning implementation immediately.`
@@ -2472,16 +2475,18 @@ export class AgentOrchestrator {
       const shouldJarvisContinue = isTaskOrBuildIntent && Boolean(toolCatalog) && (isPlanOnly || isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode) || !taskCompletionGate.passed || !actionGatePassed) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
+          const targetFileMatch = content.match(/\b([a-zA-Z0-9_-]+\.(?:txt|md|json|csv|log|py|js|ts|tsx|html|css|yaml|yml))\b/i)?.[1]
+          const targetPathHint = targetFileMatch ? ` {"path": "${targetFileMatch}"}` : ' {"path": "<file_path>"}'
           const nextDirective = hasFailedFsReadWithHint && !hasReadActualContent
             ? `[Autonomous Agent Directive]: fs_read for requested path failed, but directory contains existing files. Check the tool result hint for available files (e.g. duplicate extension like production_notes.txt.txt) and immediately call fs_read with the matching filename as your next action.`
             : !actionGatePassed
             ? `[Autonomous Agent Directive]: Required work is still not observed. Do not stop with a plan. Execute the missing action now: ${actionGateFailures.join('; ')}. Emit exactly the required tool fence, wait for its result, then continue with the remaining steps.`
+            : (isReadInterrupted || (isPlanOnly && needsInspectionAction))
+            ? `[Autonomous Agent Directive]: You returned text or a plan without reading the requested file. Immediately emit the tool fence \`\`\`tool:fs_read\n${targetPathHint}\n\`\`\` as your next output token. Do not return prose or a plan.`
             : isPlanOnly
             ? `[Autonomous Agent Directive]: You returned a plan instead of taking action. Do not narrate or repeat the plan. Emit the next tool fence now.`
             : isFakeFileClaim
             ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete code using fs_write.`
-            : isReadInterrupted
-            ? `[Autonomous Agent Directive]: Immediately read the actual file content using fs_read with the correct path.`
             : `[Autonomous Agent Directive]: Inspection complete. Now proceed immediately to write the complete implementation using fs_write.`
 
         this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: loopSteps, detail: 'Jarvis continuation' })
@@ -2513,15 +2518,16 @@ export class AgentOrchestrator {
       const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
 
       // Intent-Aware Inspection requirement:
-      // Required ONLY if user asked to read/inspect/view a file, AND NO successful write/shell tool already ran.
+      // Required ONLY if user asked to read/inspect/view a file/path, AND NO successful write/shell tool already ran.
       const hasShellEvidence = trace.toolResults.some((r) => r.success && r.effect === 'shell')
       const hasWriteEvidence = trace.toolResults.some((r) => r.success && r.effect === 'file')
-      const userAskedToRead = /\b(?:read|inspect|list|find|show|view|open)\b/i.test(content)
-      const needsInspectionAction = userAskedToRead && !hasWriteEvidence && !hasShellEvidence && !hasImageAttachment
+      const userAskedToReadFile = /\b(?:read|inspect|list|find|show|view|open)\b[\s\S]{0,100}\b(?:file|path|workspace|directory|folder|logs?|config|code|script|\.[a-z0-9]+)\b/i.test(content) || (taskPolicy.requiresInspection && !hasWriteEvidence && !hasShellEvidence && !hasImageAttachment)
+      const userAskedToRead = userAskedToReadFile && !hasWriteEvidence && !hasShellEvidence && !hasImageAttachment
+      const needsInspectionAction = taskPolicy.requiresInspection ? userAskedToRead : false
 
       // Intent-Aware Read-Back Verification requirement:
       // Required ONLY if user explicitly asked to "read it back", "verify", "read and verify", or "confirm".
-      const explicitVerificationRequested = /\b(?:read\s+(?:it\s+)?back|verify|read\s+and\s+verify|confirm\s+content)\b/i.test(content)
+      const explicitVerificationRequested = /\b(?:read\s+(?:it\s+)?back|verify|read\s+and\s+verify|confirm\s+content)\b/i.test(content) || taskPolicy.requiresVerification
       let lastWriteIndex = -1
       let lastReadIndex = -1
       for (let i = trace.toolResults.length - 1; i >= 0; i--) {
@@ -2532,10 +2538,10 @@ export class AgentOrchestrator {
       const hasReadBackAfterWrite = explicitVerificationRequested && lastWriteIndex >= 0 && lastReadIndex > lastWriteIndex
 
       const requiredActionFailures: string[] = []
-      if (needsFileMutation && successfulFileTools.size === 0) {
+      if (needsFileMutation && successfulFileTools.size === 0 && taskPolicy.intent !== 'direct_response') {
         requiredActionFailures.push('no successful file-writing tool was executed')
       }
-      if (needsShellAction && successfulShellTools.size === 0) {
+      if (needsShellAction && successfulShellTools.size === 0 && taskPolicy.intent !== 'direct_response') {
         requiredActionFailures.push('no successful install/run command was executed')
       }
       if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search', 'invoke_subagent'].some((name) => successfulTools.has(name))) {
@@ -2554,11 +2560,11 @@ export class AgentOrchestrator {
         requiredActionFailures.push('source data file read failed; placeholder artifact cannot satisfy request')
       }
 
-      if (classification.kind === 'agent' && successfulTools.size === 0) {
+      if (classification.kind === 'agent' && successfulTools.size === 0 && taskPolicy.intent !== 'direct_response') {
         requiredActionFailures.push('the agent task dispatched no successful tool')
       }
 
-      const requiresExecution = needsFileMutation || needsShellAction || needsInspectionAction || explicitVerificationRequested || needsWebAction || (classification.kind === 'agent' && Boolean(toolCatalog)) || (classification.kind === 'tool-use' && Boolean(opts?.webSearch))
+      const requiresExecution = taskPolicy.intent !== 'direct_response' && (needsFileMutation || needsShellAction || needsInspectionAction || explicitVerificationRequested || needsWebAction || (classification.kind === 'agent' && Boolean(toolCatalog)) || (classification.kind === 'tool-use' && Boolean(opts?.webSearch)))
       if (requiresExecution && requiredActionFailures.length > 0) {
         trace.success = false
         trace.endTime = Date.now()
@@ -2567,12 +2573,22 @@ export class AgentOrchestrator {
           : `The model returned text without an observed successful action.`
         const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. ${actionSummary} No task completion was recorded.`
         this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
-        try {
-          const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${message}` })).seq
-          this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
-        } catch {
-          this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: message })
+        
+        // Persist streamed text if generated, so content is retained in the bubble
+        if (text.trim().length > 0) {
+          try {
+            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: sanitizeAssistantText(text) })).seq
+            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          } catch {}
+        } else {
+          try {
+            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${message}` })).seq
+            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
+          } catch {
+            this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: message })
+          }
         }
+        
         try {
           await this.deps.persistence.appendEvent(sessionId, 'agent/trace', {
             kind: classification.kind,
@@ -2947,7 +2963,24 @@ export class AgentOrchestrator {
         } catch {}
       }
 
+      // Adaptive Context Loop Checkpointing:
+      // For multi-turn / complex tasks where prompt context is large (>70% of budget), write task checkpoint.
+      // Arithmetic and simple direct responses explicitly skip creating wiki task files.
       const promptText = messages.map((m) => m.content).join(' ')
+      const estPromptTokens = Math.ceil(promptText.length / 4)
+      const contextUsageRatio = estPromptTokens / nCtx
+      if (contextUsageRatio > 0.7 && taskIntent !== 'direct_response') {
+        try {
+          const wsDir = fallbackWsRoot || this.deps.getGlobalWorkspace?.()
+          if (wsDir) {
+            const wikiTasksDir = path.join(wsDir, 'wiki', 'tasks')
+            fs.mkdirSync(wikiTasksDir, { recursive: true })
+            const taskCheckpointFile = path.join(wikiTasksDir, `task-${sid.slice(0, 8)}.md`)
+            const checkpointContent = `---\ntitle: Task Checkpoint ${sid.slice(0, 8)}\ntype: task_checkpoint\ncreated: ${new Date().toISOString()}\n---\n\n## Objective\n${content.slice(0, 300)}\n\n## Status\nCOMPLETED\n\n## Summary\n${text.slice(0, 1000)}\n`
+            fs.writeFileSync(taskCheckpointFile, checkpointContent, 'utf-8')
+          }
+        } catch {}
+      }
       const visionTokenEstimate = messages.reduce((n, m) => n + (m.images?.length ?? 0) * 1024, 0)
       const tokenUsage = usage ?? {
         promptTokens: Math.ceil(promptText.length / 4) + visionTokenEstimate,

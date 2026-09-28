@@ -27,6 +27,7 @@ import { routeModel, pickFittingModel, suggestContextSize } from './ModelRouter'
 import { getLlamaServerPath, ensureLlamaRuntime } from '../services/llamaRuntime'
 import { encodeToPool, retrieveSlice } from '../services/unlimitedContext'
 import { AssistantStreamAccumulator } from './assistantStream'
+import { AgentOrchestratorError } from './AgentOrchestrator'
 
 export { SOVARA_SYSTEM_PROMPT as CHAT_SYSTEM_PROMPT } from './prompts/sovaraSystem'
 const CHAT_SYSTEM_PROMPT = SOVARA_SYSTEM_PROMPT
@@ -629,10 +630,14 @@ export class ChatService {
         return this.finishCancelled(sessionId, sid, started, entry.id, endpoint, model, streamed)
       }
       if (ownedInstanceId) this.noteEnd(ownedInstanceId)
-      const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
+      const safe = e instanceof Error ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, endpoint, model, started, undefined, outcomeOf(e), streamed)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+      if (e instanceof AgentOrchestratorError && e.code !== 'runtime-unavailable' && e.code !== 'model-load-failed') {
+        // Semantic agent error (e.g. llm-failed, cancelled): task complete with error, local runtime remains healthy.
+        return
+      }
       throw new ChatServiceError('runtime-unavailable', safe)
     } finally {
       this.inFlight.delete(sid)
@@ -880,10 +885,13 @@ export class ChatService {
         return this.finishCancelled(sessionId, sid, started, entry.id, endpoint, model, streamed)
       }
       if (regenInstanceId) this.noteEnd(regenInstanceId)
-      const safe = e instanceof ChatInferenceError ? e.message : 'stream-error: the local runtime interrupted the reply'
+      const safe = e instanceof Error ? e.message : 'stream-error: the local runtime interrupted the reply'
       this.log(entry.id, endpoint, model, started, undefined, outcomeOf(e), streamed)
       appendChatLog(this.deps.baseDir, { sessionId: sid, action: 'error', outcome: outcomeOf(e), error: safe, modelId: model, runtimeId: entry.id, latencyMs: Date.now() - started })
       this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: safe })
+      if (e instanceof AgentOrchestratorError && e.code !== 'runtime-unavailable' && e.code !== 'model-load-failed') {
+        return
+      }
       throw new ChatServiceError('runtime-unavailable', safe)
     } finally {
       this.inFlight.delete(sid)

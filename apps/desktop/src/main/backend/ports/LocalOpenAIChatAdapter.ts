@@ -220,20 +220,41 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     // Fallback 4096 is generous for one-turn chat before orchestrator catches up.
     const maxTokens = request.maxCompletionTokens ?? 4096
 
-    // ── Serialize messages — support role:'tool' for tool result turns ──────
+    // ── Native tool calling vs Local Loopback Serialization ─────────────────
+    const isLocalServer = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(request.endpoint)
+
+    // ── Serialize messages — support role:'tool' for remote vs local servers ──
     // Sanitize first: repair trailing/partial assistant(tool_calls) so the
     // server never sees a continuation it must reject with 400.
-    const serializedMessages = sanitizeToolCallMessages(request.messages).map((m) => {
-      if (m.role === 'tool') {
-        // Tool result: llama-server needs tool_call_id to correlate with the request
-        return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content }
-      }
-      if (m.role === 'assistant' && (m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls'])) {
-        const rawCalls = m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls']
-        return {
-          role: 'assistant',
-          content: m.content || null,
-          tool_calls: rawCalls,
+    const sanitizedMsgs = sanitizeToolCallMessages(request.messages)
+    const serializedMessages = sanitizedMsgs.map((m) => {
+      if (isLocalServer) {
+        // Local models (llama-server) use prompt toolCatalog + fenceTools.
+        // Convert role:'tool' to user-side observation and ensure assistant
+        // turn contains the textual tool fence so Jinja template formats cleanly.
+        if (m.role === 'tool') {
+          return { role: 'user', content: `[Tool Observation]\n${m.content}` }
+        }
+        if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+          let textContent = (m.content || '').trim()
+          if (!textContent) {
+            const fenceBlocks = m.tool_calls.map((tc) => `\`\`\`tool:${tc.function.name}\n${tc.function.arguments}\n\`\`\``)
+            textContent = fenceBlocks.join('\n\n')
+          }
+          return { role: 'assistant', content: textContent }
+        }
+      } else {
+        // Remote APIs (OpenAI/Anthropic): preserve OpenAI-native tool_calls protocol
+        if (m.role === 'tool') {
+          return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content }
+        }
+        if (m.role === 'assistant' && (m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls'])) {
+          const rawCalls = m.tool_calls || (m as unknown as Record<string, unknown>)['tool_calls']
+          return {
+            role: 'assistant',
+            content: m.content || null,
+            tool_calls: rawCalls,
+          }
         }
       }
       if (m.images && m.images.length > 0) {
@@ -265,7 +286,6 @@ export class LocalOpenAIChatAdapter implements LlmPort {
     // Only send native tools array to remote APIs. For local llama-server endpoints,
     // sending body['tools'] forces native Jinja tool grammar that freezes/stops local models.
     // Local models use prompt toolCatalog + fenceTools for 100% reliable execution.
-    const isLocalServer = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(request.endpoint)
     if (request.tools && request.tools.length > 0 && !isLocalServer) {
       body['tools'] = request.tools.map((t) => ({
         type: 'function',

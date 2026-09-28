@@ -890,10 +890,24 @@ export class ToolStubAdapter implements ToolPort {
       }
 
       if (toolName === 'read_skill') {
-        const rawName = args.skill_name ?? args.skillName ?? args.skill ?? args.name ?? ''
+        const rawName = args.skill_name ?? args.skillName ?? args.skill ?? args.name ?? args.path ?? args.query ?? ''
         const skillName = typeof rawName === 'string' ? rawName.trim() : ''
         if (!skillName) return JSON.stringify({ error: 'read_skill requires { "skill_name": "<name>" }' })
-        const match = allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase() || s.id.toLowerCase() === skillName.toLowerCase())
+        const lowerName = skillName.toLowerCase()
+        let match = allSkills.find(s => s.name.toLowerCase() === lowerName || s.id.toLowerCase() === lowerName)
+        if (!match) {
+          const terms = lowerName.split(/[^a-z0-9]+/).filter(t => t.length > 2)
+          if (terms.length > 0) {
+            match = allSkills.find(s => {
+              const nameTokens = (s.name || '').toLowerCase().split(/[^a-z0-9]+/)
+              const descTokens = (s.description || '').toLowerCase().split(/[^a-z0-9]+/)
+              return terms.every(t => nameTokens.includes(t) || descTokens.includes(t))
+            })
+          }
+        }
+        if (!match) {
+          match = allSkills.find(s => s.name.toLowerCase().includes(lowerName) || s.id.toLowerCase().includes(lowerName))
+        }
         if (!match) return JSON.stringify({ error: `Skill "${skillName}" not found. Try using search_skills.` })
         try {
           const content = await readFile(join(match.path, 'SKILL.md'), 'utf8')

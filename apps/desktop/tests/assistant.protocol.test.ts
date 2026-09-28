@@ -61,6 +61,16 @@ describe('assistantProtocol — JSON reasoning blocks', () => {
     expect(r.ends).toBe(1)
   })
 
+  it('handles <thought> and Thinking Process markers correctly', () => {
+    const r1 = runThrough(['<thought>reasoning text</thought>Final Answer'])
+    expect(r1.reasoning).toBe('reasoning text')
+    expect(r1.text).toBe('Final Answer')
+
+    const r2 = runThrough(['Thinking Process:\n1. Step one\n\nFinal Answer'])
+    expect(r2.reasoning).toContain('1. Step one')
+    expect(r2.text).toBe('Final Answer')
+  })
+
   it('legacy unclosed thinking block persists at flush', () => {
     const r = runThrough(['<thinking>ab', 'cd'])
     expect(r.reasoning).toBe('abcd')

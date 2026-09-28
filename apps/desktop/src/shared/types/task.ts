@@ -47,6 +47,17 @@ export interface TaskRequest {
   }
 }
 
+export interface AutoRoutingTrace {
+  input: 'image attachment' | 'text only'
+  task: string
+  requiredModality: 'image' | 'text'
+  availableModels: Array<{ id: string; visionCapable: boolean }>
+  selectedRoute: 'vision_model' | 'ocr_capability' | 'unavailable'
+  selectedModelId?: string | null
+  selectedCapability?: string | null
+  reason: string
+}
+
 export interface ModelRoutingDecision {
   /** Chosen model qualified id e.g. "rt-1:phi-4" or registry id */
   modelId: string | null
@@ -59,6 +70,10 @@ export interface ModelRoutingDecision {
   candidatesConsidered: number
   /** Whether selection differs from current active */
   switched: boolean
+  /** Concise AUTO routing trace */
+  routingTrace?: AutoRoutingTrace
+  /** Selected route mode */
+  selectedRoute?: 'vision_model' | 'ocr_capability' | 'unavailable'
 }
 
 export interface AgentExecutionStep {

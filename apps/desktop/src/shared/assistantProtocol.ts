@@ -36,11 +36,16 @@ const TEXT_OPEN_MARKERS: readonly string[] = [
   '```reasoning',
   '<thinking>',
   '<think>',
+  '<thought>',
+  'Thinking Process:',
+  'Thought Process:',
+  'Thought:',
+  'Reasoning Process:',
 ]
 /** Markers that close a legacy `<thinking>`-style block. */
-const XML_CLOSE_MARKERS: readonly string[] = ['</thinking>', '</think>']
+const XML_CLOSE_MARKERS: readonly string[] = ['</thinking>', '</think>', '</thought>', '\n\n']
 /** Markers that close a fenced reasoning block. */
-const FENCE_CLOSE_MARKERS: readonly string[] = ['```', '</thinking>', '</think>']
+const FENCE_CLOSE_MARKERS: readonly string[] = ['```', '</thinking>', '</think>', '</thought>']
 
 export type ReasoningSplitEvent =
   | { kind: 'text'; value: string }
@@ -296,9 +301,12 @@ function stripProtocolTags(prose: string): string {
   // Legacy thinking blocks incl. unclosed-to-end, then stray fragments.
   out = out.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
   out = out.replace(/<think>[\s\S]*?<\/think>/gi, '')
+  out = out.replace(/<thought>[\s\S]*?<\/thought>/gi, '')
   out = out.replace(/<thinking>[\s\S]*$/gi, '')
   out = out.replace(/<think>[\s\S]*$/gi, '')
-  out = out.replace(/<\/?(?:thinking|think)>/gi, '')
+  out = out.replace(/<thought>[\s\S]*$/gi, '')
+  out = out.replace(/<\/?(?:thinking|think|thought)>/gi, '')
+  out = out.replace(/(?:Thinking Process|Thought Process|Thought|Reasoning Process):[\s\S]*?(?=\n\n|\r\n\r\n|```|$)/gi, '')
   // Bare protocol tags (with or without attributes / self-close).
   for (const name of [...PROTOCOL_PAIRED_NAMES, ...PROTOCOL_WRAPPER_ONLY_NAMES]) {
     const n = escapeRegExp(name)

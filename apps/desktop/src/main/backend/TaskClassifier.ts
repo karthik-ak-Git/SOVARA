@@ -35,13 +35,104 @@ const REASONING_PATTERNS = [
 
 const ARTIFACT_BUILD_RE = /\b(ppt|pptx|presentation|pdf|docx|xlsx|slide|slides|report|dashboard|game|canvas|diagram)\b/i
 
+export type TaskIntent =
+  | 'direct_response'
+  | 'read'
+  | 'write'
+  | 'write_verify'
+  | 'multi_step'
+  | 'coding'
+  | 'document_analysis'
+  | 'multimodal'
+
+export interface CompletionPolicy {
+  intent: TaskIntent
+  requiredTools: string[]
+  minimumSuccessfulActions: number
+  requiresInspection: boolean
+  requiresVerification: boolean
+  requiresArtifact: boolean
+  completionCondition: 'validAssistantResponse' | 'toolsExecuted' | 'artifactCreated' | 'verifiedReadBack'
+}
+
+export function deriveTaskIntentAndPolicy(
+  content: string,
+  classification: TaskClassification
+): CompletionPolicy {
+  const text = (content ?? '').trim()
+  const hasPath = PATH_PATTERNS.some((re) => re.test(text))
+  const userAskedToRead = /\b(?:read|inspect|list|find|view|open)\b[\s\S]{0,40}\b(?:file|files|workspace|directory|folder|path|source|notes|log|code)\b/i.test(text) || (hasPath && /\b(?:read|inspect|view|show|open|summarize)\b/i.test(text))
+  const userAskedToWrite = /\b(?:create|write|save|generate|scaffold|build|make|fix|edit|update)\b[\s\S]{0,40}\b(?:file|script|app|project|program|code|config|\.[a-z0-9]+)\b/i.test(text)
+  const userAskedToVerify = /\b(?:read\s+(?:it\s+)?back|verify|read\s+and\s+verify|confirm\s+content)\b/i.test(text)
+  const isMultiStep = /\b(?:then|after that|next|steps|plan|workflow)\b/i.test(text) && text.length > 150
+
+  if (userAskedToWrite && userAskedToVerify) {
+    return {
+      intent: 'write_verify',
+      requiredTools: ['fs_write', 'fs_read'],
+      minimumSuccessfulActions: 2,
+      requiresInspection: false,
+      requiresVerification: true,
+      requiresArtifact: true,
+      completionCondition: 'verifiedReadBack',
+    }
+  }
+
+  if (userAskedToWrite) {
+    return {
+      intent: 'write',
+      requiredTools: ['fs_write'],
+      minimumSuccessfulActions: 1,
+      requiresInspection: false,
+      requiresVerification: false,
+      requiresArtifact: true,
+      completionCondition: 'artifactCreated',
+    }
+  }
+
+  if (userAskedToRead) {
+    return {
+      intent: 'read',
+      requiredTools: ['fs_read'],
+      minimumSuccessfulActions: 1,
+      requiresInspection: true,
+      requiresVerification: false,
+      requiresArtifact: false,
+      completionCondition: 'toolsExecuted',
+    }
+  }
+
+  if (isMultiStep || classification.kind === 'agent') {
+    return {
+      intent: 'multi_step',
+      requiredTools: ['fs_read', 'fs_write', 'shell_exec'],
+      minimumSuccessfulActions: 1,
+      requiresInspection: false,
+      requiresVerification: false,
+      requiresArtifact: false,
+      completionCondition: 'toolsExecuted',
+    }
+  }
+
+  // Pure arithmetic, math, calculation, general Q&A, chat, reasoning without file path / tool intent
+  return {
+    intent: 'direct_response',
+    requiredTools: [],
+    minimumSuccessfulActions: 0,
+    requiresInspection: false,
+    requiresVerification: false,
+    requiresArtifact: false,
+    completionCondition: 'validAssistantResponse',
+  }
+}
+
 // Enhanced: skill detection per audit
 export function detectSkillNeeds(content: string, attachments?: Array<{ mimeType: string }>): string[] {
   const needs = new Set<string>()
   const patterns: Record<string, RegExp> = {
-    pptx: /\b(pptx|powerpoint|presentation|slides|deck)\b/gi,
-    docx: /\b(docx|word|document)\b/gi,
-    xlsx: /\b(xlsx|excel|spreadsheet|\.xlsx)\b/gi,
+    pptx: /\b(pptx?|powerpoint|presentation|slides|deck)\b/gi,
+    docx: /\b(docx?|docs?|word|document|word\s*docs?)\b/gi,
+    xlsx: /\b(xlsx?|excel|spreadsheet|\.xlsx?)\b/gi,
     pdf: /\b(pdf|convert.*pdf|export.*pdf)\b/gi,
     ocr: /\b(scan|ocr|handwritten|extract.*text|read.*image)\b/gi,
     diagram: /\b(mermaid|flowchart|diagram|uml)\b/gi,
@@ -51,10 +142,6 @@ export function detectSkillNeeds(content: string, attachments?: Array<{ mimeType
   for (const [skill, re] of Object.entries(patterns)) {
     re.lastIndex = 0
     if (re.test(content)) needs.add(skill)
-  }
-  if (attachments) {
-    const hasVision = attachments.some((a) => a.mimeType.startsWith('image/') || a.mimeType === 'application/pdf')
-    if (hasVision) { needs.add('vision'); needs.add('ocr') }
   }
   return Array.from(needs)
 }

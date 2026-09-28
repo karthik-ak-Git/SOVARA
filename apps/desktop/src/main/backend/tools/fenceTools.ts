@@ -129,8 +129,9 @@ export function parseLenientJson(raw: string, toolName?: string): Record<string,
     if (!res || typeof res !== 'object') return defaultArgsFor(toolName)
     const out = { ...res }
     if (toolName === 'read_skill') {
-      if (!out['skill_name'] && (out['skillName'] || out['skill'] || out['name'])) {
-        out['skill_name'] = out['skillName'] || out['skill'] || out['name']
+      const alias = out['skillName'] || out['skill'] || out['name'] || out['path'] || out['query']
+      if (!out['skill_name'] && alias) {
+        out['skill_name'] = alias
       }
     } else if (toolName === 'search_skills') {
       if (!out['query'] && (out['q'] || out['keyword'] || out['term'])) {
@@ -412,7 +413,9 @@ function defaultArgsFor(toolName?: string): Record<string, unknown> {
 
 /** True if the text still contains an unexecuted-looking tool fence. */
 export function looksLikeToolFence(text: string): boolean {
-  return new RegExp('`{3,}[ \\t]*(?:tool:)?[ \\t]*(' + TOOL_NAME_PATTERN + ')\\b', 'i').test(text)
+  if (!text) return false
+  const backtickFence = new RegExp('`{3,}[ \\t]*(?:tool:)?[ \\t]*(' + TOOL_NAME_PATTERN + ')\\b', 'i').test(text)
+  return backtickFence || looksLikeBareToolCall(text)
 }
 
 /**

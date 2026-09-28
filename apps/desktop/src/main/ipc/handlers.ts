@@ -1144,11 +1144,16 @@ export function registerIpcHandlers(): void {
   // ── Wiki Knowledge Graph — read wiki folder, build nodes/edges, sync with chat context (no hardcode) ──
   ipcMain.handle('wiki:buildGraph', async (_e, raw: unknown) => {
     const parsed = zWikiBuildGraph.safeParse(raw ?? {})
-    const workspaceRoot = (parsed.success ? parsed.data.workspaceRoot : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
+    const rawWs = parsed.success ? parsed.data.workspaceRoot : undefined
+    const workspaceRoot = (rawWs && rawWs.trim().length > 0 ? rawWs.trim() : undefined) || (getBackend() as unknown as { getGlobalWorkspace?: () => string }).getGlobalWorkspace?.() || process.cwd()
     // Reference repo doubles as a read-only wiki fallback (code conventions mirror target).
     const llmWikiRef = path.resolve(process.cwd(), 'test/llm_wiki')
+    const primaryWikiDir = path.join(path.resolve(workspaceRoot), 'wiki')
+    if (!fs.existsSync(primaryWikiDir)) {
+      try { fs.mkdirSync(primaryWikiDir, { recursive: true }) } catch {}
+    }
     const tryDirs = [
-      path.join(path.resolve(workspaceRoot), 'wiki'),
+      primaryWikiDir,
       path.join(getSovaraDataDir(undefined), 'wiki'),
       path.join(llmWikiRef, 'wiki'),
       path.join(llmWikiRef, '.llm-wiki/wiki'),
