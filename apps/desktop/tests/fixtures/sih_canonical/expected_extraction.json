@@ -1,0 +1,9 @@
+{
+  "serialNumber": "TURBINE-V7-8890",
+  "component": "High-Pressure Main Steam Valve Assembly",
+  "inspectionDate": "2026-09-27 14:30:00 UTC",
+  "measuredPressurePSI": 142.5,
+  "measuredCrackLengthMM": 0.72,
+  "operationalTempC": 485,
+  "vibrationAmplitudeMMS": 0.04
+}

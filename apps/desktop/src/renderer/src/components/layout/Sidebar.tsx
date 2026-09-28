@@ -22,6 +22,7 @@ import {
   Archive,
   Check,
   Network,
+  ShieldCheck,
 } from 'lucide-react'
 import { copyToClipboard } from '@/lib/client/api'
 import { SmartNotificationDrawer } from '@/components/ui/SmartNotificationDrawer'
@@ -38,6 +39,7 @@ export type NavId =
   | 'connections'
   | 'settings'
   | 'graph'
+  | 'audit'
 
 interface ProjectItem {
   id: string
@@ -706,6 +708,30 @@ export function Sidebar({
         >
           <Clock size={16} aria-hidden style={{ color: '#64748b' }} />
           <span>Conversation History</span>
+        </button>
+
+        <button
+          type="button"
+          className={`nav-item ${activeId === 'audit' ? 'selected' : ''}`}
+          onClick={() => onNavigate('audit')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            padding: '7px 8px',
+            borderRadius: 6,
+            border: 'none',
+            background: activeId === 'audit' ? '#f1f5f9' : 'transparent',
+            color: activeId === 'audit' ? '#0f172a' : '#475569',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+            marginTop: 2,
+          }}
+        >
+          <ShieldCheck size={16} aria-hidden style={{ color: '#16a34a' }} />
+          <span>Audit & Sovereignty</span>
         </button>
 
         <div style={{ marginTop: 2 }}>

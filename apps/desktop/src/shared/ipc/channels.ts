@@ -151,6 +151,7 @@ export const IPC_CHANNELS = {
   'events:session': { type: 'on' as const },
   'events:download': { type: 'on' as const },
   'events:instances': { type: 'on' as const },
+  'agent:event': { type: 'on' as const },
 } as const
 
 export type IpcChannel = keyof typeof IPC_CHANNELS

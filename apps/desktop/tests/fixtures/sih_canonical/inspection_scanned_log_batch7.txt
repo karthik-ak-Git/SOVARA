@@ -1,0 +1,14 @@
+SERIAL: TURBINE-V7-8890
+COMPONENT: High-Pressure Main Steam Valve Assembly
+INSPECTION DATE: 2026-09-27 14:30:00 UTC
+INSPECTOR ID: EXP-8821-IND
+LOCATION: Bay-4 Thermal Power Unit
+
+MEASURED TELEMETRY:
+- Operating Pressure: 142.5 PSI
+- Surface Micro-Crack Length: 0.72 mm
+- Operating Temperature: 485 °C
+- Vibration Amplitude: 0.04 mm/s
+
+OBSERVATIONS:
+Visual inspection under 10x magnification indicates localized thermal fatigue cracking along the flange fillet weld. Pressure reading during load test exceeded baseline standard.

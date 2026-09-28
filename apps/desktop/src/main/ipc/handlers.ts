@@ -47,6 +47,19 @@ function broadcastChat(event: ChatStreamEvent): void {
   }
 }
 
+/** Push channel for structured agent lifecycle events. */
+export function broadcastAgentEvent(event: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      try {
+        win.webContents.send('agent:event', event)
+      } catch {
+        // ignore dead renderers
+      }
+    }
+  }
+}
+
 /** Prefix a user-facing error code exactly once (inner layers may pre-prefix). */
 function prefixed(raw: string, prefix: string): string {
   return raw.toLowerCase().startsWith(prefix.toLowerCase()) ? raw : `${prefix}${raw}`

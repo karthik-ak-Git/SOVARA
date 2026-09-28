@@ -1,0 +1,26 @@
+{
+  "sopDocumentId": "SOP-TURBINE-VALVE-SAFETY-v4",
+  "serialNumber": "TURBINE-V7-8890",
+  "rulesEvaluated": [
+    {
+      "ruleId": "SOP-SEC-3.2",
+      "parameter": "Max Continuous Operating Pressure",
+      "threshold": 130.0,
+      "unit": "PSI",
+      "observed": 142.5,
+      "compliant": false,
+      "severity": "CRITICAL"
+    },
+    {
+      "ruleId": "SOP-SEC-4.1",
+      "parameter": "Max Permissible Surface Crack Length",
+      "threshold": 0.50,
+      "unit": "mm",
+      "observed": 0.72,
+      "compliant": false,
+      "severity": "HIGH"
+    }
+  ],
+  "overallDecision": "REJECTED_IMMEDIATE_SHUTDOWN",
+  "requiredAction": "Immediate unit isolation and engineering repair review."
+}

@@ -174,15 +174,22 @@ export function dispatchShell(
     ? Math.min(120000, Math.max(2000, args['timeoutMs'] as number))
     : isServer ? 10000 : 20000
 
+  const sanitizedCmd = command.replace(/\0/g, '')
+  const sanitizedWorkdir = workdirRel.replace(/\0/g, '')
+
   return new Promise((resolve) => {
     let resolved = false
     let stdoutAcc = ''
     let stderrAcc = ''
 
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sanitizedCmd], {
       cwd: workdir,
       windowsHide: true,
     })
+
+    if (!isServer && child.stdin) {
+      try { child.stdin.end() } catch { /* ignore */ }
+    }
 
     const finish = (result: Record<string, unknown>): void => {
       if (resolved) return

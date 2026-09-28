@@ -187,6 +187,12 @@ export function onSessionEvents(
   return ipcOn('events:session', callback)
 }
 
+export function onAgentEvents(
+  callback: (event: import('@shared/types/agentEvents').AgentEvent) => void
+): () => void {
+  return ipcOn('agent:event', callback)
+}
+
 export async function listRuntimes(): Promise<ModelRuntimeEntry[]> {
   return ipcInvoke('models:listRuntimes')
 }

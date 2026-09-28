@@ -162,6 +162,10 @@ export async function runWebSearch(
   timeoutMs: number = WEB_SEARCH_TIMEOUT_MS,
   signal?: AbortSignal
 ): Promise<WebSearchOutcome> {
+  const gate = checkNetworkAccessAllowed(WEB_SEARCH_ENDPOINT)
+  if (!gate.allowed) {
+    throw new WebSearchError(gate.reason || 'Network search disabled in AIR_GAPPED mode', 'WEB_PROVIDER_ERROR')
+  }
   if (query.trim().length === 0) throw new WebSearchError('query must be a non-empty string', 'WEB_PROVIDER_ERROR')
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -202,7 +206,13 @@ export interface WebPage {
  * Small TypeScript-only page reader used by web_fetch. It deliberately avoids a
  * browser runtime and keeps the result bounded before it reaches the model context.
  */
+import { checkNetworkAccessAllowed } from './securityMode'
+
 export async function fetchWebPage(url: string, maxChars = 6000, timeoutMs = 15000): Promise<WebPage> {
+  const gate = checkNetworkAccessAllowed(url)
+  if (!gate.allowed) {
+    throw new WebSearchError(gate.reason || 'Web fetch disabled in AIR_GAPPED mode', 'WEB_PROVIDER_ERROR')
+  }
   let parsed: URL
   try {
     parsed = new URL(url)

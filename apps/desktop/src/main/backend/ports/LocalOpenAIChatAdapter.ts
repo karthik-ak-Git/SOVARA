@@ -370,6 +370,8 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       await pump
     } catch (e) {
       throw classifyChatError(failed ?? e)
+    } finally {
+      try { await res.body?.cancel() } catch { /* ignore */ }
     }
     if (failed) throw classifyChatError(failed)
 

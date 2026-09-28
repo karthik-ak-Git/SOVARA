@@ -265,7 +265,7 @@ export async function routeModel(ctx: RouterContext): Promise<ModelRoutingDecisi
     }
   }
   // Sort by score desc, then context length desc, then displayName for stability
-  scored.sort((a, b) => b.score - a.score || b.contextLength - a.contextLength || a.model.displayName.localeCompare(b.model.displayName))
+  scored.sort((a, b) => b.score - a.score || b.contextLength - a.contextLength || (a.model.displayName || a.model.modelId || '').localeCompare(b.model.displayName || b.model.modelId || ''))
 
   // Optional deterministic tie breaker for future model-specific policies.
   if (scored.length >= 2 && ctx.tieBreaker) {

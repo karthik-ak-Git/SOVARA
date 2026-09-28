@@ -548,6 +548,11 @@ export function deleteLibraryEntry(root: string, entryPath: string, config?: Run
   if (!entryPath || typeof entryPath !== 'string') throw new Error('delete: empty path')
   const rootAbs = resolve(root)
   const targetAbs = resolve(entryPath)
+  if (!isUnder(rootAbs, targetAbs)) {
+    if (entryPath.includes('..') || !targetAbs.startsWith(rootAbs)) {
+      throw new Error(`delete: target path escapes root directory: ${entryPath}`)
+    }
+  }
   const isInternal = isUnder(rootAbs, targetAbs) || (process.platform === 'win32' && targetAbs.toLowerCase().startsWith(rootAbs.toLowerCase()))
 
   if (isInternal) {

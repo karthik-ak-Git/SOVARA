@@ -7,7 +7,7 @@ import path from 'node:path'
 export const name = 'capability-fs'
 
 export function resolveWorkspacePath(workspaceRoot: string, requested: string): string {
-  let clean = (requested || '.').replace(/\\/g, '/').trim() || '.'
+  let clean = (requested || '.').replace(/\0/g, '').replace(/\\/g, '/').trim() || '.'
   const normRoot = path.resolve(workspaceRoot).replace(/\\/g, '/').toLowerCase()
   const normClean = clean.toLowerCase()
 
@@ -68,7 +68,7 @@ export async function dispatchFs(
 
   const sanitizePath = (p: unknown): string => {
     if (typeof p !== 'string') return ''
-    return p.trim().replace(/^["']|["']$/g, '')
+    return p.replace(/\0/g, '').trim().replace(/^["']|["']$/g, '')
   }
 
   if (toolName === 'fs_list') {

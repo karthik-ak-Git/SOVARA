@@ -75,8 +75,10 @@ function sequenceLlm(responses: string[][]) {
   let call = 0
   return {
     async *stream(): AsyncIterable<LlmChunk> { throw new Error('unused') },
-    async *streamChat(_request: LlmChatRequest): AsyncIterable<LlmChunk> {
-      const response = responses[Math.min(call++, responses.length - 1)] ?? ['done']
+    async *streamChat(request: LlmChatRequest): AsyncIterable<LlmChunk> {
+      const callIdx = call++
+      const response = responses[Math.min(callIdx, responses.length - 1)] ?? ['done']
+      console.log(`[SEQUENCE_LLM_CALL #${callIdx}] last_msg="${request.messages[request.messages.length - 1]?.content?.slice(0, 100).replace(/\n/g, ' ')}" -> returning "${response[0]?.slice(0, 60).replace(/\n/g, ' ')}"`)
       for (const text of response) yield { type: 'text-delta' as const, text }
       yield { type: 'done' as const }
     },

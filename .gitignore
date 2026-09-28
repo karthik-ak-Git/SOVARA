@@ -57,6 +57,12 @@ screenshots/
 *.ico
 # Exception: the README header logo is a tracked source asset.
 !apps/desktop/src/renderer/public/logo.png
+!apps/desktop/tests/fixtures/sih_canonical/inspection_scan_batch7.png
+
+# Traces & scratch
+traces/
+apps/desktop/traces/
+scratch/
 
 # Test folder traces (keep orchestration prompt lab)
 test/*
@@ -70,4 +76,4 @@ sovara-newui/
 # Local llama runtime binaries
 runtime/
 apps/desktop/resources/runtime/
-apps/desktop/resources/runtime-cache/
+apps/desktop/resources/runtime-cache/

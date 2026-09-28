@@ -28,6 +28,30 @@ export interface ToolFence {
   index: number
 }
 
+export interface NormalizedToolCall {
+  type: 'tool_call'
+  tool: string
+  arguments: Record<string, unknown>
+  rawCallId?: string
+  rawSpan?: string
+  index?: number
+}
+
+export function toNormalizedToolCall(fence: ToolFence): NormalizedToolCall {
+  return {
+    type: 'tool_call',
+    tool: normalizeToolName(fence.toolName),
+    arguments: { ...fence.args },
+    rawSpan: fence.raw,
+    index: fence.index,
+  }
+}
+
+export function extractNormalizedToolCalls(text: string): NormalizedToolCall[] {
+  const fences = extractToolFences(text)
+  return fences.map(toNormalizedToolCall)
+}
+
 const TOOL_NAMES = [
   'fs_list', 'fs_read', 'fs_search', 'fs_write', 'fs_patch',
   'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec',
@@ -345,7 +369,10 @@ export function extractToolFences(text: string): ToolFence[] {
       }
     }
     const args = parseLenientJson(argsSource, nameStr)
-    out.push({ toolName: nameStr, args, raw: m[0], index: m.index })
+    const reqArgs = ['fs_write', 'fs_patch', 'fs_read', 'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec', 'search_skills', 'read_skill', 'invoke_subagent'].includes(nameStr)
+    if (!reqArgs || Object.keys(args).length > 0) {
+      out.push({ toolName: nameStr, args, raw: m[0], index: m.index })
+    }
     scanFrom = m.index + m[0].length
     if (scanFrom >= text.length) break
     // Glued-fence recovery. The closing run is `` `{3,} `` (greedy), so a
@@ -376,10 +403,10 @@ export type { ToolName }
 function defaultArgsFor(toolName?: string): Record<string, unknown> {
   if (toolName === 'fs_list') return { path: '.' }
   if (toolName === 'todo_write') return { todos: [] }
-  if (toolName === 'search_skills') return { query: '' }
-  if (toolName === 'read_skill') return { skill_name: '' }
+  if (toolName === 'search_skills') return {}
+  if (toolName === 'read_skill') return {}
   if (toolName === 'invoke_subagent') return { role: 'general', description: '' }
-  if (toolName === 'shell_exec' || toolName === 'bash' || toolName === 'cmd' || toolName === 'powershell' || toolName === 'terminal_exec') return { command: 'dir' }
+  if (toolName === 'shell_exec' || toolName === 'bash' || toolName === 'cmd' || toolName === 'powershell' || toolName === 'terminal_exec') return {}
   return {}
 }
 
@@ -467,8 +494,14 @@ export function extractBareToolCalls(text: string): ToolFence[] {
           }
         }
         if (toolName && TOOL_NAMES.includes(toolName as any)) {
-          const args = { ...parsed }
-          delete args['action']; delete args['tool']; delete args['name']; delete args['tool_name']; delete args['function']; delete args['status']
+          let args: Record<string, unknown> = {}
+          const rawArgs = parsed['arguments'] ?? parsed['args'] ?? parsed['parameters']
+          if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+            args = rawArgs as Record<string, unknown>
+          } else {
+            args = { ...parsed }
+            delete args['action']; delete args['tool']; delete args['name']; delete args['tool_name']; delete args['function']; delete args['status']
+          }
           out.push({ toolName, args, raw: fullJson, index: startIdx })
           jsonObjectStartRe.lastIndex = endIdx + 1
         }
@@ -531,7 +564,7 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     if (innerContent.trim() && !args['content']) {
       args['content'] = innerContent.trim()
     }
-    if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
+    if (Object.keys(args).length === 0) return out
     out.push({ toolName, args, raw: m[0], index: m.index })
   }
 
@@ -624,7 +657,7 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     }
 
     if (toolName) {
-      if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
+      if (Object.keys(args).length === 0) continue
       out.push({ toolName, args, raw, index: m.index })
     }
   }
@@ -650,7 +683,7 @@ export function extractBareToolCalls(text: string): ToolFence[] {
         if (parsed) Object.assign(args, parsed)
       }
     }
-    if (Object.keys(args).length === 0) Object.assign(args, defaultArgsFor(toolName))
+    if (Object.keys(args).length === 0) continue
     out.push({ toolName, args, raw, index: m.index })
   }
 
@@ -689,7 +722,7 @@ export function extractJsonToolCalls(text: string): ToolFence[] {
 
     if (!toolName) continue
     if (!TOOL_NAMES.includes(toolName as (typeof TOOL_NAMES)[number]) && !toolName.startsWith('mcp_')) continue
-    if (Object.keys(args).length === 0) args = defaultArgsFor(toolName)
+    if (Object.keys(args).length === 0) continue
     out.push({ toolName, args, raw: match[0], index: match.index })
   }
   return out

@@ -1,0 +1,9 @@
+{
+  "workspaceId": "ws-sih-industrial-canonical-01",
+  "name": "SIH Industrial Inspection Workspace",
+  "securityMode": "AIR_GAPPED",
+  "allowWebSearch": false,
+  "defaultModelRole": "AUTO",
+  "localModelsPath": "D:/SOVARA/models",
+  "created": "2026-09-27T17:50:00.000Z"
+}

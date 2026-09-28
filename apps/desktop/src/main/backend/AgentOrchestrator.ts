@@ -34,7 +34,9 @@ import { DEFAULT_TUNING } from '../config/tuning'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
-import { extractToolFences, stripToolFences, looksLikeToolFence, looksLikeBareToolCall, extractBareToolCalls, stripBareToolCalls, extractJsonToolCalls, stripJsonToolCallEnvelopes } from './tools/fenceTools'
+import { extractToolFences, stripToolFences, looksLikeToolFence, looksLikeBareToolCall, extractBareToolCalls, stripBareToolCalls, extractJsonToolCalls, stripJsonToolCallEnvelopes, type ToolFence, type NormalizedToolCall, toNormalizedToolCall } from './tools/fenceTools'
+import { resolveLogicalRole, isToolPermittedForRole, type LogicalAgentRole } from './AgentRoles'
+import { AgentEventBus, type SharedContext } from './AgentEventBus'
 import type {
   ToolExecutionContext,
   ToolHook,
@@ -898,7 +900,12 @@ export class AgentOrchestrator {
         hasImage: attached.hasImage,
         attachmentChars: attached.totalChars,
       })
-      this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: classification.reason })
+      const logicalRole = resolveLogicalRole(classification.kind, classification.skillsNeeded)
+      const taskId = `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+      AgentEventBus.emitAgentEvent('TASK_CREATED', { taskId, sessionId: sid, userPrompt: content, timestamp: Date.now() })
+      AgentEventBus.emitAgentEvent('TASK_STARTED', { taskId, sessionId: sid, kind: classification.kind, timestamp: Date.now() })
+      AgentEventBus.emitAgentEvent('AGENT_STARTED', { taskId, sessionId: sid, role: logicalRole.name, userPrompt: content, modelId: '', timestamp: Date.now() })
+      this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `[${logicalRole.displayName}] ${classification.reason}` })
 
       // ── PHASE 2: model routing (smart, resource-aware) ──
       // Snapshot the user's initially selected model as the "base" that
@@ -1377,6 +1384,7 @@ export class AgentOrchestrator {
       const shouldStructured = classification.kind === 'coding' || classification.kind === 'tool-use' || classification.kind === 'agent' || /\b(build|create|write|make|dashboard|implement|generate|update|code|fix|check|solve|repair|setup|add|edit|refactor|render|draw|review|canvas|game|timer|mermaid|diagram|app|react|html)\b/i.test(content)
       const systemBlocks = [
         CHAT_SYSTEM_PROMPT,
+        `ACTIVE LOGICAL ROLE: ${logicalRole.displayName} (${logicalRole.name})\n${logicalRole.systemInstruction}\nOutput Expectation: ${logicalRole.outputDirective}`,
         ...(shouldStructured ? [STRUCTURED_OUTPUT_INSTRUCTION] : []),
         ...(reasoningSystem ? [reasoningSystem] : []),
         ...(toolCatalog ? [toolCatalog] : []),
@@ -1581,6 +1589,7 @@ export class AgentOrchestrator {
       // ── PHASE 6: agent execution loop (LLM stream + optional tool steps) ──
       let loopSteps = 0; const MAX_LOOP = DEFAULT_TUNING.maxToolLoopSteps
       const inlineToolOutputs: string[] = []
+      const executedSignatures = new Set<string>()
       // hoisted so post-loop synthesis (1558ff) can access them — fixes text/is not defined
       let endpoint = ownedEndpoint ?? entry!.endpoint
       let model = remoteModelId(routing.modelId!)
@@ -1933,6 +1942,7 @@ export class AgentOrchestrator {
           // We also inject any tool calls discovered in fences or bare calls during streaming
           // so they participate in the actual toolLoop.
           if (chunk.type === 'done' && !controller.signal.aborted) {
+            const pushedSignatures = new Set<string>()
             // 1. Inject any tool fences collected during streaming
             if (pendingStreamCalls.length > 0) {
               chunk.toolCalls = chunk.toolCalls || []
@@ -1940,11 +1950,15 @@ export class AgentOrchestrator {
                 if (f.toolName === 'fs_list' && typeof f.args['path'] === 'string') {
                   f.args['path'] = normalizeToolPath(f.toolName, f.args['path'] as string, sessionWsRoot)
                 }
-                chunk.toolCalls.push({
-                  id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
-                  type: 'function',
-                  function: { name: f.toolName, arguments: JSON.stringify(f.args) }
-                })
+                const sig = `${f.toolName}:${JSON.stringify(f.args)}`
+                if (!pushedSignatures.has(sig)) {
+                  pushedSignatures.add(sig)
+                  chunk.toolCalls.push({
+                    id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
+                    type: 'function',
+                    function: { name: f.toolName, arguments: JSON.stringify(f.args) }
+                  })
+                }
               }
             }
 
@@ -1952,9 +1966,9 @@ export class AgentOrchestrator {
             let injectedCalls = false
             const checkAndInject = (sourceText: string) => {
               if (!sourceText) return
-              const fences = []
+              const fences: ToolFence[] = []
               if (looksLikeToolFence(sourceText)) fences.push(...extractToolFences(sourceText))
-              if (looksLikeBareToolCall(sourceText)) fences.push(...extractBareToolCalls(sourceText))
+              else if (looksLikeBareToolCall(sourceText)) fences.push(...extractBareToolCalls(sourceText))
               fences.push(...extractJsonToolCalls(sourceText))
               
               for (const f of fences) {
@@ -1962,8 +1976,8 @@ export class AgentOrchestrator {
                   f.args['path'] = normalizeToolPath(f.toolName, f.args['path'] as string, sessionWsRoot)
                 }
                 const sig = `${f.toolName}:${JSON.stringify(f.args)}`
-                if (!streamFenceSet.has(sig)) {
-                  streamFenceSet.add(sig)
+                if (!pushedSignatures.has(sig)) {
+                  pushedSignatures.add(sig)
                   chunk.toolCalls = chunk.toolCalls || []
                   chunk.toolCalls.push({
                     id: `${f.toolName}-${Date.now()}-${Math.floor(Math.random()*1000)}`,
@@ -2032,6 +2046,7 @@ export class AgentOrchestrator {
                 const wsRoot = sessionWsRoot
                 // ── Loop breaker: identical tool + args repeated → stop spinning, ask the user ──
                 const callSig = `${toolName}:${JSON.stringify(toolArgs)}`
+                executedSignatures.add(callSig)
                 dupStreak = callSig === lastCallSig ? dupStreak + 1 : 0
                 lastCallSig = callSig
                 if (dupStreak >= 2) {
@@ -2040,6 +2055,21 @@ export class AgentOrchestrator {
                     error: `Loop detected: ${toolName} was called ${dupStreak + 1} times with identical arguments. Do NOT retry the same approach. Call the clarify tool with 1-4 concrete questions (each with 2-5 options) to ask the user how to proceed.`,
                     loop_detected: true,
                     suggest: 'clarify',
+                  })
+                } else if (!isToolPermittedForRole(logicalRole, toolName)) {
+                  console.warn(`[SOVARA][PERM] Tool '${toolName}' is NOT permitted for logical role '${logicalRole.name}'`)
+                  toolResult = JSON.stringify({
+                    error: `Tool '${toolName}' is not permitted for your active logical role '${logicalRole.displayName}'. Permitted tools for your role: ${logicalRole.allowedTools.join(', ')}. Please adjust your strategy.`,
+                    role_restriction: true,
+                  })
+                  AgentEventBus.emitAgentEvent('TOOL_CALL_FAILED', {
+                    taskId,
+                    sessionId: sid,
+                    toolCallId: tc.id,
+                    toolName,
+                    error: `Tool '${toolName}' restricted for role ${logicalRole.name}`,
+                    durationMs: 0,
+                    timestamp: Date.now(),
                   })
                 } else {
                 const mode = this.deps.getExecMode?.() ?? 'review'
@@ -2069,7 +2099,17 @@ export class AgentOrchestrator {
                 }
                 } // end loop-breaker else
               } catch (toolErr) {
-                toolResult = JSON.stringify({ error: String(toolErr) })
+                const errStr = String(toolErr)
+                toolResult = JSON.stringify({ error: errStr })
+                AgentEventBus.emitAgentEvent('TOOL_CALL_FAILED', {
+                  taskId,
+                  sessionId: sid,
+                  toolCallId: tc.id,
+                  toolName,
+                  error: errStr,
+                  durationMs: 0,
+                  timestamp: Date.now(),
+                })
               }
               } // end non-clarify branch
 
@@ -2597,8 +2637,14 @@ export class AgentOrchestrator {
       // traces) were previously stored as text and NEVER executed → empty reply.
       // Dedupe per fence signature (tool+args) so text+reasoning duplicates
       // (the model emits the same call twice) dispatch exactly once.
-      const executedSignatures = new Set<string>()
       const regenTools: Array<{ name: string; args: Record<string, unknown> }> = []
+      const normBareArgs = (toolName: string, rawArgs: Record<string, unknown>): Record<string, unknown> => {
+        const args = { ...rawArgs }
+        if (toolName === 'fs_list' && typeof args['path'] === 'string') {
+          args['path'] = normalizeToolPath(toolName, args['path'] as string, fallbackWsRoot)
+        }
+        return args
+      }
       const dispatchMissedFence = async (tName: string, args: Record<string, unknown>): Promise<boolean> => {
         const sig = `${tName}:${JSON.stringify(args)}`
         if (executedSignatures.has(sig)) return false
@@ -2653,7 +2699,14 @@ export class AgentOrchestrator {
           // strip raw fences by span (fenceTools) so user never sees leak (3/4/5-tick, glued)
           text = stripToolFences(text)
         }
+      } else if (looksLikeBareToolCall(text)) {
+        for (const f of extractBareToolCalls(text)) {
+          const args = normBareArgs(f.toolName, { ...f.args })
+          if (await dispatchMissedFence(f.toolName, args)) missed++
+        }
+        if (missed > 0) text = stripBareToolCalls(text)
       }
+
       // Reasoning-channel recovery: fences inside <think> never hit the text path.
       if (looksLikeToolFence(allReasoning)) {
         for (const f of extractToolFences(allReasoning)) {
@@ -2663,29 +2716,7 @@ export class AgentOrchestrator {
           }
           if (await dispatchMissedFence(f.toolName, args)) missed++
         }
-      }
-      // Bare tool call recovery: models like Nemotron-3-Nano emit tool calls
-      // as plain text (fs_list {path:"."}) or XML tags (<fs_list path=".">) without
-      // backtick fences. Detect and dispatch these from both text and reasoning.
-      const normBareArgs = (toolName: string, args: Record<string, unknown>): Record<string, unknown> => {
-        if (toolName === 'fs_list' && typeof args['path'] === 'string') {
-          args['path'] = normalizeToolPath(toolName, args['path'] as string, fallbackWsRoot)
-        }
-        return args
-      }
-      if (looksLikeBareToolCall(text)) {
-        for (const f of extractBareToolCalls(text)) {
-          const args = normBareArgs(f.toolName, { ...f.args })
-          if (await dispatchMissedFence(f.toolName, args)) missed++
-        }
-        if (missed > 0) text = stripBareToolCalls(text)
-      }
-      for (const f of extractJsonToolCalls(text)) {
-        const args = normBareArgs(f.toolName, { ...f.args })
-        if (await dispatchMissedFence(f.toolName, args)) missed++
-      }
-      if (extractJsonToolCalls(text).length > 0) text = stripJsonToolCallEnvelopes(text)
-      if (looksLikeBareToolCall(allReasoning)) {
+      } else if (looksLikeBareToolCall(allReasoning)) {
         for (const f of extractBareToolCalls(allReasoning)) {
           const args = normBareArgs(f.toolName, { ...f.args })
           if (await dispatchMissedFence(f.toolName, args)) missed++
@@ -3558,6 +3589,70 @@ export class AgentOrchestrator {
 
   private emit(sessionId: string, kind: ChatStreamEvent['kind'], extra: Partial<ChatStreamEvent> = {}): void {
     this.deps.emit({ sessionId, kind, ...extra })
+    try {
+      const { broadcastAgentEvent } = require('../ipc/handlers') as typeof import('../ipc/handlers')
+      const now = Date.now()
+      const ex = extra as Record<string, any>
+      const k = String(kind)
+      if (k === 'task:start') {
+        broadcastAgentEvent({
+          type: 'AGENT_STARTED',
+          payload: { taskId: sessionId, sessionId, role: ex.taskKind || 'agent', userPrompt: ex.detail || '', modelId: ex.modelId || 'local', timestamp: now }
+        })
+      } else if (k === 'task:planning') {
+        broadcastAgentEvent({
+          type: 'PLAN_CREATED',
+          payload: { taskId: sessionId, sessionId, todos: [], timestamp: now }
+        })
+      } else if (k === 'step:start' || k === 'model:selecting') {
+        broadcastAgentEvent({
+          type: 'MODEL_REQUEST_STARTED',
+          payload: { taskId: sessionId, sessionId, role: ex.taskKind || 'agent', modelId: ex.modelId || 'local', stepIndex: ex.stepIndex ?? 0, timestamp: now }
+        })
+      } else if (k === 'assistant-delta' || k === 'reasoning-delta') {
+        broadcastAgentEvent({
+          type: 'MODEL_TOKEN_STREAM',
+          payload: { taskId: sessionId, sessionId, chunk: ex.text || ex.delta || '', reasoningChunk: ex.reasoningText || ex.reasoningDelta || '', timestamp: now }
+        })
+      } else if (k === 'tool:start') {
+        broadcastAgentEvent({
+          type: 'TOOL_CALL_STARTED',
+          payload: { taskId: sessionId, sessionId, toolCallId: ex.toolCallId || `tc_${now}`, toolName: ex.toolName || 'tool', args: ex.toolArgs || {}, stepIndex: ex.stepIndex ?? 0, timestamp: now }
+        })
+      } else if (k === 'tool:end') {
+        if (ex.error) {
+          broadcastAgentEvent({
+            type: 'TOOL_CALL_FAILED',
+            payload: { taskId: sessionId, sessionId, toolCallId: ex.toolCallId || `tc_${now}`, toolName: ex.toolName || 'tool', error: ex.error, durationMs: 0, timestamp: now }
+          })
+        } else {
+          broadcastAgentEvent({
+            type: 'TOOL_CALL_COMPLETED',
+            payload: { taskId: sessionId, sessionId, toolCallId: ex.toolCallId || `tc_${now}`, toolName: ex.toolName || 'tool', result: ex.detail || 'ok', durationMs: 0, timestamp: now }
+          })
+        }
+      } else if (k === 'artifact:ready') {
+        broadcastAgentEvent({
+          type: 'ARTIFACT_CREATED',
+          payload: { taskId: sessionId, sessionId, kind: ex.artifactKind || 'code', fileName: ex.fileName || 'file', path: ex.artifactPath || '', bytes: 0, timestamp: now }
+        })
+      } else if (k === 'task:complete') {
+        broadcastAgentEvent({
+          type: 'TASK_COMPLETED',
+          payload: { taskId: sessionId, sessionId, summary: ex.detail || 'task completed', totalDurationMs: 0, timestamp: now }
+        })
+      } else if (k === 'task:error') {
+        broadcastAgentEvent({
+          type: 'TASK_FAILED',
+          payload: { taskId: sessionId, sessionId, error: ex.error || ex.detail || 'task failed', totalDurationMs: 0, timestamp: now }
+        })
+      } else if (k === 'task:cancelled') {
+        broadcastAgentEvent({
+          type: 'TASK_CANCELLED',
+          payload: { taskId: sessionId, sessionId, reason: ex.detail || 'cancelled by user', timestamp: now }
+        })
+      }
+    } catch { /* best-effort structured agent event dispatch */ }
   }
 
   private resolveModelFilePath(modelId?: string | null): string | undefined {

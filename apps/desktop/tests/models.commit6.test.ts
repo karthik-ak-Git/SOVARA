@@ -214,7 +214,7 @@ describe('Commit 6 — workbench registry + selection + restart', () => {
     const b = await wb.addRuntime({ displayName: 'B', endpoint: 'http://127.0.0.1:11434/v1' })
     await wb.probeRuntime(a.id)
     await wb.probeRuntime(b.id)
-    const ids = wb.listModels().map((m) => m.modelId).sort()
+    const ids = [...wb.listModels(a.id), ...wb.listModels(b.id)].map((m) => m.modelId).sort()
     expect(ids).toEqual([`${a.id}:same`, `${b.id}:same`].sort())
     cleanupWorkbench(dir, wb)
   })

@@ -18,6 +18,7 @@ import { AgentsPage } from './features/agents/AgentsPage'
 import { SkillsPage } from './features/skills/SkillsPage'
 import { ConnectionsPage } from './features/connections/ConnectionsPage'
 import { ConversationHistoryPage } from './features/chat/ConversationHistoryPage'
+import { AuditSovereigntyPage } from './features/sovereignty/AuditSovereigntyPage'
 import { ContextPanel } from './features/chat/ContextPanel'
 import { applyThemePreference } from './theme/theme'
 import {
@@ -523,6 +524,8 @@ export function App(): React.JSX.Element {
             onNewSession={handleNewSession}
           />
         ) : null}
+
+        {activeNav === 'audit' ? <AuditSovereigntyPage onBack={() => setActiveNav('chat')} /> : null}
 
         {activeNav === 'models' ? <ModelsPage /> : null}
 
