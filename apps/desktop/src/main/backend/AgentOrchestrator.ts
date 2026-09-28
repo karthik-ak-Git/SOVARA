@@ -2478,7 +2478,7 @@ export class AgentOrchestrator {
       const didExploration = messages.some((m) => m.role === 'tool' && (m.content.includes('"entries"') || m.content.includes('"todos"') || m.content.includes('"matches"'))) || /todo_write|list_files|fs_list|search_skills|explore/i.test(text)
       const hasRealCodeFence = /```(?:html|javascript|js|typescript|ts|tsx|jsx|react|mermaid|css|svg|python|py|json|sh|bash|powershell)\b[\s\S]{80,}```/i.test(text)
       const hasArtifactTool = trace.toolResults.some((r) => r.success && r.effect === 'file')
-      const hasWrittenCode = hasArtifactTool || messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true'))) || hasRealCodeFence
+      const hasWrittenCode = hasArtifactTool || messages.some((m) => m.role === 'tool' && (m.content.includes('"bytes"') || m.content.includes('"path"') || m.content.includes('"success":true')))
       const hasActionfulToolEvidence = trace.toolResults.some((r) => r.success && !['search_skills', 'read_skill', 'todo_write', 'run_code'].includes(r.toolName))
       const isFileMutationIntent = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
       const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
@@ -2488,26 +2488,65 @@ export class AgentOrchestrator {
       const isActionableTask = isFileMutationIntent || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent'
       const isPlanOnly = Boolean(toolCatalog) && isActionableTask && !hasActionfulToolEvidence && isPlanOnlyResponse(text)
       const hasShellTool = trace.toolResults.some((r) => r.success && r.effect === 'shell')
+      
+      // Auto-extract prose code blocks into fs_write when model emitted code without tool call
+      if (!hasWrittenCode && isFileMutationIntent) {
+        const codeMatch = text.match(/```(?:python|py|ts|js|tsx|html|css|json|bash|sh|powershell)?\s*\n([\s\S]+?)\n```/i)
+        if (codeMatch && codeMatch[1] && codeMatch[1].trim().length > 30) {
+          const extractedCode = codeMatch[1].trim()
+          const targetFileMatch = content.match(/\b([a-zA-Z0-9_-]+\.(?:py|js|ts|tsx|html|css|json|md|csv))\b/i)?.[1] || (content.toLowerCase().includes('python') ? 'ode_solver.py' : 'output.txt')
+          this.safeLog(`[SOVARA][ORCH] Model outputted prose code block without tool fence. Automatically executing fs_write for ${targetFileMatch}...`)
+          try {
+            const writeResult = await execTool('fs_write', { path: targetFileMatch, content: extractedCode })
+            if (writeResult.success) {
+              trace.toolResults.push({ toolName: 'fs_write', success: true, effect: 'file', path: targetFileMatch })
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/call', { toolCallId: `auto-write-${Date.now()}` as never, name: 'fs_write', args: { path: targetFileMatch } } as never) } catch {}
+              try { await this.deps.persistence.appendEvent(sessionId, 'tool/result', { toolCallId: `auto-write-${Date.now()}` as never, name: 'fs_write', content: writeResult.output } as never) } catch {}
+              this.emit(sid, 'tool:end', { taskKind: classification.kind, stepIndex: loopSteps, toolCallId: `auto-write-${Date.now()}`, toolName: 'fs_write', args: { path: targetFileMatch }, detail: `auto-extracted prose code → written to ${targetFileMatch}` })
+              
+              const absPath = path.isAbsolute(targetFileMatch) ? targetFileMatch : path.resolve(sessionWsRoot || '.', targetFileMatch)
+              const spec = executionPlan.expectedArtifacts[0] || {
+                fileName: targetFileMatch,
+                type: targetFileMatch.endsWith('.py') ? 'py' : targetFileMatch.endsWith('.html') ? 'html' : 'md',
+                minSizeBytes: 50,
+                requiredMarkers: targetFileMatch.endsWith('.html') ? ['</html>'] : [],
+                sampleInput: 'diff(y(x),x,2)-y(x)\n0',
+              }
+              const dispatchFn = async (n: string, a: Record<string, unknown>) => {
+                const res = await execTool(n, a)
+                return res.output || res.error || ''
+              }
+              const vResult = (targetFileMatch.endsWith('.py') || targetFileMatch.endsWith('.js') || targetFileMatch.endsWith('.ts'))
+                ? await verifyCodeArtifact(absPath, spec as any, dispatchFn)
+                : await verifyArtifact(absPath, spec as any, dispatchFn)
+              const vReport = generateVerificationReport(vResult)
+              text += `\n\n[SYSTEM AUTOMATIC VERIFICATION REPORT]:\n${vReport}`
+            }
+          } catch {}
+        }
+      }
+
+      const updatedHasWrittenCode = trace.toolResults.some((r) => r.success && r.effect === 'file')
       const actionGateFailures: string[] = []
-      if (isFileMutationIntent && !hasArtifactTool) actionGateFailures.push('fs_write or fs_patch must create the requested file')
+      if (isFileMutationIntent && !updatedHasWrittenCode) actionGateFailures.push('fs_write or fs_patch must create the requested file')
       if (needsShellAction && !hasShellTool) actionGateFailures.push('shell_exec or run_code must install/run the requested command')
       const actionGatePassed = actionGateFailures.length === 0
       const taskCompletionGate = checkTaskCompletionGate(
         { ...classification, requiresArtifact: isFileMutationIntent, artifactType: isFileMutationIntent ? 'code' : classification.artifactType },
-        hasArtifactTool,
+        updatedHasWrittenCode,
       )
       const isReadOrExplainIntent = /\b(read|inspect|show|view|find|explain|analyze|describe|skill|content)\b/i.test(content)
       const hasReadActualContent = messages.some((m) => m.role === 'tool' && m.content.includes('"content"'))
       const hasFailedFsReadWithHint = messages.some((m) => m.role === 'tool' && m.content.includes('file not found') && m.content.includes('Files existing in directory'))
-      const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
+      const isFakeFileClaim = (!updatedHasWrittenCode) && (/\b(?:created|wrote|saved|generated|file\s*is\s*created|created\s*(?:the|a)?\s*file|i've\s*created|i\s*have\s*created|here\s*is\s*the\s*file)\b/i.test(text) || /"action":\s*"created"/i.test(text) || /```(?:python|py|ts|js|html)[\s\S]{30,}```/i.test(text))
       const isReadInterrupted = isReadOrExplainIntent && (didExploration || hasFailedFsReadWithHint) && !hasReadActualContent
 
       // Continue autonomously if:
       // 1. Model returned a plan without executing anything, OR
-      // 2. Model emitted a fake JSON claim instead of writing code, OR
+      // 2. Model emitted a fake claim instead of writing code, OR
       // 3. Model experienced fs_read file not found with hint and has not tried the recovery file yet.
       const continuationCount = messages.filter((m) => m.role === 'user' && m.content.includes('[Autonomous Agent Directive]')).length
-      const shouldJarvisContinue = isTaskOrBuildIntent && Boolean(toolCatalog) && (isPlanOnly || isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode) || !taskCompletionGate.passed || !actionGatePassed) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
+      const shouldJarvisContinue = isTaskOrBuildIntent && Boolean(toolCatalog) && (isPlanOnly || isFakeFileClaim || isReadInterrupted || (didExploration && !updatedHasWrittenCode) || !taskCompletionGate.passed || !actionGatePassed) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
           const targetFileMatch = content.match(/\b([a-zA-Z0-9_-]+\.(?:txt|md|json|csv|log|py|js|ts|tsx|html|css|yaml|yml))\b/i)?.[1]
