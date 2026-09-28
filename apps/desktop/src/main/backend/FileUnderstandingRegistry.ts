@@ -96,6 +96,8 @@ export function getFallbackExtractionScript(category: FileCategory, filePath: st
       return `powershell -c "Add-Type -AssemblyName 'System.IO.Compression.FileSystem'; $z=[IO.Compression.ZipFile]::OpenRead('${escaped}'); $e=$z.Entries|Where{$_.FullName -eq 'xl/sharedStrings.xml'}; $s=$e.Open(); $r=[IO.StreamReader]::new($s); $r.ReadToEnd()"`;
     case 'pdf':
       return `powershell -c "Get-Content '${escaped}' -Raw | Select-String -Pattern '[\\w\\s]{4,}' -AllMatches | ForEach{\$_.Matches.Value}"`;
+    case 'database':
+      return `python -c "import sqlite3; conn=sqlite3.connect('${escaped}'); print([r[0] for r in conn.execute(\\\"SELECT name FROM sqlite_master WHERE type='table'\\\")]); [print(t[0], conn.execute(f'SELECT * FROM {t[0]}').fetchall()) for t in conn.execute(\\\"SELECT name FROM sqlite_master WHERE type='table'\\\")]"`;
     default:
       return null;
   }
@@ -198,7 +200,7 @@ export async function understandFile(
           category,
           extractedContent: output,
           method: 'shell-extraction',
-          confidence: 0.7,
+          confidence: 0.9,
         };
       }
     } catch {}

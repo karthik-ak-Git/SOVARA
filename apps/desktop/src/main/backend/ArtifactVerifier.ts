@@ -93,6 +93,8 @@ export async function verifyArtifact(
   return result;
 }
 
+import { executeCodeFile } from './OutputExecutor'
+
 export async function verifyCodeArtifact(
   path: string,
   spec: ArtifactSpec,
@@ -103,57 +105,23 @@ export async function verifyCodeArtifact(
     return result;
   }
 
-  const extMatch = path.match(/\.([a-z0-9]+)$/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+  try {
+    const outcome = await executeCodeFile(path, toolDispatch, {
+      sampleInputs: spec.sampleInput ? spec.sampleInput.split('\n') : undefined,
+    });
 
-  let command = '';
-  const escapedPath = path.replace(/\\/g, '/');
+    result.executionResult = {
+      command: outcome.commandExecuted,
+      exitCode: outcome.exitCode,
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+    };
 
-  if (ext === 'py') {
-    command = `python "${escapedPath}"`;
-  } else if (ext === 'js') {
-    command = `node "${escapedPath}"`;
-  } else if (ext === 'ts') {
-    command = `npx tsx "${escapedPath}"`;
-  } else if (ext === 'sh') {
-    command = `bash "${escapedPath}"`;
-  } else if (ext === 'ps1') {
-    command = `powershell -File "${escapedPath}"`;
-  }
-
-  if (command) {
-    try {
-      const execOutput = await toolDispatch('shell_exec', { command });
-      let stdout = execOutput;
-      let stderr = '';
-      let exitCode = 0;
-
-      if (execOutput.includes('EXIT CODE:') || execOutput.includes('Error:')) {
-        const exitMatch = execOutput.match(/EXIT CODE:\s*(\d+)/i);
-        if (exitMatch) {
-          exitCode = parseInt(exitMatch[1], 10);
-        }
-        if (exitCode !== 0) {
-          stderr = execOutput;
-          result.issues.push(`Execution exited with non-zero code ${exitCode}`);
-        }
-      }
-
-      result.executionResult = {
-        command,
-        exitCode,
-        stdout,
-        stderr,
-      };
-    } catch (err: any) {
-      result.issues.push(`Execution failed: ${err?.message || String(err)}`);
-      result.executionResult = {
-        command,
-        exitCode: 1,
-        stdout: '',
-        stderr: String(err),
-      };
+    if (!outcome.success) {
+      result.issues.push(`Execution failed (exit code ${outcome.exitCode}): ${outcome.stderr || outcome.error || 'Unknown error'}`);
     }
+  } catch (err: any) {
+    result.issues.push(`Execution failed: ${err?.message || String(err)}`);
   }
 
   return result;

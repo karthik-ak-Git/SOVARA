@@ -43,8 +43,8 @@ export async function executeCodeFile(
   let command = `${runner} "${normPath}"`;
   
   if (options?.sampleInputs && options.sampleInputs.length > 0) {
-    const inputPipe = options.sampleInputs.map((i) => `"${i.replace(/"/g, '\\"')}"`).join('\n');
-    command = `echo ${inputPipe} | ${command}`;
+    const inputStr = options.sampleInputs.join('\\n').replace(/'/g, "\\'");
+    command = `python -c "import subprocess; p=subprocess.Popen([r'${runner}', r'${normPath}'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True); out, err = p.communicate('${inputStr}'); print(out); print(err if err else '')"`;
   }
 
   try {
