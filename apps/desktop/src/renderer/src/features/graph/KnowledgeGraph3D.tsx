@@ -39,9 +39,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
   // Highlight: explicit prop wins; otherwise derive trivially from the current
   // chat store (last user message) so open chat context highlights matching nodes.
   const storeEvents = useChatStore((s) => s.events)
-  const storeStreamingText = useChatStore((s) => s.streamingText)
   const derivedQuery = useMemo(() => {
-    void storeStreamingText
     for (let i = storeEvents.length - 1; i >= 0; i--) {
       const e = storeEvents[i]
       if (!e || e.type !== 'user/message') continue
@@ -49,7 +47,7 @@ export function KnowledgeGraph3D({ workspaceRoot, highlightQuery }: { workspaceR
       if (typeof content === 'string' && content.trim().length >= 2) return content.slice(0, 200)
     }
     return undefined
-  }, [storeEvents, storeStreamingText])
+  }, [storeEvents])
   const effectiveHighlight = highlightQuery && highlightQuery.trim().length >= 2 ? highlightQuery : derivedQuery
 
   // Fetch wiki folder — no hardcode, live from disk
