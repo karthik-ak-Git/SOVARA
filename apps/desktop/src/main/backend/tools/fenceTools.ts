@@ -453,7 +453,7 @@ export function extractBareToolCalls(text: string): ToolFence[] {
   // e.g. { "action": "fs_write", "path": "...", "content": "..." }
   // e.g. { "path": "revenue.py", "content": "...", "status": "pending" } -> fs_write
   // e.g. { "command": "python revenue.py", "status": "pending" } -> shell_exec
-  const jsonObjectStartRe = /\{\s*"(?:action|tool|name|tool_name|function|path|command|cmd|query|skill_name)"\s*:/gi
+  const jsonObjectStartRe = /\{\s*"(?:tool_calls|tool_call|calls|call|action|tool|name|tool_name|function|path|command|cmd|query|skill_name)"\s*:/gi
   let mObj: RegExpExecArray | null
   let guardObj = 0
   while (guardObj++ < 32 && (mObj = jsonObjectStartRe.exec(text)) !== null) {
@@ -476,36 +476,46 @@ export function extractBareToolCalls(text: string): ToolFence[] {
       const fullJson = text.slice(startIdx, endIdx + 1)
       const parsed = tryParse(fullJson)
       if (parsed && typeof parsed === 'object') {
-        let toolName = ''
-        const rawAction = (parsed['action'] || parsed['tool'] || parsed['name'] || parsed['tool_name'] || parsed['function'])
-        if (typeof rawAction === 'string') {
-          toolName = normalizeToolName(rawAction)
-        }
-        if (!toolName || !TOOL_NAMES.includes(toolName as any)) {
-          if (typeof parsed['command'] === 'string' || typeof parsed['cmd'] === 'string') {
-            toolName = 'shell_exec'
-          } else if (typeof parsed['path'] === 'string' && typeof parsed['content'] === 'string') {
-            toolName = 'fs_write'
-          } else if (typeof parsed['path'] === 'string' && typeof parsed['search'] === 'string' && typeof parsed['replace'] === 'string') {
-            toolName = 'fs_patch'
-          } else if (typeof parsed['path'] === 'string') {
-            toolName = 'fs_read'
-          } else if (typeof parsed['skill_name'] === 'string') {
-            toolName = 'read_skill'
-          } else if (typeof parsed['query'] === 'string') {
-            toolName = 'search_skills'
+        const rawCallsArray = (parsed['tool_calls'] || parsed['tool_call'] || parsed['calls'])
+        const callItems: Array<Record<string, unknown>> = Array.isArray(rawCallsArray)
+          ? (rawCallsArray as Array<Record<string, unknown>>)
+          : [parsed as Record<string, unknown>]
+
+        for (const item of callItems) {
+          if (!item || typeof item !== 'object') continue
+          let toolName = ''
+          const rawAction = (item['call'] || item['action'] || item['tool'] || item['name'] || item['tool_name'] || item['function'])
+          if (typeof rawAction === 'string') {
+            toolName = normalizeToolName(rawAction)
+          }
+          if (!toolName || !TOOL_NAMES.includes(toolName as any)) {
+            if (typeof item['command'] === 'string' || typeof item['cmd'] === 'string') {
+              toolName = 'shell_exec'
+            } else if (typeof item['path'] === 'string' && typeof item['content'] === 'string') {
+              toolName = 'fs_write'
+            } else if (typeof item['path'] === 'string' && typeof item['search'] === 'string' && typeof item['replace'] === 'string') {
+              toolName = 'fs_patch'
+            } else if (typeof item['path'] === 'string') {
+              toolName = 'fs_read'
+            } else if (typeof item['skill_name'] === 'string') {
+              toolName = 'read_skill'
+            } else if (typeof item['query'] === 'string') {
+              toolName = 'search_skills'
+            }
+          }
+          if (toolName && TOOL_NAMES.includes(toolName as any)) {
+            let args: Record<string, unknown> = {}
+            const rawArgs = item['arguments'] ?? item['args'] ?? item['parameters']
+            if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+              args = rawArgs as Record<string, unknown>
+            } else {
+              args = { ...item }
+              delete args['call']; delete args['action']; delete args['tool']; delete args['name']; delete args['tool_name']; delete args['function']; delete args['status']
+            }
+            out.push({ toolName, args, raw: fullJson, index: startIdx })
           }
         }
-        if (toolName && TOOL_NAMES.includes(toolName as any)) {
-          let args: Record<string, unknown> = {}
-          const rawArgs = parsed['arguments'] ?? parsed['args'] ?? parsed['parameters']
-          if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
-            args = rawArgs as Record<string, unknown>
-          } else {
-            args = { ...parsed }
-            delete args['action']; delete args['tool']; delete args['name']; delete args['tool_name']; delete args['function']; delete args['status']
-          }
-          out.push({ toolName, args, raw: fullJson, index: startIdx })
+        if (callItems.length > 0 && out.length > 0) {
           jsonObjectStartRe.lastIndex = endIdx + 1
         }
       }
@@ -706,27 +716,35 @@ export function extractJsonToolCalls(text: string): ToolFence[] {
   let guard = 0
   while (guard++ < 32 && (match = re.exec(text)) !== null) {
     const parsed = tryParse(match[1]?.trim() ?? '')
-    if (!parsed) continue
+    if (!parsed || typeof parsed !== 'object') continue
 
-    const actionValue = parsed['action'] ?? parsed['tool'] ?? parsed['tool_name'] ?? parsed['name']
-    const callValue = parsed['tool_call'] ?? parsed['call'] ?? parsed['arguments'] ?? parsed['args']
-    let toolName = typeof actionValue === 'string' ? actionValue.trim().toLowerCase() : ''
-    let args: Record<string, unknown> = {}
+    const rawCallsArray = parsed['tool_calls'] || parsed['tool_call'] || parsed['calls']
+    const callItems: Array<Record<string, unknown>> = Array.isArray(rawCallsArray)
+      ? (rawCallsArray as Array<Record<string, unknown>>)
+      : [parsed as Record<string, unknown>]
 
-    if (callValue && typeof callValue === 'object' && !Array.isArray(callValue)) {
-      const call = callValue as Record<string, unknown>
-      if (!toolName && typeof call['name'] === 'string') toolName = String(call['name']).trim().toLowerCase()
-      const rawArgs = call['arguments'] ?? call['args'] ?? call['input'] ?? call
-      if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) args = parseLenientJson(JSON.stringify(rawArgs), toolName)
-      else if (typeof rawArgs === 'string') args = parseLenientJson(rawArgs, toolName)
-    } else if (typeof callValue === 'string') {
-      args = parseLenientJson(callValue, toolName)
+    for (const item of callItems) {
+      if (!item || typeof item !== 'object') continue
+      const actionValue = item['action'] ?? item['tool'] ?? item['tool_name'] ?? item['name'] ?? item['call']
+      let toolName = typeof actionValue === 'string' ? normalizeToolName(actionValue) : ''
+      let args: Record<string, unknown> = {}
+
+      const argsValue = item['arguments'] ?? item['args'] ?? item['parameters'] ?? item['input']
+      if (argsValue && typeof argsValue === 'object' && !Array.isArray(argsValue)) {
+        args = argsValue as Record<string, unknown>
+      } else if (typeof argsValue === 'string') {
+        args = parseLenientJson(argsValue, toolName)
+      } else {
+        const copy = { ...item }
+        delete copy['call']; delete copy['action']; delete copy['tool']; delete copy['name']; delete copy['tool_name']; delete copy['function']; delete copy['status']
+        args = copy
+      }
+
+      if (!toolName) continue
+      if (!TOOL_NAMES.includes(toolName as (typeof TOOL_NAMES)[number]) && !toolName.startsWith('mcp_')) continue
+      if (Object.keys(args).length === 0) continue
+      out.push({ toolName, args, raw: match[0], index: match.index })
     }
-
-    if (!toolName) continue
-    if (!TOOL_NAMES.includes(toolName as (typeof TOOL_NAMES)[number]) && !toolName.startsWith('mcp_')) continue
-    if (Object.keys(args).length === 0) continue
-    out.push({ toolName, args, raw: match[0], index: match.index })
   }
   return out
 }

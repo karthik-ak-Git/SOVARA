@@ -73,4 +73,13 @@ describe('Enterprise Orchestration Modules', () => {
     const report = generateVerificationReport(result)
     expect(report).toContain('PASSED')
   })
+
+  it('parses tool_calls array format with call property in JSON tool envelopes', async () => {
+    const { extractJsonToolCalls } = await import('../src/main/backend/tools/fenceTools')
+    const sampleInput = '```json\n{"tool_calls": [{"call": "fs_write", "args": {"path": "ode_solver.py", "content": "import sympy as sp"}}]}\n```'
+    const calls = extractJsonToolCalls(sampleInput)
+    expect(calls.length).toBe(1)
+    expect(calls[0].toolName).toBe('fs_write')
+    expect(calls[0].args['path']).toBe('ode_solver.py')
+  })
 })
