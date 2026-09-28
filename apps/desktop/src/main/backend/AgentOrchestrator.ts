@@ -31,6 +31,10 @@ import type { TaskClassification, ModelRoutingDecision } from '@shared/types/tas
 import type { DiscoveredModel } from '@shared/types/models'
 import { SOVARA_SYSTEM_PROMPT, STRUCTURED_OUTPUT_INSTRUCTION } from './prompts/sovaraSystem'
 import { DEFAULT_TUNING } from '../config/tuning'
+import { generateExecutionPlan, planToPromptDirective, type ExecutionPlan } from './ExecutionPlanner'
+import { verifyArtifact, verifyCodeArtifact, shouldAutoVerify, generateVerificationReport } from './ArtifactVerifier'
+import { understandFile } from './FileUnderstandingRegistry'
+import { executeCodeFile } from './OutputExecutor'
 
 // ── Tool Infrastructure (DeepSeek Harness-style) ──
 import { getToolInfrastructure, ToolInfrastructure } from './tools/index'
@@ -904,11 +908,13 @@ export class AgentOrchestrator {
       const taskPolicy = deriveTaskIntentAndPolicy(content, classification)
       const taskIntent = taskPolicy.intent
       const logicalRole = resolveLogicalRole(classification.kind, classification.skillsNeeded)
+      const executionPlan = generateExecutionPlan(classification, content)
+      const planDirective = planToPromptDirective(executionPlan)
       const taskId = `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`
       AgentEventBus.emitAgentEvent('TASK_CREATED', { taskId, sessionId: sid, userPrompt: content, timestamp: Date.now() })
       AgentEventBus.emitAgentEvent('TASK_STARTED', { taskId, sessionId: sid, kind: classification.kind, timestamp: Date.now() })
       AgentEventBus.emitAgentEvent('AGENT_STARTED', { taskId, sessionId: sid, role: logicalRole.name, userPrompt: content, modelId: '', timestamp: Date.now() })
-      this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `[${logicalRole.displayName}] ${classification.reason}` })
+      this.emit(sid, 'task:planning', { taskKind: classification.kind, detail: `[${logicalRole.displayName}] Plan: ${executionPlan.steps.length} steps (${executionPlan.intent})` })
 
       // ── PHASE 2: model routing (smart, resource-aware) ──
       // Snapshot the user's initially selected model as the "base" that
@@ -1388,6 +1394,7 @@ export class AgentOrchestrator {
       const systemBlocks = [
         CHAT_SYSTEM_PROMPT,
         `ACTIVE LOGICAL ROLE: ${logicalRole.displayName} (${logicalRole.name})\n${logicalRole.systemInstruction}\nOutput Expectation: ${logicalRole.outputDirective}`,
+        planDirective,
         ...(shouldStructured ? [STRUCTURED_OUTPUT_INSTRUCTION] : []),
         ...(reasoningSystem ? [reasoningSystem] : []),
         ...(toolCatalog ? [toolCatalog] : []),
@@ -2115,6 +2122,34 @@ export class AgentOrchestrator {
                 })
               }
               } // end non-clarify branch
+
+              // ── Enterprise Auto Verification ──
+              if (shouldAutoVerify(toolName, toolArgs)) {
+                try {
+                  const targetPath = String(toolArgs['path'] || '')
+                  if (targetPath) {
+                    const absPath = path.isAbsolute(targetPath) ? targetPath : path.resolve(sessionWsRoot || '.', targetPath)
+                    const spec = executionPlan.expectedArtifacts[0] || {
+                      fileName: path.basename(targetPath),
+                      type: targetPath.endsWith('.py') ? 'py' : targetPath.endsWith('.html') ? 'html' : 'md',
+                      minSizeBytes: 50,
+                      requiredMarkers: targetPath.endsWith('.html') ? ['</html>'] : [],
+                    }
+                    const dispatchFn = async (n: string, a: Record<string, unknown>) => {
+                      const res = await execTool(n, a)
+                      return res.output || res.error || ''
+                    }
+                    const vResult = (targetPath.endsWith('.py') || targetPath.endsWith('.js') || targetPath.endsWith('.ts'))
+                      ? await verifyCodeArtifact(absPath, spec as any, dispatchFn)
+                      : await verifyArtifact(absPath, spec as any, dispatchFn)
+                    const vReport = generateVerificationReport(vResult)
+                    this.safeLog(`[SOVARA][VERIFY] ${targetPath}: ${vResult.structureValid ? 'VALID' : 'ISSUES'}`)
+                    toolResult += `\n\n[SYSTEM AUTOMATIC VERIFICATION REPORT]:\n${vReport}`
+                  }
+                } catch (vErr) {
+                  this.safeLog(`[SOVARA][VERIFY] Failed to verify: ${String(vErr)}`)
+                }
+              }
 
               console.log(`[SOVARA][TOOL_DISPATCH] Completed tool="${toolName}" resultLen=${toolResult.length} preview="${toolResult.slice(0, 150).replace(/\s+/g, ' ')}"`)
 
