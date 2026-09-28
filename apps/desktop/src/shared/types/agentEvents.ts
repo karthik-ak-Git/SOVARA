@@ -194,3 +194,34 @@ export interface AgentEvent<T extends AgentEventType = AgentEventType> {
   type: T
   payload: AgentEventPayloads[T]
 }
+
+export type CanonicalRuntimeStatus =
+  | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'READY'
+  | 'MODEL_LOADING'
+  | 'MODEL_READY'
+  | 'STREAMING'
+  | 'TOOL_EXECUTING'
+  | 'ERROR'
+
+export interface CanonicalRuntimeState {
+  status: CanonicalRuntimeStatus
+  residentModelId: string | null
+  residentEndpoint: string | null
+  activeToolName: string | null
+  lastError: string | null
+  isAvailable: boolean
+  updatedAt: number
+}
+
+export interface DiagnosticEventLogEntry {
+  eventId: string
+  sequence: number
+  sessionId: string
+  taskId: string
+  eventType: string
+  timestamp: number
+  detail?: string
+}
+

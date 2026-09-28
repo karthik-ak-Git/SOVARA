@@ -34,6 +34,7 @@ import { SessionBadge } from '../../components/ui/SessionBadge'
 import { ProjectSelector } from './ProjectSelector'
 import { preparePreviewHtml, isVisualArtifact, isBinaryArtifact, bundleBinaryPreview } from '../../utils/previewBundler'
 import { ArtifactCard } from '../../components/ui/ArtifactCard'
+import { useRuntimeStatus } from '../../hooks/useRuntimeStatus'
 
 interface ChatViewProps {
   sessions: Array<{ id: string; title: string }>
@@ -298,6 +299,8 @@ export function ChatView({
     }
   }, [activeArtifact])
 
+  const runtimeStatus = useRuntimeStatus()
+
   const getActionableError = (err: string | null): { title: string; hint: string; action?: 'models' | 'retry' } | null => {
     if (!err) return null
     const lower = err.toLowerCase()
@@ -315,8 +318,13 @@ export function ChatView({
     // or inner throws may still carry both substrings — model load wins.
     if (lower.includes('model-load-failed') || lower.includes('invalid-model') || lower.includes('unknown model architecture') || lower.includes('architecture') && lower.includes('not supported'))
       return { title: 'Model could not be loaded', hint: err.replace(/^(model-load-failed|invalid-model):\s*/i, ''), action: 'models' }
-    if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable'))
+    if (lower.includes('runtime-unavailable') || lower.includes('runtime is unavailable')) {
+      // If canonical runtime status indicates available or active execution, suppress stale banner
+      if (runtimeStatus.runtimeState.isAvailable || ['READY', 'MODEL_READY', 'STREAMING', 'TOOL_EXECUTING', 'MODEL_LOADING'].includes(runtimeStatus.runtimeState.status)) {
+        return null
+      }
       return { title: 'Model runtime unavailable', hint: 'The selected runtime is unavailable. Open Models and test its connection.', action: 'models' }
+    }
     if (lower.includes('model could not be loaded') || lower.includes('failed')) {
       if (lower.includes('vram') || lower.includes('memory')) return { title: 'Model could not be loaded', hint: 'The selected model requires more VRAM than is currently available. Choose another model or unload one.', action: 'models' }
       return { title: 'Model could not be loaded', hint: err, action: 'models' }

@@ -205,6 +205,7 @@ export function useChatSession() {
       }
       if (ev.kind === 'model:ready') {
         if (!isSelected) return
+        setError(null)
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'ready', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail, vramUsedMB: ev.vramUsedMB, vramTotalMB: ev.vramTotalMB })
         setPhase('streaming')
         void refreshModelStatus()
@@ -274,6 +275,7 @@ export function useChatSession() {
       }
       if (ev.kind === 'task:complete') {
         if (!isSelected) return
+        setError(null)
         setExecution({ taskKind: (ev.taskKind as AgentExecutionState['taskKind']) ?? null, phase: 'done', modelId: ev.modelId, runtimeId: ev.runtimeId, detail: ev.detail, stepIndex: ev.stepIndex })
         return
       }
@@ -329,6 +331,9 @@ export function useChatSession() {
         )
       } else if (ev.kind === 'assistant-done' || ev.kind === 'assistant-cancelled') {
         if (isSelected) {
+          if (ev.kind === 'assistant-done') {
+            setError(null)
+          }
           setStreamingText('')
           setStreamingReasoning('')
           setPhase('idle')

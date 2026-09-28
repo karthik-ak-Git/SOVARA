@@ -2556,7 +2556,10 @@ export class AgentOrchestrator {
       if (requiresExecution && requiredActionFailures.length > 0) {
         trace.success = false
         trace.endTime = Date.now()
-        const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. The model returned text without an observed successful action. No task completion was recorded.`
+        const actionSummary = successfulTools.size > 0 
+          ? `Task executed actions (${Array.from(successfulTools).join(', ')}), but verification or inspection step was incomplete.` 
+          : `The model returned text without an observed successful action.`
+        const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. ${actionSummary} No task completion was recorded.`
         this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
         try {
           const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${message}` })).seq
