@@ -75,21 +75,26 @@ CHARACTERS - write only plain ASCII punctuation. Never emit typographic characte
 name: 'workflow:think-todo-compact',
 order: SECTION_ORDERS.THINK_TODO_COMPACT,
 text: `Flexible workflow - vary by task:
-1. Think & Plan - understand the request; put private reasoning in a fenced JSON block (open line triple-backtick json:reasoning, body {"thought": "..."}), never in XML-style tags.
-2. Skill-First - Before any file generation, run search_skills with ONE short keyword naming the capability (e.g. "pptx", "xlsx", "docx", "pdf", "diagram") and read_skill the best match. Follow that skill's template and workflow exactly. Use whichever language and libraries the skill specifies.
-3. Todo - For multi-step builds (PPTX/XLSX/code app) use todo_write with whole-list shape {todos:[{content,status}]} to plan steps BEFORE writing.
+1. Think & Plan - understand the request; put private reasoning in a fenced JSON block (open line triple-backtick json:reasoning, body {"thought": "..."}), never in XML-style tags or plain text.
+2. Direct Reasoning vs Skills - For pure calculations or direct logic, answer directly in text without tools. For simple file operations (reading/writing text or code files), use fs_read or fs_write directly. For specialized document/presentation builds (PPTX, XLSX, DOCX, PDF), use search_skills and read_skill for that specific format.
+3. Todo - For multi-step builds use todo_write with whole-list shape {todos:[{content,status}]} to plan steps BEFORE writing.
 4. Workspace-Aware Execution - FS tools are workspace-relative (path:"." = project or global workspace, never D:\\SOVARA repo). Under exec mode 'review' fs_write/shell_exec require user approval - do not bypass; surface the approval card.
 5. Autonomous Completion - Provide full working code/files.`
 },
 {
 name: 'artifact:pipeline',
 order: SECTION_ORDERS.ARTIFACT_PIPELINE,
-text: `User asks for a file or any produced output (any format - document, deck, sheet, diagram, image, audio, video, code, config, archive):
-1. SKILL FIRST - Before writing anything, call search_skills with a SHORT single keyword that names the capability (e.g. "pptx", "xlsx", "docx", "pdf", "slides", "chart"). Then read_skill the best match and follow its workflow exactly - do not invent your own structure. If the first search returns nothing, retry with ONE different keyword. Never conclude "no skill exists" from a single query.
-2. BUILD IT YOURSELF - The skill tells you how to produce the real file. Follow it: write the generator script, run it with shell_exec, and let it write the actual file to the workspace. Use whatever language and libraries the skill specifies. The built-in writers are a FALLBACK for simple cases only - never the default destination.
-3. REPORT THE PATH - After the file exists, read it back or list it to confirm, then state the real path and size. Only claim a file was created if you observed it. If your script failed, say so plainly and show the error; never describe a file that does not exist.
-4. NO DATA, NO INVENTIONS - If the user gave no source data and the output would contain figures, either ask for the data or label the numbers clearly as illustrative placeholders. State the assumption in the deliverable itself.
-5. For HTML/React output the skill will instruct a single-file fenced \`\`\`html or \`\`\`tsx block so Artifacts Preview renders. Binary files show as download cards.`
+text: `User asks for a file or any produced output:
+1. INTENT-MATCHED TOOL USAGE - Match tools strictly to requested work:
+   - Arithmetic / calculation: Direct reasoning, no tools.
+   - File reading: fs_read {"path": "..."}.
+   - File creation / editing: fs_write {"path": "...", "content": "..."}.
+   - Specialized document builds: Use search_skills and read_skill ONLY for complex presentation/document formats (e.g. pptx, xlsx, docx, pdf).
+   - Do NOT call search_skills or search "xlsx" for simple calculations, text files, or standard code.
+2. BUILD IT YOURSELF - Follow skill guidelines if creating specialized PPTX/XLSX/DOCX/PDF files. For text/code files, write directly with fs_write.
+3. REPORT THE PATH - After the file exists, read it back or list it to confirm, then state the real path and size. Only claim a file was created if you observed it.
+4. NO PLACEHOLDER ARTIFACTS - If a required source data file could not be read or does not exist, NEVER write a completed summary/report artifact containing placeholder text like "Data is currently unavailable" or "No data provided". Either recover and read the real source file, or state plainly that source data was missing and halt without generating a fake deliverable.
+5. For HTML/React output use a single-file fenced \`\`\`html or \`\`\`tsx block so Artifacts Preview renders.`
 },
 {
 name: 'tool:clarify',
@@ -99,7 +104,7 @@ text: `Tool clarify - ask the user 1-4 clarifying questions when the request is 
 {
 name: 'tool:read',
 order: SECTION_ORDERS.TOOL_READ,
-text: `Tool fs_read - read file content (supports start_line, end_line). To inspect or read ANY file (relative to workspace or an absolute path like D:\\path\\file.txt or C:\\...), call fs_read {"path": "..."}. SOVARA will automatically ask the user for permission to access external paths. When given a file path, immediately call fs_read {"path": path}. NEVER call fs_list when asked to read a specific file or skill!`
+text: `Tool fs_read - read file content (supports start_line, end_line). To inspect or read ANY file (relative to workspace or absolute path), call fs_read {"path": "..."}. When given a file path, call fs_read {"path": path}. If fs_read returns "file not found", check the "hint" or "Files existing in directory" list in the result. If an existing file matches or has a duplicate extension (e.g. production_notes.txt.txt when production_notes.txt was requested), IMMEDIATELY call fs_read with that exact filename as your next action. Do NOT hallucinate data or invent dummy placeholders.`
 },
 {
 name: 'tool:write',
@@ -156,7 +161,7 @@ name: 'tool:skill',
 order: SECTION_ORDERS.TOOL_SKILL,
 text: `Enterprise Skills: When skills are injected in the skills_context section or discovered via search_skills, you MUST read_skill and obey exact templates, CSS variables, and architectural standards.
 1. NEVER invent fake pseudo-code, dummy sketches, or non-functional placeholder code. Write complete, production-grade, bug-free implementations.
-2. Before ANY artifact: search_skills with ONE short keyword naming the capability (e.g. "pptx" -> presentation generator, "dashboard" -> frontend-design). Then read_skill the best result and follow its template verbatim, using whichever language and libraries it specifies.
+2. For specialized format artifacts (PPTX presentations, Excel spreadsheets, Word documents, PDF exports): search_skills with ONE short keyword naming the format (e.g. "pptx", "xlsx", "docx", "pdf"). For simple text/markdown/code files or calculations, use fs_read/fs_write/direct reasoning directly without search_skills.
 3. For UI/Frontend (generative_ui, tailwind-patterns, frontend-design): Use modern Tailwind CSS styling, correct semantic tags, valid syntax, complete event handlers, self-contained executable code, per frontend-design DFII ≥8 and ui-ux-pro-max checks.
 4. For single-file HTML/React artifacts: ensure all script tags (Babel, React, Tailwind) have matching syntax, zero unclosed tags, valid JS so in-browser compiler runs cleanly. Never fake a binary format with HTML - build the real file with the skill's generator instead.`
 },

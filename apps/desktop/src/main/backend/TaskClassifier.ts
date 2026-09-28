@@ -39,14 +39,14 @@ const ARTIFACT_BUILD_RE = /\b(ppt|pptx|presentation|pdf|docx|xlsx|slide|slides|r
 export function detectSkillNeeds(content: string, attachments?: Array<{ mimeType: string }>): string[] {
   const needs = new Set<string>()
   const patterns: Record<string, RegExp> = {
-    pptx: /\b(pptx|powerpoint|presentation|slide|deck)\b/gi,
-    docx: /\b(docx|word|document|approval.*note|memo|letter)\b/gi,
-    xlsx: /\b(xlsx|excel|spreadsheet|calculation|financial|budget)\b/gi,
+    pptx: /\b(pptx|powerpoint|presentation|slides|deck)\b/gi,
+    docx: /\b(docx|word|document)\b/gi,
+    xlsx: /\b(xlsx|excel|spreadsheet|\.xlsx)\b/gi,
     pdf: /\b(pdf|convert.*pdf|export.*pdf)\b/gi,
     ocr: /\b(scan|ocr|handwritten|extract.*text|read.*image)\b/gi,
-    diagram: /\b(mermaid|flowchart|diagram|architecture|uml)\b/gi,
-    code: /\b(function|class|algorithm|script|execute|run.*code)\b/gi,
-    rag: /\b(search|knowledge.*base|sop|manual|reference|document.*search)\b/gi,
+    diagram: /\b(mermaid|flowchart|diagram|uml)\b/gi,
+    code: /\b(scaffold|build.*app|generate.*project)\b/gi,
+    rag: /\b(knowledge.*base|sop|manual|reference)\b/gi,
   }
   for (const [skill, re] of Object.entries(patterns)) {
     re.lastIndex = 0

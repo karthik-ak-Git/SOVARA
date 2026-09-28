@@ -68,13 +68,17 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
   // Hide raw tool/thinking leaks: <thinking>...</thinking> should be ReasoningBlock, not bubble text (your 10:49 PM screenshot).
   // Also <atem:invoke> leaked as "— used tool —" must be card. Strip both so bubble shows only the final answer.
   const stripToolTags = (s: string): string => {
-    // 0) Fenced JSON reasoning blocks — the JSON-first protocol's private
-    // channel. Closed blocks first, then unclosed-to-end (stream cut).
+    // 0) Fenced JSON reasoning blocks & raw reasoning headers — private channel
     let out = s.replace(/```(?:json:)?reasoning[^\n]*\n[\s\S]*?```/gi, '')
     out = out.replace(/```(?:json:)?reasoning[\s\S]*$/gi, '')
-    // 1) Remove <thinking>...</thinking> and <think>...</think> entirely (including content) — that is reasoning, not answer
+    // 1) Remove <thinking>...</thinking> and <think>...</think> entirely (including content)
     out = out.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     out = out.replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // 1b) Remove raw plain text reasoning headers (e.g. Thinking Process:, **Analyze the Request**, **Self-Correction**)
+    out = out.replace(/(?:\*\*)?(?:Thinking Process|Analyze the Request|Self-Correction|Tool Call Formulation|Plan|Reasoning Process)(?:\*\*)?:?[^\n]*\n?/gi, '')
+    // 1c) Remove Jarvis Agent / Autonomous Agent Directive text markers
+    out = out.replace(/\[Jarvis Agent:[^\]]*\]\n?/gi, '')
+    out = out.replace(/\[Autonomous Agent Directive\]:[^\n]*\n?/gi, '')
     // 2) Remove XML tags from prompt/tool injection leaks (<system_message>, <context_summary>, <user_request>, <implementation_plan>, <walkthrough>)
     out = out.replace(/<system_message>[\s\S]*?<\/system_message>/gi, '')
     out = out.replace(/<context_summary>[\s\S]*?<\/context_summary>/gi, '')

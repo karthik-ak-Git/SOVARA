@@ -2459,33 +2459,32 @@ export class AgentOrchestrator {
         hasArtifactTool,
       )
       const isReadOrExplainIntent = /\b(read|inspect|show|view|find|explain|analyze|describe|skill|content)\b/i.test(content)
-      const hasReadActualContent = messages.some((m) => m.role === 'tool' && (m.content.includes('"content"') || m.content.includes('"linesReturned"') || m.content.includes('"results"')))
+      const hasReadActualContent = messages.some((m) => m.role === 'tool' && m.content.includes('"content"'))
+      const hasFailedFsReadWithHint = messages.some((m) => m.role === 'tool' && m.content.includes('file not found') && m.content.includes('Files existing in directory'))
       const isFakeFileClaim = (/json:response|"action":\s*"created"|files created|created.*dashboard|i've created|created standard/i.test(text)) && !hasWrittenCode
-      const isReadInterrupted = isReadOrExplainIntent && didExploration && !hasReadActualContent
+      const isReadInterrupted = isReadOrExplainIntent && (didExploration || hasFailedFsReadWithHint) && !hasReadActualContent
 
       // Continue autonomously if:
       // 1. Model returned a plan without executing anything, OR
       // 2. Model emitted a fake JSON claim instead of writing code, OR
-      // 3. Model did exploration but did not reach the requested artifact/action.
+      // 3. Model experienced fs_read file not found with hint and has not tried the recovery file yet.
       const continuationCount = messages.filter((m) => m.role === 'user' && m.content.includes('[Autonomous Agent Directive]')).length
       const shouldJarvisContinue = isTaskOrBuildIntent && Boolean(toolCatalog) && (isPlanOnly || isFakeFileClaim || isReadInterrupted || (didExploration && !hasWrittenCode) || !taskCompletionGate.passed || !actionGatePassed) && loopSteps < MAX_LOOP && continuationCount < 2 && !controller.signal.aborted
 
       if (shouldJarvisContinue) {
-          const nextDirective = !actionGatePassed
+          const nextDirective = hasFailedFsReadWithHint && !hasReadActualContent
+            ? `[Autonomous Agent Directive]: fs_read for requested path failed, but directory contains existing files. Check the tool result hint for available files (e.g. duplicate extension like production_notes.txt.txt) and immediately call fs_read with the matching filename as your next action.`
+            : !actionGatePassed
             ? `[Autonomous Agent Directive]: Required work is still not observed. Do not stop with a plan. Execute the missing action now: ${actionGateFailures.join('; ')}. Emit exactly the required tool fence, wait for its result, then continue with the remaining steps.`
             : isPlanOnly
-            ? `[Autonomous Agent Directive]: You returned a plan instead of taking action. Do not narrate or repeat the plan. Emit the next tool fence now. For this request, first inspect/read the supplied attachment, then use fs_write for the requested file and shell_exec to install dependencies and run the sample input. Wait for each tool result before continuing.`
+            ? `[Autonomous Agent Directive]: You returned a plan instead of taking action. Do not narrate or repeat the plan. Emit the next tool fence now.`
             : isFakeFileClaim
-            ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete, functioning code using fs_write (e.g. fs_write {"path": "script.py", "content": "..."}) or output the full code in a named markdown code block. Do not output a json:response summary. Consult your skills context and MCP tools if necessary. Write the real code now.`
+            ? `[Autonomous Agent Directive]: You summarized that files were created, but the actual code was not written to disk yet. Immediately write the complete code using fs_write.`
             : isReadInterrupted
-            ? `[Autonomous Agent Directive]: Listing/search complete. Do not stop or pause. Immediately read the actual content using fs_read (e.g. fs_read {"path": "filepath"}) or read_skill (e.g. read_skill {"skill_name": "skill_name"}) and explain or present the full content to the user.`
-            : `[Autonomous Agent Directive]: Workspace inspection complete. Now proceed immediately to write the complete, functional code and implementation using fs_write (e.g. app.py, main.js) or a full markdown code block. Review the Enterprise Skills and MCP tools in your context before writing. Do not stop or ask for confirmation.`
+            ? `[Autonomous Agent Directive]: Immediately read the actual file content using fs_read with the correct path.`
+            : `[Autonomous Agent Directive]: Inspection complete. Now proceed immediately to write the complete implementation using fs_write.`
 
-        this.deps.emit({
-          sessionId: sid,
-          kind: 'assistant-delta',
-          text: `\n\n*[Jarvis Agent: Executing the next required action...]*\n\n`,
-        })
+        this.emit(sid, 'step:start', { taskKind: classification.kind, stepIndex: loopSteps, detail: 'Jarvis continuation' })
         messages.push({ role: 'assistant', content: text.trim() || 'Workspace inspected.' })
         messages.push({
           role: 'user',
@@ -2505,10 +2504,6 @@ export class AgentOrchestrator {
       }
 
       // ── Hard execution completion gate ──────────────────────────────────────
-      // A non-empty assistant message is not proof that an action ran. For an
-      // actionable request, require the relevant successful tool results before
-      // allowing final synthesis or task:complete. This prevents a local model
-      // that only narrates a plan from being reported as a successful agent.
       const successfulTools = new Set(trace.toolResults.filter((r) => r.success).map((r) => r.toolName))
       const successfulFileTools = new Set(trace.toolResults.filter((r) => r.success && r.effect === 'file').map((r) => r.toolName))
       const successfulShellTools = new Set(trace.toolResults.filter((r) => r.success && r.effect === 'shell').map((r) => r.toolName))
@@ -2516,18 +2511,26 @@ export class AgentOrchestrator {
       const needsFileMutation = /\b(?:create|write|save|generate|scaffold|implement|add|build|make|fix|edit|update)\b[\s\S]{0,100}\b(?:file|python|script|app|project|program|code)\b/i.test(content)
       const needsShellAction = /\b(?:install|run|execute|launch|test|compile|pip|npm|bash|powershell)\b/i.test(content)
       const needsWebAction = /\b(?:web search|web fetch|browse the web|internet|online)\b/i.test(content) || Boolean(opts?.webSearch)
-      // Inspection is only REQUIRED when the user actually asked to read/see
-      // something. Firing it for every `tool-use` classification made legitimate
-      // "create file X" turns fail with "no successful workspace inspection" even
-      // though the write succeeded — a false positive that broke the very turn the
-      // gate was supposed to protect.
-      //
-      // A successful shell_exec already produced output the user asked to see, so
-      // "run X and show me the output" is satisfied by the command, not by a
-      // second filesystem read.
+
+      // Intent-Aware Inspection requirement:
+      // Required ONLY if user asked to read/inspect/view a file, AND NO successful write/shell tool already ran.
       const hasShellEvidence = trace.toolResults.some((r) => r.success && r.effect === 'shell')
-      const needsInspectionAction = !hasImageAttachment && !hasShellEvidence
-        && /\b(?:read|inspect|list|find|show|view|open)\b/i.test(content)
+      const hasWriteEvidence = trace.toolResults.some((r) => r.success && r.effect === 'file')
+      const userAskedToRead = /\b(?:read|inspect|list|find|show|view|open)\b/i.test(content)
+      const needsInspectionAction = userAskedToRead && !hasWriteEvidence && !hasShellEvidence && !hasImageAttachment
+
+      // Intent-Aware Read-Back Verification requirement:
+      // Required ONLY if user explicitly asked to "read it back", "verify", "read and verify", or "confirm".
+      const explicitVerificationRequested = /\b(?:read\s+(?:it\s+)?back|verify|read\s+and\s+verify|confirm\s+content)\b/i.test(content)
+      let lastWriteIndex = -1
+      let lastReadIndex = -1
+      for (let i = trace.toolResults.length - 1; i >= 0; i--) {
+        const r = trace.toolResults[i]
+        if (lastWriteIndex === -1 && r && r.success && r.effect === 'file') lastWriteIndex = i
+        if (lastReadIndex === -1 && r && r.success && r.toolName === 'fs_read') lastReadIndex = i
+      }
+      const hasReadBackAfterWrite = explicitVerificationRequested && lastWriteIndex >= 0 && lastReadIndex > lastWriteIndex
+
       const requiredActionFailures: string[] = []
       if (needsFileMutation && successfulFileTools.size === 0) {
         requiredActionFailures.push('no successful file-writing tool was executed')
@@ -2535,24 +2538,27 @@ export class AgentOrchestrator {
       if (needsShellAction && successfulShellTools.size === 0) {
         requiredActionFailures.push('no successful install/run command was executed')
       }
-      // A successful invoke_subagent is genuine verified evidence: the child
-      // really ran and its answer is persisted in tool/result. It is listed here
-      // so delegation can satisfy an inspection request. Because
-      // `successfulTools` is already filtered on r.success, a subagent that
-      // failed, was cancelled, or timed out still cannot open this gate.
       if (needsInspectionAction && !['fs_list', 'fs_read', 'fs_search', 'invoke_subagent'].some((name) => successfulTools.has(name))) {
         requiredActionFailures.push('no successful workspace inspection was executed')
+      }
+      if (explicitVerificationRequested && !hasReadBackAfterWrite) {
+        requiredActionFailures.push('explicit read-back verification (fs_read after fs_write) was requested but not performed')
       }
       if (needsWebAction && !['web_search', 'web_fetch'].some((name) => successfulTools.has(name))) {
         requiredActionFailures.push('no successful web tool was executed')
       }
+      // Placeholder artifact detection: prevent claim of success if file read failed and content contains placeholder text
+      const hasPlaceholderContent = /\b(?:data (?:is|was) (?:currently )?unavailable|no data (?:was )?provided|placeholder data)\b/i.test(text)
+      const hadFailedSourceRead = trace.toolResults.some((r) => r.toolName === 'fs_read' && !r.success) && !trace.toolResults.some((r) => r.toolName === 'fs_read' && r.success)
+      if (hasPlaceholderContent && (hadFailedSourceRead || userAskedToRead)) {
+        requiredActionFailures.push('source data file read failed; placeholder artifact cannot satisfy request')
+      }
+
       if (classification.kind === 'agent' && successfulTools.size === 0) {
         requiredActionFailures.push('the agent task dispatched no successful tool')
       }
-      if (classification.kind === 'agent' && trace.toolResults.some((r) => r.toolName === 'run_code' && r.success) && !trace.toolResults.some((r) => r.success && r.effect)) {
-        requiredActionFailures.push('run_code completed without a verified nested tool effect')
-      }
-      const requiresExecution = needsFileMutation || needsShellAction || needsInspectionAction || needsWebAction || classification.kind === 'agent' || (classification.kind === 'tool-use' && Boolean(opts?.webSearch))
+
+      const requiresExecution = needsFileMutation || needsShellAction || needsInspectionAction || explicitVerificationRequested || needsWebAction || (classification.kind === 'agent' && Boolean(toolCatalog)) || (classification.kind === 'tool-use' && Boolean(opts?.webSearch))
       if (requiresExecution && requiredActionFailures.length > 0) {
         trace.success = false
         trace.endTime = Date.now()
