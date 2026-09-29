@@ -96,12 +96,12 @@ export function parseMessageContent(raw: string, streaming = false): ParsedPart[
     out = out.replace(/<\/?atem:[^>]*>/gi, '')
     // 5) Remove <tool_call>...</tool_call>, <function>...</function>, <invoke>...</invoke>,
     //    <parameter>...</parameter> tags that Nemotron and similar models emit as raw tool syntax.
-    out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    out = out.replace(/<\s*\|?\s*tool_call\s*\|?>[\s\S]*?(?:<\s*\|?\s*\/?\s*tool_call\s*\|?>|$)/gi, '')
     out = out.replace(/<invoke[^>]*>[\s\S]*?<\/invoke>/gi, '')
     out = out.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '')
     // Stray closing tags from split/partial blocks
-    out = out.replace(/<\/parameter>/gi, '').replace(/<\/function>/gi, '').replace(/<\/tool_call>/gi, '').replace(/<\/invoke>/gi, '')
-    out = out.replace(/<parameter\s[^>]*>/gi, '').replace(/<function\s[^>]*>/gi, '').replace(/<tool_call>/gi, '')
+    out = out.replace(/<\/parameter>/gi, '').replace(/<\/function>/gi, '').replace(/<\s*\|?\s*\/?\s*tool_call\s*\|?>/gi, '').replace(/<\/invoke>/gi, '')
+    out = out.replace(/<parameter\s[^>]*>/gi, '').replace(/<function\s[^>]*>/gi, '').replace(/<\s*\|?\s*tool_call\s*\|?>/gi, '')
     // 6) Collapse "— used tool —" chip duplication and repeated text
     out = out.replace(/—\s*used tool\s*—/gi, ' ')
     out = out.replace(/(I'll read the workspace root to list all files and folders in the codebase\.)\s*\1/gi, '$1')

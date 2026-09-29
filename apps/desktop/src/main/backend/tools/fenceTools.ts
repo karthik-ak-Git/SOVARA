@@ -581,8 +581,8 @@ export function extractBareToolCalls(text: string): ToolFence[] {
     out.push({ toolName, args, raw: m[0], index: m.index })
   }
 
-  // Pattern 3: <tool_call>...</tool_call> (handles function/parameter, arg_key/arg_value, JSON, or bare tool name)
-  const toolCallXmlRe = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/gi
+  // Pattern 3: <tool_call>...</tool_call> or <|tool_call|> (handles function/parameter, arg_key/arg_value, JSON, or bare tool name)
+  const toolCallXmlRe = /<\s*\|?\s*tool_call\s*\|?>([\s\S]*?)(?:<\s*\|?\s*\/?\s*tool_call\s*\|?>|$)/gi
   guard = 0
   while (guard++ < 64 && (m = toolCallXmlRe.exec(text)) !== null) {
     const raw = m[0]
@@ -628,12 +628,14 @@ export function extractBareToolCalls(text: string): ToolFence[] {
 
     // Variant C: JSON inside <tool_call>:
     // <tool_call>\n{"name": "fs_read", "arguments": {"path": "..."}}\n</tool_call>
+    // or <tool_call>call:fs_write{"path": "..."}</tool_call>
     // or <tool_call>{"path": "..."}</tool_call>
     if (!toolName) {
       const jsonStart = content.indexOf('{')
       const jsonEnd = content.lastIndexOf('}')
       if (jsonStart >= 0 && jsonEnd > jsonStart) {
         const leading = content.slice(0, jsonStart).trim()
+        const cleanLeading = leading.replace(/^(?:call:|tool:)/i, '').trim().toLowerCase()
         const jsonStr = content.slice(jsonStart, jsonEnd + 1)
         const parsed = tryParse(jsonStr)
         if (parsed) {
@@ -645,8 +647,8 @@ export function extractBareToolCalls(text: string): ToolFence[] {
             } else if (typeof rawArgs === 'string') {
               args = parseLenientJson(rawArgs, toolName)
             }
-          } else if (leading && TOOL_NAMES.includes(leading.toLowerCase() as any)) {
-            toolName = leading.toLowerCase()
+          } else if (cleanLeading && TOOL_NAMES.includes(cleanLeading as any)) {
+            toolName = cleanLeading
             args = parsed
           }
         }
@@ -729,14 +731,14 @@ export function extractJsonToolCalls(text: string): ToolFence[] {
       let toolName = typeof actionValue === 'string' ? normalizeToolName(actionValue) : ''
       let args: Record<string, unknown> = {}
 
-      const argsValue = item['arguments'] ?? item['args'] ?? item['parameters'] ?? item['input']
+      const argsValue = item['arguments'] ?? item['args'] ?? item['parameters'] ?? item['input'] ?? (item['tool_call'] && typeof item['tool_call'] === 'object' ? item['tool_call'] : undefined)
       if (argsValue && typeof argsValue === 'object' && !Array.isArray(argsValue)) {
         args = argsValue as Record<string, unknown>
       } else if (typeof argsValue === 'string') {
         args = parseLenientJson(argsValue, toolName)
       } else {
         const copy = { ...item }
-        delete copy['call']; delete copy['action']; delete copy['tool']; delete copy['name']; delete copy['tool_name']; delete copy['function']; delete copy['status']
+        delete copy['call']; delete copy['action']; delete copy['tool']; delete copy['name']; delete copy['tool_name']; delete copy['function']; delete copy['status']; delete copy['thought']; delete copy['tool_call']
         args = copy
       }
 
