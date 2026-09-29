@@ -164,7 +164,8 @@ export async function listDetailedSkillsForSources(store?: { getAppSetting: (k: 
 
   // 3. Bundled desktop skills
   try {
-    const bundled = join(process.cwd(), 'apps', 'desktop', 'skills')
+    const resPath = (process as unknown as { resourcesPath?: string }).resourcesPath
+    const bundled = app?.isPackaged && resPath ? join(resPath, 'skills') : join(process.cwd(), 'apps', 'desktop', 'skills')
     const bundledSkills = await listSkillsInDir(bundled)
     if (bundledSkills.length > 0) {
       out.push({ name: 'Bundled Desktop', path: bundled, skills: bundledSkills })

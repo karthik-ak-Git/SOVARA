@@ -33,12 +33,20 @@ extraResources:
   - from: resources/pty
     to: pty
 
+  # Bundled skills (arena, superpower, etc.)
+  - from: skills
+    to: skills
+    filter:
+      - "**/*"
+
 asar: true
 compression: maximum
 
 win:
   target:
     - target: nsis
+      arch: [x64]
+    - target: msi
       arch: [x64]
   icon: resources/icon.ico
   publisherName: Sovara
