@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MRPL Flare Emissions Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00bcd4;
+            --compliant-color: #4CAF50;
+            --warning-color: #FF9800;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 20px;
+            padding: 0;
+        }
+        .dashboard-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        header {
+            background-color: #333;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-weight: bold;
+            color: var(--bg-color);
+            background-color: var(--compliant-color);
+            margin-bottom: 20px;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .metric-card {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+        .metric-card h3 {
+            color: var(--accent-color);
+            margin-top: 0;
+        }
+        .gauge-container {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+        .gauge-title {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .gauge-bar-container {
+            height: 300px;
+            width: 100%;
+            background-color: #333;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .gauge-bar {
+            height: 100%;
+            transition: width 0.5s ease-in-out;
+            background-color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #121212;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <header>
+            <h1>MRPL Flare Emissions Monitoring</h1>
+            <span id="status" class="status-badge">COMPLIANT</span>
+        </header>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>SO2 Emission (mg/Nm3)</h3>
+                <p>Current Level: <span id="so2_value">450.0</span> mg/Nm3</p>
+                <p>CPCB Limit: 500 mg/Nm3</p>
+            </div>
+            <div class="metric-card">
+                <h3>NOx Emission (mg/Nm3)</h3>
+                <p>Current Level: <span id="nox_value">120.0</span> mg/Nm3</p>
+                <p>CPCB Limit: 400 mg/Nm3</p>
+            </div>
+            <div class="metric-card">
+                <h3>VOC Emission (ppm)</h3>
+                <p>Current Level: <span id="voc_value">15.5</span> ppm</p>
+                <p>Limit: N/A (Monitoring)</p>
+            </div>
+        </div>
+
+        <div class="gauge-container">
+            <div class="gauge-title">SO2 Compliance Gauge</div>
+            <div class="gauge-bar-container">
+                <div id="so2_gauge" class="gauge-bar" style="width: 90%; background-color: var(--compliant-color);">90%</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Mock Data and Logic for Dashboard Visualization
+        const data = {
+            hourlyData: [
+                { hour: 1, so2: 450.0, nox: 120.0, voc: 15.5 },
+                { hour: 2, so2: 460.0, nox: 130.0, voc: 16.0 },
+                { hour: 3, so2: 445.0, nox: 118.0, voc: 15.0 }
+            ],
+            limits: {
+                so2: 500,
+                nox: 400,
+                voc: Infinity
+            }
+        };
+
+        function updateDashboard()
+{
+    // Update Metric Cards
+    document.getElementById('so2_value').textContent = data.hourlyData[0].so2.toFixed(1);
+    document.getElementById('nox_value').textContent = data.hourlyData[0].nox.toFixed(1);
+    document.getElementById('voc_value').textContent = data.hourlyData[0].voc.toFixed(1);
+
+    // Update Status Badge based on SO2 compliance (example logic)
+    const so2Level = data.hourlyData[0].so2;
+    const statusElement = document.getElementById('status');
+    if (so2Level <= data.limits.so2) {
+        statusElement.textContent = 'COMPLIANT';
+        statusElement.style.backgroundColor = 'var(--compliant-color)';
+    } else {
+        statusElement.textContent = 'NON_COMPLIANT';
+        statusElement.style.backgroundColor = 'var(--warning-color)';
+    }
+
+    // Update Gauge based on SO2
+    const so2Percent = Math.min(100, (so2Level / data.limits.so2) * 100);
+    const gaugeBar = document.getElementById('so2_gauge');
+    gaugeBar.style.width = so2Percent + '%';
+    gaugeBar.textContent = so2Percent.toFixed(1) + '%';
+
+}
+
+// Initial load and mock data update loop
+updateDashboard();
+// In a real application, this would be an interval polling the actual data source.
+setInterval(updateDashboard, 5000);
+
+</script>
+</body>
+</html>
