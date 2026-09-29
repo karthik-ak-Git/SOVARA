@@ -181,7 +181,7 @@ export function dispatchShell(
     let resolved = false
     let stdoutAcc = ''
     let stderrAcc = ''
-
+    const isWin = process.platform === 'win32'
     let finalCmd = sanitizedCmd
     if (isWin) {
       finalCmd = finalCmd

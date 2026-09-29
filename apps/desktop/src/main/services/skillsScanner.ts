@@ -1,7 +1,14 @@
 import { readdir, access, readFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { app } from 'electron'
+function getApp(): { getPath: (name: string) => string; isPackaged: boolean } | null {
+  try {
+    const el = require('electron')
+    return el.app || el.default?.app || null
+  } catch {
+    return null
+  }
+}
 
 export interface SkillsSource {
   name: string
@@ -55,7 +62,9 @@ export function setSkillsSourceEnabled(store: { setAppSetting: (k: string, v: st
 
 function getBionicDir(): string {
   try {
-    return join(app.getPath('userData'), 'skills')
+    const elApp = getApp()
+    if (elApp) return join(elApp.getPath('userData'), 'skills')
+    return join(homedir(), '.sovara', 'skills')
   } catch {
     return join(homedir(), '.sovara', 'skills')
   }
@@ -281,8 +290,7 @@ export async function getAllDiscoveredSkills(
 
   // 4. Fallback: bundled desktop skills (absolute repo path) — ensures superpower etc. always available regardless of workspace location
   try {
-    const { app } = await import('electron')
-    const isPackaged = app.isPackaged
+    const isPackaged = getApp()?.isPackaged ?? false
     if (!isPackaged) {
       // Dev mode: repo-relative
       const bundled = join(process.cwd(), 'apps', 'desktop', 'skills')
