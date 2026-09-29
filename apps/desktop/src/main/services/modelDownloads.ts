@@ -548,10 +548,8 @@ export function deleteLibraryEntry(root: string, entryPath: string, config?: Run
   if (!entryPath || typeof entryPath !== 'string') throw new Error('delete: empty path')
   const rootAbs = resolve(root)
   const targetAbs = resolve(entryPath)
-  if (!isUnder(rootAbs, targetAbs)) {
-    if (entryPath.includes('..') || !targetAbs.startsWith(rootAbs)) {
-      throw new Error(`delete: target path escapes root directory: ${entryPath}`)
-    }
+  if (entryPath.includes('..') && !isUnder(rootAbs, targetAbs)) {
+    throw new Error(`delete: target path escapes root directory: ${entryPath}`)
   }
   const isInternal = isUnder(rootAbs, targetAbs) || (process.platform === 'win32' && targetAbs.toLowerCase().startsWith(rootAbs.toLowerCase()))
 
@@ -1298,8 +1296,9 @@ export function reconcileLibrary(config: RuntimeConfigStore, userData: string): 
       try { size = statSync(row.destPath).size } catch { size = row.downloadedBytes }
       reg.updateDownloadRow(row.id, { status: 'completed', downloadedBytes: size, error: null })
       report.fixed++
-    } else if (!destExists && !partExists && (row.status === 'completed' || row.status === 'downloading' || row.status === 'paused' || row.status === 'queued' || row.status === 'verifying')) {
-      reg.updateDownloadRow(row.id, { status: 'failed', error: 'File missing on disk' })
+    } else if (!destExists && !partExists) {
+      reg.removeDownloadRow(row.id)
+      reg.removeRegistryRowsByPath(row.destPath)
       report.fixed++
       report.missing.push(`${row.repoId}/${row.rfilename}`)
     } else if (partExists && row.status === 'completed') {

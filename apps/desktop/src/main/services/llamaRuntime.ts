@@ -885,14 +885,17 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
   try { fileMB = Math.round(fs.statSync(opts.modelPath).size / (1024 * 1024)) } catch { fileMB = 0 }
   const isHeavy = fileMB >= 4500
   const isMedium = fileMB >= 2500
-  const batch = opts.safeArgs || isHeavy
+  const isConsumerGpu = (typeof opts.gpuTotalMB === 'number' && opts.gpuTotalMB <= 8192) || opts.safeArgs
+  const batch = isConsumerGpu
+    ? 512
+    : isHeavy
     ? 1024
     : isMedium
     ? 2048
     : ctx >= 8192
     ? 2048
     : 1024
-  const ubatch = Math.min(batch, 512)
+  const ubatch = isConsumerGpu ? 256 : Math.min(batch, 512)
   // Adaptive cache type: industry servers (24-48GB) → f16 for quality, 8-16GB → q8_0, consumer 6GB → q4_0
   // Previous q2_k hardcoded for heavy models crashed b10900 (allowed: f32/f16/bf16/q8_0/q4_0/q4_1/iq4_nl/q5_0/q5_1)
   let cacheK: ServerArgsOpts['cacheTypeK'] = opts.cacheTypeK ?? 'q4_0'
@@ -952,34 +955,14 @@ export function buildServerArgs(opts: ServerArgsOpts): string[] {
 }
 
 /**
- * Physical-core count for llama-server `-t`. On Windows we read
- * `NUMBER_OF_PROCESSOR_GROUPS` / `CPU_GROUP_INFO` once via PowerShell; on
- * POSIX we read `/proc/cpuinfo` `cpu cores` per physical package. Falls back
- * to `os.cpus().length - 1` when detection fails.
+ * Physical-core count for llama-server `-t`. Uses available parallelism
+ * or physical core estimate without spawning slow, blocking subprocesses.
  */
 function pickThreads(min: number, max: number): number {
   try {
-    if (process.platform === 'win32') {
-      const out = execFileSync(
-        'powershell.exe',
-        [
-          '-NoProfile', '-NonInteractive', '-Command',
-          '(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum',
-        ],
-        { timeout: 5000, windowsHide: true, encoding: 'utf8' },
-      ) as string
-      const m = String(out ?? '').match(/\d+/)
-      if (m) {
-        const physical = parseInt(m[0], 10)
-        return Math.max(min, Math.min(max, physical))
-      }
-    } else if (process.platform === 'linux') {
-      const cpuinfo = fs.readFileSync('/proc/cpuinfo', 'utf8')
-      const match = cpuinfo.match(/cpu cores\s*:\s*(\d+)/)
-      if (match) {
-        const physical = parseInt(match[1], 10)
-        return Math.max(min, Math.min(max, physical))
-      }
+    if (typeof (os as unknown as { availableParallelism?: () => number }).availableParallelism === 'function') {
+      const p = (os as unknown as { availableParallelism: () => number }).availableParallelism()
+      if (typeof p === 'number' && p > 0) return Math.max(min, Math.min(max, Math.round(p / 2)))
     }
   } catch { /* fall through */ }
   const logical = os.cpus().length || 8
@@ -1028,10 +1011,10 @@ async function downloadFile(url: string, destPart: string, onProgress?: (p: Runt
 async function extractZip(zipPath: string, destDir: string): Promise<void> {
   ensureDir(destDir)
   if (process.platform === 'win32') {
-    // Zero-dependency extraction on Windows (no new npm deps for provisioning).
+    // Zero-dependency extraction on Windows with unblock so Windows Security doesn't flag them
     const ps = [
-      '-NoProfile', '-NonInteractive', '-Command',
-      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+      '-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force; try { Get-ChildItem -Path '${destDir.replace(/'/g, "''")}' -Recurse | Unblock-File -ErrorAction SilentlyContinue } catch {}`,
     ]
     await new Promise<void>((resolve, reject) => {
       execFile('powershell.exe', ps, { timeout: 180_000, windowsHide: true }, (err, _out, stderr) => {

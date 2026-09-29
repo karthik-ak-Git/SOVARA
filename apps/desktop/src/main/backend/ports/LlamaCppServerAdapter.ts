@@ -331,6 +331,18 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
     }
   }
 
+  /** Adaptive context floor: 8192 on <=6GB GPUs or CPU mode to avoid host RAM swapping; 12288 on >=8GB */
+  private async resolveDefaultCtxFloor(forceCpu = false): Promise<number> {
+    if (forceCpu) return 8192
+    try {
+      const gpu = await (this.deps.queryVram ? this.deps.queryVram() : queryGpuVram(this.deps.exePathOverride ?? null))
+      if (gpu && typeof gpu.totalMB === 'number' && gpu.totalMB > 0 && gpu.totalMB <= 6144) {
+        return 8192
+      }
+    } catch {}
+    return 12288
+  }
+
   /**
    * Routing seam (spec §10): resolve-or-load the verified healthy instance
    * for a model. Healthy instances route directly; otherwise the per-model
@@ -340,15 +352,11 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
    */
   async ensureHealthy(modelId: ModelId, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<ModelInstance> {
     const key = String(instanceIdFor(String(modelId)))
+    const defaultFloor = await this.resolveDefaultCtxFloor(opts?.gpu === 'cpu')
     const cur = this.instances.get(key)
     if (cur) {
-      // Floor 12288 — sovereign prompt + tool catalog + workspace + injected contexts
-      // routinely hit ~6500-8500 prompt tokens; 8192 overflowed on the first
-      // tool turn (Nemotron-3-Nano measured 8372 vs 8192 server ctx). Bump to 12288
-      // fits comfortably on 6GB GPUs (Nemotron 4B Q4_K_M: 2706MB weights +
-      // ~2016MB KV@12288 + ~256MB workspace = ~4978MB total, leaves headroom).
-      // Never downgrade a resident higher ctx to a lower one (would ping-pong).
-      const want = Math.max(12288, opts?.ctxLen ?? 12288)
+      // Adaptive floor: 8192 on 6GB GPUs (RTX 3050 etc) to stay inside VRAM; 12288 on >=8GB
+      const want = Math.max(defaultFloor, opts?.ctxLen ?? defaultFloor)
       const have = cur.ctxLen ?? 0
       if (have !== want && want > have) {
         // Only upgrade, never downgrade — downgrade would trash VRAM fit and reintroduce the overflow.
@@ -357,7 +365,7 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         return this.load(modelId, { ...opts, ctxLen: want })
       }
       if (have !== want && want < have) {
-        // Caller asked for smaller ctx than resident — keep resident (12288 superset of 8192).
+        // Caller asked for smaller ctx than resident — keep resident
         appendLlamaLog(this.baseDir, 'ensureHealthy-ctx-keep', { modelId: String(modelId), have, want, keep: have })
       }
       const h = await this.health(cur.id)
@@ -366,9 +374,8 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
         return this.publicView(cur)
       }
     }
-    // Cold-load floor: classification can pass 1024/2048 — never spawn below 12288
-    // (sovereign prompt ~6500-8500 tokens with tool catalog + workspace + skills injected).
-    return this.load(modelId, { ...opts, ctxLen: Math.max(12288, opts?.ctxLen ?? 12288) })
+    // Cold-load floor: adaptive to memory
+    return this.load(modelId, { ...opts, ctxLen: Math.max(defaultFloor, opts?.ctxLen ?? defaultFloor) })
   }
 
   /** Streaming accounting (spec §11–12): request start. */
@@ -434,10 +441,8 @@ export class LlamaCppServerAdapter implements ModelRuntimePort {
   private async loadInner(modelId: string, opts?: { ctxLen?: number; gpu?: 'auto' | 'cpu' | 'fit' | number; runtimeId?: string }): Promise<TrackedInstance> {
     const t0 = Date.now()
     const runtimeId = opts?.runtimeId ?? 'local'
-    // Keep caller's ctxLen (tests/offload harnesses pass small values on purpose).
-    // App paths floor at ensureHealthy cold-load + orchestrator call sites instead.
-    // Default 12288 to match the orchestrator floor (Nemotron-3-Nano measured 8372 tokens > 8192 ctx).
-    let ctxLen = Math.max(512, opts?.ctxLen ?? 12288)
+    const defaultFloor = await this.resolveDefaultCtxFloor(opts?.gpu === 'cpu')
+    let ctxLen = Math.max(512, opts?.ctxLen ?? defaultFloor)
     const id = instanceIdFor(modelId)
     const key = id as string
 

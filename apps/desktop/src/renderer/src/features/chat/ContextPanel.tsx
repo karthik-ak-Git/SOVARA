@@ -102,15 +102,30 @@ export function ContextPanel({
   const activeInst = instances.find((i) => i.state === 'BUSY_DECODE' || i.status === 'generating') ?? instances.find((i) => i.state === 'ACTIVE' || i.status === 'loaded') ?? instances[0]
   const ctxLen = activeInst?.ctxLen ?? activeInst?.configuration?.ctxLen ?? 4096
 
-  // Token accounting — chars/4 estimate aligns with backend estimateTokens
-  const eventChars = useMemo(() => events.reduce((n, e) => {
-    const c = (e.data as { content?: string })?.content ?? ''
-    return n + (typeof c === 'string' ? c.length : 0)
-  }, 0), [events])
+  // Token accounting — tracks exact prompt and completion tokens from message events, falling back to chars/4
+  const { promptTokens, completionTokens } = useMemo(() => {
+    let pTok = 0
+    let cTok = 0
+    for (const e of events) {
+      const d = e.data as { promptTokens?: number; completionTokens?: number; content?: string } | undefined
+      if (d?.completionTokens) {
+        cTok += d.completionTokens
+        if (d.promptTokens) pTok = Math.max(pTok, d.promptTokens)
+      } else {
+        const c = typeof d?.content === 'string' ? d.content : ''
+        const est = Math.ceil(c.length / 4)
+        if (e.type === 'user/message') pTok += est
+        else cTok += est
+      }
+    }
+    return { promptTokens: pTok, completionTokens: cTok }
+  }, [events])
+
   const streamingChars = streamingText.length + streamingReasoning.length
-  const totalChars = eventChars + streamingChars
-  const usedTokens = Math.ceil(totalChars / 4)
-  const streamingTokens = Math.ceil(streamingChars / 4) || (streamingText ? Math.ceil(streamingText.length / 4) : 0)
+  const liveStreamingTokens = Math.ceil(streamingChars / 4) || (streamingText ? Math.ceil(streamingText.length / 4) : 0)
+  const totalCompletionTokens = completionTokens + liveStreamingTokens
+  const usedTokens = promptTokens + totalCompletionTokens
+  const streamingTokens = liveStreamingTokens
   const ctxPct = Math.min(100, Math.round((usedTokens / ctxLen) * 100))
   const tokPerSecLive = activeInst?.metrics?.tokensPerSec
   // Local tok/s estimate when backend hasn't reported yet (first ~2s)
@@ -224,8 +239,9 @@ export function ContextPanel({
             <span style={{ fontFamily: 'DM Mono, monospace' }}>{usedTokens.toLocaleString()} / {ctxLen.toLocaleString()} tok · {ctxPct}%</span>
           </div>
           <Bar pct={ctxPct} />
-          <div style={{ fontSize: 10, color: '#b0a89e', marginTop: 4, fontFamily: 'DM Mono, monospace' }}>
-            {isStreaming ? `${streamingTokens} tok streaming${tps ? ` · ${tps} tok/s` : ''}` : `${events.length} events · ~${usedTokens} tok`}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#b0a89e', marginTop: 4, fontFamily: 'DM Mono, monospace' }}>
+            <span>Prompt: ~{promptTokens.toLocaleString()} · Gen: {totalCompletionTokens.toLocaleString()}</span>
+            <span>{isStreaming ? `${streamingTokens} tok streaming${tps ? ` · ${tps} tok/s` : ''}` : `${events.length} events`}</span>
           </div>
         </div>
       </ContextSection>

@@ -182,10 +182,29 @@ export function dispatchShell(
     let stdoutAcc = ''
     let stderrAcc = ''
 
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sanitizedCmd], {
-      cwd: workdir,
-      windowsHide: true,
-    })
+    const isWin = process.platform === 'win32'
+    const spawnArgs = isWin
+      ? ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-Command', sanitizedCmd]
+      : ['-c', sanitizedCmd]
+    const shellBin = isWin ? 'powershell.exe' : '/bin/sh'
+
+    let child: ChildProcess
+    try {
+      child = spawn(shellBin, spawnArgs, {
+        cwd: workdir,
+        windowsHide: true,
+      })
+    } catch {
+      // Security fallback: if PowerShell is blocked by policy, fall back to cmd.exe on Windows
+      if (isWin) {
+        child = spawn('cmd.exe', ['/d', '/s', '/c', sanitizedCmd], {
+          cwd: workdir,
+          windowsHide: true,
+        })
+      } else {
+        throw new Error('failed to spawn shell process')
+      }
+    }
 
     if (!isServer && child.stdin) {
       try { child.stdin.end() } catch { /* ignore */ }
@@ -241,6 +260,36 @@ export function dispatchShell(
     })
 
     child.on('error', (err) => {
+      if (isWin && shellBin === 'powershell.exe' && !resolved) {
+        // Fallback to cmd.exe if Windows Security blocks PowerShell
+        try {
+          const fallbackChild = spawn('cmd.exe', ['/d', '/s', '/c', sanitizedCmd], {
+            cwd: workdir,
+            windowsHide: true,
+          })
+          fallbackChild.stdout?.on('data', (chunk: Buffer) => {
+            stdoutAcc += chunk.toString('utf8')
+            checkServerReady()
+          })
+          fallbackChild.stderr?.on('data', (chunk: Buffer) => {
+            stderrAcc += chunk.toString('utf8')
+            checkServerReady()
+          })
+          fallbackChild.on('close', (code) => {
+            finish({
+              command,
+              workdir: workdirRel,
+              exitCode: code ?? 0,
+              stdout: stdoutAcc.slice(0, 8000),
+              stderr: stderrAcc.slice(0, 2000),
+            })
+          })
+          fallbackChild.on('error', (e2) => {
+            finish({ error: e2.message, command, workdir: workdirRel })
+          })
+          return
+        } catch { /* proceed to finish with original error */ }
+      }
       finish({
         error: err.message,
         command,

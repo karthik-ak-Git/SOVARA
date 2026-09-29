@@ -37,6 +37,7 @@ export function ConnectionsPage({ onBack: _onBack }: ConnectionsPageProps): Reac
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [probingId, setProbingId] = useState<string | null>(null)
+  const [probeStatus, setProbeStatus] = useState<{ id: string; success: boolean; message: string } | null>(null)
 
   // Modal / Add state
   const [showAddModal, setShowAddModal] = useState(false)
@@ -75,11 +76,22 @@ export function ConnectionsPage({ onBack: _onBack }: ConnectionsPageProps): Reac
 
   const handleProbe = useCallback(async (id: string): Promise<void> => {
     setProbingId(id)
+    setProbeStatus(null)
     try {
-      await probeMcpServer(id)
+      const res = await probeMcpServer(id)
+      const isOk = res.status === 'connected'
+      setProbeStatus({
+        id,
+        success: isOk,
+        message: isOk
+          ? `✓ Connection verified for "${res.name}". Server is connected and actively usable by the AI agent.`
+          : `⚠️ Connection test for "${res.name}" status: ${res.status}${res.lastError ? ` (${res.lastError})` : ''}`,
+      })
       await reload()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setProbeStatus({ id, success: false, message: `Connection failed: ${msg}` })
+      setError(msg)
     } finally {
       setProbingId(null)
     }
@@ -179,6 +191,34 @@ export function ConnectionsPage({ onBack: _onBack }: ConnectionsPageProps): Reac
         </div>
       ) : null}
 
+      {probeStatus ? (
+        <div
+          role="status"
+          style={{
+            marginBottom: '16px',
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-md)',
+            background: probeStatus.success ? '#ecfdf5' : '#fef2f2',
+            border: `1px solid ${probeStatus.success ? '#a7f3d0' : '#fecaca'}`,
+            color: probeStatus.success ? '#065f46' : '#991b1b',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>{probeStatus.message}</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            style={{ padding: '2px 8px', fontSize: '12px' }}
+            onClick={() => setProbeStatus(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       {/* Search */}
       <div style={{ position: 'relative', marginBottom: '20px' }}>
         <Search size={16} style={{ position: 'absolute', left: '12px', top: '10px', color: 'var(--muted)' }} />
@@ -238,6 +278,12 @@ export function ConnectionsPage({ onBack: _onBack }: ConnectionsPageProps): Reac
                       </span>
                       <span className="badge badge--neutral" style={{ fontSize: '10px' }}>
                         {server.transport}
+                      </span>
+                      <span
+                        className={`badge ${server.enabled ? 'badge--success' : 'badge--neutral'}`}
+                        style={{ fontSize: '10px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        {server.enabled ? '● Active in Agent' : '○ Inactive in Agent'}
                       </span>
                     </div>
 

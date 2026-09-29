@@ -483,7 +483,10 @@ export function Composer({
             <input ref={folderInputRef} type="file" className="sr-only" {...{ webkitdirectory: '' } as unknown as Record<string, string>} multiple onChange={handleFileSelect} aria-label="Select folder to attach" />
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {estimatedTokens > 0 ? (
+              <TokenMeter used={estimatedTokens} max={contextMaxTokens} />
+            ) : null}
             {showStop ? (
               <button type="button" className="sv-send-btn" style={{ background: '#8A8279' }} onClick={() => onCancel?.()} aria-label="Stop generating" title="Stop generating (Esc)" data-testid="stop-button">
                 <Square size={14} aria-hidden />

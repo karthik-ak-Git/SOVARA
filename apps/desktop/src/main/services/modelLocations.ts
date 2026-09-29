@@ -162,10 +162,11 @@ function listWinDrives(env: NodeJS.ProcessEnv): string[] {
   const drives = new Set<string>()
   const sysDrive = (env.SystemDrive ?? env.SYSTEMDRIVE ?? 'C:').trim()
   if (/^[A-Za-z]:$/.test(sysDrive)) drives.add(sysDrive.toUpperCase())
-  try {
-    const raw = execSync('wmic logicaldisk get name', { timeout: 1500, encoding: 'utf8', windowsHide: true, stdio: ['ignore','pipe','ignore'] } as any)
-    for (const m of raw.matchAll(/([A-Za-z]:)/g)) drives.add(m[1].toUpperCase())
-  } catch { /* ignore */ }
+  for (const letter of ['C', 'D', 'E', 'F', 'G']) {
+    try {
+      if (fs.existsSync(`${letter}:\\`)) drives.add(letter + ':')
+    } catch { /* ignore */ }
+  }
   if (drives.size === 0) drives.add('C:')
   return [...drives].map((d) => `${d}\\`)
 }

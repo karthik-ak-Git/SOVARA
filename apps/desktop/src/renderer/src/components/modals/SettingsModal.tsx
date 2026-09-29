@@ -81,6 +81,8 @@ import {
   detectExternalRuntimes,
   getActiveDownloads,
   onDownloadEvents,
+  listInstances,
+  type ModelInstance,
   cancelModelDownload,
   type DownloadEventView,
   type AppSettingsState,
@@ -294,6 +296,7 @@ export function SettingsModal({
   const [searchTestResult, setSearchTestResult] = useState<string | null>(null)
 
   // Local Model API & Logs
+  const [runningInstances, setRunningInstances] = useState<ModelInstance[]>([])
   const [apiRecentLogs, setApiRecentLogs] = useState<Record<string, string[]>>({})
 
   // Project Deletion Confirmation
@@ -360,6 +363,7 @@ export function SettingsModal({
     getRecentUsage().then(setRecentUsage).catch(() => {})
     listDiscoveredModels().then(setAgentModels).catch(() => {})
     listTools().then(setAgentTools).catch(() => {})
+    listInstances().then(setRunningInstances).catch(() => {})
     getRecentLogs('all').then(setApiRecentLogs).catch(() => {})
 
     void getHardwareProfile().then(setHwProfile).catch(() => {})
@@ -411,25 +415,54 @@ export function SettingsModal({
   const hwStorageTotal = hwProfile?.storageTotalGB !== undefined ? `${hwProfile.storageTotalGB} GB` : undefined
 
   const hwRecommendation = (() => {
-    if (!hwProfile) return { tier: 'Detecting Hardware…', desc: 'Analyzing system capabilities…', badgeClass: 'sv-hw-badge--neutral' }
-    if (hwProfile.gpuAvailable && (hwProfile.totalVramMB ?? 0) >= 7500) {
+    if (!hwProfile) {
       return {
-        tier: 'High Performance GPU',
-        desc: 'Up to 8B–14B models (Llama 3.1 8B, Qwen 2.5 7B, Mistral 7B) fit in VRAM with full GPU offload.',
-        badgeClass: 'sv-hw-badge--success',
+        tier: 'Detecting Hardware…',
+        desc: 'Analyzing system capabilities…',
+        badgeClass: 'sv-hw-badge--neutral',
+        capabilities: [] as Array<{ name: string; tag: string; models: string; note: string }>,
       }
     }
-    if (hwProfile.gpuAvailable && (hwProfile.totalVramMB ?? 0) >= 3000) {
+    const vram = hwProfile.totalVramMB ?? 0
+    if (hwProfile.gpuAvailable && vram >= 7500) {
+      return {
+        tier: 'High Performance GPU',
+        desc: 'Up to 8B–14B models fit in VRAM with full GPU offload and high generation speeds.',
+        badgeClass: 'sv-hw-badge--success',
+        capabilities: [
+          { name: 'Vision', tag: 'Multimodal', models: 'Llama 3.2 Vision 11B / Qwen2-VL 7B', note: 'Full GPU acceleration for images & docs' },
+          { name: 'Tools', tag: 'Function Calling', models: 'Hermes 3 8B / Qwen 2.5 7B-Instruct', note: 'Zero-shot tool use and JSON schemas' },
+          { name: 'Text', tag: 'Writing & Chat', models: 'Llama 3.1 8B / Mistral 7B / Gemma 2 9B', note: 'High prose nuance & complex dialogue' },
+          { name: 'Code', tag: 'Programming', models: 'Qwen 2.5 Coder 7B / DeepSeek-Coder 6.7B', note: 'Full repo refactoring and debugging' },
+          { name: 'Reasoning', tag: 'Deep Thinking', models: 'DeepSeek-R1-Distill-Qwen 7B / QwQ-32B', note: 'Chain-of-thought verification & math' },
+        ],
+      }
+    }
+    if (hwProfile.gpuAvailable && vram >= 3000) {
       return {
         tier: 'Dedicated GPU Accelerated',
-        desc: 'Compact 1B–4B models (Llama 3.2 3B, Qwen 2.5 3B, SmolLM2) offload with high tokens/sec.',
+        desc: 'Compact 1B–4B models offload with high tokens/sec and low thermal footprint.',
         badgeClass: 'sv-hw-badge--accent',
+        capabilities: [
+          { name: 'Vision', tag: 'Multimodal', models: 'Moondream2 1.8B / SmolVLM 2.2B', note: 'Fast lightweight image analysis' },
+          { name: 'Tools', tag: 'Function Calling', models: 'Qwen 2.5 3B-Instruct / Hermes 3 3B', note: 'Responsive MCP and function calls' },
+          { name: 'Text', tag: 'Writing & Chat', models: 'Llama 3.2 3B / Qwen 2.5 3B / Phi-3.5', note: 'Rapid responses and instruction following' },
+          { name: 'Code', tag: 'Programming', models: 'Qwen 2.5 Coder 1.5B / 3B', note: 'Fast inline autocomplete and scripting' },
+          { name: 'Reasoning', tag: 'Deep Thinking', models: 'DeepSeek-R1-Distill-Qwen 1.5B / 7B (Q4)', note: 'Quantized step-by-step reasoning' },
+        ],
       }
     }
     return {
       tier: 'System RAM / CPU Mode',
-      desc: 'Lightweight models (SmolLM2 135M/360M, Llama 3.2 1B, Qwen 0.5B/1.5B) run smoothly in system memory.',
+      desc: 'Lightweight models run smoothly in system memory with zero VRAM requirement.',
       badgeClass: 'sv-hw-badge--neutral',
+      capabilities: [
+        { name: 'Vision', tag: 'Multimodal', models: 'Moondream2 1.8B (CPU offload)', note: 'Runs in system memory' },
+        { name: 'Tools', tag: 'Function Calling', models: 'Qwen 2.5 1.5B-Instruct', note: 'Lightweight tool calling support' },
+        { name: 'Text', tag: 'Writing & Chat', models: 'Llama 3.2 1B / SmolLM2 360M / Qwen 0.5B', note: 'Zero GPU requirement, battery friendly' },
+        { name: 'Code', tag: 'Programming', models: 'Qwen 2.5 Coder 0.5B / 1.5B', note: 'Instant code generation on CPU' },
+        { name: 'Reasoning', tag: 'Deep Thinking', models: 'DeepSeek-R1-Distill-Qwen 1.5B', note: 'Compact logic and math reasoning' },
+      ],
     }
   })()
 
@@ -941,6 +974,27 @@ export function SettingsModal({
                       </button>
                     </div>
                   </div>
+
+                  <div className="settings-modal-row">
+                    <div className="settings-modal-row-info">
+                      <div className="settings-modal-row-label">Follow-up &amp; Execution Notifications</div>
+                      <div className="settings-modal-row-desc">
+                        Show a desktop notification when queued follow-up messages or tasks complete execution.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${appSettings?.executionNotifications ?? appSettings?.sessionNotifications ?? true ? 'settings-toggle--on' : ''}`}
+                      onClick={() => {
+                        const nextVal = !(appSettings?.executionNotifications ?? appSettings?.sessionNotifications ?? true)
+                        void applyPatch({ executionNotifications: nextVal, sessionNotifications: nextVal })
+                      }}
+                      role="switch"
+                      aria-checked={appSettings?.executionNotifications ?? appSettings?.sessionNotifications ?? true}
+                    >
+                      <span className="settings-toggle-thumb" />
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1091,6 +1145,24 @@ export function SettingsModal({
                       onClick={() => void applyPatch({ autoUpdates: !(appSettings?.autoUpdates ?? true) })}
                       role="switch"
                       aria-checked={appSettings?.autoUpdates ?? true}
+                    >
+                      <span className="settings-toggle-thumb" />
+                    </button>
+                  </div>
+
+                  <div className="settings-modal-row">
+                    <div className="settings-modal-row-info">
+                      <div className="settings-modal-row-label">Auto-Download Updates</div>
+                      <div className="settings-modal-row-desc">
+                        Automatically fetch and stage new verified application updates in the background when available.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${appSettings?.autoDownloadUpdates ?? true ? 'settings-toggle--on' : ''}`}
+                      onClick={() => void applyPatch({ autoDownloadUpdates: !(appSettings?.autoDownloadUpdates ?? true) })}
+                      role="switch"
+                      aria-checked={appSettings?.autoDownloadUpdates ?? true}
                     >
                       <span className="settings-toggle-thumb" />
                     </button>
@@ -1381,13 +1453,27 @@ export function SettingsModal({
                     </div>
                   </div>
 
-                  <div style={{ padding: '12px 14px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0', marginBottom: 14 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A', marginBottom: 4 }}>
-                      Tailored Model Recommendation
+                  <div style={{ padding: '14px 16px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0', marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginBottom: 4 }}>
+                      Workable Models by Capability
                     </div>
-                    <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, lineHeight: 1.5 }}>
                       {hwRecommendation.desc}
                     </div>
+                    {hwRecommendation.capabilities && hwRecommendation.capabilities.length > 0 ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+                        {hwRecommendation.capabilities.map((c) => (
+                          <div key={c.name} style={{ padding: '10px 12px', background: '#FFFFFF', borderRadius: 6, border: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.name}</span>
+                              <span className="badge badge--neutral" style={{ fontSize: 9, padding: '1px 5px' }}>{c.tag}</span>
+                            </div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#C65D3B', marginTop: 2 }}>{c.models}</div>
+                            <div style={{ fontSize: 11, color: '#64748B', marginTop: 2, lineHeight: 1.3 }}>{c.note}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -1812,30 +1898,6 @@ export function SettingsModal({
                 <p className="settings-modal-subtitle">
                   Inspect, open, archive, or permanently delete conversation threads across all workspaces.
                 </p>
-              </div>
-
-              {/* Fork Behavior */}
-              <div className="settings-modal-group">
-                <div className="settings-modal-group-title">Session Forking</div>
-                <div className="settings-modal-card">
-                  <div className="settings-modal-row">
-                    <div className="settings-modal-row-info">
-                      <div className="settings-modal-row-label">Rename Session After Fork</div>
-                      <div className="settings-modal-row-desc">
-                        Prompt to rename newly created sessions when branching conversation history.
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className={`settings-toggle ${appSettings?.renameAfterFork ?? true ? 'settings-toggle--on' : ''}`}
-                      onClick={() => void applyPatch({ renameAfterFork: !(appSettings?.renameAfterFork ?? true) })}
-                      role="switch"
-                      aria-checked={appSettings?.renameAfterFork ?? true}
-                    >
-                      <span className="settings-toggle-thumb" />
-                    </button>
-                  </div>
-                </div>
               </div>
 
               {/* Active Conversations */}
@@ -2272,97 +2334,116 @@ export function SettingsModal({
                 </p>
               </div>
 
-              <div className="settings-modal-group">
-                <div className="settings-modal-group-title">Endpoints &amp; Integration</div>
-                <div className="settings-modal-card">
-                  <div className="settings-modal-row">
-                    <div className="settings-modal-row-info">
-                      <div className="settings-modal-row-label">Base URL</div>
-                      <div className="settings-modal-row-desc">OpenAI-compatible REST server</div>
-                    </div>
-                    <span className="settings-info-chip">http://127.0.0.1:11434/v1</span>
-                  </div>
-                  <div className="settings-modal-row">
-                    <div className="settings-modal-row-info">
-                      <div className="settings-modal-row-label">Chat Completions</div>
-                      <div className="settings-modal-row-desc">Standard streaming chat endpoint</div>
-                    </div>
-                    <span className="settings-info-chip">POST /v1/chat/completions</span>
-                  </div>
-                  <div className="settings-modal-row">
-                    <div className="settings-modal-row-info">
-                      <div className="settings-modal-row-label">Models List</div>
-                      <div className="settings-modal-row-desc">Inspect discovered local GGUF models</div>
-                    </div>
-                    <span className="settings-info-chip">GET /v1/models</span>
-                  </div>
-                </div>
-              </div>
+              {(() => {
+                const activeInst = runningInstances.find((i) => i.status === 'loaded' || i.status === 'active' || i.status === 'generating' || i.status === 'busy') ?? runningInstances[0]
+                const localApiBaseUrl = activeInst?.endpoint ?? (activeInst?.port ? `http://127.0.0.1:${activeInst.port}/v1` : 'http://127.0.0.1:8080/v1')
+                const isOnline = Boolean(activeInst && (activeInst.status === 'loaded' || activeInst.status === 'active' || activeInst.status === 'generating' || activeInst.status === 'busy'))
+                const logLines = (apiRecentLogs.llamaRuntime && apiRecentLogs.llamaRuntime.length > 0) ? apiRecentLogs.llamaRuntime : (apiRecentLogs.runtime ?? [])
 
-              {/* Logs */}
-              <div className="settings-modal-group" style={{ marginTop: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div className="settings-modal-group-title" style={{ margin: 0 }}>Terminal Logs (chat.log &amp; runtime.log)</div>
-                  <button
-                    type="button"
-                    className="settings-btn-action"
-                    onClick={() => void handleRefreshLogs()}
-                  >
-                    <RefreshCw size={12} />
-                    <span>Refresh Logs</span>
-                  </button>
-                </div>
-                <div className="settings-modal-card" style={{ padding: 14 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6, textTransform: 'uppercase' }}>
-                        chat.log (last 10 lines)
+                return (
+                  <>
+                    <div className="settings-modal-group">
+                      <div className="settings-modal-group-title">Endpoints &amp; Integration</div>
+                      <div className="settings-modal-card">
+                        <div className="settings-modal-row">
+                          <div className="settings-modal-row-info">
+                            <div className="settings-modal-row-label">Base URL</div>
+                            <div className="settings-modal-row-desc">OpenAI-compatible REST server (dynamic port routing)</div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className={`badge ${isOnline ? 'badge--success' : 'badge--neutral'}`} style={{ fontSize: 10 }}>
+                              {isOnline ? `● Online (${activeInst?.modelId})` : '○ Standby'}
+                            </span>
+                            <span className="settings-info-chip">{localApiBaseUrl}</span>
+                          </div>
+                        </div>
+                        <div className="settings-modal-row">
+                          <div className="settings-modal-row-info">
+                            <div className="settings-modal-row-label">Chat Completions</div>
+                            <div className="settings-modal-row-desc">Standard streaming chat endpoint</div>
+                          </div>
+                          <span className="settings-info-chip">POST /v1/chat/completions</span>
+                        </div>
+                        <div className="settings-modal-row">
+                          <div className="settings-modal-row-info">
+                            <div className="settings-modal-row-label">Models List</div>
+                            <div className="settings-modal-row-desc">Inspect discovered local GGUF models</div>
+                          </div>
+                          <span className="settings-info-chip">GET /v1/models</span>
+                        </div>
                       </div>
-                      <pre
-                        style={{
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                          background: 'var(--bg-soft)',
-                          color: '#0f172a',
-                          padding: 10,
-                          borderRadius: 8,
-                          maxHeight: 180,
-                          overflow: 'auto',
-                          whiteSpace: 'pre-wrap',
-                          border: '1px solid #e2e8f0',
-                        }}
-                      >
-                        {(apiRecentLogs.chat ?? []).length > 0
-                          ? (apiRecentLogs.chat ?? []).slice(-10).join('\n')
-                          : 'No chat entries yet — send a message to see [SOVARA][CHAT] lines.'}
-                      </pre>
                     </div>
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6, textTransform: 'uppercase' }}>
-                        runtime.log (last 10 lines)
+
+                    {/* Logs */}
+                    <div className="settings-modal-group" style={{ marginTop: 20 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <div className="settings-modal-group-title" style={{ margin: 0 }}>Terminal Logs (chat.log &amp; llama-runtime.log)</div>
+                        <button
+                          type="button"
+                          className="settings-btn-action"
+                          onClick={() => {
+                            void handleRefreshLogs()
+                            void listInstances().then(setRunningInstances).catch(() => {})
+                          }}
+                        >
+                          <RefreshCw size={12} />
+                          <span>Refresh Logs</span>
+                        </button>
                       </div>
-                      <pre
-                        style={{
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                          background: 'var(--bg-soft)',
-                          color: '#0f172a',
-                          padding: 10,
-                          borderRadius: 8,
-                          maxHeight: 180,
-                          overflow: 'auto',
-                          whiteSpace: 'pre-wrap',
-                          border: '1px solid #e2e8f0',
-                        }}
-                      >
-                        {(apiRecentLogs.runtime ?? []).length > 0
-                          ? (apiRecentLogs.runtime ?? []).slice(-10).join('\n')
-                          : 'No runtime entries yet.'}
-                      </pre>
+                      <div className="settings-modal-card" style={{ padding: 14 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6, textTransform: 'uppercase' }}>
+                              chat.log (last 10 lines)
+                            </div>
+                            <pre
+                              style={{
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                background: 'var(--bg-soft)',
+                                color: '#0f172a',
+                                padding: 10,
+                                borderRadius: 8,
+                                maxHeight: 180,
+                                overflow: 'auto',
+                                whiteSpace: 'pre-wrap',
+                                border: '1px solid #e2e8f0',
+                              }}
+                            >
+                              {(apiRecentLogs.chat ?? []).length > 0
+                                ? (apiRecentLogs.chat ?? []).slice(-10).join('\n')
+                                : 'No chat entries yet — send a message to see [SOVARA][CHAT] lines.'}
+                            </pre>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6, textTransform: 'uppercase' }}>
+                              llama-runtime.log (last 10 lines)
+                            </div>
+                            <pre
+                              style={{
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                background: 'var(--bg-soft)',
+                                color: '#0f172a',
+                                padding: 10,
+                                borderRadius: 8,
+                                maxHeight: 180,
+                                overflow: 'auto',
+                                whiteSpace: 'pre-wrap',
+                                border: '1px solid #e2e8f0',
+                              }}
+                            >
+                              {logLines.length > 0
+                                ? logLines.slice(-10).join('\n')
+                                : 'No runtime entries yet.'}
+                            </pre>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              </div>
+                  </>
+                )
+              })()}
             </div>
           ) : null}
 

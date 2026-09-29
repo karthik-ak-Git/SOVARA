@@ -1010,7 +1010,12 @@ export function registerIpcHandlers(): void {
     let dir: string; try { dir = path.join(getSovaraDataDir(undefined),'logs') } catch { dir = path.join(require('node:os').tmpdir(),'sovara-logs') }
     const out: Record<string,string[]> = {}
     if (kind==='all' || kind==='detection') out.detection = tail(path.join(dir,'detection.log'), 30)
-    if (kind==='all' || kind==='runtime') out.runtime = tail(path.join(dir,'runtime.log'), 30)
+    if (kind==='all' || kind==='runtime') {
+      const llamaLog = tail(path.join(dir,'llama-runtime.log'), 40)
+      const baseLog = tail(path.join(dir,'runtime.log'), 30)
+      out.runtime = llamaLog.length > 0 ? llamaLog : baseLog
+      out.llamaRuntime = llamaLog
+    }
     if (kind==='all' || kind==='app') out.app = tail(path.join(dir,'app.log'), 30)
     if (kind==='all' || kind==='chat') out.chat = tail(path.join(dir,'chat.log'), 50)
     void kind
@@ -1053,14 +1058,18 @@ export function registerIpcHandlers(): void {
   const isGitRepo = (cwd: string): boolean => {
     try {
       const out = execSync('git rev-parse --is-inside-work-tree', {
-        cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'],
+        cwd, encoding: 'utf8', timeout: 1000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim()
       return out === 'true'
     } catch { return false }
   }
-  const gitExec = (cmd: string, cwd: string): string => execSync(cmd, {
-    cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'],
-  })
+  const gitExec = (cmd: string, cwd: string): string => {
+    try {
+      return execSync(cmd, {
+        cwd, encoding: 'utf8', timeout: 1500, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch { return '' }
+  }
 
   ipcMain.handle('git:status', async (_e, raw: unknown) => {
     const parsed = zGitStatus.safeParse(raw ?? {})

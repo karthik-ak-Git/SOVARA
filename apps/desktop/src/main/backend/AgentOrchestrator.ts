@@ -21,7 +21,7 @@ import { resolveCapabilities, capabilitiesForTask } from '@shared/types/modelCap
 import { computeContextBudget, truncateFileToBudget } from './contextBudget'
 import { ChatInferenceError } from './ports/LocalOpenAIChatAdapter'
 import { appendChatLog, appendRuntimeLog, safeTarget } from '../logging/runtimeLog'
-import { getArtifactsDir } from '../storage/paths'
+import { getArtifactsDir, getSovaraDataDir } from '../storage/paths'
 import { gateDispatch } from '../services/execPermissions'
 import { resolveMmprojPath } from '../services/llamaRuntime'
 import { processAttachments, buildAttachmentContext, type IncomingAttachment } from './attachments'
@@ -798,6 +798,119 @@ export class AgentOrchestrator {
     return { cancelled: true }
   }
 
+  private async materializePlan(
+    sessionId: SessionId,
+    content: string,
+    classification: TaskClassification
+  ): Promise<void> {
+    try {
+      const sid = String(sessionId)
+      const h = await this.deps.persistence.get(sessionId).catch(() => null) as { projectId?: string | null } | null
+      const pid = h?.projectId ?? null
+      const wsRoot = this.deps.getProjectWorkspace?.(pid) ?? this.deps.getGlobalWorkspace?.() ?? null
+      const cleanPrompt = content.replace(/\r?\n/g, ' ').trim()
+      const title = cleanPrompt.length > 50 ? `${cleanPrompt.slice(0, 50)}…` : cleanPrompt || 'User Execution Plan'
+      const planContent = [
+        '---',
+        'type: plan',
+        `title: "${title.replace(/"/g, '\\"')}"`,
+        `session: "${sid}"`,
+        `created: ${new Date().toISOString()}`,
+        `tags: [plan, agent, ${classification.kind}]`,
+        '---',
+        `# Plan: ${title}`,
+        '',
+        '## User Request',
+        content.trim(),
+        '',
+        '## Execution Objectives',
+        `- Task Kind: **${classification.kind}** (confidence: ${Math.round((classification.confidence ?? 1) * 100)}%)`,
+        '- Mode: Sovereign Local Execution',
+        '- Reference Link: [[walkthrough]]',
+        '',
+        '## Execution Milestones',
+        '1. Ingest request parameters and inspect target codebase/files.',
+        '2. Execute actions with resource and security boundaries enforced.',
+        '3. Produce verified deliverable and record summary in [[walkthrough]].',
+        '',
+      ].join('\n')
+
+      if (wsRoot && fs.existsSync(wsRoot)) {
+        try { fs.writeFileSync(path.join(wsRoot, 'plan.md'), planContent, 'utf8') } catch {}
+        try {
+          const wsWiki = path.join(wsRoot, 'wiki', 'plans')
+          fs.mkdirSync(wsWiki, { recursive: true })
+          fs.writeFileSync(path.join(wsWiki, `plan-${sid.slice(0, 8)}.md`), planContent, 'utf8')
+        } catch {}
+      }
+
+      try {
+        const globalDataDir = getSovaraDataDir(this.deps.baseDir)
+        const globalWikiPlans = path.join(globalDataDir, 'wiki', 'plans')
+        fs.mkdirSync(globalWikiPlans, { recursive: true })
+        fs.writeFileSync(path.join(globalWikiPlans, `plan-${sid.slice(0, 8)}.md`), planContent, 'utf8')
+        fs.writeFileSync(path.join(globalDataDir, 'wiki', 'plan.md'), planContent, 'utf8')
+      } catch {}
+    } catch {
+      // Best-effort Knowledge Graph sync
+    }
+  }
+
+  private async materializeWalkthrough(
+    sessionId: SessionId,
+    content: string,
+    output: string,
+    classification: TaskClassification
+  ): Promise<void> {
+    try {
+      const sid = String(sessionId)
+      const h = await this.deps.persistence.get(sessionId).catch(() => null) as { projectId?: string | null } | null
+      const pid = h?.projectId ?? null
+      const wsRoot = this.deps.getProjectWorkspace?.(pid) ?? this.deps.getGlobalWorkspace?.() ?? null
+      const cleanPrompt = content.replace(/\r?\n/g, ' ').trim()
+      const title = cleanPrompt.length > 50 ? `${cleanPrompt.slice(0, 50)}…` : cleanPrompt || 'Execution Walkthrough'
+      const summaryExcerpt = output.trim().slice(0, 2000) || 'Task execution completed successfully.'
+      const walkthroughContent = [
+        '---',
+        'type: walkthrough',
+        `title: "Walkthrough: ${title.replace(/"/g, '\\"')}"`,
+        `session: "${sid}"`,
+        `completed: ${new Date().toISOString()}`,
+        `tags: [walkthrough, agent, ${classification.kind}]`,
+        '---',
+        `# Walkthrough: ${title}`,
+        '',
+        '## Summary of Completed Output',
+        summaryExcerpt,
+        '',
+        '## Knowledge Graph & Verification',
+        `- Completed Task: **${classification.kind}**`,
+        '- Associated Plan: [[plan]]',
+        '- RAG context indexed for subsequent sovereign generation.',
+        '',
+      ].join('\n')
+
+      if (wsRoot && fs.existsSync(wsRoot)) {
+        try { fs.writeFileSync(path.join(wsRoot, 'walkthrough.md'), walkthroughContent, 'utf8') } catch {}
+        try {
+          const wsWiki = path.join(wsRoot, 'wiki', 'walkthroughs')
+          fs.mkdirSync(wsWiki, { recursive: true })
+          fs.writeFileSync(path.join(wsWiki, `walkthrough-${sid.slice(0, 8)}.md`), walkthroughContent, 'utf8')
+        } catch {}
+      }
+
+      try {
+        const globalDataDir = getSovaraDataDir(this.deps.baseDir)
+        const globalWikiWalkthroughs = path.join(globalDataDir, 'wiki', 'walkthroughs')
+        fs.mkdirSync(globalWikiWalkthroughs, { recursive: true })
+        fs.writeFileSync(path.join(globalWikiWalkthroughs, `walkthrough-${sid.slice(0, 8)}.md`), walkthroughContent, 'utf8')
+        fs.writeFileSync(path.join(globalDataDir, 'wiki', 'walkthrough.md'), walkthroughContent, 'utf8')
+      } catch {}
+    } catch {
+      // Best-effort Knowledge Graph sync
+    }
+  }
+
   async execute(
     sessionId: SessionId,
     content: string,
@@ -1328,6 +1441,7 @@ export class AgentOrchestrator {
       const userContent = attached.manifestLine ? `${attached.manifestLine}\n\n${content}` : content
       try {
         userSeq = (await this.deps.persistence.appendEvent(sessionId, 'user/message', { content: userContent })).seq
+        void this.materializePlan(sessionId, userContent, classification)
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'could not persist your message'
         this.emit(sid, 'task:error', { taskKind: classification.kind, detail: msg, error: msg })
@@ -3090,7 +3204,13 @@ export class AgentOrchestrator {
       })
       trace.success = true
       trace.endTime = Date.now()
-      const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: text })).seq
+      const assistantSeq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', {
+        content: text,
+        promptTokens: tokenUsage.promptTokens,
+        completionTokens: tokenUsage.completionTokens,
+        totalTokens: tokenUsage.totalTokens,
+      })).seq
+      void this.materializeWalkthrough(sessionId, userContent, text, classification)
       if (ownedInstanceForMetrics) {
         const elapsedS = Math.max(0.1, (Date.now() - startedAll) / 1000)
         this.noteEndQuiet(ownedInstanceForMetrics, {

@@ -108,55 +108,45 @@ function tryNvidiaSmi(): { name?: string; totalVramMB?: number; freeVramMB?: num
   }
 }
 
-function tryWmic(): { name?: string; totalVramMB?: number; gpuUtil?: number } | null {
+function tryWindowsRegistryGpu(): { name?: string } | null {
   if (process.platform !== 'win32') return null
   try {
-    // wmic returns AdapterRAM in bytes
-    const out = execSync('wmic path win32_VideoController get Name,AdapterRAM /format:list', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
-    const lines = out.split('\n').map((s) => s.trim()).filter(Boolean)
-    let name: string | undefined
-    let ram: number | undefined
-    for (const line of lines) {
-      if (line.startsWith('Name=')) name = line.slice('Name='.length).trim()
-      if (line.startsWith('AdapterRAM=')) {
-        const v = parseInt(line.slice('AdapterRAM='.length).trim(), 10)
-        if (Number.isFinite(v) && v > 0) ram = Math.round(v / (1024 * 1024))
+    const out = execFileSync('reg.exe', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}', '/s', '/v', 'DriverDesc'], {
+      timeout: 1500,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const matches = Array.from(out.matchAll(/DriverDesc\s+REG_SZ\s+(.+)/gi))
+    for (const m of matches) {
+      const name = m[1]?.trim()
+      if (name && !name.toLowerCase().includes('basic render') && !name.toLowerCase().includes('virtual')) {
+        return { name }
       }
     }
-    if (name || ram) return { name: name || undefined, totalVramMB: ram && ram > 0 ? ram : undefined }
-    return null
-  } catch { return null }
+  } catch { /* silent fallback */ }
+  return null
 }
 
-function tryPowerShell(): { name?: string; totalVramMB?: number; gpuUtil?: number } | null {
-  if (process.platform !== 'win32') return null
-  try {
-    const out = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -First 1 Name, AdapterRAM | Format-List"', { timeout: 4000, encoding: 'utf8', windowsHide: true } as any)
-    const nameMatch = out.match(/Name\s*:\s*(.+)/)
-    const ramMatch = out.match(/AdapterRAM\s*:\s*(\d+)/)
-    const name = nameMatch ? nameMatch[1].trim() : undefined
-    const ram = ramMatch ? parseInt(ramMatch[1], 10) : NaN
-    if (name || Number.isFinite(ram)) {
-      return { name, totalVramMB: Number.isFinite(ram) && ram > 0 ? Math.round(ram / (1024 * 1024)) : undefined }
-    }
-    return null
-  } catch { return null }
-}
+let cachedHwProfile: (HardwareInfo & { gpuUtilization?: number }) | null = null
+let cachedHwTime = 0
+const HW_CACHE_TTL = 15_000
 
 export function getHardwareProfile(): HardwareInfo {
+  const now = Date.now()
+  if (cachedHwProfile && (now - cachedHwTime) < HW_CACHE_TTL) {
+    return cachedHwProfile
+  }
+
   const totalRamMB = Math.round(os.totalmem() / (1024 * 1024))
   const freeRamMB = Math.round(os.freemem() / (1024 * 1024))
 
-  // Try GPU detection in priority: nvidia-smi → wmic → powershell
+  // Try GPU detection in priority: nvidia-smi → registry (zero wmic / powershell blocking)
   let gpu: { name?: string; totalVramMB?: number; freeVramMB?: number; gpuUtil?: number } | null = null
   gpu = tryNvidiaSmi()
   if (!gpu || !gpu.totalVramMB) {
-    const w = tryWmic()
-    if (w) gpu = { ...(gpu ?? {}), ...w } as typeof gpu
-  }
-  if (!gpu || !gpu.totalVramMB) {
-    const p = tryPowerShell()
-    if (p) gpu = { ...(gpu ?? {}), ...p } as typeof gpu
+    const regGpu = tryWindowsRegistryGpu()
+    if (regGpu) gpu = { ...(gpu ?? {}), ...regGpu } as typeof gpu
   }
 
   let totalVramMB = gpu?.totalVramMB
@@ -170,7 +160,7 @@ export function getHardwareProfile(): HardwareInfo {
   const gpuAvailable = gpuClass.gpuAvailable
 
   const storage = tryStorage()
-  return {
+  const res = {
     totalRamMB,
     freeRamMB,
     totalVramMB: gpuDetected ? totalVramMB : undefined,
@@ -184,6 +174,10 @@ export function getHardwareProfile(): HardwareInfo {
     storageFreeGB: storage.freeGB,
     storageTotalGB: storage.totalGB,
   } as HardwareInfo & { gpuUtilization?: number }
+
+  cachedHwProfile = res
+  cachedHwTime = Date.now()
+  return res
 }
 
 export function getVramAwareCompatibilityMessage(hw: HardwareInfo): string {
@@ -201,15 +195,12 @@ import type { HardwareProfileFull } from '@shared/types/validation'
 
 function detectPhysicalCores(): number | null {
   try {
-    if (process.platform === 'win32') {
-      const out = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum"', { timeout: 3000, encoding: 'utf8', windowsHide: true } as any)
-      const n = parseInt(String(out).match(/\d+/)?.[0] ?? '', 10)
-      if (Number.isFinite(n) && n > 0) return n
-    } else {
-      const raw = execSync('lscpu 2>/dev/null | awk \'/^Core\\(s\\) per socket/{c=$4} /^Socket\\(s\\)/{s=$2} END{print c*s}\'', { timeout: 2000, encoding: 'utf8' } as any)
-      const n = parseInt(String(raw).trim(), 10)
-      if (Number.isFinite(n) && n > 0) return n
+    if (typeof (os as unknown as { availableParallelism?: () => number }).availableParallelism === 'function') {
+      const p = (os as unknown as { availableParallelism: () => number }).availableParallelism()
+      if (typeof p === 'number' && p > 0) return Math.max(1, Math.round(p / 2))
     }
+    const threads = os.cpus().length || 8
+    return Math.max(1, Math.round(threads / 2))
   } catch { /* fallback */ }
   return null
 }
