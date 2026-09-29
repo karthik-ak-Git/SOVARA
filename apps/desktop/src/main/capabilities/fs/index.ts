@@ -259,12 +259,18 @@ export async function dispatchFs(
 
   // ── fs_write: create or overwrite a file ───────────────────────────────
   // Creates all parent directories. Validates path stays inside workspace.
-  // Gated: requires 'review' or 'allow' exec mode (not 'ask').
   if (toolName === 'fs_write') {
     const rel = typeof args['path'] === 'string' ? args['path'] as string : ''
     let content = typeof args['content'] === 'string' ? args['content'] : (typeof args['text'] === 'string' ? args['text'] : (typeof args['code'] === 'string' ? args['code'] : undefined))
     if (!rel || content === undefined) {
       return JSON.stringify({ error: 'fs_write requires { path: string, content: string }', code: 'INVALID_ARGUMENTS' })
+    }
+    const placeholderPattern = /^(?:\.\.\.|<!DOCTYPE html>\.\.\.|\/\* \.\.\. \*\/|\/\/ \.\.\.)$/i
+    if (placeholderPattern.test(content.trim()) || (content.trim().length <= 3 && content.trim() === '...')) {
+      return JSON.stringify({
+        error: `fs_write rejected: The provided content was an abbreviation/placeholder ('${content.trim()}'). You must generate the complete, unabbreviated code.`,
+        code: 'PLACEHOLDER_REJECTED'
+      })
     }
     let abs: string
     try { abs = resolveWorkspacePath(root, rel) } catch (e) {

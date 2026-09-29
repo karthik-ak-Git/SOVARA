@@ -182,9 +182,15 @@ export function dispatchShell(
     let stdoutAcc = ''
     let stderrAcc = ''
 
-    const isWin = process.platform === 'win32'
+    let finalCmd = sanitizedCmd
+    if (isWin) {
+      finalCmd = finalCmd
+        .replace(/\blscpu\b/gi, 'Get-CimInstance Win32_Processor')
+        .replace(/\bfree\s+(?:-[mh]|\b)/gi, 'Get-CimInstance Win32_OperatingSystem')
+        .replace(/\s*&&\s*/g, '; ')
+    }
     const spawnArgs = isWin
-      ? ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-Command', sanitizedCmd]
+      ? ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive', '-Command', finalCmd]
       : ['-c', sanitizedCmd]
     const shellBin = isWin ? 'powershell.exe' : '/bin/sh'
 

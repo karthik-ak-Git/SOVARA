@@ -122,8 +122,8 @@ async function runSinglePrompt(adapter: LocalOpenAIChatAdapter, promptObj: typeo
         model: MODEL_PATH,
         messages: history,
         stream: true,
-        maxCompletionTokens: 1024,
-        timeoutMs: 45000
+        maxCompletionTokens: 4096,
+        timeoutMs: 60000
       })) {
         if (chunk.type === 'text-delta' && chunk.text) {
           assistantText += chunk.text
@@ -186,6 +186,7 @@ async function runSinglePrompt(adapter: LocalOpenAIChatAdapter, promptObj: typeo
     title: promptObj.title,
     steps: step,
     toolsInvoked,
+    fullOutput: fullOutput.trim(),
     preview: fullOutput.trim().slice(0, 300) + (fullOutput.trim().length > 300 ? '...' : '')
   }
 }
@@ -233,9 +234,23 @@ async function main() {
       results.push(res)
     } catch (e: any) {
       console.error(`Prompt ${p.id} threw error:`, e.message)
-      results.push({ id: p.id, title: p.title, steps: 0, toolsInvoked: [], preview: `Error: ${e.message}` })
+      results.push({ id: p.id, title: p.title, steps: 0, toolsInvoked: [], fullOutput: `Error: ${e.message}`, preview: `Error: ${e.message}` })
     }
   }
+
+  let mdReport = '# SOVARA Live AI Model Generation Outputs\n\n'
+  mdReport += `**Model**: \`${path.basename(MODEL_PATH)}\` via \`llama-server.exe\` (CUDA)\n`
+  mdReport += `**Timestamp**: ${new Date().toISOString()}\n\n---\n\n`
+
+  for (const r of results) {
+    mdReport += `## Prompt ${r.id}: ${r.title}\n\n`
+    mdReport += `**Steps Executed**: ${r.steps}\n\n`
+    mdReport += `**Tools Invoked**: ${r.toolsInvoked.length > 0 ? r.toolsInvoked.join(', ') : 'None'}\n\n`
+    mdReport += `### Generated Output:\n\n${r.fullOutput}\n\n---\n\n`
+  }
+
+  fs.writeFileSync(path.join(WORKSPACE, 'live_model_outputs.md'), mdReport, 'utf8')
+  console.log(`Saved full outputs to ${path.join(WORKSPACE, 'live_model_outputs.md')}`)
 
   console.log('\n======================================================================')
   console.log('SUMMARY OF LIVE LOCAL MODEL TESTS (Gemma-4-E2B-it-Q4_K_M)')
@@ -244,7 +259,6 @@ async function main() {
     console.log(`\nPrompt ${r.id}: ${r.title}`)
     console.log(`- Steps executed: ${r.steps}`)
     console.log(`- Tools called: ${r.toolsInvoked.length > 0 ? r.toolsInvoked.join(', ') : 'None (Generated markdown/text directly)'}`)
-    console.log(`- Response preview:\n"${r.preview}"`)
   }
 
   console.log('\nShutting down llama-server...')
