@@ -280,6 +280,8 @@ export class LocalOpenAIChatAdapter implements LlmPort {
       cache_prompt: true,
       max_tokens: maxTokens,
       temperature: 0.7,
+      repeat_penalty: 1.1,
+      presence_penalty: 0.1,
     }
 
     // ── Native tool calling ─────────────────────────────────────────────────

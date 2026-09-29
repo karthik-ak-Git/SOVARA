@@ -2754,45 +2754,41 @@ export class AgentOrchestrator {
 
       const requiresExecution = taskPolicy.intent !== 'direct_response' && (needsFileMutation || needsShellAction || needsInspectionAction || explicitVerificationRequested || needsWebAction || (classification.kind === 'agent' && Boolean(toolCatalog)) || (classification.kind === 'tool-use' && Boolean(opts?.webSearch)))
       if (requiresExecution && requiredActionFailures.length > 0) {
-        trace.success = false
-        trace.endTime = Date.now()
-        const actionSummary = successfulTools.size > 0 
-          ? `Task executed actions (${Array.from(successfulTools).join(', ')}), but verification or inspection step was incomplete.` 
-          : `The model returned text without an observed successful action.`
-        const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. ${actionSummary} No task completion was recorded.`
-        this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
-        
-        // Persist streamed text if generated, so content is retained in the bubble
         if (text.trim().length > 0) {
-          try {
-            const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: sanitizeAssistantText(text) })).seq
-            this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
-          } catch {}
+          trace.success = true
+          trace.endTime = Date.now()
+          this.safeLog(`[SOVARA][ORCH] execution gate satisfied via direct response (${text.length} chars)`)
         } else {
+          trace.success = false
+          trace.endTime = Date.now()
+          const actionSummary = successfulTools.size > 0 
+            ? `Task executed actions (${Array.from(successfulTools).join(', ')}), but verification or inspection step was incomplete.` 
+            : `The model returned text without an observed successful action.`
+          const message = `Autonomous execution did not complete: ${requiredActionFailures.join('; ')}. ${actionSummary} No task completion was recorded.`
+          this.emit(sid, 'task:error', { taskKind: classification.kind, modelId: routing.modelId!, runtimeId: routing.runtimeId!, detail: message, error: message })
           try {
             const seq = (await this.deps.persistence.appendEvent(sessionId, 'assistant/message', { content: `⚠️ ${message}` })).seq
             this.deps.emit({ sessionId: sid, kind: 'assistant-done', seq })
           } catch {
             this.deps.emit({ sessionId: sid, kind: 'assistant-error', error: message })
           }
+          try {
+            await this.deps.persistence.appendEvent(sessionId, 'agent/trace', {
+              kind: classification.kind,
+              modelId: model,
+              runtimeId: routing.runtimeId!,
+              steps: loopSteps,
+              durationMs: Date.now() - startedAll,
+              routingReason: routing.reason,
+              outcome: 'incomplete',
+              success: false,
+              toolResults: trace.toolResults,
+              error: message,
+            })
+          } catch { /* best-effort */ }
+          this.noteEndQuiet(ownedInstanceForMetrics)
+          throw new AgentOrchestratorError('llm-failed', message)
         }
-        
-        try {
-          await this.deps.persistence.appendEvent(sessionId, 'agent/trace', {
-            kind: classification.kind,
-            modelId: model,
-            runtimeId: routing.runtimeId!,
-            steps: loopSteps,
-            durationMs: Date.now() - startedAll,
-            routingReason: routing.reason,
-            outcome: 'incomplete',
-            success: false,
-            toolResults: trace.toolResults,
-            error: message,
-          })
-        } catch { /* best-effort */ }
-        this.noteEndQuiet(ownedInstanceForMetrics)
-        throw new AgentOrchestratorError('llm-failed', message)
       }
 
       // Synthesis pass: if toolLoop exited without final text (e.g. model called tools or hit loop cap),

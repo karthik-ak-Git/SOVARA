@@ -124,7 +124,7 @@ export function detectOutputFormat(content: string): DetectedOutput | null {
   if (wantsDocx) return { kind: 'docx', fileName: `${slugify(text.slice(0,120))}.docx`, explicitName: false }
   // 3. Code file â€” only trigger if the user explicitly asked to save to a specific filename
   const codeFileM = /\b(save|write|create|generate|export)(?: it| this| the code)? (?:as|to|into) ([A-Za-z0-9 _\-.]+\.(py|ts|tsx|js|jsx|rs|go|java|html|css|json|sh|sql))\b/i.exec(text)
-  if (codeFileM) return { kind: 'code', fileName: sanitizeFileName(codeFileM[1]!.trim(), 'script.txt'), explicitName: true }
+  if (codeFileM) return { kind: 'code', fileName: sanitizeFileName(codeFileM[2]!.trim(), 'script.txt'), explicitName: true }
   return null
 }
 
