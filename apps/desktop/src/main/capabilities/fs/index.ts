@@ -92,20 +92,17 @@ export async function dispatchFs(
     }
     const stat = fs.statSync(abs)
     if (stat.isFile()) return JSON.stringify({ path: rel, type: 'file', size: stat.size, workspace: root, external: isAbs })
-    const entries = fs.readdirSync(abs, { withFileTypes: true }).slice(0, 200).map(d => {
-      const full = path.join(abs, d.name)
+    const entries = fs.readdirSync(abs, { withFileTypes: true }).slice(0, 100).map(d => {
       let size = 0
-      try { size = d.isFile() ? fs.statSync(full).size : 0 } catch { size = 0 }
+      try { size = d.isFile() ? fs.statSync(path.join(abs, d.name)).size : 0 } catch { size = 0 }
       return {
         name: d.name,
-        isDirectory: d.isDirectory(),
-        isFile: d.isFile(),
+        type: d.isDirectory() ? 'dir' : 'file',
         size,
-        path: isAbs ? full.replace(/\\/g, '/') : path.relative(root, full).replace(/\\/g, '/'),
       }
     })
     console.log(`[SOVARA][FS] fs_list path="${rel}" found ${entries.length} entries (external=${isAbs})`)
-    return JSON.stringify({ workspace: root, path: rel, external: isAbs, entries, count: entries.length }, null, 2)
+    return JSON.stringify({ workspace: root, path: rel, external: isAbs, entries, count: entries.length })
   }
 
   if (toolName === 'fs_read') {
@@ -265,10 +262,10 @@ export async function dispatchFs(
   // Gated: requires 'review' or 'allow' exec mode (not 'ask').
   if (toolName === 'fs_write') {
     const rel = typeof args['path'] === 'string' ? args['path'] as string : ''
-    if (!rel || !Object.prototype.hasOwnProperty.call(args, 'content') || typeof args['content'] !== 'string') {
+    let content = typeof args['content'] === 'string' ? args['content'] : (typeof args['text'] === 'string' ? args['text'] : (typeof args['code'] === 'string' ? args['code'] : undefined))
+    if (!rel || content === undefined) {
       return JSON.stringify({ error: 'fs_write requires { path: string, content: string }', code: 'INVALID_ARGUMENTS' })
     }
-    const content = args['content'] as string
     let abs: string
     try { abs = resolveWorkspacePath(root, rel) } catch (e) {
       console.warn(`[SOVARA][FS] fs_write path escapes workspace: ${rel}`, e)

@@ -370,6 +370,16 @@ export function extractToolFences(text: string): ToolFence[] {
       }
     }
     const args = parseLenientJson(argsSource, nameStr)
+    if (nameStr === 'fs_write' && (!args['content'] || typeof args['content'] !== 'string' || (args['content'] as string).trim() === '')) {
+      const codeMatch = /```(?:html|css|js|javascript|ts|typescript|py|python|json|sh|bash|powershell)?\s*\n([\s\S]+?)\n```/i.exec(text)
+      if (codeMatch && codeMatch[1]?.trim()) {
+        args['content'] = codeMatch[1].trim()
+      }
+    }
+    if (['shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec'].includes(nameStr)) {
+      if (!args['command'] && args['cmd']) args['command'] = args['cmd']
+      if (!args['command'] && args['script']) args['command'] = args['script']
+    }
     const reqArgs = ['fs_write', 'fs_patch', 'fs_read', 'shell_exec', 'bash', 'cmd', 'powershell', 'terminal_exec', 'search_skills', 'read_skill', 'invoke_subagent'].includes(nameStr)
     if (!reqArgs || Object.keys(args).length > 0) {
       out.push({ toolName: nameStr, args, raw: m[0], index: m.index })
